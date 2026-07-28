@@ -48,6 +48,30 @@ impl AgentView {
             && self.cancel_turn_view.is_none()
             && self.question_view.is_none()
     }
+    /// Whether a layered agent surface must receive mouse input before the
+    /// app-level session sidebar.
+    pub(crate) fn sidebar_mouse_blocked(&self) -> bool {
+        self.active_subagent.is_some()
+            || self.image_viewer.is_some()
+            || self.video_viewer.is_some()
+            || self.gboom.is_some()
+            || (self.show_goal_detail && self.goal_state.is_some())
+            || self.btw_state.is_some()
+            || self.line_viewer.is_some()
+            || self.extensions_modal.is_some()
+            || self.persona_detail.is_some()
+            || self.agents_modal.is_some()
+            || self.block_viewer.is_some()
+            || self.active_modal.is_some()
+            || !self.permission_queue.is_empty()
+            || self.plan_approval_view.is_some()
+            || self.rewind_state.is_some()
+            || self.inline_edit.is_some()
+            || self.jump_state.is_some()
+            || self.cancel_turn_view.is_some()
+            || self.question_view.is_some()
+            || self.prompt.any_dropdown_open()
+    }
     /// Whether FocusGained should move focus from Scrollback → Prompt.
     ///
     /// Needs-input overlays (permission / plan / cancel-turn / question) always
@@ -585,6 +609,12 @@ impl AgentView {
                     self.handle_modal_key(key)
                 }
                 Event::Mouse(mouse) => self.handle_modal_mouse(mouse),
+                Event::Paste(text) => {
+                    if let Some(ActiveModal::Providers { state }) = &mut self.active_modal {
+                        state.handle_paste(text);
+                    }
+                    InputOutcome::Changed
+                }
                 _ => InputOutcome::Changed,
             };
         }

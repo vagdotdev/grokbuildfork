@@ -32,6 +32,7 @@ pub mod plugin;
 pub mod relay;
 pub mod remote;
 pub mod sampling;
+pub mod secure_store;
 pub mod session;
 pub mod terminal;
 #[cfg(test)]

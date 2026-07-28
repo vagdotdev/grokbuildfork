@@ -1727,7 +1727,7 @@ async fn async_main() -> Result<()> {
                     println!("{}", serde_json::to_string(&payload)?);
                 } else {
                     println!(
-                        "grok {}",
+                        "workshop {}",
                         xai_grok_version::display_version_with_commit(
                             env!("VERSION_WITH_COMMIT"),
                             xai_grok_update::channel_label(),
@@ -1778,6 +1778,9 @@ async fn async_main() -> Result<()> {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 return xai_grok_pager::plugin_cmd::run(plugin_args).await;
+            }
+            Command::Provider(provider_args) => {
+                return xai_grok_pager::provider_cmd::run(provider_args);
             }
             Command::Models => {
                 init_tracing_simple("cli");

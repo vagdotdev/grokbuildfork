@@ -183,6 +183,26 @@ impl AgentView {
             }
         }
 
+        if let ActiveModal::Providers { state } = modal {
+            use crate::views::provider_modal::{ProviderModalOutcome, handle_provider_key};
+            return match handle_provider_key(state, key) {
+                ProviderModalOutcome::Close => {
+                    self.active_modal = None;
+                    InputOutcome::Changed
+                }
+                ProviderModalOutcome::Refresh => InputOutcome::Action(Action::RefreshProviders),
+                ProviderModalOutcome::SubmitAdd => InputOutcome::Action(Action::SubmitProviderAdd),
+                ProviderModalOutcome::ImportOpenCode { include_oauth } => {
+                    InputOutcome::Action(Action::ImportOpenCodeProviders { include_oauth })
+                }
+                ProviderModalOutcome::Remove { id } => {
+                    InputOutcome::Action(Action::RemoveManagedProvider { id })
+                }
+                ProviderModalOutcome::Changed => InputOutcome::Changed,
+                ProviderModalOutcome::Unchanged => InputOutcome::Unchanged,
+            };
+        }
+
         // RememberNoteReview: modal preview for # remember notes.
         if let ActiveModal::RememberNoteReview {
             ref mut scroll,
@@ -473,6 +493,7 @@ impl AgentView {
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
             | ActiveModal::Settings { .. }
+            | ActiveModal::Providers { .. }
             | ActiveModal::ResetSettingsConfirm { .. }
             | ActiveModal::RememberNoteReview { .. } => unreachable!(),
         }
@@ -1310,6 +1331,24 @@ impl AgentView {
         use crate::views::modal::ActiveModal;
         use crate::views::modal_window::{self as mw, ModalWindowOutcome};
         use crossterm::event::MouseEventKind;
+
+        if let Some(ActiveModal::Providers { state }) = &mut self.active_modal {
+            return match mw::handle_modal_mouse(
+                &mut state.window,
+                mouse.kind,
+                mouse.column,
+                mouse.row,
+            ) {
+                ModalWindowOutcome::CloseRequested => {
+                    self.active_modal = None;
+                    InputOutcome::Changed
+                }
+                ModalWindowOutcome::Handled | ModalWindowOutcome::Unhandled => {
+                    InputOutcome::Changed
+                }
+                _ => InputOutcome::Changed,
+            };
+        }
 
         // Picker-based modals: route through ModalWindow chrome first,
         // then delegate content events to the picker input handler.
@@ -2245,6 +2284,10 @@ impl AgentView {
                     settings_state,
                     compact,
                     None,
+                );
+            } else if let modal::ActiveModal::Providers { state } = active_modal {
+                crate::views::provider_modal::render_provider_modal(
+                    buf, area, state, compact, &theme,
                 );
             } else if matches!(
                 active_modal,

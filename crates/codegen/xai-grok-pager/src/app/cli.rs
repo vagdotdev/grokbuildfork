@@ -46,6 +46,9 @@ pub enum Command {
     Mcp(crate::mcp_cmd::McpArgs),
     /// Manage plugins and marketplace sources
     Plugin(crate::plugin_cmd::PluginArgs),
+    /// Connect and manage model providers
+    #[command(visible_alias = "providers", visible_alias = "connect")]
+    Provider(crate::provider_cmd::ProviderArgs),
     /// Manage cross-session memory
     Memory(crate::memory_cmd::MemoryArgs),
     /// List available models and exit
@@ -55,7 +58,7 @@ pub enum Command {
     /// Fetch and install managed configuration
     Setup {
         /// Print the fetched configuration as JSON instead of installing it;
-        /// writes nothing to ~/.grok.
+        /// writes nothing to the config directory.
         #[arg(long)]
         json: bool,
     },
@@ -76,10 +79,10 @@ clipboard (containers, SSH) and your terminal does not handle OSC 52 itself
 sync with your window size.
 
 Examples:
-  grok wrap docker exec -it my-container bash
-  grok wrap kubectl exec -it my-pod -- bash
+  workshop wrap docker exec -it my-container bash
+  workshop wrap kubectl exec -it my-pod -- bash
 
-See ~/.grok/README.md for more information.
+See the docs for more information.
 ")]
     Wrap(WrapArgs),
     /// Export a session transcript as Markdown
@@ -311,13 +314,13 @@ impl AgentArgs {
                 Ok(canonical) if canonical.is_dir() => Some(canonical),
                 Ok(_) => {
                     eprintln!(
-                        "grok: --plugin-dir {}: not a directory; skipping",
+                        "workshop: --plugin-dir {}: not a directory; skipping",
                         p.display()
                     );
                     None
                 }
                 Err(e) => {
-                    eprintln!("grok: --plugin-dir {}: {e}; skipping", p.display());
+                    eprintln!("workshop: --plugin-dir {}: {e}; skipping", p.display());
                     None
                 }
             })
@@ -408,9 +411,9 @@ fn version_with_channel() -> &'static str {
 }
 #[derive(Debug, Clone, Parser)]
 #[command(
-    name = "grok",
+    name = "workshop",
     version = version_with_channel(),
-    about = "Grok Build TUI",
+    about = "Workshop engineering agent",
     disable_version_flag = true,
     next_display_order = None,
     help_template = "\
@@ -434,7 +437,7 @@ pub struct PagerArgs {
     /// Working directory.
     #[arg(long)]
     pub cwd: Option<PathBuf>,
-    /// Use a custom leader socket path instead of the default `~/.grok/leader.sock`.
+    /// Use a custom leader socket path instead of the default `~/.docking/leader.sock`.
     #[arg(
         long = "leader-socket",
         value_name = "PATH",
@@ -736,7 +739,7 @@ pub struct PagerArgs {
     /// Run standalone even when leader mode is configured.
     #[arg(long, conflicts_with = "leader", hide = true)]
     pub no_leader: bool,
-    /// Initial prompt for the interactive session, e.g. `grok "fix the bug"` or `grok --worktree=feat "create this feature"`.
+    /// Initial prompt for the interactive session, e.g. `workshop "fix the bug"` or `workshop --worktree=feat "create this feature"`.
     #[arg(
         value_name = "PROMPT",
         conflicts_with_all = &["single",
@@ -778,8 +781,13 @@ impl PagerArgs {
             .map(std::path::Path::new)
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
-            .filter(|n| *n == "grok" || *n == "agent")
-            .unwrap_or("grok")
+            .filter(|n| {
+                matches!(
+                    *n,
+                    "workshop" | "docking" | "booster" | "agentic" | "grok" | "agent"
+                )
+            })
+            .unwrap_or("workshop")
             .to_owned();
         let mut args = Self::parse_from(std::iter::once(bin_name).chain(std::env::args().skip(1)));
         if let Some(socket) = args.leader_socket.take() {

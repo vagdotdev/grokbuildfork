@@ -56,6 +56,9 @@ derive_more = { workspace = true, features = ["deref", "deref_mut"] }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 clap_complete = { workspace = true }
+rpassword = "7.4"
+reqwest = { workspace = true }
+zeroize = "1.8"
 rand = { workspace = true }
 tokio = { workspace = true, features = [
     "sync",

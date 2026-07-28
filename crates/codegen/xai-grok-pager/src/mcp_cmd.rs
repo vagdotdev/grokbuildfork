@@ -18,13 +18,13 @@ Examples:
   grok mcp add postgres -e DATABASE_URL=postgres://localhost/mydb -- npx -y @modelcontextprotocol/server-postgres
 
   # Add a remote HTTP server
-  grok mcp add --transport http sentry https://mcp.sentry.dev/mcp
+  workshop mcp add --transport http sentry https://mcp.sentry.dev/mcp
 
   # Add a remote server with an authentication header
-  grok mcp add --transport http api https://mcp.example.com/mcp --header \"Authorization: Bearer YOUR_TOKEN\"
+  workshop mcp add --transport http api https://mcp.example.com/mcp --header \"Authorization: Bearer YOUR_TOKEN\"
 
   # Add to the project config (./.grok/config.toml) instead of ~/.grok/config.toml
-  grok mcp add --scope project github -- npx -y @modelcontextprotocol/server-github";
+  workshop mcp add --scope project github -- npx -y @modelcontextprotocol/server-github";
 
 #[derive(Debug, clap::Args, Clone)]
 pub struct McpArgs {

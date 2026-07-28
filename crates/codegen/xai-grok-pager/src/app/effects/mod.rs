@@ -42,6 +42,48 @@ pub(crate) fn execute(
     let mut meta = EffectMeta::default();
     let effect_is_send_now = matches!(effect, Effect::SendPromptNow { .. });
     match effect {
+        Effect::LoadProviders { agent_id } => {
+            tasks.spawn(async move {
+                let result = tokio::task::spawn_blocking(crate::provider_cmd::list_providers)
+                    .await
+                    .map_err(|_| "provider list task failed".to_owned())
+                    .and_then(|result| result.map_err(|error| error.to_string()));
+                TaskResult::ProvidersLoaded { agent_id, result }
+            });
+        }
+        Effect::AddProvider { agent_id, request } => {
+            tasks.spawn(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    crate::provider_cmd::add_provider(request)
+                })
+                .await
+                .map_err(|_| "provider add task failed".to_owned())
+                .and_then(|result| result.map_err(|error| error.to_string()));
+                TaskResult::ProviderMutationComplete { agent_id, result }
+            });
+        }
+        Effect::ImportOpenCodeProviders { agent_id, request } => {
+            tasks.spawn(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    crate::provider_cmd::import_opencode(request)
+                })
+                .await
+                .map_err(|_| "OpenCode import task failed".to_owned())
+                .and_then(|result| result.map_err(|error| error.to_string()));
+                TaskResult::ProviderMutationComplete { agent_id, result }
+            });
+        }
+        Effect::RemoveProvider { agent_id, id } => {
+            tasks.spawn(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    crate::provider_cmd::remove_provider(&id)
+                })
+                .await
+                .map_err(|_| "provider removal task failed".to_owned())
+                .and_then(|result| result.map_err(|error| error.to_string()));
+                TaskResult::ProviderMutationComplete { agent_id, result }
+            });
+        }
         Effect::RegisterActiveSession { session_id, cwd } => {
             crate::app::signal_handler::set_current_session_id(Some(session_id.clone()));
             if let Err(e) = xai_grok_shell::active_sessions::register(xai_grok_shell::active_sessions::ActiveSession {

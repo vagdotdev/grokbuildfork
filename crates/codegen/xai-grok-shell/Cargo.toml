@@ -48,6 +48,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { workspace = true }
 serde_ignored = "0.1"
 serde_json = { workspace = true, features = ["preserve_order"] }
+zeroize = "1.8"
 similar = { workspace = true }
 thiserror = { workspace = true }
 clap = { workspace = true }

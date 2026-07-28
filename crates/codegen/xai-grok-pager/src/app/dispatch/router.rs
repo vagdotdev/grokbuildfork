@@ -5,8 +5,8 @@ use super::auth::{
 };
 use super::billing::dispatch_open_supergrok_url;
 use super::ctx::{
-    active_agent_session_id, get_active_agent_mut, navigate_clearing_selection,
-    sync_sleep_inhibitor, with_active_agent, with_scrollback,
+    SwitchCause, active_agent_session_id, get_active_agent_mut, navigate_clearing_selection,
+    switch_to_agent, sync_sleep_inhibitor, with_active_agent, with_scrollback,
 };
 use super::dashboard::{
     dispatch_dashboard_attach, dispatch_dashboard_begin_rename, dispatch_dashboard_change_location,
@@ -949,6 +949,58 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PreviewAutoDarkTheme(v) => preview_auto_dark_theme(app, v),
         Action::PreviewAutoLightTheme(v) => preview_auto_light_theme(app, v),
         Action::OpenSettings => dispatch_open_settings(app),
+        Action::OpenProviderManager => {
+            let ActiveView::Agent(agent_id) = app.active_view else {
+                return vec![];
+            };
+            let Some(agent) = app.agents.get_mut(&agent_id) else {
+                return vec![];
+            };
+            agent.active_modal = Some(crate::views::modal::ActiveModal::Providers {
+                state: Box::new(crate::views::provider_modal::ProviderModalState::loading()),
+            });
+            vec![Effect::LoadProviders { agent_id }]
+        }
+        Action::RefreshProviders => {
+            let ActiveView::Agent(agent_id) = app.active_view else {
+                return vec![];
+            };
+            vec![Effect::LoadProviders { agent_id }]
+        }
+        Action::SubmitProviderAdd => {
+            let ActiveView::Agent(agent_id) = app.active_view else {
+                return vec![];
+            };
+            let request = app.agents.get_mut(&agent_id).and_then(|agent| {
+                let Some(crate::views::modal::ActiveModal::Providers { state }) =
+                    agent.active_modal.as_mut()
+                else {
+                    return None;
+                };
+                state.take_pending_add()
+            });
+            request.map_or_else(Vec::new, |request| {
+                vec![Effect::AddProvider { agent_id, request }]
+            })
+        }
+        Action::ImportOpenCodeProviders { include_oauth } => {
+            let ActiveView::Agent(agent_id) = app.active_view else {
+                return vec![];
+            };
+            vec![Effect::ImportOpenCodeProviders {
+                agent_id,
+                request: crate::provider_cmd::ImportOpenCodeRequest {
+                    path: None,
+                    include_oauth,
+                },
+            }]
+        }
+        Action::RemoveManagedProvider { id } => {
+            let ActiveView::Agent(agent_id) = app.active_view else {
+                return vec![];
+            };
+            vec![Effect::RemoveProvider { agent_id, id }]
+        }
         Action::OpenCommandPalette => dispatch_open_command_palette(app),
         Action::OpenHowtoGuides => dispatch_open_howto_guides(app),
         Action::OpenResetConfirm { key } => dispatch_open_reset_confirm(app, key),
@@ -1130,6 +1182,19 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         }
         Action::OpenDashboard => dispatch_open_dashboard(app),
         Action::ExitDashboard => dispatch_exit_dashboard(app),
+        Action::SwitchAgent(target) => {
+            if !app.agents.contains_key(&target) {
+                return vec![];
+            }
+            if let Some(agent) = app.agents.get_mut(&target) {
+                agent.active_subagent = None;
+            }
+            if let Some(dashboard) = app.dashboard.as_mut() {
+                dashboard.close_popup();
+            }
+            switch_to_agent(app, target, SwitchCause::Picker);
+            vec![]
+        }
         Action::DashboardAttach(id) => dispatch_dashboard_attach(app, id),
         Action::DashboardDispatch { text, attach } => {
             dispatch_dashboard_dispatch(app, text, attach)

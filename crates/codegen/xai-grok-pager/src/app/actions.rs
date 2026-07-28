@@ -566,6 +566,21 @@ pub enum Action {
     /// Open the settings modal (F2, `/settings`, command palette).
     /// If already open, closes it instead of stacking.
     OpenSettings,
+    /// Open and asynchronously load the provider manager.
+    OpenProviderManager,
+    /// Reload provider metadata and Keychain-presence status.
+    RefreshProviders,
+    /// Submit the add form. The secret remains in modal state until dispatch
+    /// moves it directly into a redacted, zeroizing effect payload.
+    SubmitProviderAdd,
+    /// Import OpenCode credentials after explicit modal confirmation.
+    ImportOpenCodeProviders {
+        include_oauth: bool,
+    },
+    /// Remove a provider after explicit modal confirmation.
+    RemoveManagedProvider {
+        id: String,
+    },
     /// Open the command palette (`/help`). The keybinding path (Ctrl+P) opens it
     /// directly in `handle_agent_action`; this lets a slash command reach the
     /// same modal through dispatch.
@@ -744,6 +759,8 @@ pub enum Action {
     OpenDashboard,
     /// Close the dashboard, returning to the previous `ActiveView`.
     ExitDashboard,
+    /// Switch to an already-open local agent from the multi-session sidebar.
+    SwitchAgent(AgentId),
     /// Attach to a dashboard row — switches to the parent agent and
     /// (for subagent rows) sets the parent's `active_subagent`.
     DashboardAttach(crate::views::dashboard::DashboardRowId),
@@ -1316,6 +1333,20 @@ pub enum ProbedAttachment {
 }
 #[derive(Debug)]
 pub enum Effect {
+    /// Read provider metadata and Keychain presence off the event-loop thread.
+    LoadProviders { agent_id: AgentId },
+    /// Store a provider credential and optional generated model config.
+    AddProvider {
+        agent_id: AgentId,
+        request: crate::provider_cmd::AddProviderRequest,
+    },
+    /// Import OpenCode auth records after TUI confirmation.
+    ImportOpenCodeProviders {
+        agent_id: AgentId,
+        request: crate::provider_cmd::ImportOpenCodeRequest,
+    },
+    /// Remove provider-manager-owned state.
+    RemoveProvider { agent_id: AgentId, id: String },
     /// Create a new ACP session.
     CreateSession {
         agent_id: AgentId,
@@ -2046,6 +2077,16 @@ pub enum SubagentKillOutcome {
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum TaskResult {
+    /// Provider list load completed. Contains metadata only, never credentials.
+    ProvidersLoaded {
+        agent_id: AgentId,
+        result: Result<Vec<crate::provider_cmd::ProviderInfo>, String>,
+    },
+    /// Add/import/remove completed and returned a refreshed metadata list.
+    ProviderMutationComplete {
+        agent_id: AgentId,
+        result: Result<crate::provider_cmd::ProviderMutation, String>,
+    },
     /// Session was created successfully.
     SessionCreated {
         agent_id: AgentId,

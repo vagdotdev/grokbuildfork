@@ -171,6 +171,24 @@ fn drain_clipboard_target(target: &ClipboardPasteTarget, app: &mut AppView) -> V
 /// Handle a completed async task result.
 pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec<Effect> {
     match result {
+        TaskResult::ProvidersLoaded { agent_id, result } => {
+            if let Some(agent) = app.agents.get_mut(&agent_id)
+                && let Some(crate::views::modal::ActiveModal::Providers { state }) =
+                    agent.active_modal.as_mut()
+            {
+                state.apply_loaded(result);
+            }
+            vec![]
+        }
+        TaskResult::ProviderMutationComplete { agent_id, result } => {
+            if let Some(agent) = app.agents.get_mut(&agent_id)
+                && let Some(crate::views::modal::ActiveModal::Providers { state }) =
+                    agent.active_modal.as_mut()
+            {
+                state.apply_mutation(result);
+            }
+            vec![]
+        }
         TaskResult::SessionCreated {
             agent_id,
             session_id,

@@ -1524,6 +1524,21 @@ fn close_active_agent_with_dead_parent_falls_back_to_surviving_peer() {
     assert!(matches!(app.active_view, ActiveView::Agent(id) if id == AgentId(0)));
 }
 #[test]
+fn sidebar_switch_validates_and_clears_transient_targets() {
+    let mut app = three_agent_app();
+    app.agents.get_mut(&AgentId(1)).unwrap().active_subagent = Some("child".into());
+    crate::app::dispatch::dashboard::ensure_dashboard_state(&mut app);
+    app.dashboard.as_mut().unwrap().attached_agent = Some(AgentId(0));
+
+    assert!(dispatch(Action::SwitchAgent(AgentId(99)), &mut app).is_empty());
+    assert!(matches!(app.active_view, ActiveView::Agent(AgentId(0))));
+
+    assert!(dispatch(Action::SwitchAgent(AgentId(1)), &mut app).is_empty());
+    assert!(matches!(app.active_view, ActiveView::Agent(AgentId(1))));
+    assert!(app.agents[&AgentId(1)].active_subagent.is_none());
+    assert!(app.dashboard.as_ref().unwrap().attached_agent.is_none());
+}
+#[test]
 fn entry_title_uses_display_name_when_set() {
     use crate::views::session_title::entry_title;
     let mut app = test_app_with_agent();

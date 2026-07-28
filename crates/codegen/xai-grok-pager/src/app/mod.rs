@@ -602,6 +602,12 @@ pub async fn run(
         default_yolo_mode: launch_yolo.yolo,
         default_auto_mode: launch_auto && !launch_yolo.yolo,
     };
+    // Workshop product startup: scan the machine, vault credentials, write BYOK
+    // model config, and pin API-key auth before ACP initialize.
+    let _ = crate::provider_autodock::auto_dock_on_startup();
+    if let Err(error) = crate::provider_cmd::bootstrap_byok_auth_from_dock() {
+        tracing::warn!(error = %error, "workshop provider bootstrap failed");
+    }
     let connection = if use_leader {
         let conn = crate::acp::connect_via_leader(&cancel, connect_flags, &raw_config).await?;
         tracing::info!(

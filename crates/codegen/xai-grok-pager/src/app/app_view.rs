@@ -768,6 +768,8 @@ pub struct AppView {
     /// brighter red on the import row's `[x]` when the mouse is exactly on
     /// those cells).
     pub last_mouse_pos: Option<(u16, u16)>,
+    /// Cached geometry and hover for the wide multi-session agent sidebar.
+    pub session_sidebar: crate::views::session_sidebar::SessionSidebarState,
     /// Origin (column, row) of the in-progress scroll gesture. Reused by
     /// `update_tick`'s residual flush so sub-line carry / stream-gap flushes
     /// route via `hit_test` to the originating pane instead of leaking into
@@ -1222,6 +1224,7 @@ impl AppView {
             welcome_show_changelog_action: false,
             welcome_import_banner_rect: None,
             last_mouse_pos: None,
+            session_sidebar: Default::default(),
             last_scroll_pos: None,
             last_cache_evict_at: None,
             welcome_prompt_rect: None,
@@ -2339,6 +2342,42 @@ impl AppView {
                         ));
                     }
                     return InputOutcome::Unchanged;
+                }
+                if !overlay_active
+                    && !self.screen_mode.is_minimal()
+                    && self.agents.len() >= 2
+                    && let Event::Mouse(mouse) = ev
+                    && !self
+                        .agents
+                        .get(&id)
+                        .is_some_and(AgentView::sidebar_mouse_blocked)
+                {
+                    match mouse.kind {
+                        MouseEventKind::Moved => {
+                            if self.session_sidebar.update_hover(mouse.column, mouse.row) {
+                                return InputOutcome::Changed;
+                            }
+                            if self
+                                .session_sidebar
+                                .area
+                                .is_some_and(|area| area.contains((mouse.column, mouse.row).into()))
+                            {
+                                return InputOutcome::Unchanged;
+                            }
+                        }
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            if let Some(area) = self.session_sidebar.area
+                                && area.contains((mouse.column, mouse.row).into())
+                            {
+                                return self
+                                    .session_sidebar
+                                    .target_at(mouse.column, mouse.row)
+                                    .map(|target| InputOutcome::Action(Action::SwitchAgent(target)))
+                                    .unwrap_or(InputOutcome::Unchanged);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 if let Some(outcome) = self.voice_esc_outcome(key_event) {
                     return outcome;
@@ -3697,6 +3736,7 @@ impl AppView {
     fn draw_inner(&mut self, terminal: &mut PagerTerminal) {
         self.resync_announcement_slash_gate_on_divergence();
         if self.screen_mode.is_minimal() {
+            self.session_sidebar.clear();
             if let Some(hooks) = crate::minimal_hook::hooks() {
                 (hooks.draw)(self, terminal);
             }
@@ -3770,6 +3810,7 @@ impl AppView {
             cursor,
             pending_action,
             pending_notification_escapes,
+            session_sidebar,
             ..
         } = self;
         let notif_escapes = pending_notification_escapes.take();
@@ -3812,6 +3853,7 @@ impl AppView {
             if view_area.height > 0 {
                 match *active_view {
                     ActiveView::Welcome => {
+                        session_sidebar.clear();
                         let mut flags_vec: Vec<crate::views::prompt_widget::PromptFlag<'_>> =
                             Vec::new();
                         if self.default_yolo {
@@ -4035,6 +4077,7 @@ impl AppView {
                                 None
                             };
                         let (agent_area, header) = if overlay_active {
+                            session_sidebar.clear();
                             let theme = crate::theme::Theme::current();
                             let title = agents
                                 .get(&id)
@@ -4068,7 +4111,20 @@ impl AppView {
                                 Some(chrome) => (chrome.content, Some(chrome)),
                                 None => (view_area, None),
                             }
+                        } else if let Some((sidebar_area, agent_area)) =
+                            crate::views::session_sidebar::split_area(view_area, agents.len())
+                        {
+                            crate::views::session_sidebar::render(
+                                f.buffer_mut(),
+                                sidebar_area,
+                                agents,
+                                id,
+                                session_sidebar,
+                                self.last_mouse_pos,
+                            );
+                            (agent_area, None)
                         } else {
+                            session_sidebar.clear();
                             (view_area, None)
                         };
                         if let Some(d) = self.dashboard.as_mut() {
@@ -4141,6 +4197,7 @@ impl AppView {
                         }
                     }
                     ActiveView::AgentDashboard => {
+                        session_sidebar.clear();
                         if let Some(dashboard) = self.dashboard.as_mut() {
                             dashboard.voice_listening = voice_listening;
                             dashboard.voice_interim = voice_interim.clone();
@@ -4247,6 +4304,8 @@ impl AppView {
                         }
                     }
                 }
+            } else {
+                session_sidebar.clear();
             }
             if let Some(fps) = &fps_overlay {
                 fps.render(full_area, f.buffer_mut());

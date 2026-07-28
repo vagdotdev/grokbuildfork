@@ -676,32 +676,27 @@ pub(crate) async fn run(
             }
         }
 
-        // Skip the login splash screen — auto-trigger login immediately
-        // by reusing dispatch_login. Effects are stashed and drained after
-        // the initial render so the user sees the auth UI right away.
-        // Empty auth_methods (preferred_method pin with no credentials) is
-        // fail-closed: do not invent grok.com / auto-start OIDC.
+        // Workshop is a multi-provider BYOK agent. Interactive Grok OAuth is
+        // optional and never auto-started; cold start uses docked API keys.
         tracing::info!(
             method_id = ?app.login_method_id,
             methods_empty = connection.auth_methods.is_empty(),
-            "auto-triggering login at startup"
+            "workshop startup: no auto OAuth"
         );
     }
     // else: auth_state defaults to Done (already authenticated eagerly)
-    // Effects stashed until after the initial render, so the user sees the
-    // welcome/auth UI right away.
     let mut post_render_effects = if needs_interactive_login {
-        if connection.auth_methods.is_empty() {
-            // preferred_method pin unavailable — no advertised method to start.
-            app.auth_state = super::app_view::AuthState::Pending {
-                error: Some(
-                    xai_grok_shell::agent::auth_method::PREFERRED_API_KEY_UNAVAILABLE.to_string(),
-                ),
-            };
-            vec![]
-        } else {
-            dispatch::dispatch(Action::Login, &mut app)
-        }
+        app.auth_state = super::app_view::AuthState::Pending {
+            error: if connection.auth_methods.is_empty() {
+                Some(
+                    "No API key docked yet. Open /providers to connect OpenAI, Anthropic, OpenRouter, or xAI."
+                        .to_string(),
+                )
+            } else {
+                None
+            },
+        };
+        vec![]
     } else {
         vec![]
     };
@@ -970,6 +965,20 @@ pub(crate) async fn run(
                 .into_iter()
                 .collect(),
         );
+        // Cold-start: scan the machine for env keys, OpenCode, Codex, Claude Code,
+        // and Keychain API secrets; vault what we can into Docking's store.
+        if let Some(report) = crate::provider_autodock::auto_dock_on_startup() {
+            let severity = if report.imported > 0 {
+                crate::startup::WarningSeverity::Info
+            } else {
+                crate::startup::WarningSeverity::Warning
+            };
+            app.startup_warnings.push(crate::startup::StartupWarning {
+                severity,
+                message: report.message,
+                action: Some("/providers".to_owned()),
+            });
+        }
     }
 
     // Apply initial config (may come from existing ~/.grok/pager.toml).
@@ -1416,6 +1425,26 @@ pub(crate) async fn run(
         }
     }
 
+    // Workshop: auto-create session for BYOK API-key users.
+    // Mirrors minimal mode's auto-session path so the user lands directly at
+    // the prompt without pressing Enter on the welcome screen.
+    if matches!(app.active_view, ActiveView::Welcome)
+        && app.is_api_key_auth
+        && !app.is_zdr_blocked()
+        && !app.is_access_blocked()
+        && app.deferred_startup.is_empty()
+    {
+        if app.session_startup_allowed() {
+            let effs = dispatch::dispatch(Action::NewSession, &mut app);
+            if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
+                return Ok(make_run_result(&app));
+            }
+            app.draw(terminal);
+        } else {
+            app.deferred_startup.new_session = true;
+        }
+    }
+
     // Startup intents are now fully classified; only an untouched welcome can nudge.
     if let Some(effect) = app.begin_foreign_resume_detection()
         && process_effects(vec![effect], &mut tasks, &mut app, &progress_tx)
@@ -1533,7 +1562,7 @@ pub(crate) async fn run(
             } else if app.voice_cmd_tx.is_none() {
                 app.voice_state = VoiceState::Idle;
                 app.voice_ui_active = false;
-                app.show_toast("Voice pipeline could not start — restart grok");
+                app.show_toast("Voice pipeline could not start — restart workshop");
             } else {
                 // Defensive: a queued start with the pipeline already up (which
                 // shouldn't occur) — drop it so we don't re-enter every tick.

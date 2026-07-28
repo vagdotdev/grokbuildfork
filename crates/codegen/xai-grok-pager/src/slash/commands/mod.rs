@@ -43,6 +43,7 @@ pub mod personas;
 pub mod plan;
 pub mod plugin;
 pub mod privacy;
+pub mod providers;
 pub mod queue;
 pub mod recap;
 pub mod release_notes;
@@ -79,7 +80,6 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(docs::DocsCommand),
         Arc::new(home::HomeCommand),
         Arc::new(new::NewCommand),
-        
         Arc::new(fork::ForkCommand),
         Arc::new(compact::CompactCommand),
         Arc::new(copy::CopyCommand),
@@ -92,6 +92,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(screen_mode_switch::ScreenModeSwitchCommand::minimal()),
         Arc::new(screen_mode_switch::ScreenModeSwitchCommand::fullscreen()),
         Arc::new(model::ModelCommand),
+        Arc::new(providers::ProvidersCommand),
         Arc::new(effort::EffortCommand),
         Arc::new(always_approve::AlwaysApproveCommand),
         Arc::new(auto::AutoCommand),
@@ -117,7 +118,6 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(mcps::McpsCommand),
         Arc::new(btw::BtwCommand),
         Arc::new(recap::RecapCommand),
-        
         Arc::new(terminal_setup::TerminalSetupCommand),
         Arc::new(voice::VoiceCommand),
         Arc::new(loop_cmd::LoopCommand),
@@ -199,6 +199,7 @@ mod tests {
         assert!(reg.get("new").is_some());
         assert!(reg.get("compact").is_some());
         assert!(reg.get("model").is_some());
+        assert!(reg.get("providers").is_some());
         assert!(reg.get("home").is_some());
         assert!(reg.get("view-plan").is_some());
         reg.set_available_tools(std::collections::HashSet::from([
@@ -237,6 +238,8 @@ mod tests {
         assert!(reg.get("exit").is_some());
         assert!(reg.get("clear").is_some());
         assert!(reg.get("m").is_some());
+        assert_eq!(reg.get("provider").unwrap().name(), "providers");
+        assert_eq!(reg.get("connect").unwrap().name(), "providers");
         assert!(reg.get("welcome").is_some());
         assert!(reg.get("show-plan").is_some());
         assert!(reg.get("plan-view").is_some());

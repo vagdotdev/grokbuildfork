@@ -105,9 +105,12 @@ impl EnvKeys {
             Self::Many(v) => v.iter().map(String::as_str).find(|s| !s.is_empty()),
         }
     }
-    /// Resolve the first set, non-blank process env value among configured names.
+    /// Resolve the first set, non-blank secure-store reference or process env
+    /// value among configured names.
     pub fn resolve_value(&self) -> Option<String> {
-        self.resolve_value_with(|name| std::env::var(name).ok())
+        self.resolve_value_with(|name| {
+            crate::secure_store::resolve_reference(name).or_else(|| std::env::var(name).ok())
+        })
     }
     /// Testable resolve with an injected getenv.
     pub fn resolve_value_with(
