@@ -1,18 +1,18 @@
 [package]
 name = "xai-grok-pager-bin"
-version = "0.1.220-alpha.4"
+version = "0.2.114"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["xAI"]
-default-run = "workshop"
+default-run = "xai-grok-pager"
 
-# Composition-root binary for Workshop (Grok Build fork). This package exists so
-# the binary can link both the pager library and the optional
-# `xai-grok-pager-minimal` render mode: `minimal` depends on `xai-grok-pager`,
-# so the pager library cannot depend back on it (cargo cycle). The binary
-# installs the minimal-mode IoC hooks at startup.
+# Composition-root binary for the Grok Build TUI. The artifact is still named
+# `xai-grok-pager`. This package exists so the binary can link both the pager
+# library and the optional `xai-grok-pager-minimal` render mode: `minimal`
+# depends on `xai-grok-pager`, so the pager library cannot depend back on it
+# (cargo cycle). The binary installs the minimal-mode IoC hooks at startup.
 [[bin]]
-name = "workshop"
+name = "xai-grok-pager"
 path = "src/main.rs"
 
 [dependencies]
@@ -92,6 +92,5 @@ default-bazel = [
     "sandbox-enforce",
     ]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]
-# Forward the sandbox-enforcement feature to the library.
 sandbox-enforce = ["xai-grok-pager/sandbox-enforce"]
 release-dist = ["xai-grok-pager/release-dist"]

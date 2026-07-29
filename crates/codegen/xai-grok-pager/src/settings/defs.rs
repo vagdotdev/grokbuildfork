@@ -130,16 +130,18 @@ const PERMISSION_MODE_CHOICES: &[EnumChoice] = &[
 // can fail. Commit on Enter only.
 // ---------------------------------------------------------------------------
 
+// The setting's own description carries the full explanation, so the choices
+// are bare labels — an empty description collapses each to a single line.
 const CODING_DATA_SHARING_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "opt-in",
         display: "Opt in",
-        description: "Allow SpaceXAI to retain and use coding session data for training and product improvement.",
+        description: "",
     },
     EnumChoice {
         canonical: "opt-out",
         display: "Opt out",
-        description: "Do not retain coding session data. Code requests will not be used for training.",
+        description: "",
     },
 ];
 
@@ -314,9 +316,10 @@ const SCREEN_MODE_CHOICES: &[EnumChoice] = &[
 ];
 
 // Voice-capture-mode catalog. SHELL-owned, persisted to `[ui].voice_capture_mode`.
-// `hold` is only offered on terminals that report key releases (Kitty keyboard
-// protocol); `effective_enum_choices` hides it elsewhere, and it falls back to
-// `toggle` at runtime.
+// `hold` is gated on `kitty_releases_reported`; `effective_enum_choices` hides it
+// elsewhere, and it falls back to `toggle` at runtime. "Kitty-protocol terminal"
+// in the copy below is a deliberate user-facing simplification: Alacritty <= 0.14
+// negotiates the protocol yet never reports releases, so hold stays hidden there.
 const VOICE_CAPTURE_MODE_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "toggle",
@@ -513,6 +516,7 @@ const CONTEXTUAL_HINTS_CHILDREN: &[&str] = &[
     "contextual_hints.send_now",
     "contextual_hints.small_screen",
     "contextual_hints.word_select",
+    "contextual_hints.ssh_wrap",
 ];
 
 /// Build the catalog. Called once at process start via
@@ -594,6 +598,39 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             // Minimal mode has no interactive scrollback pane for the rail.
             hidden_in_minimal: true,
+        },
+        SettingMeta {
+            key: "page_flip_on_send",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Shared,
+            label: "Snap prompt to top on send",
+            description: "When you send a prompt, scroll it to the top of the screen so the \
+                          response starts on a fresh page (default). Turn off to leave the scroll \
+                          position unchanged when you send.",
+            keywords: &[
+                "page", "flip", "send", "prompt", "scroll", "top", "jump", "auto", "snap",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.page_flip_on_send_enabled(),
+            },
+            restart_required: false,
+            hidden_in_minimal: true,
+        },
+        SettingMeta {
+            key: "combine_queued_prompts",
+            category: SettingCategory::Editor,
+            owner: SettingOwner::Shared,
+            label: "Combine queued prompts",
+            description: "Merge consecutive plain follow-ups into one model turn \
+                          (TUI shows one bubble each). Stops at bash, slash commands, \
+                          cron, expanded skills, image follow-ups, or a row under edit. \
+                          Default off; applies on local drain and shell promote.",
+            keywords: &["queue", "combine", "batch", "follow-up", "merge", "pending"],
+            kind: SettingKind::Bool {
+                default: ui_default.combine_queued_prompts.unwrap_or(false),
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
         },
         SettingMeta {
             // Persisted key stays `simple_mode`; the user-facing label
@@ -1106,27 +1143,32 @@ pub fn default_settings() -> Vec<SettingMeta> {
         },
         // SHELL-owned. Persisted in auth metadata (not config.toml).
         // Reads from `PagerLocalSnapshot.coding_data_sharing_opt_out`.
-        // Default "opt-in" matches `AuthEntry::coding_data_retention_opt_out = false`.
+        // Default "opt-out" matches `AuthEntry::coding_data_retention_opt_out = true`
+        // (safer consumer default; server enrichment may still opt the user in).
         // ZDR / non-admin guards are enforced at dispatch time.
+        // Do not put "telemetry" in keywords — that word is the config-file
+        // analytics toggle (Monitoring / Configuration docs).
         SettingMeta {
             key: "coding_data_sharing",
             category: SettingCategory::Privacy,
             owner: SettingOwner::Shell,
-            label: "Coding data sharing",
-            description: "Controls whether SpaceXAI may retain and train on coding session data.",
+            label: "Coding data, retention, and training",
+            description: "Opt-in to provide SpaceXAI the ability to retain and train on \
+                          coding data, e.g., prompts, traces, & metrics, for training and \
+                          debugging purposes. We may still collect simple user metrics, \
+                          e.g. how many times you use the product or a feature.",
             keywords: &[
                 "privacy",
                 "data",
                 "sharing",
                 "coding",
                 "retention",
-                "telemetry",
                 "training",
                 "opt-in",
                 "opt-out",
             ],
             kind: SettingKind::Enum {
-                default: "opt-in",
+                default: "opt-out",
                 choices: CODING_DATA_SHARING_CHOICES,
                 supports_preview: false,
             },
@@ -1268,6 +1310,9 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "small",
                 "screen",
                 "compact",
+                "ssh",
+                "wrap",
+                "remote",
             ],
             kind: SettingKind::Group {
                 children: CONTEXTUAL_HINTS_CHILDREN,
@@ -1308,6 +1353,36 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 supports_preview: false,
             },
             restart_required: true,
+            hidden_in_minimal: false,
+        },
+        // SHELL-owned, persisted to `[ui].voice_keybind_enabled`. Default ON —
+        // `None` (inherit) reads as `true`. Disables only the Ctrl+Space / F8
+        // chord; `/voice` (and Esc / the recording-row `[stop]`) keep working.
+        SettingMeta {
+            key: "voice_keybind_enabled",
+            category: SettingCategory::Editor,
+            owner: SettingOwner::Shell,
+            label: "Voice shortcut",
+            description: "Enable the Ctrl+Space / F8 shortcut for voice dictation. \
+                          When off, the keys are ignored; /voice still starts \
+                          dictation.",
+            keywords: &[
+                "voice",
+                "dictation",
+                "mic",
+                "microphone",
+                "speech",
+                "stt",
+                "keybinding",
+                "hotkey",
+                "ctrl+space",
+                "f8",
+                "disable",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.voice_keybind_enabled.unwrap_or(true),
+            },
+            restart_required: false,
             hidden_in_minimal: false,
         },
         // SHELL-owned, persisted to `[ui].voice_capture_mode`. The `hold` choice
@@ -1464,6 +1539,27 @@ pub fn default_settings() -> Vec<SettingMeta> {
             ],
             kind: SettingKind::Bool {
                 default: ui_default.contextual_hints.word_select.unwrap_or(true),
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
+        SettingMeta {
+            key: "contextual_hints.ssh_wrap",
+            category: SettingCategory::Advanced,
+            owner: SettingOwner::Shell,
+            label: "SSH wrap",
+            description: "Show a `/doctor` tip when an SSH session is not using `grok wrap`.",
+            keywords: &[
+                "ssh",
+                "wrap",
+                "remote",
+                "clipboard",
+                "restore",
+                "startup",
+                "hint",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.contextual_hints.ssh_wrap.unwrap_or(true),
             },
             restart_required: false,
             hidden_in_minimal: false,
