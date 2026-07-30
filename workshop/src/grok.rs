@@ -1,5 +1,6 @@
 use crate::store::{Credential, CredentialMethod};
 use anyhow::{Context, Result, bail};
+use fs2::FileExt;
 use std::path::{Path, PathBuf};
 use toml_edit::{Array, DocumentMut, Item, Table, Value, value};
 
@@ -46,9 +47,26 @@ pub fn install_openrouter_model(
     executable: &Path,
     model: &str,
     alias: Option<&str>,
+    context_window: u64,
+) -> Result<(PathBuf, String)> {
+    let config_path = grok_config_path()?;
+    install_openrouter_model_at(&config_path, executable, model, alias, context_window)
+}
+
+fn install_openrouter_model_at(
+    config_path: &Path,
+    executable: &Path,
+    model: &str,
+    alias: Option<&str>,
+    context_window: u64,
 ) -> Result<(PathBuf, String)> {
     if model.trim().is_empty() || model.chars().any(char::is_control) {
         bail!("OpenRouter model ID cannot be empty or contain control characters");
+    }
+    let context_window =
+        i64::try_from(context_window).context("model context window exceeds TOML integer range")?;
+    if context_window <= 0 {
+        bail!("model context window must be greater than zero");
     }
     let alias = alias
         .map(str::trim)
@@ -59,8 +77,8 @@ pub fn install_openrouter_model(
         bail!("model alias cannot contain control characters");
     }
 
-    let config_path = grok_config_path()?;
-    let existing = match std::fs::read_to_string(&config_path) {
+    let lock = lock_config(config_path)?;
+    let existing = match std::fs::read_to_string(config_path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => {
@@ -76,8 +94,19 @@ pub fn install_openrouter_model(
     };
 
     let auth_name = "workshop-openrouter";
-    let mut auth = Table::new();
-    auth["command"] = value(executable.to_string_lossy().into_owned());
+    let executable = executable.to_string_lossy().into_owned();
+    let auth_providers = table_section(&mut document, "auth_provider")?;
+    let auth = named_table(auth_providers, auth_name, "auth_provider")?;
+    if auth
+        .get("command")
+        .and_then(Item::as_str)
+        .is_some_and(|command| command != executable)
+    {
+        bail!(
+            "Grok config already defines [auth_provider.{auth_name}] with another command; refusing to overwrite it"
+        );
+    }
+    auth["command"] = value(executable);
     let mut args = Array::new();
     for argument in ["auth", "token", "openrouter"] {
         args.push(argument);
@@ -85,30 +114,117 @@ pub fn install_openrouter_model(
     auth["args"] = Item::Value(Value::Array(args));
     auth["token_ttl_secs"] = value(86_400);
     auth["timeout_secs"] = value(30);
-    document["auth_provider"][auth_name] = Item::Table(auth);
 
-    let mut provider = Table::new();
+    let model_providers = table_section(&mut document, "model_providers")?;
+    let provider = named_table(model_providers, auth_name, "model_providers")?;
+    for credential_or_route in [
+        "api_base_url",
+        "api_key",
+        "env_key",
+        "extra_headers",
+        "query_params",
+        "env_http_headers",
+        "auth",
+    ] {
+        provider.remove(credential_or_route);
+    }
     provider["base_url"] = value("https://openrouter.ai/api/v1");
     provider["api_backend"] = value("chat_completions");
     provider["auth_provider"] = value(auth_name);
-    document["model_providers"][auth_name] = Item::Table(provider);
 
-    let mut model_table = Table::new();
+    let models = table_section(&mut document, "model")?;
+    if let Some(existing) = models.get(&alias) {
+        let existing_table = existing
+            .as_table()
+            .with_context(|| format!("Grok config [model.{alias}] entry is not a table"))?;
+        let existing_model = existing_table.get("model").and_then(Item::as_str);
+        if existing_model != Some(model) {
+            bail!(
+                "Grok model alias {alias:?} already exists for {}; choose a different --alias",
+                existing_model.unwrap_or("an unrecognized model entry")
+            );
+        }
+        if existing_table.get("model_provider").and_then(Item::as_str) != Some(auth_name) {
+            bail!(
+                "Grok model alias {alias:?} is not owned by Workshop; choose a different --alias"
+            );
+        }
+    }
+    let model_table = named_table(models, &alias, "model")?;
+    for credential_or_route in [
+        "base_url",
+        "api_base_url",
+        "api_key",
+        "env_key",
+        "auth_provider",
+        "auth_scheme",
+        "api_backend",
+        "extra_headers",
+        "query_params",
+        "env_http_headers",
+    ] {
+        model_table.remove(credential_or_route);
+    }
     model_table["model"] = value(model);
     model_table["name"] = value(format!("OpenRouter · {model}"));
     model_table["model_provider"] = value(auth_name);
-    document["model"][&alias] = Item::Table(model_table);
+    model_table["context_window"] = value(context_window);
 
-    write_private_atomic(&config_path, document.to_string().as_bytes())?;
-    Ok((config_path, alias))
+    let rendered = document.to_string();
+    let write_result = write_private_atomic(config_path, rendered.as_bytes(), Some(&existing));
+    let unlock_result =
+        FileExt::unlock(&lock).with_context(|| format!("unlock {}", config_path.display()));
+    write_result?;
+    unlock_result?;
+    Ok((config_path.to_owned(), alias))
 }
 
 pub fn grok_config_path() -> Result<PathBuf> {
-    if let Some(home) = std::env::var_os("GROK_HOME").filter(|value| !value.is_empty()) {
+    if let Some(home) = std::env::var_os("GROK_HOME") {
         return Ok(PathBuf::from(home).join("config.toml"));
     }
     let base = directories::BaseDirs::new().context("determine home directory")?;
     Ok(base.home_dir().join(".grok").join("config.toml"))
+}
+
+fn table_section<'a>(document: &'a mut DocumentMut, name: &str) -> Result<&'a mut Table> {
+    if document.get(name).is_none() {
+        document[name] = Item::Table(Table::new());
+    }
+    document[name]
+        .as_table_mut()
+        .with_context(|| format!("Grok config [{name}] section is not a table"))
+}
+
+fn named_table<'a>(section: &'a mut Table, key: &str, section_name: &str) -> Result<&'a mut Table> {
+    if !section.contains_key(key) {
+        section.insert(key, Item::Table(Table::new()));
+    }
+    section
+        .get_mut(key)
+        .and_then(Item::as_table_mut)
+        .with_context(|| format!("Grok config [{section_name}.{key}] entry is not a table"))
+}
+
+fn lock_config(config_path: &Path) -> Result<std::fs::File> {
+    let parent = config_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    let lock_path = parent.join(".workshop-config.lock");
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let lock = options
+        .open(&lock_path)
+        .with_context(|| format!("open {}", lock_path.display()))?;
+    FileExt::lock_exclusive(&lock).with_context(|| format!("lock {}", lock_path.display()))?;
+    Ok(lock)
 }
 
 fn default_alias(model: &str) -> String {
@@ -129,17 +245,12 @@ fn default_alias(model: &str) -> String {
     alias
 }
 
-fn write_private_atomic(path: &Path, contents: &[u8]) -> Result<()> {
+fn write_private_atomic(path: &Path, contents: &[u8], expected: Option<&str>) -> Result<()> {
     let parent = path
         .parent()
-        .context("Grok config path has no parent directory")?;
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("set private permissions on {}", parent.display()))?;
-    }
     let temp = parent.join(format!(".config.toml.{}.tmp", uuid::Uuid::new_v4()));
     let mut options = std::fs::OpenOptions::new();
     options.create_new(true).write(true);
@@ -157,7 +268,27 @@ fn write_private_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     file.sync_all()
         .with_context(|| format!("sync {}", temp.display()))?;
     drop(file);
-    std::fs::rename(&temp, path).with_context(|| format!("replace {}", path.display()))?;
+    if let Some(expected) = expected {
+        let current = match std::fs::read_to_string(path) {
+            Ok(current) => current,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => {
+                let _ = std::fs::remove_file(&temp);
+                return Err(error).with_context(|| format!("re-read {}", path.display()));
+            }
+        };
+        if current != expected {
+            let _ = std::fs::remove_file(&temp);
+            bail!(
+                "{} changed while Workshop was editing it; no changes were written, retry the command",
+                path.display()
+            );
+        }
+    }
+    if let Err(error) = std::fs::rename(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error).with_context(|| format!("replace {}", path.display()));
+    }
     Ok(())
 }
 
@@ -196,32 +327,18 @@ mod tests {
     #[test]
     fn installs_openrouter_without_overwriting_unrelated_config() {
         let temp = tempfile::tempdir().unwrap();
-        let old_home = std::env::var_os("GROK_HOME");
-        unsafe {
-            std::env::set_var("GROK_HOME", temp.path());
-        }
-        std::fs::write(
-            temp.path().join("config.toml"),
-            "[models]\ndefault = \"existing\"\n",
-        )
-        .unwrap();
+        let config = temp.path().join("config.toml");
+        std::fs::write(&config, "[models]\ndefault = \"existing\"\n").unwrap();
 
-        let result = install_openrouter_model(
+        let result = install_openrouter_model_at(
+            &config,
             Path::new("/usr/local/bin/workshop"),
             "anthropic/claude-test",
             None,
+            131_072,
         )
         .unwrap();
 
-        if let Some(old_home) = old_home {
-            unsafe {
-                std::env::set_var("GROK_HOME", old_home);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("GROK_HOME");
-            }
-        }
         let contents = std::fs::read_to_string(result.0).unwrap();
         let parsed: toml_edit::DocumentMut = contents.parse().unwrap();
         assert_eq!(parsed["models"]["default"].as_str(), Some("existing"));
@@ -233,6 +350,155 @@ mod tests {
             parsed["auth_provider"]["workshop-openrouter"]["command"].as_str(),
             Some("/usr/local/bin/workshop")
         );
+        assert_eq!(
+            parsed["model"]["openrouter-anthropic-claude-test"]["context_window"].as_integer(),
+            Some(131_072)
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_managed_section_without_panicking() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config.toml");
+        std::fs::write(&config, "auth_provider = \"not-a-table\"\n").unwrap();
+
+        let error = install_openrouter_model_at(
+            &config,
+            Path::new("/usr/local/bin/workshop"),
+            "author/model",
+            None,
+            100_000,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("not a table"));
+    }
+
+    #[test]
+    fn refuses_to_overwrite_an_existing_model_alias() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config.toml");
+        install_openrouter_model_at(
+            &config,
+            Path::new("/usr/local/bin/workshop"),
+            "author/first",
+            Some("favorite"),
+            100_000,
+        )
+        .unwrap();
+
+        let error = install_openrouter_model_at(
+            &config,
+            Path::new("/usr/local/bin/workshop"),
+            "author/second",
+            Some("favorite"),
+            200_000,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("already exists"));
+        let contents = std::fs::read_to_string(config).unwrap();
+        assert!(contents.contains("author/first"));
+        assert!(!contents.contains("author/second"));
+    }
+
+    #[test]
+    fn reconfigure_preserves_non_routing_model_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config.toml");
+        install_openrouter_model_at(
+            &config,
+            Path::new("/usr/local/bin/workshop"),
+            "author/model",
+            Some("favorite"),
+            100_000,
+        )
+        .unwrap();
+        let mut document: DocumentMut = std::fs::read_to_string(&config).unwrap().parse().unwrap();
+        document["model"]["favorite"]["max_completion_tokens"] = value(12_345);
+        std::fs::write(&config, document.to_string()).unwrap();
+
+        install_openrouter_model_at(
+            &config,
+            Path::new("/usr/local/bin/workshop"),
+            "author/model",
+            Some("favorite"),
+            200_000,
+        )
+        .unwrap();
+
+        let parsed: DocumentMut = std::fs::read_to_string(config).unwrap().parse().unwrap();
+        assert_eq!(
+            parsed["model"]["favorite"]["max_completion_tokens"].as_integer(),
+            Some(12_345)
+        );
+        assert_eq!(
+            parsed["model"]["favorite"]["context_window"].as_integer(),
+            Some(200_000)
+        );
+    }
+
+    #[test]
+    fn reconfigure_clears_old_route_and_credential_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config.toml");
+        install_openrouter_model_at(
+            &config,
+            Path::new("/usr/local/bin/workshop"),
+            "author/model",
+            Some("favorite"),
+            100_000,
+        )
+        .unwrap();
+        let mut document: DocumentMut = std::fs::read_to_string(&config).unwrap().parse().unwrap();
+        document["model"]["favorite"]["base_url"] = value("https://old.example/v1");
+        document["model"]["favorite"]["api_key"] = value("old-model-secret");
+        document["model"]["favorite"]["extra_headers"]["X-Old-Secret"] = value("old-header-secret");
+        document["model_providers"]["workshop-openrouter"]["env_http_headers"]["X-Token"] =
+            value("OLD_TOKEN");
+        std::fs::write(&config, document.to_string()).unwrap();
+
+        install_openrouter_model_at(
+            &config,
+            Path::new("/usr/local/bin/workshop"),
+            "author/model",
+            Some("favorite"),
+            200_000,
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(config).unwrap();
+        assert!(!contents.contains("old.example"));
+        assert!(!contents.contains("old-model-secret"));
+        assert!(!contents.contains("old-header-secret"));
+        assert!(!contents.contains("OLD_TOKEN"));
+    }
+
+    #[test]
+    fn refuses_to_adopt_an_unrelated_same_model_alias() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config.toml");
+        std::fs::write(
+            &config,
+            "[model.favorite]\nmodel = \"author/model\"\nbase_url = \"https://other.example/v1\"\nauth_provider = \"other\"\n",
+        )
+        .unwrap();
+
+        let error = install_openrouter_model_at(
+            &config,
+            Path::new("/usr/local/bin/workshop"),
+            "author/model",
+            Some("favorite"),
+            100_000,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("not owned by Workshop"));
+        let contents = std::fs::read_to_string(config).unwrap();
+        assert!(contents.contains("https://other.example/v1"));
+        assert!(!contents.contains("workshop-openrouter"));
     }
 }
-

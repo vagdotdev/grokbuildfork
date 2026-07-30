@@ -1,7 +1,7 @@
 pub mod openrouter;
 
 use base64::Engine;
-use rand::RngCore;
+use rand::RngExt;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -20,7 +20,7 @@ pub struct Pkce {
 
 pub fn generate_pkce() -> Pkce {
     let mut random = [0_u8; 32];
-    rand::rng().fill_bytes(&mut random);
+    rand::rng().fill(&mut random);
     let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random);
     let digest = Sha256::digest(verifier.as_bytes());
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
@@ -43,9 +43,10 @@ pub fn parse_authorization_input(input: &str) -> Option<String> {
         return Some(code);
     }
     if value.contains("code=")
-        && let Some(code) = url::form_urlencoded::parse(value.as_bytes()).find_map(|(key, value)| {
-            (key == "code" && !value.is_empty()).then(|| value.into_owned())
-        })
+        && let Some(code) =
+            url::form_urlencoded::parse(value.as_bytes()).find_map(|(key, value)| {
+                (key == "code" && !value.is_empty()).then(|| value.into_owned())
+            })
     {
         return Some(code);
     }
@@ -85,4 +86,3 @@ mod tests {
         assert_eq!(parse_authorization_input("  "), None);
     }
 }
-

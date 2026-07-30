@@ -12,7 +12,8 @@ source syncs do not regenerate or overwrite it.
 - xAI account login delegated to Grok's existing `grok login`
 - A Pi harness adapter that calls Pi's supported
   `auth print-bearer-token`/`auth print-api-key` interface
-- Safe OpenRouter model installation in `~/.grok/config.toml`
+- OpenRouter model installation that preserves unrelated TOML fields and
+  detects most concurrent edits
 
 Workshop does not read Pi's credential files or copy Pi's embedded OAuth client
 identities. Providers such as ChatGPT Codex, Claude subscriptions, and GitHub
@@ -36,6 +37,16 @@ workshop configure openrouter anthropic/claude-sonnet-4
 grok --model openrouter-anthropic-claude-sonnet-4
 ```
 
+Run `workshop configure` while Grok is closed and no other process is editing
+`~/.grok/config.toml`. Workshop uses its own cross-process lock and checks for
+changes before replacing the file, but upstream Grok currently uses a
+process-local lock that external tools cannot join.
+
+For entries managed by Workshop, reconfiguration preserves ordinary model
+settings but clears old endpoint, credential, query-parameter, and HTTP-header
+overrides. This prevents credentials from a previous route being sent to
+OpenRouter.
+
 The login opens OpenRouter in a browser and listens on a random loopback port.
 For SSH or remote environments, paste the final redirect URL or authorization
 code into the prompt. OpenRouter returns a user-controlled API key billed from
@@ -55,7 +66,12 @@ List the available authentication ownership and transport status:
 ```sh
 workshop providers
 workshop auth status
+workshop auth logout openrouter
 ```
+
+Logging out removes Workshop's local credential. OpenRouter OAuth creates a
+remote API key, so Workshop also points you to the OpenRouter settings page to
+revoke that key when you no longer want it to remain active.
 
 xAI OAuth stays in upstream Grok:
 

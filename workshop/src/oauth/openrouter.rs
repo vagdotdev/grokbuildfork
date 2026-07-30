@@ -6,6 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const AUTHORIZE_URL: &str = "https://openrouter.ai/auth";
 const TOKEN_URL: &str = "https://openrouter.ai/api/v1/auth/keys";
+const MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CALLBACK_BYTES: usize = 16 * 1024;
@@ -51,8 +52,7 @@ impl OpenRouterOAuth {
             .context("read OpenRouter callback address")?
             .port();
         let callback_url = format!("http://127.0.0.1:{port}{callback_path}");
-        let authorization_url =
-            self.authorization_url(&callback_url, &pkce.challenge)?;
+        let authorization_url = self.authorization_url(&callback_url, &pkce.challenge)?;
 
         eprintln!("Open this URL to sign in with OpenRouter:\n");
         eprintln!("{authorization_url}\n");
@@ -63,14 +63,11 @@ impl OpenRouterOAuth {
             eprintln!("Could not open a browser automatically: {error}");
         }
 
-        let manual = manual_code_receiver();
+        let manual = wait_for_manual_code(manual_code_receiver());
         let code = tokio::time::timeout(LOGIN_TIMEOUT, async {
             tokio::select! {
                 callback = wait_for_callback(listener, &callback_path) => callback,
-                manual = manual => {
-                    let input = manual.context("manual OAuth input reader stopped")?;
-                    parse_authorization_input(&input).context("missing authorization code")
-                }
+                manual = manual => manual,
             }
         })
         .await
@@ -124,41 +121,114 @@ impl OpenRouterOAuth {
             extra: std::collections::BTreeMap::new(),
         })
     }
+
+    pub async fn model_context_window(access_token: &str, model: &str) -> Result<u64> {
+        let client = reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .context("build OpenRouter HTTP client")?;
+        fetch_model_context_window(&client, MODELS_URL, access_token, model).await
+    }
+}
+
+async fn fetch_model_context_window(
+    client: &reqwest::Client,
+    models_url: &str,
+    access_token: &str,
+    model: &str,
+) -> Result<u64> {
+    let response = client
+        .get(models_url)
+        .bearer_auth(access_token)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .context("fetch OpenRouter model catalog")?;
+    let status = response.status();
+    let body: Value = response
+        .json()
+        .await
+        .context("OpenRouter model catalog returned invalid JSON")?;
+    if !status.is_success() {
+        let detail = error_detail(&body).unwrap_or("unknown error");
+        bail!("OpenRouter model catalog failed (HTTP {status}): {detail}");
+    }
+    let context = body
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|models| {
+            models.iter().find_map(|entry| {
+                (entry.get("id").and_then(Value::as_str) == Some(model))
+                    .then(|| entry.get("context_length").and_then(Value::as_u64))
+                    .flatten()
+            })
+        })
+        .filter(|context| *context > 0)
+        .with_context(|| {
+            format!("OpenRouter did not return a context window for model {model:?}")
+        })?;
+    Ok(context)
 }
 
 fn manual_code_receiver() -> tokio::sync::oneshot::Receiver<String> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
         let mut input = String::new();
-        if std::io::stdin().read_line(&mut input).is_ok() {
+        if std::io::stdin()
+            .read_line(&mut input)
+            .is_ok_and(|count| count > 0)
+            && !input.trim().is_empty()
+        {
             let _ = sender.send(input);
         }
     });
     receiver
 }
 
+async fn wait_for_manual_code(receiver: tokio::sync::oneshot::Receiver<String>) -> Result<String> {
+    if let Ok(input) = receiver.await
+        && let Some(code) = parse_authorization_input(&input)
+    {
+        return Ok(code);
+    }
+    std::future::pending().await
+}
+
 async fn wait_for_callback(
     listener: tokio::net::TcpListener,
     callback_path: &str,
 ) -> Result<String> {
-    loop {
-        let (mut stream, _) = listener
-            .accept()
-            .await
-            .context("accept OpenRouter OAuth callback")?;
+    'connections: loop {
+        let (mut stream, _) = match listener.accept().await {
+            Ok(connection) => connection,
+            Err(error) => {
+                return Err(error).context("accept OpenRouter OAuth callback");
+            }
+        };
         let mut request = Vec::with_capacity(2048);
         loop {
             if request.len() >= MAX_CALLBACK_BYTES {
-                send_response(&mut stream, 431, "OAuth callback request was too large.").await?;
-                break;
+                let _ =
+                    send_response(&mut stream, 431, "OAuth callback request was too large.").await;
+                continue 'connections;
             }
             let mut chunk = [0_u8; 1024];
-            let count = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut chunk))
+            let count = match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut chunk))
                 .await
-                .map_err(|_| anyhow!("timed out reading OAuth callback"))?
-                .context("read OAuth callback")?;
+            {
+                Ok(Ok(count)) => count,
+                Ok(Err(error)) => {
+                    eprintln!("Ignored malformed local OAuth callback: {error}");
+                    continue 'connections;
+                }
+                Err(_) => {
+                    let _ =
+                        send_response(&mut stream, 408, "OAuth callback request timed out.").await;
+                    continue 'connections;
+                }
+            };
             if count == 0 {
-                break;
+                continue 'connections;
             }
             request.extend_from_slice(&chunk[..count]);
             if request.windows(4).any(|window| window == b"\r\n\r\n") {
@@ -169,60 +239,61 @@ async fn wait_for_callback(
         let request = match std::str::from_utf8(&request) {
             Ok(request) => request,
             Err(_) => {
-                send_response(&mut stream, 400, "OAuth callback was not valid UTF-8.").await?;
+                let _ =
+                    send_response(&mut stream, 400, "OAuth callback was not valid UTF-8.").await;
                 continue;
             }
         };
         let Some(first_line) = request.lines().next() else {
-            send_response(&mut stream, 400, "OAuth callback request was empty.").await?;
+            let _ = send_response(&mut stream, 400, "OAuth callback request was empty.").await;
             continue;
         };
         let mut parts = first_line.split_whitespace();
         let method = parts.next();
         let target = parts.next();
         if method != Some("GET") {
-            send_response(&mut stream, 405, "OAuth callback must use GET.").await?;
+            let _ = send_response(&mut stream, 405, "OAuth callback must use GET.").await;
             continue;
         }
         let Some(target) = target else {
-            send_response(&mut stream, 400, "OAuth callback URL was missing.").await?;
+            let _ = send_response(&mut stream, 400, "OAuth callback URL was missing.").await;
             continue;
         };
         let callback = match url::Url::parse(&format!("http://127.0.0.1{target}")) {
             Ok(callback) => callback,
             Err(_) => {
-                send_response(&mut stream, 400, "OAuth callback URL was invalid.").await?;
+                let _ = send_response(&mut stream, 400, "OAuth callback URL was invalid.").await;
                 continue;
             }
         };
         if callback.path() != callback_path {
-            send_response(&mut stream, 404, "OAuth callback route was not found.").await?;
+            let _ = send_response(&mut stream, 404, "OAuth callback route was not found.").await;
             continue;
         }
         if let Some(error) = callback
             .query_pairs()
             .find_map(|(key, value)| (key == "error").then(|| value.into_owned()))
         {
-            send_response(&mut stream, 400, "OpenRouter authorization was denied.").await?;
+            let _ = send_response(&mut stream, 400, "OpenRouter authorization was denied.").await;
             bail!("OpenRouter authorization failed: {error}");
         }
         let Some(code) = callback.query_pairs().find_map(|(key, value)| {
             (key == "code" && !value.is_empty()).then(|| value.into_owned())
         }) else {
-            send_response(
+            let _ = send_response(
                 &mut stream,
                 400,
                 "OpenRouter returned no authorization code.",
             )
-            .await?;
+            .await;
             continue;
         };
-        send_response(
+        let _ = send_response(
             &mut stream,
             200,
-            "Signed in to OpenRouter. You may close this page.",
+            "Authorization received. Return to Workshop to finish signing in.",
         )
-        .await?;
+        .await;
         return Ok(code);
     }
 }
@@ -235,14 +306,14 @@ async fn send_response(
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
+        408 => "Request Timeout",
         404 => "Not Found",
         405 => "Method Not Allowed",
         431 => "Request Header Fields Too Large",
         _ => "Error",
     };
-    let body = format!(
-        "<!doctype html><meta charset=\"utf-8\"><title>Workshop</title><h1>{message}</h1>"
-    );
+    let body =
+        format!("<!doctype html><meta charset=\"utf-8\"><title>Workshop</title><h1>{message}</h1>");
     let response = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\n\
          Cache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -285,9 +356,11 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"key": "sk-or-test"})))
             .mount(&server)
             .await;
-        let oauth =
-            OpenRouterOAuth::new("https://openrouter.ai/auth", format!("{}/keys", server.uri()))
-                .unwrap();
+        let oauth = OpenRouterOAuth::new(
+            "https://openrouter.ai/auth",
+            format!("{}/keys", server.uri()),
+        )
+        .unwrap();
 
         let tokens = oauth.exchange_code("auth-code", "verifier").await.unwrap();
 
@@ -305,9 +378,11 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let oauth =
-            OpenRouterOAuth::new("https://openrouter.ai/auth", format!("{}/keys", server.uri()))
-                .unwrap();
+        let oauth = OpenRouterOAuth::new(
+            "https://openrouter.ai/auth",
+            format!("{}/keys", server.uri()),
+        )
+        .unwrap();
 
         let error = oauth
             .exchange_code("sensitive-code", "sensitive-verifier")
@@ -318,6 +393,33 @@ mod tests {
         assert!(error.contains("invalid_grant"));
         assert!(!error.contains("sensitive-code"));
         assert!(!error.contains("sensitive-verifier"));
+    }
+
+    #[tokio::test]
+    async fn resolves_context_window_from_model_catalog() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": [
+                    {"id": "other/model", "context_length": 1000},
+                    {"id": "author/model", "context_length": 131072}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::new();
+
+        let context = fetch_model_context_window(
+            &client,
+            &format!("{}/models", server.uri()),
+            "token",
+            "author/model",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(context, 131072);
     }
 
     #[test]
@@ -336,9 +438,22 @@ mod tests {
             Some("challenge")
         );
         assert_eq!(
-            query.get("code_challenge_method").map(|value| value.as_ref()),
+            query
+                .get("code_challenge_method")
+                .map(|value| value.as_ref()),
             Some("S256")
         );
     }
-}
 
+    #[tokio::test]
+    async fn closed_manual_input_does_not_cancel_browser_callback() {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        drop(sender);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), wait_for_manual_code(receiver))
+                .await
+                .is_err()
+        );
+    }
+}

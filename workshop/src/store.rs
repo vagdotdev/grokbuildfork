@@ -8,8 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const AUTH_FILE_VERSION: u32 = 1;
-const ACCESS_FIELD: &str = "access";
-const REFRESH_FIELD: &str = "refresh";
+const CREDENTIAL_FIELD: &str = "credential";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +40,14 @@ pub struct Credential {
     pub refresh: Option<String>,
 }
 
+#[derive(Deserialize, Serialize)]
+struct StoredSecretCredential {
+    metadata: CredentialMetadata,
+    access: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refresh: Option<String>,
+}
+
 pub struct CredentialStore<S = KeyringSecretStore> {
     home: PathBuf,
     secrets: S,
@@ -48,7 +55,9 @@ pub struct CredentialStore<S = KeyringSecretStore> {
 
 impl CredentialStore<KeyringSecretStore> {
     pub fn discover() -> Result<Self> {
-        Ok(Self::new(default_workshop_home()?, KeyringSecretStore::default()))
+        let home = default_workshop_home()?;
+        let secrets = KeyringSecretStore::for_home(&home);
+        Ok(Self::new(home, secrets))
     }
 }
 
@@ -62,24 +71,40 @@ impl<S: SecretStore> CredentialStore<S> {
     }
 
     pub fn list(&self) -> Result<BTreeMap<String, CredentialMetadata>> {
-        Ok(self.read_auth_file()?.providers)
+        self.with_read_lock(|| Ok(self.read_auth_file()?.providers))
     }
 
     pub fn get(&self, provider: &str) -> Result<Option<Credential>> {
-        let auth = self.read_auth_file()?;
-        let Some(metadata) = auth.providers.get(provider).cloned() else {
-            return Ok(None);
-        };
-        let access = self
-            .secrets
-            .get(provider, ACCESS_FIELD)?
-            .ok_or_else(|| anyhow!("{provider} metadata exists but its keychain secret is missing"))?;
-        let refresh = self.secrets.get(provider, REFRESH_FIELD)?;
-        Ok(Some(Credential {
-            metadata,
-            access,
-            refresh,
-        }))
+        validate_provider_id(provider)?;
+        self.with_read_lock(|| {
+            let Some(secret) = self.secrets.get(provider, CREDENTIAL_FIELD)? else {
+                return Ok(None);
+            };
+            let secret: StoredSecretCredential = serde_json::from_str(&secret)
+                .with_context(|| format!("parse {provider} credential from keychain"))?;
+            Ok(Some(Credential {
+                metadata: secret.metadata,
+                access: secret.access,
+                refresh: secret.refresh,
+            }))
+        })
+    }
+
+    pub fn preflight(&self, provider: &str) -> Result<()> {
+        validate_provider_id(provider)?;
+        self.with_write_lock(|| {
+            let field = format!("preflight-{}", uuid::Uuid::new_v4());
+            let value = uuid::Uuid::new_v4().to_string();
+            self.secrets.set(provider, &field, &value)?;
+            let read_result = self.secrets.get(provider, &field);
+            let delete_result = self.secrets.delete(provider, &field);
+            let read = read_result?;
+            delete_result?;
+            if read.as_deref() != Some(value.as_str()) {
+                bail!("operating-system keychain failed its write/read check");
+            }
+            Ok(())
+        })
     }
 
     pub fn save_api_key(&self, provider: &str, key: &str) -> Result<()> {
@@ -130,16 +155,31 @@ impl<S: SecretStore> CredentialStore<S> {
     ) -> Result<()> {
         validate_provider_id(provider)?;
         self.with_write_lock(|| {
-            self.secrets.set(provider, ACCESS_FIELD, access)?;
-            if let Some(refresh) = refresh.filter(|value| !value.is_empty()) {
-                self.secrets.set(provider, REFRESH_FIELD, refresh)?;
-            } else {
-                self.secrets.delete(provider, REFRESH_FIELD)?;
+            let mut auth = self.read_auth_file()?;
+            let old_credential = self.secrets.get(provider, CREDENTIAL_FIELD)?;
+            let secret = serde_json::to_string(&StoredSecretCredential {
+                metadata: metadata.clone(),
+                access: access.to_owned(),
+                refresh: refresh
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+            })
+            .context("serialize credential for keychain")?;
+
+            if let Err(error) = self.secrets.set(provider, CREDENTIAL_FIELD, &secret) {
+                return rollback_error(
+                    error,
+                    self.restore_secret(provider, CREDENTIAL_FIELD, old_credential.as_deref()),
+                );
             }
 
-            let mut auth = self.read_auth_file()?;
             auth.providers.insert(provider.to_owned(), metadata);
-            self.write_auth_file(&auth)
+            if let Err(error) = self.write_auth_file(&auth) {
+                let rollback =
+                    self.restore_secret(provider, CREDENTIAL_FIELD, old_credential.as_deref());
+                return rollback_error(error, rollback);
+            }
+            Ok(())
         })
     }
 
@@ -147,14 +187,31 @@ impl<S: SecretStore> CredentialStore<S> {
         validate_provider_id(provider)?;
         self.with_write_lock(|| {
             let mut auth = self.read_auth_file()?;
-            let existed = auth.providers.remove(provider).is_some();
-            self.secrets.delete(provider, ACCESS_FIELD)?;
-            self.secrets.delete(provider, REFRESH_FIELD)?;
-            if existed {
-                self.write_auth_file(&auth)?;
+            let old_credential = self.secrets.get(provider, CREDENTIAL_FIELD)?;
+            let existed = auth.providers.contains_key(provider) || old_credential.is_some();
+
+            if let Err(error) = self.secrets.delete(provider, CREDENTIAL_FIELD) {
+                return rollback_error(
+                    error,
+                    self.restore_secret(provider, CREDENTIAL_FIELD, old_credential.as_deref()),
+                );
+            }
+            auth.providers.remove(provider);
+            if let Err(error) = self.write_auth_file(&auth) {
+                let rollback =
+                    self.restore_secret(provider, CREDENTIAL_FIELD, old_credential.as_deref());
+                return rollback_error(error, rollback);
             }
             Ok(existed)
         })
+    }
+
+    fn restore_secret(&self, provider: &str, field: &str, value: Option<&str>) -> Result<()> {
+        if let Some(value) = value {
+            self.secrets.set(provider, field, value)
+        } else {
+            self.secrets.delete(provider, field)
+        }
     }
 
     fn read_auth_file(&self) -> Result<AuthFile> {
@@ -169,8 +226,8 @@ impl<S: SecretStore> CredentialStore<S> {
             }
             Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
         };
-        let auth: AuthFile = serde_json::from_str(&contents)
-            .with_context(|| format!("parse {}", path.display()))?;
+        let auth: AuthFile =
+            serde_json::from_str(&contents).with_context(|| format!("parse {}", path.display()))?;
         if auth.version != AUTH_FILE_VERSION {
             bail!(
                 "unsupported Workshop auth file version {} in {}",
@@ -196,21 +253,44 @@ impl<S: SecretStore> CredentialStore<S> {
         file.sync_all()
             .with_context(|| format!("sync {}", temp.display()))?;
         drop(file);
-        std::fs::rename(&temp, &path)
-            .with_context(|| format!("replace {}", path.display()))?;
+        if let Err(error) = std::fs::rename(&temp, &path) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error).with_context(|| format!("replace {}", path.display()));
+        }
         Ok(())
     }
 
+    fn with_read_lock<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.with_lock(false, operation)
+    }
+
     fn with_write_lock<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.with_lock(true, operation)
+    }
+
+    fn with_lock<T>(&self, exclusive: bool, operation: impl FnOnce() -> Result<T>) -> Result<T> {
         ensure_private_dir(&self.home)?;
         let lock_path = self.home.join("auth.lock");
         let lock = private_file(&lock_path)?;
-        FileExt::lock_exclusive(&lock)
-            .with_context(|| format!("lock {}", lock_path.display()))?;
+        if exclusive {
+            FileExt::lock_exclusive(&lock)
+        } else {
+            FileExt::lock_shared(&lock)
+        }
+        .with_context(|| format!("lock {}", lock_path.display()))?;
         let result = operation();
-        let unlock = FileExt::unlock(&lock)
-            .with_context(|| format!("unlock {}", lock_path.display()));
+        let unlock =
+            FileExt::unlock(&lock).with_context(|| format!("unlock {}", lock_path.display()));
         result.and_then(|value| unlock.map(|()| value))
+    }
+}
+
+fn rollback_error<T>(error: anyhow::Error, rollback: Result<()>) -> Result<T> {
+    match rollback {
+        Ok(()) => Err(error),
+        Err(rollback) => Err(anyhow!(
+            "{error:#}; restoring the prior keychain credential also failed: {rollback:#}"
+        )),
     }
 }
 
@@ -269,6 +349,47 @@ mod tests {
     use super::*;
     use crate::secrets::MemorySecretStore;
 
+    #[derive(Clone, Default)]
+    struct FailingSecretStore {
+        values:
+            std::sync::Arc<std::sync::Mutex<std::collections::HashMap<(String, String), String>>>,
+        fail_credential_write_once: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl SecretStore for FailingSecretStore {
+        fn get(&self, provider: &str, field: &str) -> Result<Option<String>> {
+            Ok(self
+                .values
+                .lock()
+                .unwrap()
+                .get(&(provider.to_owned(), field.to_owned()))
+                .cloned())
+        }
+
+        fn set(&self, provider: &str, field: &str, value: &str) -> Result<()> {
+            self.values
+                .lock()
+                .unwrap()
+                .insert((provider.to_owned(), field.to_owned()), value.to_owned());
+            if field == CREDENTIAL_FIELD
+                && self
+                    .fail_credential_write_once
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                bail!("injected credential write failure");
+            }
+            Ok(())
+        }
+
+        fn delete(&self, provider: &str, field: &str) -> Result<()> {
+            self.values
+                .lock()
+                .unwrap()
+                .remove(&(provider.to_owned(), field.to_owned()));
+            Ok(())
+        }
+    }
+
     #[test]
     fn secrets_stay_out_of_metadata_file() {
         let temp = tempfile::tempdir().unwrap();
@@ -313,6 +434,34 @@ mod tests {
     }
 
     #[test]
+    fn failed_keyring_update_restores_previous_credential() {
+        let temp = tempfile::tempdir().unwrap();
+        let secrets = FailingSecretStore::default();
+        let control = secrets.clone();
+        let store = CredentialStore::new(temp.path().to_owned(), secrets);
+        store.save_api_key("provider", "old-key").unwrap();
+        control
+            .fail_credential_write_once
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        assert!(
+            store
+                .save_oauth(
+                    "provider",
+                    "new-access",
+                    Some("new-refresh"),
+                    Some(123),
+                    BTreeMap::new(),
+                )
+                .is_err()
+        );
+        let credential = store.get("provider").unwrap().unwrap();
+        assert_eq!(credential.metadata.method, CredentialMethod::ApiKey);
+        assert_eq!(credential.access, "old-key");
+        assert_eq!(credential.refresh, None);
+    }
+
+    #[test]
     fn rejects_unsafe_provider_ids() {
         let temp = tempfile::tempdir().unwrap();
         let store = CredentialStore::new(temp.path().to_owned(), MemorySecretStore::default());
@@ -335,4 +484,3 @@ mod tests {
         assert_eq!(mode, 0o600);
     }
 }
-

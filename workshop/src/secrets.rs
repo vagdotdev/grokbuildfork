@@ -1,4 +1,7 @@
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
+use std::fmt::Write;
+use std::path::Path;
 
 pub trait SecretStore: Send + Sync {
     fn get(&self, provider: &str, field: &str) -> Result<Option<String>>;
@@ -26,6 +29,15 @@ impl KeyringSecretStore {
         }
     }
 
+    pub fn for_home(home: &Path) -> Self {
+        let digest = Sha256::digest(home.as_os_str().to_string_lossy().as_bytes());
+        let mut suffix = String::with_capacity(16);
+        for byte in &digest[..8] {
+            write!(&mut suffix, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        Self::new(format!("dev.workshop.auth.{suffix}"))
+    }
+
     fn entry(&self, provider: &str, field: &str) -> Result<keyring::Entry> {
         let account = format!("{provider}:{field}");
         keyring::Entry::new(&self.service, &account)
@@ -38,17 +50,16 @@ impl SecretStore for KeyringSecretStore {
         match self.entry(provider, field)?.get_password() {
             Ok(value) => Ok(Some(value)),
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(error) => Err(error)
-                .with_context(|| format!("read {provider} credentials from operating-system keychain")),
+            Err(error) => Err(error).with_context(|| {
+                format!("read {provider} credentials from operating-system keychain")
+            }),
         }
     }
 
     fn set(&self, provider: &str, field: &str, value: &str) -> Result<()> {
         self.entry(provider, field)?
             .set_password(value)
-            .with_context(|| {
-                format!("save {provider} credentials in operating-system keychain")
-            })
+            .with_context(|| format!("save {provider} credentials in operating-system keychain"))
     }
 
     fn delete(&self, provider: &str, field: &str) -> Result<()> {
@@ -94,4 +105,3 @@ impl SecretStore for MemorySecretStore {
         Ok(())
     }
 }
-

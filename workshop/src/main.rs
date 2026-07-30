@@ -128,7 +128,7 @@ async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         TopLevel::Auth(args) => run_auth(args.command).await,
         TopLevel::Providers { json } => list_providers(json),
-        TopLevel::Configure(args) => configure(args),
+        TopLevel::Configure(args) => configure(args).await,
     }
 }
 
@@ -138,16 +138,29 @@ async fn run_auth(command: AuthCommand) -> Result<()> {
         AuthCommand::Logout { provider } => {
             let provider = resolve_provider(provider.as_deref())?;
             let store = CredentialStore::discover()?;
-            if store.delete(provider.id)? {
-                println!("Signed out of {}.", provider.name);
+            let removed = store.delete(provider.id)?;
+            if removed {
+                println!("Removed the local {} credential.", provider.name);
             } else {
                 println!("No Workshop credential was stored for {}.", provider.name);
             }
-            if provider.oauth == OAuthSupport::Pi {
-                println!(
-                    "Pi credentials are separate. Use Pi's /logout command to remove its {} login.",
-                    provider.name
-                );
+            match provider.oauth {
+                OAuthSupport::Grok => {
+                    run_grok_auth_command("logout")?;
+                    println!("Cleared Grok's separate {} session.", provider.name);
+                }
+                OAuthSupport::Pi => {
+                    println!(
+                        "Pi credentials are separate. Use Pi's /logout command to remove its {} login.",
+                        provider.name
+                    );
+                }
+                OAuthSupport::Direct if provider.id == "openrouter" && removed => {
+                    println!(
+                        "The OpenRouter API key remains active remotely. Revoke it at https://openrouter.ai/settings/keys if you no longer want it to work."
+                    );
+                }
+                OAuthSupport::Direct | OAuthSupport::None => {}
             }
             Ok(())
         }
@@ -172,16 +185,19 @@ async fn login(args: LoginArgs) -> Result<()> {
             provider: provider.id.to_owned(),
             model,
             alias: args.alias,
-        })?;
+        })
+        .await?;
     } else if provider.id == "openrouter" {
-        println!(
-            "Add a model with: workshop configure openrouter <provider/model-id>"
-        );
+        println!("Add a model with: workshop configure openrouter <provider/model-id>");
     }
     Ok(())
 }
 
 fn login_api_key(provider: &Provider, from_env: bool) -> Result<()> {
+    let store = CredentialStore::discover()?;
+    store.preflight(provider.id).with_context(
+        || "the operating-system keychain is unavailable; no credential was requested",
+    )?;
     let key = if from_env {
         let variable = provider
             .api_key_env
@@ -195,7 +211,7 @@ fn login_api_key(provider: &Provider, from_env: bool) -> Result<()> {
         rpassword::prompt_password(format!("{} API key: ", provider.name))
             .context("read API key")?
     };
-    CredentialStore::discover()?.save_api_key(provider.id, key.trim())?;
+    store.save_api_key(provider.id, key.trim())?;
     println!(
         "Saved the {} API key in your operating-system keychain.",
         provider.name
@@ -206,20 +222,28 @@ fn login_api_key(provider: &Provider, from_env: bool) -> Result<()> {
 async fn login_oauth(provider: &Provider) -> Result<()> {
     match provider.oauth {
         OAuthSupport::Direct if provider.id == "openrouter" => {
+            let store = CredentialStore::discover()?;
+            store.preflight(provider.id).with_context(
+                || "the operating-system keychain is unavailable; OAuth was not started",
+            )?;
             let tokens = OpenRouterOAuth::default().login().await?;
-            CredentialStore::discover()?.save_oauth(
+            if let Err(error) = store.save_oauth(
                 provider.id,
                 &tokens.access,
                 tokens.refresh.as_deref(),
                 tokens.expires_at_ms,
                 tokens.extra,
-            )?;
+            ) {
+                bail!(
+                    "OpenRouter authorized Workshop but the credential could not be stored: {error:#}. Revoke the newly created key at https://openrouter.ai/settings/keys before retrying"
+                );
+            }
             println!(
                 "Signed in to OpenRouter. The minted API key is stored in your operating-system keychain."
             );
             Ok(())
         }
-        OAuthSupport::Grok if provider.id == "xai" => run_grok_login(),
+        OAuthSupport::Grok if provider.id == "xai" => run_grok_auth_command("login"),
         OAuthSupport::Pi => {
             let pi = PiHarness::default();
             if !pi.is_available() {
@@ -241,21 +265,21 @@ async fn login_oauth(provider: &Provider) -> Result<()> {
     }
 }
 
-fn run_grok_login() -> Result<()> {
+fn run_grok_auth_command(subcommand: &str) -> Result<()> {
     let binary = std::env::var_os("WORKSHOP_GROK_BINARY")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("grok"));
     let status = Command::new(&binary)
-        .arg("login")
+        .arg(subcommand)
         .status()
         .with_context(|| {
             format!(
-                "run Grok login at {}; set WORKSHOP_GROK_BINARY if needed",
+                "run Grok {subcommand} at {}; set WORKSHOP_GROK_BINARY if needed",
                 binary.display()
             )
         })?;
     if !status.success() {
-        bail!("Grok login failed with {status}");
+        bail!("Grok {subcommand} failed with {status}");
     }
     Ok(())
 }
@@ -267,7 +291,10 @@ fn status(json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&credentials)?);
         return Ok(());
     }
-    println!("Workshop credential metadata: {}", store.auth_file_path().display());
+    println!(
+        "Workshop credential metadata: {}",
+        store.auth_file_path().display()
+    );
     if credentials.is_empty() {
         println!("No credentials stored.");
         return Ok(());
@@ -296,7 +323,10 @@ fn print_token(args: TokenArgs) -> Result<()> {
             workshop::grok::token_json(&credential)?
         }
         CredentialSource::Pi => {
-            let model = args.model.as_deref().context("--model is required with --source=pi")?;
+            let model = args
+                .model
+                .as_deref()
+                .context("--model is required with --source=pi")?;
             let pi = PiHarness::default();
             let token = match args.pi_credential {
                 PiCredentialKind::Bearer => pi.bearer_token(&args.provider, model)?,
@@ -309,21 +339,24 @@ fn print_token(args: TokenArgs) -> Result<()> {
     Ok(())
 }
 
-fn configure(args: ConfigureArgs) -> Result<()> {
+async fn configure(args: ConfigureArgs) -> Result<()> {
     if args.provider != "openrouter" {
         bail!(
             "automatic configuration is only enabled for OpenRouter because its OAuth and inference APIs are documented for third-party clients"
         );
     }
     let store = CredentialStore::discover()?;
-    if store.get("openrouter")?.is_none() {
-        bail!("sign in first with `workshop auth login openrouter`");
-    }
+    let credential = store
+        .get("openrouter")?
+        .context("sign in first with `workshop auth login openrouter`")?;
+    let context_window =
+        OpenRouterOAuth::model_context_window(&credential.access, &args.model).await?;
     let executable = std::env::current_exe().context("locate Workshop executable")?;
     let (path, alias) = workshop::grok::install_openrouter_model(
         &executable,
         &args.model,
         args.alias.as_deref(),
+        context_window,
     )?;
     println!("Added `{alias}` to Grok in {}.", path.display());
     println!("Start it with: grok --model {alias}");
@@ -449,4 +482,3 @@ fn validate_method(provider: &Provider, method: LoginMethod) -> Result<LoginMeth
         _ => Ok(method),
     }
 }
-
