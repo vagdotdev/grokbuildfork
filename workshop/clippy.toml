@@ -1,0 +1,3 @@
+# Workshop is a standalone workspace and does not inherit Grok's crate-specific
+# disallowed-method configuration.
+
