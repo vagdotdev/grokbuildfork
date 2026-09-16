@@ -17,8 +17,17 @@ fn open_extensions_modal_no_session_sets_flag_no_fetches() {
         &mut app,
     );
     assert_eq!(count_extension_fetches(&effects), 0);
-    assert!(app.agents[&id].pending_extensions_fetch);
-    assert!(app.agents[&id].extensions_modal.is_some());
+    let Some(agent) = app.agents.get(&id) else {
+        panic!("expected agent {id:?}");
+    };
+    assert!(agent.pending_extensions_fetch);
+    assert!(agent.extensions_modal.is_some());
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::CreateSession { .. })),
+        "opening the modal must not create a session, got {effects:?}"
+    );
 }
 
 #[test]
@@ -34,7 +43,11 @@ fn open_extensions_modal_with_session_emits_fetches_no_flag() {
         &mut app,
     );
     assert_eq!(count_extension_fetches(&effects), 5);
-    assert!(!app.agents[&id].pending_extensions_fetch);
+    assert!(
+        app.agents
+            .get(&id)
+            .is_some_and(|a| !a.pending_extensions_fetch)
+    );
 }
 
 #[test]
@@ -51,7 +64,73 @@ fn open_extensions_modal_with_session_resets_stale_flag() {
         &mut app,
     );
     assert_eq!(count_extension_fetches(&effects), 5);
-    assert!(!app.agents[&id].pending_extensions_fetch);
+    assert!(
+        app.agents
+            .get(&id)
+            .is_some_and(|a| !a.pending_extensions_fetch)
+    );
+}
+
+#[test]
+fn reload_skills_marks_both_lists_loading_and_refetches() {
+    use crate::views::extensions_modal::{ExtensionsModalState, ExtensionsTab, TabDataState};
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let mut modal = ExtensionsModalState::new(ExtensionsTab::Workflows);
+    modal.skills_data = TabDataState::Loaded(vec![]);
+    modal.workflows_data = TabDataState::Loaded(vec![]);
+    app.agents.get_mut(&id).unwrap().extensions_modal = Some(modal);
+
+    let effects = dispatch(Action::ReloadSkills, &mut app);
+
+    // The router arm is the sole owner of the Loading transitions; the modal key handler only emits the action
+    let Some(modal) = app
+        .agents
+        .get(&id)
+        .and_then(|a| a.extensions_modal.as_ref())
+    else {
+        panic!("expected extensions modal on {id:?}");
+    };
+    assert!(matches!(modal.skills_data, TabDataState::Loading));
+    assert!(matches!(modal.workflows_data, TabDataState::Loading));
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::FetchSkillsList { .. })),
+        "reload must refetch skills, got {effects:?}"
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::FetchWorkflowsList { .. })),
+        "reload must refetch workflows, got {effects:?}"
+    );
+}
+
+#[test]
+fn reload_skills_without_session_keeps_loaded_state() {
+    use crate::views::extensions_modal::{ExtensionsModalState, ExtensionsTab, TabDataState};
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().session.session_id = None;
+    let mut modal = ExtensionsModalState::new(ExtensionsTab::Workflows);
+    modal.skills_data = TabDataState::Loaded(vec![]);
+    modal.workflows_data = TabDataState::Loaded(vec![]);
+    app.agents.get_mut(&id).unwrap().extensions_modal = Some(modal);
+
+    let effects = dispatch(Action::ReloadSkills, &mut app);
+
+    // Nothing can fetch without a session, so nothing may flip to Loading; a stranded spinner would make repeat presses no-ops
+    assert!(effects.is_empty(), "got {effects:?}");
+    let Some(modal) = app
+        .agents
+        .get(&id)
+        .and_then(|a| a.extensions_modal.as_ref())
+    else {
+        panic!("expected extensions modal on {id:?}");
+    };
+    assert!(matches!(modal.skills_data, TabDataState::Loaded(_)));
+    assert!(matches!(modal.workflows_data, TabDataState::Loaded(_)));
 }
 
 #[test]
@@ -69,11 +148,16 @@ fn session_created_with_flag_but_modal_closed_clears_flag_no_fetches() {
             agent_id: id,
             session_id: acp::SessionId::new("s"),
             models: None,
+            modes: None,
         }),
         &mut app,
     );
     assert_eq!(count_extension_fetches(&effects), 0);
-    assert!(!app.agents[&id].pending_extensions_fetch);
+    assert!(
+        app.agents
+            .get(&id)
+            .is_some_and(|a| !a.pending_extensions_fetch)
+    );
 }
 
 // ── /new dispatcher tests ─────────────────────────────────────────────
@@ -86,24 +170,26 @@ fn dispatch_new_session_opens_question_modal_in_git_repo() {
     assert!(effects.is_empty(), "no effects until modal answered");
     // No new agent yet (creation is deferred until modal answered).
     assert_eq!(app.agents.len(), 1);
-    let qv = app.agents[&AgentId(0)]
-        .question_view
-        .as_ref()
-        .expect("modal must be open");
+    let Some(qv) = app
+        .agents
+        .get(&AgentId(0))
+        .and_then(|a| a.question_view.as_ref())
+    else {
+        panic!("modal must be open");
+    };
     match qv.local_kind.as_ref().expect("local_kind must be set") {
         crate::views::question_view::LocalQuestionKind::NewSession => {}
         other => panic!("expected NewSession, got {other:?}"),
     }
+    let Some(question) = qv.questions.first() else {
+        panic!("expected a question: {:?}", qv.questions);
+    };
     assert_eq!(
-        qv.questions[0].options.len(),
+        question.options.len(),
         4,
         "modal must offer exactly 4 options (Yes/No/Always/Never)"
     );
-    let labels: Vec<&str> = qv.questions[0]
-        .options
-        .iter()
-        .map(|o| o.label.as_str())
-        .collect();
+    let labels: Vec<&str> = question.options.iter().map(|o| o.label.as_str()).collect();
     assert_eq!(
         labels,
         vec!["Yes", "No", "Always worktree", "Never worktree"]
@@ -112,8 +198,7 @@ fn dispatch_new_session_opens_question_modal_in_git_repo() {
 
 #[test]
 fn dispatch_new_session_skips_modal_in_non_git_repo() {
-    // current_branch stays None (no git repo) → no modal, straight
-    // to dispatch_new_session_inner.
+    // current_branch stays None (no git repo), so no modal opens and dispatch goes straight to dispatch_new_session_inner
     let mut app = test_app_with_agent();
     let effects = dispatch(Action::NewSession, &mut app);
     assert!(
@@ -129,6 +214,29 @@ fn dispatch_new_session_skips_modal_in_non_git_repo() {
 }
 
 // ── Session close (shared with dashboard) ─────────────────────────────
+
+#[test]
+fn drop_other_agents_in_minimal_unregisters_leftovers() {
+    let mut app = three_agent_app();
+    app.agents.get_mut(&AgentId(1)).unwrap().session.session_id = Some("sess-resume".into());
+    app.agents.get_mut(&AgentId(2)).unwrap().session.session_id = Some("sess-fork".into());
+
+    assert!(drop_other_agents_in_minimal(&mut app, AgentId(0)).is_empty());
+    assert_eq!(app.agents.len(), 3);
+
+    app.screen_mode = crate::app::ScreenMode::Minimal;
+    let effects = drop_other_agents_in_minimal(&mut app, AgentId(0));
+    let unregistered: Vec<_> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::UnregisterActiveSession { session_id } => Some(session_id.0.as_ref()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(unregistered, ["sess-resume", "sess-fork"]);
+    assert_eq!(app.agents.len(), 1);
+    assert!(app.agents.contains_key(&AgentId(0)));
+}
 
 #[test]
 fn close_inactive_agent_drops_it() {
@@ -150,7 +258,7 @@ fn close_agent_releases_retained_memory() {
 
     let mut app = three_agent_app();
 
-    // Dropping a real AgentView (scrollback + caches + child views) → purge.
+    // Dropping a real AgentView (scrollback, caches, child views) purges
     let before = test_support::calls();
     dispatch_sessions_confirm_close(&mut app, AgentId(2));
     assert!(!app.agents.contains_key(&AgentId(2)));
@@ -160,7 +268,7 @@ fn close_agent_releases_retained_memory() {
         "dropping the closed AgentView must purge retained pages"
     );
 
-    // Closing an unknown agent drops nothing → no purge.
+    // Closing an unknown agent drops nothing, so no purge
     let before = test_support::calls();
     dispatch_sessions_confirm_close(&mut app, AgentId(999));
     assert_eq!(
@@ -176,7 +284,9 @@ fn close_clears_forked_from_on_surviving_children() {
     set_forked_from(&mut app, AgentId(2), AgentId(1));
     dispatch_sessions_confirm_close(&mut app, AgentId(1));
     assert!(
-        app.agents[&AgentId(2)].session.forked_from.is_none(),
+        app.agents
+            .get(&AgentId(2))
+            .is_some_and(|a| a.session.forked_from.is_none()),
         "stale forked_from pointer must be cleared after parent close"
     );
 }
@@ -217,31 +327,114 @@ fn close_does_not_disturb_unrelated_forked_from_pointers() {
     set_forked_from(&mut app, AgentId(2), AgentId(0));
     dispatch_sessions_confirm_close(&mut app, AgentId(1));
     assert_eq!(
-        app.agents[&AgentId(2)].session.forked_from,
+        app.agents
+            .get(&AgentId(2))
+            .and_then(|a| a.session.forked_from),
         Some(AgentId(0)),
         "unrelated forked_from must NOT be cleared"
     );
 }
 
+fn count_marketplace_fetches(effects: &[Effect]) -> usize {
+    effects
+        .iter()
+        .filter(|e| matches!(e, Effect::FetchMarketplaceList { .. }))
+        .count()
+}
+
+fn success_outcome() -> xai_hooks_plugins_types::ActionOutcome {
+    xai_hooks_plugins_types::ActionOutcome {
+        status: xai_hooks_plugins_types::OutcomeStatus::Success,
+        message: "ok".into(),
+        requires_reload: false,
+        requires_restart: false,
+    }
+}
+
+fn empty_marketplace_response() -> xai_hooks_plugins_types::MarketplaceListResponse {
+    xai_hooks_plugins_types::MarketplaceListResponse { sources: vec![] }
+}
+
 #[test]
-fn extensions_modal_in_non_project_dir_creates_session() {
-    let mut app = project_picker_app();
-    dispatch(Action::NewSession, &mut app);
+fn marketplace_fetch_coalesces_while_inflight() {
+    use crate::views::extensions_modal::ExtensionsTab;
+    let mut app = test_app_with_agent();
     let id = AgentId(0);
 
     let effects = dispatch(
         Action::OpenExtensionsModal {
-            tab: crate::views::extensions_modal::ExtensionsTab::McpServers,
+            tab: ExtensionsTab::Marketplace,
             trigger: xai_grok_telemetry::events::ExtensionsModalTrigger::SlashCommand,
         },
         &mut app,
     );
+    assert_eq!(count_marketplace_fetches(&effects), 1);
 
+    // A successful action while the open-fetch is still in flight must not stack a second scan; it queues one refetch instead
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::PluginsActionResult {
+            agent_id: id,
+            result: Ok(success_outcome()),
+        }),
+        &mut app,
+    );
+    assert_eq!(count_marketplace_fetches(&effects), 0);
     assert!(
         effects
             .iter()
-            .any(|e| matches!(e, Effect::CreateSession { .. })),
-        "session-less modal open must create the deferred session"
+            .any(|e| matches!(e, Effect::FetchHooksList { .. })),
+        "non-marketplace refetches still fire"
     );
-    assert!(app.agents[&id].pending_extensions_fetch);
+
+    // When the in-flight fetch lands, the queued refetch fires exactly once.
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::MarketplaceListLoaded {
+            agent_id: id,
+            result: Ok(empty_marketplace_response()),
+        }),
+        &mut app,
+    );
+    assert_eq!(count_marketplace_fetches(&effects), 1);
+
+    // And the queue drains: the refetch landing issues nothing further.
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::MarketplaceListLoaded {
+            agent_id: id,
+            result: Ok(empty_marketplace_response()),
+        }),
+        &mut app,
+    );
+    assert_eq!(count_marketplace_fetches(&effects), 0);
+}
+
+#[test]
+fn marketplace_fetch_fires_immediately_when_idle() {
+    use crate::views::extensions_modal::ExtensionsTab;
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+
+    dispatch(
+        Action::OpenExtensionsModal {
+            tab: ExtensionsTab::Marketplace,
+            trigger: xai_grok_telemetry::events::ExtensionsModalTrigger::SlashCommand,
+        },
+        &mut app,
+    );
+    dispatch(
+        Action::TaskComplete(TaskResult::MarketplaceListLoaded {
+            agent_id: id,
+            result: Ok(empty_marketplace_response()),
+        }),
+        &mut app,
+    );
+
+    // Nothing in flight: an action-triggered refetch goes out immediately.
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::PluginsActionResult {
+            agent_id: id,
+            result: Ok(success_outcome()),
+        }),
+        &mut app,
+    );
+    assert_eq!(count_marketplace_fetches(&effects), 1);
 }

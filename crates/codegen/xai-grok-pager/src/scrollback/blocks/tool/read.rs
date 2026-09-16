@@ -1,5 +1,3 @@
-//! ReadToolCallBlock - reads a file with syntax highlighting.
-
 use std::path::Path;
 
 use ratatui::style::{Modifier, Style};
@@ -18,6 +16,7 @@ use crate::theme::Theme;
 const FIRST_LINES: usize = 5;
 const LAST_LINES: usize = 3;
 
+use crate::appearance::AppearanceConfig;
 use xai_grok_tools::implementations::skills::types::skill_name_from_path;
 
 /// What kind of non-text media this read produced.
@@ -29,18 +28,17 @@ pub enum ReadMediaKind {
     Pdf { pages: usize },
 }
 
-/// Read file tool call.
 #[derive(Debug, Clone)]
 pub struct ReadToolCallBlock {
     /// Path to the file being read.
     pub path: String,
     /// Line range if specified: [start, end] (1-based, inclusive).
     pub line_range: Option<LineRange>,
-    /// Error message if the tool call failed (None = success).
+    /// Error message if the tool call failed (None means success).
     pub error: Option<String>,
-    /// When the tool started running (Phase 2: time tracking).
+    /// When the tool started running.
     pub started_at: Option<std::time::Instant>,
-    /// Elapsed time in ms after completion (Phase 2: time tracking).
+    /// Elapsed time in ms after completion.
     pub elapsed_ms: Option<i64>,
     /// Raw file content (unformatted). `None` for errors, images, PDFs.
     pub content: Option<String>,
@@ -50,14 +48,13 @@ pub struct ReadToolCallBlock {
     pub image_ref: Option<ScrollbackImageRef>,
     /// Non-text media kind (image, PDF).
     pub media_kind: Option<ReadMediaKind>,
+    /// Whether this ordinary read targets a memory v2 scope.
+    pub is_memory_activity: bool,
 }
 
 impl ReadToolCallBlock {
-    /// Create a new read block.
-    ///
-    /// Pre-completed blocks have no meaningful local timing — `started_at`
-    /// is `None`. Timing is only set for blocks that enter a running UI
-    /// state (via `set_last_running(true)` in `ScrollbackState`).
+    /// Pre-completed blocks have no meaningful local timing, so `started_at` is `None`.
+    /// Timing is only set for blocks that enter a running UI state (via `set_last_running(true)` in `ScrollbackState`).
     pub fn new(path: impl Into<String>) -> Self {
         Self {
             path: path.into(),
@@ -69,16 +66,20 @@ impl ReadToolCallBlock {
             total_lines: None,
             image_ref: None,
             media_kind: None,
+            is_memory_activity: false,
         }
     }
 
-    /// Set line range.
+    pub fn with_memory_activity(mut self) -> Self {
+        self.is_memory_activity = true;
+        self
+    }
+
     pub fn with_line_range(mut self, range: LineRange) -> Self {
         self.line_range = Some(range);
         self
     }
 
-    /// Set file content and total line count.
     pub fn with_content(mut self, content: String, total_lines: usize) -> Self {
         self.content = Some(content);
         self.total_lines = Some(total_lines);
@@ -91,7 +92,6 @@ impl ReadToolCallBlock {
         self
     }
 
-    /// Check if successful (no error).
     pub fn is_success(&self) -> bool {
         self.error.is_none()
     }
@@ -102,7 +102,7 @@ impl ReadToolCallBlock {
     }
 
     /// Skill name when this read targets a skill definition (`SKILL.md`).
-    /// Single source of truth for skill-read detection.
+    /// All skill-read detection goes through here.
     pub fn skill_name(&self) -> Option<&str> {
         skill_name_from_path(&self.path)
     }
@@ -112,7 +112,7 @@ impl ReadToolCallBlock {
         self.skill_name().is_some()
     }
 
-    /// Set error (mutable) — compute elapsed time if not already set (Phase 2).
+    /// Set the error, computing elapsed time if not already set.
     pub fn set_error(&mut self, error: Option<String>) {
         if self.elapsed_ms.is_none()
             && let Some(start) = self.started_at
@@ -124,8 +124,7 @@ impl ReadToolCallBlock {
 
     /// Finalize elapsed time from `started_at`.
     ///
-    /// Idempotent: no-op if `started_at` is `None` (pre-completed block)
-    /// or if `elapsed_ms` is already set (already finalized).
+    /// Idempotent: no-op if `started_at` is `None` (pre-completed block) or if `elapsed_ms` is already set (already finalized).
     pub fn finish(&mut self) {
         if self.elapsed_ms.is_some() {
             return;
@@ -135,7 +134,6 @@ impl ReadToolCallBlock {
         }
     }
 
-    /// Get elapsed time in ms (Phase 2).
     pub fn elapsed_ms(&self) -> Option<i64> {
         match self.elapsed_ms {
             Some(ms) => Some(ms),
@@ -230,29 +228,25 @@ impl ReadToolCallBlock {
     }
 
     /// Header line with only the path (or skill name) span selectable.
-    ///
-    /// Spans: `["Read ", path, optional_range_suffix, optional_extra_suffix]`
-    /// or `["Skill ", skill_name]`. Prefix/suffixes excluded (no `selection_text`
-    /// override). Sets absolute `file://` `link_url` for non-skill paths.
     fn header_block_line(&self, line: Line<'static>, cwd: Option<&std::path::Path>) -> BlockLine {
         let path_end = 2.min(line.spans.len()).max(1);
-        let link_url = if self.skill_name().is_some() {
+        let link_target = if self.skill_name().is_some() {
             None
         } else {
-            crate::render::osc8::tool_path_file_url(&self.path, cwd)
+            crate::render::osc8::tool_path_file_target(&self.path, cwd)
         };
         BlockLine {
             selectable: Selectable::Spans(1..path_end),
             selection_range: Some(TOOL_HEADER_RANGE),
             content: line,
-            link_url,
+            link_target,
             ..Default::default()
         }
     }
 
     /// Render content lines with absolute line numbers in the gutter.
     ///
-    /// Wraps all lines first, then applies truncation -- matching ExecuteToolCallBlock.
+    /// Wraps all lines first, then applies truncation, matching ExecuteToolCallBlock.
     fn render_content_lines(
         &self,
         theme: &Theme,
@@ -269,7 +263,8 @@ impl ReadToolCallBlock {
         let gutter_width = digit_count(base_line + raw_lines.len().saturating_sub(1));
         let content_width = width.saturating_sub(gutter_width + 2).max(20);
 
-        let gutter_style = Style::default().fg(theme.gray_dim);
+        // Use Theme::dim/primary so terminal-native (minimal) maps grays to SGR dim / default fg instead of raw gray_dim slots
+        let gutter_style = theme.dim();
         let text_style = theme.primary();
 
         let syntect = get_syntect();
@@ -413,7 +408,7 @@ impl BlockContent for ReadToolCallBlock {
         }
     }
 
-    fn has_vpad(&self, _ctx: &BlockContext) -> bool {
+    fn has_vpad_for(&self, _appearance: &AppearanceConfig) -> bool {
         false
     }
 
@@ -470,6 +465,24 @@ mod tests {
     use super::*;
     use crate::scrollback::types::{BlockContext, DisplayMode};
 
+    fn first_line(
+        output: &crate::scrollback::types::BlockOutput,
+    ) -> &crate::scrollback::types::BlockLine {
+        output
+            .lines
+            .first()
+            .unwrap_or_else(|| panic!("expected a line, got {:?}", output.lines))
+    }
+
+    fn span_text(line: &crate::scrollback::types::BlockLine, i: usize) -> &str {
+        line.content
+            .spans
+            .get(i)
+            .unwrap_or_else(|| panic!("expected span {i}, got {:?}", line.content.spans))
+            .content
+            .as_ref()
+    }
+
     fn make_ctx() -> BlockContext {
         BlockContext {
             width: 80,
@@ -487,7 +500,7 @@ mod tests {
     fn skill_md_renders_as_skill_label() {
         let block = ReadToolCallBlock::new("/home/user/.grok/skills/deploy/SKILL.md");
         let output = block.output(&make_ctx());
-        let text: String = output.lines[0]
+        let text: String = first_line(&output)
             .content
             .spans
             .iter()
@@ -500,7 +513,7 @@ mod tests {
     fn regular_file_renders_as_read() {
         let block = ReadToolCallBlock::new("src/main.rs");
         let output = block.output(&make_ctx());
-        let text: String = output.lines[0]
+        let text: String = first_line(&output)
             .content
             .spans
             .iter()
@@ -518,7 +531,7 @@ mod tests {
         let block = ReadToolCallBlock::new("/Users/me/project/src/main.rs")
             .with_line_range(LineRange::new(1, 10));
         let output = block.output(&make_ctx());
-        let text: String = output.lines[0]
+        let text: String = first_line(&output)
             .content
             .spans
             .iter()
@@ -536,7 +549,7 @@ mod tests {
         ctx.mode = DisplayMode::Expanded;
         ctx.cwd = Some(cwd.clone());
         let output = block.output(&ctx);
-        let header: String = output.lines[0]
+        let header: String = first_line(&output)
             .content
             .spans
             .iter()
@@ -556,9 +569,8 @@ mod tests {
 
     #[test]
     fn content_preview_shading_is_marked_panel() {
-        // The preview's bg_dark band is decorative chrome, not semantic
-        // shading — it must be flagged `background_is_panel` so minimal
-        // mode's flat rendering can drop it (EntryRenderer::flat_background).
+        // The preview's bg_dark band is decoration, not meaningful shading
+        // It must be flagged `background_is_panel` so minimal mode's flat rendering can drop it (EntryRenderer::flat_background)
         let block = ReadToolCallBlock::new("notes.txt").with_content("alpha\nbravo".to_string(), 2);
         let mut ctx = make_ctx();
         ctx.mode = DisplayMode::Expanded;
@@ -585,7 +597,7 @@ mod tests {
         let block = ReadToolCallBlock::new("/Users/me/project/src/main.rs")
             .with_line_range(LineRange::new(1, 10));
         let output = block.output(&make_ctx());
-        let header = &output.lines[0];
+        let header = first_line(&output);
 
         assert!(
             matches!(&header.selectable, Selectable::Spans(r) if *r == (1..2)),
@@ -598,7 +610,7 @@ mod tests {
             "main.rs",
             "copy/highlight should match the painted path span, not 'Read …'"
         );
-        assert_eq!(header.content.spans[0].content.as_ref(), "Read ");
+        assert_eq!(span_text(header, 0), "Read ");
         assert!(header.selection_text.is_none());
     }
 
@@ -610,33 +622,42 @@ mod tests {
         let mut ctx = make_ctx();
         ctx.mode = DisplayMode::Expanded;
         ctx.cwd = Some(std::path::PathBuf::from("/Users/me/project"));
-        let header = &block.output(&ctx).lines[0];
+        let output = block.output(&ctx);
+        let header = first_line(&output);
         assert_eq!(derive_selection_text(header), "src/main.rs");
     }
 
     #[test]
-    fn header_link_url_is_absolute_for_collapsed_and_expanded() {
+    fn header_link_target_is_absolute_file_for_collapsed_and_expanded() {
         let abs = "/Users/me/project/src/main.rs";
         let block = ReadToolCallBlock::new(abs);
         let mut ctx = make_ctx();
         ctx.cwd = Some(std::path::PathBuf::from("/Users/me/project"));
 
         let collapsed = block.output(&ctx);
-        let url = collapsed.lines[0].link_url.as_ref().expect("link_url");
-        assert!(url.starts_with("file://"), "got {url}");
-        assert!(url.contains("main.rs"), "got {url}");
+        let collapsed_header = first_line(&collapsed);
+        let target = collapsed_header.link_target.as_ref().expect("link target");
         assert_eq!(
-            collapsed.lines[0].content.spans[1].content.as_ref(),
-            "main.rs"
+            target,
+            &crate::render::osc8::LinkTarget::File(
+                std::sync::Arc::from(std::path::Path::new(abs),)
+            )
         );
+        assert_eq!(
+            crate::render::osc8::resolve_link_target(target)
+                .unwrap()
+                .osc8_url
+                .unwrap()
+                .as_ref(),
+            "file:///Users/me/project/src/main.rs"
+        );
+        assert_eq!(span_text(collapsed_header, 1), "main.rs");
 
         ctx.mode = DisplayMode::Expanded;
         let expanded = block.output(&ctx);
-        assert_eq!(
-            expanded.lines[0].content.spans[1].content.as_ref(),
-            "src/main.rs"
-        );
-        assert_eq!(expanded.lines[0].link_url.as_deref(), Some(url.as_ref()));
+        let expanded_header = first_line(&expanded);
+        assert_eq!(span_text(expanded_header, 1), "src/main.rs");
+        assert_eq!(expanded_header.link_target.as_ref(), Some(target));
     }
 
     #[test]
@@ -645,11 +666,11 @@ mod tests {
 
         let block = ReadToolCallBlock::new("/home/user/.grok/skills/deploy/SKILL.md");
         let output = block.output(&make_ctx());
-        let header = &output.lines[0];
+        let header = first_line(&output);
 
         assert!(matches!(&header.selectable, Selectable::Spans(r) if *r == (1..2)));
         assert_eq!(derive_selection_text(header), "deploy");
-        assert_eq!(header.content.spans[0].content.as_ref(), "Skill ");
+        assert_eq!(span_text(header, 0), "Skill ");
     }
 
     #[test]
@@ -698,7 +719,7 @@ mod tests {
             ..make_ctx()
         };
         let output = block.output(&ctx);
-        // Header + blank separator + FIRST_LINES + ellipsis + LAST_LINES
+        // Header, blank separator, FIRST_LINES, ellipsis, LAST_LINES
         assert!(
             output.lines.len() > 1,
             "truncated should have content lines"

@@ -1,28 +1,20 @@
-//! Minimal-mode below-prompt **list panels**: `/resume` (session picker) and
-//! `/mcps` (MCP server status), rendered as simple lists *below the input bar*
-//! instead of centered modal windows (design nit: "the mcps / resume lists
-//! should not be in a modal").
+//! Minimal-mode below-prompt list panels: `/resume` (session picker) and `/mcps` (MCP server status).
+//! Both render as simple lists below the input bar instead of centered modal windows.
 //!
 //! ## Why this is a render-only change
 //!
-//! Input routing is unchanged — the existing `handle_modal_key`
-//! (`ActiveModal::SessionPicker`) and `handle_extensions_modal_key`
-//! (`extensions_modal`) own navigation and close-on-Esc. Two different coupling
-//! contracts are honored here:
+//! Input routing is unchanged.
+//! `handle_modal_key` (`ActiveModal::SessionPicker`) and `handle_extensions_modal_key` (`extensions_modal`) own navigation and close-on-Esc.
+//! The two panels couple to their input handlers differently:
 //!
-//! * **Session picker** rebuilds its entry map from data on every keypress
-//!   (render-independent), so we just reuse the *same* builders
-//!   ([`build_grouped_picker_entries`]) — the rendered order then matches the
-//!   handler's `selected`.
-//! * **Extensions modal** reads render-stored state (`entry_data_indices`,
-//!   `entry_group_keys`, `entry_non_selectable*`). The MCP renderer repopulates
-//!   those exactly as the full modal does (via the shared
-//!   [`build_mcp_servers_picker_rows`]), so keyboard nav + section fold stay in
-//!   sync without touching the input handler.
+//! * **Session picker** rebuilds its entry map from data on every keypress (render-independent).
+//!   The panel reuses the same builders ([`build_grouped_picker_entries`]), so the rendered order matches the handler's `selected`.
+//! * **Extensions modal** reads render-stored state (`entry_data_indices`, `entry_group_keys`, `entry_non_selectable*`).
+//!   The MCP renderer repopulates those exactly as the full modal does (via the shared [`build_mcp_servers_picker_rows`]).
+//!   Keyboard nav and section fold then stay in sync without touching the input handler.
 //!
-//! Both reuse [`picker::render_picker_content`] for the rows, so row look +
-//! selection highlight match the full TUI; only the modal-window chrome (border,
-//! tabs, footer bar) is dropped.
+//! Both reuse [`picker::render_picker_content`] for the rows, so row look and selection highlight match the full TUI.
+//! Only the modal-window chrome (border, tabs, footer bar) is dropped.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -36,8 +28,7 @@ use xai_grok_pager::views::extensions_modal::{ExtensionsTab, TabDataState};
 use xai_grok_pager::views::modal::ActiveModal;
 use xai_grok_pager::views::picker::{self, PickerEntry, PickerField, PickerHitAreas, PickerRow};
 
-/// Rows of chrome around the scrolling list: title + subtitle/search + divider
-/// + footer.
+/// Rows of chrome around the scrolling list: title + subtitle/search + divider + footer.
 const CHROME_ROWS: u16 = 4;
 
 /// Which below-prompt list panel is active for the focused agent.
@@ -50,11 +41,8 @@ pub(super) enum ListPanel {
 }
 
 /// Detect an active below-prompt list panel, or `None`.
-///
-/// Only the session picker and the MCP-servers tab are hosted as simple lists;
-/// every other modal keeps its existing (centered) rendering. Callers must check
-/// this *before* `overlay::app_modal_active`, since `SessionPicker` is also an
-/// `active_modal`.
+/// Only the session picker and the MCP-servers tab are hosted as simple lists; every other modal keeps its existing (centered) rendering.
+/// Callers must check this *before* `overlay::app_modal_active`, since `SessionPicker` is also an `active_modal`.
 pub(super) fn active(agent: &AgentView) -> Option<ListPanel> {
     if matches!(agent.active_modal, Some(ActiveModal::SessionPicker { .. })) {
         return Some(ListPanel::Resume);
@@ -67,10 +55,9 @@ pub(super) fn active(agent: &AgentView) -> Option<ListPanel> {
     None
 }
 
-/// Target viewport height for the active list panel: chrome + the exact body
-/// height, clamped to `[CHROME_ROWS + 1, ceiling]`. Sizing to the exact content
-/// height keeps the footer directly under the last row (no blank band); when the
-/// body exceeds `ceiling` the list scrolls internally.
+/// Target viewport height for the active list panel: chrome + the exact body height, clamped to `[CHROME_ROWS + 1, ceiling]`.
+/// Sizing to the exact content height keeps the footer directly under the last row (no blank band).
+/// When the body exceeds `ceiling` the list scrolls internally.
 pub(super) fn panel_height(agent: &AgentView, kind: ListPanel, width: u16, ceiling: u16) -> u16 {
     let body = match kind {
         ListPanel::Resume => resume_body_rows(agent, width),
@@ -81,8 +68,8 @@ pub(super) fn panel_height(agent: &AgentView, kind: ListPanel, width: u16, ceili
         .clamp(CHROME_ROWS + 1, ceiling.max(CHROME_ROWS + 1))
 }
 
-/// Render the active list panel into `area` (the whole live region). Returns the
-/// text cursor for the panel's search bar when search is focused, else `None`.
+/// Render the active list panel into `area` (the whole live region).
+/// Returns the text cursor for the panel's search bar when search is focused, else `None`.
 pub(super) fn render(
     buf: &mut Buffer,
     area: Rect,
@@ -172,7 +159,7 @@ fn resume_body_rows(agent: &AgentView, width: u16) -> u16 {
     let entries_data = entries.as_deref().unwrap_or(&[]);
     let content_width = width.saturating_sub(2);
     let filtered =
-        minimal_api::filter_session_entries(entries.as_deref(), &state.query, *source_filter);
+        minimal_api::filter_session_entries(entries.as_deref(), state.query(), *source_filter);
     let built =
         minimal_api::build_session_entry_data(entries_data, &filtered, state, content_width);
     let fields_vecs: Vec<Vec<PickerField>> = built
@@ -193,7 +180,12 @@ fn resume_body_rows(agent: &AgentView, width: u16) -> u16 {
         state,
         Some(current_repo.as_str()),
     );
-    measure_entries(&picker_entries)
+    // Reserve a row for the pinned hidden-external hint when shown.
+    let hint_row = u16::from(
+        !agent.app_chat_mode
+            && minimal_api::hidden_external_hint(entries.as_deref(), *source_filter).is_some(),
+    );
+    measure_entries(&picker_entries).saturating_add(hint_row)
 }
 
 fn render_resume(
@@ -203,6 +195,7 @@ fn render_resume(
     theme: &Theme,
 ) -> Option<(u16, u16)> {
     let cwd = agent.session.cwd.to_string_lossy().to_string();
+    let chat_mode = agent.app_chat_mode;
     let Some(ActiveModal::SessionPicker {
         entries,
         state,
@@ -212,12 +205,12 @@ fn render_resume(
     else {
         return None;
     };
-    let (title_row, search_row, divider_row, list_area, footer_row) = chrome_layout(area);
+    let (title_row, search_row, divider_row, mut list_area, footer_row) = chrome_layout(area);
 
     let entries_data = entries.as_deref().unwrap_or(&[]);
     let content_width = area.width.saturating_sub(2);
     let filtered =
-        minimal_api::filter_session_entries(entries.as_deref(), &state.query, *source_filter);
+        minimal_api::filter_session_entries(entries.as_deref(), state.query(), *source_filter);
     let built =
         minimal_api::build_session_entry_data(entries_data, &filtered, state, content_width);
     let fields_vecs: Vec<Vec<PickerField>> = built
@@ -238,22 +231,41 @@ fn render_resume(
         state,
         Some(current_repo.as_str()),
     );
+    let hidden_hint = (!chat_mode)
+        .then(|| minimal_api::hidden_external_hint(entries.as_deref(), *source_filter))
+        .flatten();
 
     render_title(buf, title_row, theme, "Resume session");
     // Focus-aware search bar (cursor only when search is focused).
-    picker::render_search_bar(
+    minimal_api::render_picker_search_bar(
         buf,
-        search_row.x + 1,
-        search_row.y,
-        search_row.width.saturating_sub(1),
+        Rect::new(
+            search_row.x + 1,
+            search_row.y,
+            search_row.width.saturating_sub(1),
+            1,
+        ),
         theme,
-        &state.query,
-        state.search_active,
+        state,
         true,
-        state.query_cursor,
         None,
     );
     render_divider(buf, divider_row, theme);
+
+    // Pinned above the list so it stays visible regardless of list scroll.
+    if let Some(hint) = hidden_hint.as_deref() {
+        render_dim_line(
+            buf,
+            Rect {
+                height: 1,
+                ..list_area
+            },
+            theme,
+            hint,
+        );
+        list_area.y += 1;
+        list_area.height = list_area.height.saturating_sub(1);
+    }
 
     let nsc = vec![false; picker_entries.len()];
     let hit = picker::render_picker_content(
@@ -293,7 +305,7 @@ fn mcps_body_rows(agent: &AgentView) -> u16 {
     };
     let rows = minimal_api::build_mcp_picker_rows(
         servers,
-        &s.picker_state.query,
+        s.picker_state.query(),
         s.mcps_filter,
         &s.mcps_collapsed_sections,
         &s.mcps_tools_expanded,
@@ -310,7 +322,7 @@ fn render_mcps(
     let (title_row, subtitle_row, divider_row, list_area, footer_row) = chrome_layout(area);
     render_title(buf, title_row, theme, "Manage MCP servers");
 
-    // Phase 1 (immutable): build the row mapping + owned per-row render data.
+    // Phase 1 (immutable): build the row mapping and owned per-row render data
     let labels: Vec<String>;
     let group_keys: Vec<Option<String>>;
     let data_indices: Vec<Option<usize>>;
@@ -324,14 +336,14 @@ fn render_mcps(
     let loading;
     {
         let s = minimal_api::extensions_modal(agent)?;
-        let searching = !s.picker_state.query.is_empty();
+        let searching = !s.picker_state.query().is_empty();
         loading = matches!(s.mcps_data, TabDataState::Loading);
         match &s.mcps_data {
             TabDataState::Loaded(servers) => {
                 let (row_labels, row_group_keys, row_data_indices) =
                     minimal_api::build_mcp_picker_rows(
                         servers,
-                        &s.picker_state.query,
+                        s.picker_state.query(),
                         s.mcps_filter,
                         &s.mcps_collapsed_sections,
                         &s.mcps_tools_expanded,
@@ -344,39 +356,67 @@ fn render_mcps(
                 let mut col = vec![false; n];
                 let mut exp = vec![false; n];
                 for i in 0..n {
-                    let gk = row_group_keys[i].as_deref();
-                    if gk.is_some_and(|k| k.starts_with("mcp-section:")) {
-                        col[i] = true;
-                        exp[i] = !minimal_api::mcp_section_children_hidden(
-                            &s.mcps_collapsed_sections,
-                            gk.unwrap(),
-                            searching,
-                        );
+                    let gk = row_group_keys.get(i).and_then(|k| k.as_deref());
+                    if let Some(k) = gk.filter(|k| k.starts_with("mcp-section:")) {
+                        if let Some(c) = col.get_mut(i) {
+                            *c = true;
+                        }
+                        if let Some(e) = exp.get_mut(i) {
+                            *e = !minimal_api::mcp_section_children_hidden(
+                                &s.mcps_collapsed_sections,
+                                k,
+                                searching,
+                            );
+                        }
                     } else if gk.is_some_and(|k| k.starts_with("mcp-tools:")) {
-                        ind[i] = 1;
-                        col[i] = true;
-                        if let Some(si) = row_data_indices[i] {
-                            exp[i] = s.mcps_tools_expanded.contains(&si);
+                        if let Some(d) = ind.get_mut(i) {
+                            *d = 1;
+                        }
+                        if let Some(c) = col.get_mut(i) {
+                            *c = true;
+                        }
+                        if let Some(si) = row_data_indices.get(i).copied().flatten() {
+                            if let Some(e) = exp.get_mut(i) {
+                                *e = s.mcps_tools_expanded.contains(&si);
+                            }
                             if let Some(srv) = servers.get(si) {
                                 if !srv.enabled {
-                                    b[i] = "disabled".to_string();
-                                    bc[i] = Some(theme.accent_error);
+                                    // Policy-blocked rows also carry `enabled = false`; the verdict outranks
+                                    // the personal-disable badge, as in the full modal
+                                    if let Some(badge) = b.get_mut(i) {
+                                        *badge = if srv.blocked_reason.is_some() {
+                                            "blocked by policy"
+                                        } else {
+                                            "disabled"
+                                        }
+                                        .to_string();
+                                    }
+                                    if let Some(color) = bc.get_mut(i) {
+                                        *color = Some(theme.accent_error);
+                                    }
                                 } else {
-                                    b[i] = minimal_api::mcp_status_label(&srv.status).to_string();
-                                    bc[i] = Some(minimal_api::mcp_status_theme_color(
-                                        &srv.status,
-                                        theme,
-                                    ));
+                                    if let Some(badge) = b.get_mut(i) {
+                                        *badge =
+                                            minimal_api::mcp_status_label(&srv.status).to_string();
+                                    }
+                                    if let Some(color) = bc.get_mut(i) {
+                                        *color = Some(minimal_api::mcp_status_theme_color(
+                                            &srv.status,
+                                            theme,
+                                        ));
+                                    }
                                 }
-                                rl[i] = if srv.tool_count == 1 {
-                                    "1 tool".to_string()
-                                } else {
-                                    format!("{} tools", srv.tool_count)
-                                };
+                                if let Some(right) = rl.get_mut(i) {
+                                    *right = if srv.tool_count == 1 {
+                                        "1 tool".to_string()
+                                    } else {
+                                        format!("{} tools", srv.tool_count)
+                                    };
+                                }
                             }
                         }
-                    } else {
-                        ind[i] = 2; // tool child
+                    } else if let Some(d) = ind.get_mut(i) {
+                        *d = 2; // tool child
                     }
                 }
                 subtitle = format!(
@@ -440,7 +480,7 @@ fn render_mcps(
         }
     }
 
-    // Phase 3 (mutable picker_state): build PickerEntry from owned data + render.
+    // Phase 3 (mutable picker_state): build PickerEntry from owned data and render
     let s = minimal_api::extensions_modal_mut(agent)?;
     let selected = s.picker_state.selected;
     let search_active = s.picker_state.search_active;
@@ -449,18 +489,18 @@ fn render_mcps(
     let entries: Vec<PickerEntry> = (0..n)
         .map(|i| {
             PickerEntry::Row(PickerRow {
-                label: labels[i].as_str(),
-                right_label: right_labels[i].as_str(),
+                label: labels.get(i).map(String::as_str).unwrap_or(""),
+                right_label: right_labels.get(i).map(String::as_str).unwrap_or(""),
                 selected: !search_active && i == selected,
-                expanded: expandeds[i],
+                expanded: expandeds.get(i).copied().unwrap_or(false),
                 fields: &empty_fields,
                 description_lines: &no_lines,
                 summary_lines: &no_lines,
                 dimmed: false,
-                indent: indents[i],
-                badge: badges[i].as_str(),
-                badge_color: badge_colors[i],
-                collapsible: collapsibles[i],
+                indent: indents.get(i).copied().unwrap_or(0),
+                badge: badges.get(i).map(String::as_str).unwrap_or(""),
+                badge_color: badge_colors.get(i).copied().flatten(),
+                collapsible: collapsibles.get(i).copied().unwrap_or(false),
                 underline_last_desc: false,
             })
         })
@@ -492,14 +532,21 @@ fn render_mcps(
 
 // ─────────────────────────────── helpers ────────────────────────────────────
 
-/// Sum the display height of grouped picker entries: a header is one row; a row
-/// is its label line plus its collapsed summary lines (what the picker draws
-/// when the row is not expanded).
+/// Sum the display height of grouped picker entries.
+/// A header is one row, plus the blank spacer `render_picker_content` draws before non-first headers.
+/// A row is its label line plus its collapsed summary lines (what the picker draws when the row is not expanded).
 fn measure_entries(entries: &[PickerEntry<'_>]) -> u16 {
     entries
         .iter()
-        .map(|e| match e {
-            PickerEntry::Header { .. } => 1u16,
+        .enumerate()
+        .map(|(idx, e)| match e {
+            PickerEntry::Header { .. } => {
+                if idx == 0 {
+                    1u16
+                } else {
+                    2u16
+                }
+            }
             PickerEntry::Row(r) => {
                 if r.expanded {
                     1u16.saturating_add(r.description_lines.len() as u16)
@@ -530,8 +577,12 @@ mod tests {
             status,
             tool_count: tools,
             auth_required: false,
+            setup_required: false,
+            setup: None,
+            setup_values: std::collections::HashMap::new(),
             tools: Vec::new(),
             enabled: true,
+            blocked_reason: None,
             source: "local".to_string(),
             wire_source: McpWireSource::Local,
             plugin_name: None,
@@ -567,6 +618,9 @@ mod tests {
             branch: None,
             repo_name: "repo".into(),
             worktree_label: None,
+            last_turn_summary: None,
+            last_recap: None,
+            session_kind: None,
             card_detail: None,
         }
     }
@@ -583,23 +637,13 @@ mod tests {
             content_results: None,
             content_loading: false,
             deep_search_seq: 0,
+            generation: 0,
+            detail_seq: 0,
             source_filter: xai_grok_pager::views::session_picker::SourceFilter::default(),
             pending_delete: None,
             entries_query: None,
         });
         a
-    }
-
-    fn buffer_text(buf: &Buffer) -> String {
-        let area = buf.area;
-        let mut out = String::new();
-        for y in area.y..area.y + area.height {
-            for x in area.x..area.x + area.width {
-                out.push_str(buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "));
-            }
-            out.push('\n');
-        }
-        out
     }
 
     #[test]
@@ -630,7 +674,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         render(&mut buf, area, &mut a, ListPanel::Mcps, &theme);
 
-        let text = buffer_text(&buf);
+        let text = crate::buffer_text(&buf);
         assert!(text.contains("Manage MCP servers"), "title:\n{text}");
         assert!(text.contains("2 servers"), "subtitle:\n{text}");
         assert!(text.contains("alpha"), "server row:\n{text}");
@@ -643,9 +687,8 @@ mod tests {
             "MCP footer must not reuse resume confirm copy:\n{text}"
         );
 
-        // The input handler reads these render-stored fields; the panel must
-        // mirror them (section header + 2 servers = 3 rows) so keyboard nav and
-        // fold stay correct without touching the handler.
+        // The input handler reads these render-stored fields
+        // The panel must mirror them (section header + 2 servers = 3 rows) so keyboard nav and fold stay correct without touching the handler
         let s = minimal_api::extensions_modal(&a).unwrap();
         assert_eq!(s.entry_data_indices.len(), 3, "section + 2 servers");
         assert_eq!(
@@ -657,6 +700,41 @@ mod tests {
     }
 
     #[test]
+    fn mcps_panel_badges_policy_block_over_disabled() {
+        let mut denied = mcp_server("denied-srv", McpServerDisplayStatus::Unavailable, 0);
+        denied.enabled = false;
+        denied.blocked_reason = Some("matches deniedMcpServers".into());
+        let mut manual = mcp_server("manual-srv", McpServerDisplayStatus::Ready, 2);
+        manual.enabled = false;
+        let mut a = with_mcps(vec![denied, manual]);
+        let theme = Theme::current();
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        render(&mut buf, area, &mut a, ListPanel::Mcps, &theme);
+
+        let text = crate::buffer_text(&buf);
+        let row = |name: &str| {
+            text.lines()
+                .find(|l| l.contains(name))
+                .map(str::to_string)
+                .unwrap_or_else(|| panic!("no row for {name}:\n{text}"))
+        };
+        let denied_row = row("denied-srv");
+        assert!(
+            denied_row.contains("blocked by policy"),
+            "policy verdict must win:\n{denied_row}"
+        );
+        assert!(
+            !denied_row.contains("disabled"),
+            "policy-blocked row must not read as a personal disable:\n{denied_row}"
+        );
+        assert!(
+            row("manual-srv").contains("disabled"),
+            "personal disable keeps its badge:\n{text}"
+        );
+    }
+
+    #[test]
     fn resume_panel_renders_title_rows_and_footer() {
         let mut a = with_resume(vec![session_entry("first task"), session_entry("second")]);
         let theme = Theme::current();
@@ -664,13 +742,59 @@ mod tests {
         let mut buf = Buffer::empty(area);
         render(&mut buf, area, &mut a, ListPanel::Resume, &theme);
 
-        let text = buffer_text(&buf);
+        let text = crate::buffer_text(&buf);
         assert!(text.contains("Resume session"), "title:\n{text}");
         assert!(text.contains("first task"), "session row:\n{text}");
         assert!(text.contains("enter confirm"), "resume footer:\n{text}");
         assert!(
             !text.contains("r refresh"),
             "resume footer must stay session-picker copy:\n{text}"
+        );
+    }
+
+    #[test]
+    fn resume_search_uses_picker_grapheme_viewport_at_narrow_width() {
+        let grapheme = "👩🏽\u{200d}💻";
+        let combining = "e\u{301}";
+        let mut agent = with_resume(vec![session_entry("match")]);
+        let Some(ActiveModal::SessionPicker { state, .. }) = &mut agent.active_modal else {
+            panic!("expected session picker");
+        };
+        state.set_query(format!("a{grapheme}{combining}"));
+        state.search_active = true;
+
+        let theme = Theme::current();
+        let area = Rect::new(0, 0, 14, 5);
+        let mut actual = Buffer::empty(area);
+        render(&mut actual, area, &mut agent, ListPanel::Resume, &theme);
+
+        let Some(ActiveModal::SessionPicker { state, .. }) = &agent.active_modal else {
+            panic!("expected session picker");
+        };
+        let mut expected = Buffer::empty(area);
+        minimal_api::render_picker_search_bar(
+            &mut expected,
+            Rect::new(1, 1, 13, 1),
+            &theme,
+            state,
+            true,
+            None,
+        );
+        for x in 1..14 {
+            let actual_cell = actual.cell((x, 1)).expect("actual search cell");
+            let expected_cell = expected.cell((x, 1)).expect("expected search cell");
+            assert_eq!(actual_cell.symbol(), expected_cell.symbol(), "column {x}");
+            assert_eq!(actual_cell.style(), expected_cell.style(), "column {x}");
+        }
+        let text = crate::buffer_text(&actual);
+        assert!(text.contains(grapheme), "ZWJ grapheme was split: {text:?}");
+        assert!(
+            text.contains(combining),
+            "combining grapheme was split: {text:?}"
+        );
+        assert_eq!(
+            actual.cell((13, 1)).expect("cursor cell").bg,
+            theme.text_primary
         );
     }
 

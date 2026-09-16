@@ -77,9 +77,12 @@ Scroll the plan with the arrow keys or `j`/`k`. The action bar shows these short
 | `a`      | Approve the plan and start building. With pending comments, this reads `approve w/ comments` and sends them alongside the approval. |
 | `s`      | Request changes. Focus moves to the prompt so you can type revision notes; press `Enter` to send them. |
 | `c`      | Comment on the selected line or line range.                                                          |
+| `y`      | Copy the full plan to the clipboard.                                                                 |
 | `q`      | Quit plan -- abandon the plan without approving and turn plan mode off.                              |
 
 Press `Tab` to move focus between the plan preview and the prompt.
+
+While the plan approval view is open, `Ctrl+P` (command palette → model) still works for switching model before you press `a` to approve.
 
 ### Providing Feedback
 
@@ -89,7 +92,7 @@ The approval view has three focus states:
 - **Commenting**: Add an inline comment to the selected line range (press `c`, or `Enter` on a line).
 - **Prompt**: Type freeform revision notes.
 
-Press `Tab` to switch between the preview and the prompt. When you send feedback -- inline comments, freeform notes, or both -- the agent receives it and revises the plan. Plan mode stays active so you can iterate.
+Press `Tab` to switch between the preview and the prompt. When you send feedback -- inline comments, freeform notes, or both -- the agent receives it and revises the plan. Plan mode stays active so you can iterate. A complete pager command typed in the prompt (for example `/feedback <text>` or `/compact`) runs as a command instead of being sent as notes; the review stays open. Pressing `a` while such a command sits in the prompt is refused until you run it with Enter or delete it.
 
 ### Leaving the Approval View
 
