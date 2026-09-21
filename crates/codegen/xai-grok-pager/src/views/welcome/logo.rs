@@ -55,6 +55,14 @@ impl LogoTier {
         }
     }
 
+    /// Per-cell shade map for a tonal art; only the large tier carries one.
+    fn shade(self) -> Option<&'static str> {
+        match self {
+            Self::Large => workshop_brand::hero_art().large_shade,
+            _ => None,
+        }
+    }
+
     pub fn rows(self) -> u16 {
         self.art().map_or(0, count_lines)
     }
@@ -85,8 +93,16 @@ pub fn hero_logo_tiers() -> &'static [LogoTier] {
     }
 }
 
+#[cfg(not(test))]
 fn large_enabled() -> bool {
     workshop_brand::hero_art().large.is_some()
+}
+
+/// Unit tests keep the upstream tier chain (no automatic 2x), so the layout invariants written for the 7-row hero still hold.
+/// The Large tier is exercised explicitly where it matters.
+#[cfg(test)]
+fn large_enabled() -> bool {
+    false
 }
 
 fn pick_logo(window_height: u16) -> Option<&'static str> {
@@ -165,9 +181,23 @@ fn shine_opacity(diag: f32, secs: f32) -> f32 {
     (pulse + SHINE * shine).clamp(0.0, 1.0)
 }
 
-fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, logo: &str) {
+/// How far the weak shade sinks from the resting gray toward the background, and the strong shade rises toward the text color.
+/// Both stay theme-derived so every palette (and polarity) keeps its own contrast.
+const SHADE_WEAK_MIX: f32 = 0.5;
+const SHADE_STRONG_MIX: f32 = 0.55;
+
+/// Resting colors for the three shade levels of a tonal art: weak, mid (the plain logo gray), strong.
+fn shade_palette(theme: &Theme) -> [Color; 3] {
+    let mid = theme.gray;
+    let weak = blend_color(mid, theme.bg_base, SHADE_WEAK_MIX).unwrap_or(mid);
+    let strong = blend_color(mid, theme.text_primary, SHADE_STRONG_MIX).unwrap_or(mid);
+    [weak, mid, strong]
+}
+
+fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, logo: &str, shade: Option<&str>) {
     // Light themes paint the dots dark, so flip the portrait to keep it a positive image
-    let ink = (!theme.is_dark()).then(|| workshop_brand::invert(logo));
+    let dark = theme.is_dark();
+    let ink = (!dark).then(|| workshop_brand::invert(logo));
     let logo = ink.as_deref().unwrap_or(logo);
     let lines: Vec<&str> = non_empty_lines(logo).collect();
     let rows = lines.len().max(1) as f32;
@@ -179,9 +209,10 @@ fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, logo: &str) {
         .max(1) as f32;
     let secs = anim_phase_secs();
 
-    // Blend each glyph from the resting gray toward the bright text color by its shine opacity, so a sheen sweeps across the braille art
+    // Each glyph rests on its cell's shade (the plain gray without a shade map) and blends toward the bright text color by its shine opacity, so a sheen sweeps across the braille art
+    // A light theme's dots are ink, so a bright cell there carries few, weak dots and a dark cell many, strong ones: the shade levels mirror
     // Adjacent glyphs that land on the same blended color share one Span to hold down the per-frame allocation
-    let base = theme.gray;
+    let [weak, mid, strong] = shade_palette(theme);
     let hilite = theme.text_primary;
     let logo_lines: Vec<Line> = lines
         .iter()
@@ -191,6 +222,12 @@ fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, logo: &str) {
             let mut run = String::new();
             let mut run_color: Option<Color> = None;
             for (col, ch) in line.chars().enumerate() {
+                let level = shade.map_or(1, |s| workshop_brand::shade_level(s, row, col));
+                let base = match (dark, level) {
+                    (true, 0) | (false, 2) => weak,
+                    (true, 2) | (false, 0) => strong,
+                    _ => mid,
+                };
                 // Sweep along the diagonal from bottom-left to top-right: the coordinate grows as col increases and row decreases
                 let diag = (col as f32 + (rows - 1.0 - row as f32)) / (cols + rows);
                 let color = blend_color(base, hilite, shine_opacity(diag, secs)).unwrap_or(base);
@@ -223,15 +260,13 @@ pub fn logo_visual_width(window_height: u16) -> u16 {
 }
 
 pub fn render_logo(area: Rect, buf: &mut Buffer, theme: &Theme, window_height: u16) {
-    if let Some(logo) = pick_logo(window_height) {
-        render_into(area, buf, theme, logo);
-    }
+    render_logo_tier(area, buf, theme, LogoTier::for_height(window_height));
 }
 
 /// Paint the tier the layout reserved rows for, so the art can never outgrow its slot.
 pub fn render_logo_tier(area: Rect, buf: &mut Buffer, theme: &Theme, tier: LogoTier) {
     if let Some(logo) = tier.art() {
-        render_into(area, buf, theme, logo);
+        render_into(area, buf, theme, logo, tier.shade());
     }
 }
 
@@ -399,5 +434,77 @@ mod tests {
         // During the rest phase the band is parked off-screen, so an interior glyph falls back to at most the gentle pulse, never full bright
         let op = shine_opacity(0.5, 6.0); // secs % 4.0 = 2.0, past SWEEP_FRAC, in the rest phase
         assert!(op < 0.2, "resting opacity {op} should stay dim");
+    }
+
+    fn luminance(color: Color) -> f32 {
+        match color {
+            Color::Rgb(r, g, b) => 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32,
+            other => panic!("expected an RGB theme color, got {other:?}"),
+        }
+    }
+
+    /// The unquantized dark and light palettes, so the assertions see RGB regardless of `NO_COLOR` or the terminal under test.
+    fn polarities() -> [crate::theme::Theme; 2] {
+        [
+            crate::theme::Theme::groknight(),
+            crate::theme::Theme::grokday(),
+        ]
+    }
+
+    #[test]
+    fn shade_palette_steps_from_the_background_toward_the_text() {
+        // The three resting shades must be ordered by contrast against the canvas on both polarities, or tone shading would invert
+        for theme in polarities() {
+            let [weak, mid, strong] = shade_palette(&theme);
+            assert_eq!(mid, theme.gray);
+            let bg = luminance(theme.bg_base);
+            let (w, m, s) = (luminance(weak), luminance(mid), luminance(strong));
+            assert!(
+                (w - bg).abs() < (m - bg).abs() && (m - bg).abs() < (s - bg).abs(),
+                "weak {w} mid {m} strong {s} against bg {bg}"
+            );
+        }
+    }
+
+    #[test]
+    fn shaded_cells_take_their_level_and_flat_art_rests_on_gray() {
+        for theme in polarities() {
+            let [weak, mid, strong] = shade_palette(&theme);
+            // Two full cells (so the light theme's inverted glyph is still non-blank): shade 0 then 2
+            let art = "\u{28FF}\u{28FF}\n";
+            let area = Rect::new(0, 0, 2, 1);
+            let mut shaded = Buffer::empty(area);
+            render_into(area, &mut shaded, &theme, art, Some("02\n"));
+            let mut flat = Buffer::empty(area);
+            render_into(area, &mut flat, &theme, art, None);
+            // A dark cell is weak where dots are light and strong where dots are ink, and the reverse for a bright cell
+            let expected = if theme.is_dark() {
+                [weak, strong]
+            } else {
+                [strong, weak]
+            };
+            // The shimmer shifts every cell toward the text color, so only check the cell sits between its base and that color
+            let toward = |base: Color, cell: Color| {
+                let (b, c, t) = (
+                    luminance(base),
+                    luminance(cell),
+                    luminance(theme.text_primary),
+                );
+                (c - b) * (t - b) >= 0.0 && (c - b).abs() <= (t - b).abs()
+            };
+            for (x, base) in expected.into_iter().enumerate() {
+                let cell = shaded.cell((x as u16, 0)).unwrap().fg;
+                assert!(
+                    toward(base, cell),
+                    "cell {x}: {cell:?} not between {base:?} and the text color"
+                );
+                let plain = flat.cell((x as u16, 0)).unwrap().fg;
+                assert!(
+                    toward(mid, plain),
+                    "flat cell {x}: {plain:?} not between {mid:?} and the text color"
+                );
+                assert_ne!(cell, plain, "shading must change cell {x}");
+            }
+        }
     }
 }
