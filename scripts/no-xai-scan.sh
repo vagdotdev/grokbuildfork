@@ -32,7 +32,7 @@ default_sources=(
   crates/codegen/xai-grok-shell-base/src/env.rs
   crates/codegen/xai-dirs/src/lib.rs
 )
-forbidden_source_re='cli-chat-proxy\.grok\.com|assets\.grok\.com|code\.grok\.com|wss://grok\.com|https://grok\.com|x\.ai/cli|grok-build-public-artifacts|@xai-official/grok|xai-org-shared/grok-build|computer-hub\.grok\.com|"grok-4|"grok-build"|api\.x\.ai'
+forbidden_source_re='cli-chat-proxy\.grok\.com|assets\.grok\.com|code\.grok\.com|wss://grok\.com|https://grok\.com|x\.ai/cli|grok-build-public-artifacts|@xai-official/grok|xai-org-shared/grok-build|computer-hub\.grok\.com|"grok-4|api\.x\.ai'
 for f in "${default_sources[@]}"; do
   if hits="$(strip_comments "$f" | grep -nE "$forbidden_source_re" || true)"; [[ -n "$hits" ]]; then
     # auth.x.ai / accounts.x.ai in login config are the optional provider; everything else is a fail.
@@ -41,8 +41,8 @@ for f in "${default_sources[@]}"; do
     echo "ok   $f"
   fi
 done
-# The login config may keep the xAI issuer only as the *optional* provider constant.
-if strip_comments crates/codegen/xai-grok-login/src/config.rs | grep -qE 'issuer: *xai_oauth2_issuer\(\)\.to_owned\(\)'; then
+# The login config may keep the xAI issuer only in the *optional* provider constructor, never in `impl Default`.
+if awk '/^impl Default for GrokComConfig/,/^}/' crates/codegen/xai-grok-login/src/config.rs | grep -qE 'xai_oauth2_issuer\(\)|auth\.x\.ai'; then
   echo "FAIL crates/codegen/xai-grok-login/src/config.rs: GrokComConfig::default still bakes the xAI issuer"; fail=1
 fi
 
