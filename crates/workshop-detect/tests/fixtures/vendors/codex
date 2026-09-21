@@ -1,0 +1,24 @@
+#!/bin/sh
+# Fake Codex CLI for Workshop detection tests.
+# Output shapes copied from Codex CLI 0.155.1 (`codex --version`, `codex login status`).
+[ -n "$FAKE_CLI_STATE_DIR" ] && { echo "codex $*" >> "$FAKE_CLI_STATE_DIR/calls.codex"; env > "$FAKE_CLI_STATE_DIR/env.codex"; }
+case "$1" in
+  --version|-V) echo "codex-cli 0.155.1"; exit 0 ;;
+  --help|-h)
+    echo "Codex CLI"
+    echo
+    echo "Usage: codex [OPTIONS] [PROMPT]"
+    exit 0 ;;
+  login)
+    case "$2" in
+      status)
+        case "${FAKE_LOGIN_CODEX:-out}" in
+          in) echo "Logged in using ChatGPT"; exit 0 ;;
+          garbage) echo "thread 'main' panicked" >&2; exit 101 ;;
+          *) echo "Not logged in"; exit 1 ;;
+        esac ;;
+      "") echo "fake codex login"; exit 0 ;;
+    esac ;;
+esac
+echo "fake codex: unsupported args: $*" >&2
+exit 64

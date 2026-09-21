@@ -1,0 +1,24 @@
+#!/bin/sh
+# Fake Claude Code CLI for Workshop detection tests.
+# Output shapes copied from Claude Code 2.1.278 (`claude --version`, `claude auth status`).
+[ -n "$FAKE_CLI_STATE_DIR" ] && { echo "claude $*" >> "$FAKE_CLI_STATE_DIR/calls.claude"; env > "$FAKE_CLI_STATE_DIR/env.claude"; }
+case "$1" in
+  --version|-v) echo "2.1.278 (Claude Code)"; exit 0 ;;
+  --help|-h)
+    echo "Usage: claude [options] [command] [prompt]"
+    echo
+    echo "Claude Code - starts an interactive session by default, use -p/--print for"
+    exit 0 ;;
+  auth)
+    case "$2" in
+      status)
+        case "${FAKE_LOGIN_CLAUDE:-out}" in
+          in) printf '{\n  "loggedIn": true,\n  "authMethod": "claude.ai",\n  "apiProvider": "firstParty"\n}\n'; exit 0 ;;
+          garbage) echo "???"; exit 7 ;;
+          *) printf '{\n  "loggedIn": false,\n  "authMethod": "none",\n  "apiProvider": "firstParty"\n}\n'; exit 1 ;;
+        esac ;;
+      login) echo "fake claude login"; exit 0 ;;
+    esac ;;
+esac
+echo "fake claude: unsupported args: $*" >&2
+exit 64

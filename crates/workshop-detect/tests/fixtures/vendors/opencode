@@ -1,0 +1,27 @@
+#!/bin/sh
+# Fake OpenCode CLI for Workshop detection tests.
+# Output shapes copied from OpenCode 1.18.31 (`opencode --version`, `opencode auth list`).
+[ -n "$FAKE_CLI_STATE_DIR" ] && { echo "opencode $*" >> "$FAKE_CLI_STATE_DIR/calls.opencode"; env > "$FAKE_CLI_STATE_DIR/env.opencode"; }
+case "$1" in
+  --version|-v) echo "1.18.31"; exit 0 ;;
+  --help|-h)
+    echo "Commands:"
+    echo "  opencode completion          generate shell completion script"
+    echo "  opencode acp                 start ACP (Agent Client Protocol) server"
+    exit 0 ;;
+  auth)
+    case "$2" in
+      list|ls)
+        printf '\033[0m\n'
+        printf '\342\224\214  Credentials \033[90m<fake credential store>\033[0m\n'
+        printf '\342\224\202\n'
+        case "${FAKE_LOGIN_OPENCODE:-out}" in
+          in) printf '\342\227\217  anthropic \033[90moauth\033[0m\n\342\224\202\n\342\224\224  1 credential\n'; exit 0 ;;
+          garbage) echo "boom"; exit 0 ;;
+          *) printf '\342\224\224  0 credentials\n'; exit 0 ;;
+        esac ;;
+      login) echo "fake opencode login"; exit 0 ;;
+    esac ;;
+esac
+echo "fake opencode: unsupported args: $*" >&2
+exit 64
