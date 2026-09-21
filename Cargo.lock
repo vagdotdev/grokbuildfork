@@ -13333,8 +13333,16 @@ dependencies = [
 name = "workshop-auth"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
+ "toml",
+ "workshop-detect",
+ "workshop-providers",
  "xai-dirs",
+ "xai-grok-sampler",
+ "xai-grok-sampling-types",
 ]
 
 [[package]]
@@ -13364,7 +13372,11 @@ dependencies = [
  "serde_json",
  "serial_test",
  "tempfile",
+ "walkdir",
+ "workshop-adapters",
  "workshop-auth",
+ "workshop-detect",
+ "workshop-providers",
  "xai-dirs",
  "xai-grok-env",
  "xai-grok-login",
@@ -14374,9 +14386,13 @@ dependencies = [
  "urlencoding",
  "uuid",
  "walkdir",
+ "webbrowser",
  "windows-sys 0.59.0",
+ "workshop-adapters",
  "workshop-auth",
  "workshop-brand",
+ "workshop-detect",
+ "workshop-providers",
  "xai-acp-lib",
  "xai-chat-state",
  "xai-crash-handler",

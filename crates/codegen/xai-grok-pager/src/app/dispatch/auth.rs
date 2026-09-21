@@ -234,15 +234,25 @@ pub(super) fn dispatch_open_connection_picker(
         app.auth_state = AuthState::Pending { error: None };
     }
     match app.connection_picker.as_mut() {
-        Some(picker) => picker.tab = tab,
+        Some(picker) => {
+            picker.tab = tab;
+            vec![]
+        }
         None => {
-            let mut picker = workshop_auth::PickerState::new().with_tab(tab);
-            // Presence-only: PATH + well-known dirs. No auth files, no child processes.
-            picker.run_detection();
-            app.connection_picker = Some(picker);
+            app.connection_picker = Some(workshop_auth::PickerState::new().with_tab(tab));
+            // Rows and rails load asynchronously: loopback local-server probe, catalogs, and the
+            // official CLI detection (child processes on the blocking pool). No auth files.
+            vec![Effect::WorkshopLoadPicker]
         }
     }
-    vec![]
+}
+
+/// Close the picker and return to the view it was opened from.
+fn close_connection_picker(app: &mut AppView) {
+    app.connection_picker = None;
+    if let Some(return_view) = app.auth_return_view.take() {
+        restore_auth_return_view(app, return_view);
+    }
 }
 
 /// Route a key press to the open connection picker (Workshop).
@@ -250,26 +260,135 @@ pub(super) fn dispatch_connection_picker(
     app: &mut AppView,
     input: workshop_auth::PickerInput,
 ) -> Vec<Effect> {
+    use workshop_auth::PickerOutcome;
     let Some(picker) = app.connection_picker.as_mut() else {
         return vec![];
     };
     match picker.handle(input) {
-        workshop_auth::PickerOutcome::Changed => vec![],
-        workshop_auth::PickerOutcome::AdapterLogin(_) => vec![],
-        workshop_auth::PickerOutcome::Close => {
-            app.connection_picker = None;
-            // Return to the session the picker was opened from, if any. Before any connection is
-            // configured the welcome screen stays on the (auth-pending) home, never on a browser.
-            if let Some(return_view) = app.auth_return_view.take() {
-                restore_auth_return_view(app, return_view);
-            }
+        PickerOutcome::Changed => vec![],
+        PickerOutcome::Refresh => {
+            picker.loading = true;
+            picker.set_status("Refreshing…");
+            vec![Effect::WorkshopLoadPicker]
+        }
+        PickerOutcome::Close => {
+            // Before any connection is configured the welcome screen stays on the (auth-pending)
+            // home, never on a browser.
+            close_connection_picker(app);
             vec![]
         }
-        workshop_auth::PickerOutcome::StartOptionalXaiLogin => {
+        PickerOutcome::StartOptionalXaiLogin => {
             app.connection_picker = None;
             start_optional_xai_login(app)
         }
+        PickerOutcome::SelectCatalog(model) => {
+            match crate::app::workshop::activate_catalog_model(&model) {
+                Ok(plan) => {
+                    crate::app::workshop::export_env(&plan.env);
+                    picker.set_status(format!(
+                        "Connecting {} ({})…",
+                        plan.display_name, plan.base_url
+                    ));
+                    app.workshop_connection = crate::app::workshop::WorkshopConnection::Shell;
+                    start_workshop_activation(app, plan.key)
+                }
+                Err(e) => {
+                    picker.set_status(format!("Could not activate: {e}"));
+                    vec![]
+                }
+            }
+        }
+        PickerOutcome::ConnectProvider(provider_id) => {
+            if provider_id == "openrouter" {
+                picker.set_status(
+                    "Opening OpenRouter sign-in in your browser (loopback callback)…",
+                );
+                vec![Effect::WorkshopOpenRouterSignIn]
+            } else {
+                let label = crate::app::workshop::key_prompt_label(&provider_id);
+                picker.begin_key_entry(&provider_id, &label);
+                vec![]
+            }
+        }
+        PickerOutcome::SaveKey { provider_id, key } => {
+            match crate::app::workshop::save_provider_key(&provider_id, &key) {
+                Ok(backend) => {
+                    picker.set_status(format!("Saved {provider_id} key to {backend}. Refreshing…"));
+                    picker.loading = true;
+                    vec![Effect::WorkshopLoadPicker]
+                }
+                Err(e) => {
+                    picker.set_status(format!("Could not save key: {e}"));
+                    vec![]
+                }
+            }
+        }
+        PickerOutcome::SelectEngine(model) => {
+            let label = format!("OpenCode · {}", model.name);
+            app.workshop_connection = crate::app::workshop::WorkshopConnection::Engine { model };
+            app.show_toast(&format!("Connection: {label} (engine)"));
+            finish_workshop_adapter_selection(app)
+        }
+        PickerOutcome::RailConnect(rail) => {
+            let argv = crate::app::workshop::rail_login_argv(rail);
+            picker.set_status(format!(
+                "Running `{}` in your terminal; Workshop re-probes when it exits.",
+                argv.join(" ")
+            ));
+            // The event loop suspends the TUI and runs the vendor login attached to the terminal.
+            app.pending_workshop_login = Some((rail, argv));
+            vec![]
+        }
+        PickerOutcome::SelectRailModel(rail, model) => {
+            let label = workshop_detect::composer_label(rail, &model);
+            app.workshop_connection =
+                crate::app::workshop::WorkshopConnection::Adapter { rail, model };
+            app.show_toast(&format!("Connection: {label} (agent adapter)"));
+            finish_workshop_adapter_selection(app)
+        }
     }
+}
+
+/// An adapter/engine connection needs no shell credential: mark auth done so the home prompt is
+/// usable, and close the picker.
+fn finish_workshop_adapter_selection(app: &mut AppView) -> Vec<Effect> {
+    if !matches!(app.auth_state, AuthState::Done) {
+        app.auth_state = AuthState::Done;
+        app.is_api_key_auth = true;
+        app.usage_visible = false;
+        app.sync_billing_surface_to_agents();
+        app.welcome_prompt_focused = !app.is_access_blocked();
+    }
+    close_connection_picker(app);
+    vec![]
+}
+
+/// After config.toml gained `[model.<key>]`: reload the shell's model list, authenticate with the
+/// non-interactive `xai.api_key` method (the anonymous sentinel or a real key counts), and switch
+/// the active session. Completion arrives as `AuthComplete` / `AuthFailed` for `request_seq`.
+fn start_workshop_activation(app: &mut AppView, model_id: String) -> Vec<Effect> {
+    abort_prior_auth(app);
+    let request_seq = app.next_auth_request_seq;
+    app.next_auth_request_seq += 1;
+    app.auth_state = AuthState::Authenticating {
+        request_seq,
+        handle: None,
+        auth_url: None,
+        mode: AuthMode::Pending,
+    };
+    let session = match app.auth_return_view {
+        Some(ActiveView::Agent(id)) => app
+            .agents
+            .get(&id)
+            .and_then(|a| a.session.session_id.clone())
+            .map(|sid| (id, sid)),
+        _ => None,
+    };
+    vec![Effect::WorkshopActivateModel {
+        request_seq,
+        model_id,
+        session,
+    }]
 }
 
 /// The only path to the inherited xAI OIDC flow: the user selected the labeled optional xAI card

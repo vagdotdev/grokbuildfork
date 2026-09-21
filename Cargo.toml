@@ -330,6 +330,9 @@ xai-computer-hub-core = { path = "crates/common/xai-computer-hub-core" }
 xai-computer-hub-sdk = { path = "crates/common/xai-computer-hub-sdk" }
 xai-dirs = { path = "crates/codegen/xai-dirs" }
 workshop-auth = { path = "crates/workshop-auth" }
+workshop-adapters = { path = "crates/workshop-adapters" }
+workshop-detect = { path = "crates/workshop-detect" }
+workshop-providers = { path = "crates/workshop-providers" }
 xai-fuzzy-file-search = { path = "crates/codegen/xai-fuzzy-file-search" }
 xai-gix-status = { path = "crates/codegen/xai-gix-status" }
 xai-grok-active-sessions = { path = "crates/codegen/xai-grok-active-sessions" }

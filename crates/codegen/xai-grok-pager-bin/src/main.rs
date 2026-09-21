@@ -2351,7 +2351,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                     && grok_com_config.auth_provider_command.is_none()
                 {
                     let mut picker = workshop_auth::PickerState::new();
-                    picker.run_detection();
+                    picker.apply_snapshot(xai_grok_pager::app::workshop::load_picker_snapshot().await);
                     print!("{}", workshop_auth::text::cli_login_text(&picker));
                     xai_grok_shell::instrumentation::finalize_and_exit(0);
                 }

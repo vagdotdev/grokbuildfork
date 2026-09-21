@@ -4621,13 +4621,35 @@ pub(crate) fn first_own_credential(
         .map(str::to_owned)
         .or_else(|| env_key.and_then(EnvKeys::resolve_value))
 }
+/// Workshop: sentinel `api_key` for connections that need no credential (local servers, keyless
+/// pools such as Kilo `:free`). It makes the model count as bringing its own credential — so the
+/// non-interactive `xai.api_key` method is advertised and accepted and no session token is ever
+/// attached — while [`resolve_credentials`] sends **no** `Authorization` header and never falls
+/// through to `XAI_API_KEY` or a session for such a model.
+pub const WORKSHOP_ANONYMOUS_API_KEY: &str = "workshop-anonymous";
+
+/// `true` when `key` is the Workshop anonymous sentinel.
+pub fn is_workshop_anonymous_key(key: &str) -> bool {
+    key.trim() == WORKSHOP_ANONYMOUS_API_KEY
+}
+
 /// Priority: model api_key/env_key > cached auth-provider token > session token > XAI_API_KEY.
+/// A Workshop anonymous model resolves to no key at all (see [`WORKSHOP_ANONYMOUS_API_KEY`]).
 pub(crate) fn resolve_credentials(
     model: &ModelEntry,
     session_key: Option<&str>,
 ) -> ResolvedCredentials {
     let info = model.info();
-    let (api_key, base_url, auth_type) = if let Some(key) = model.own_credential() {
+    let (api_key, base_url, auth_type) = if model
+        .own_credential()
+        .is_some_and(|k| is_workshop_anonymous_key(&k))
+    {
+        (
+            None,
+            info.base_url.clone(),
+            xai_chat_state::AuthType::ApiKey,
+        )
+    } else if let Some(key) = model.own_credential() {
         (
             Some(key),
             info.base_url.clone(),

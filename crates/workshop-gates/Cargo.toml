@@ -18,12 +18,16 @@ xai-grok-models = { workspace = true }
 xai-grok-telemetry = { workspace = true }
 xai-dirs = { workspace = true }
 workshop-auth = { workspace = true }
+workshop-adapters = { workspace = true }
+workshop-providers = { workspace = true }
+workshop-detect = { workspace = true }
 agent-client-protocol = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }
 tempfile = { workspace = true }
+walkdir = { workspace = true }
 # PTY-driven smoke of the built `workshop` binary (opt-in via WORKSHOP_BIN).
 xai-grok-pager-pty-harness = { path = "../codegen/xai-grok-pager-pty-harness" }
 

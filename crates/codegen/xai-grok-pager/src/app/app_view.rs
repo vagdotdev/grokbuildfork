@@ -735,6 +735,9 @@ pub struct AppView {
     /// When true the event loop ensures the pager renders raw control codes (`less -R`) so the colors show instead of literal escapes.
     /// Plain-text transcripts (`/export` markdown) leave this false.
     pub pending_pager_ansi: bool,
+    /// Workshop: a vendor CLI login (`claude auth login`, …) to run attached to the user's terminal
+    /// through the same suspend/resume path as the external editor; consumed by the event loop.
+    pub pending_workshop_login: Option<(workshop_detect::Rail, Vec<String>)>,
     /// Minimal mode only: the Ctrl+T **force-show** pin for the todo panel.
     /// Minimal-mode-only per-session state, consolidated into a single field so the central `AppView` isn't peppered with loose minimal flags.
     /// Default-empty and inert outside `--minimal`; the `xai-grok-pager-minimal` crate reads/mutates it through the `crate::minimal_api` accessors.
@@ -995,6 +998,9 @@ pub struct AppView {
     /// welcome `l`, `/login`, `/auth`, `/models` and first run all open it. Rendered on the welcome
     /// view; keys are routed to it while open.
     pub connection_picker: Option<workshop_auth::PickerState>,
+    /// Workshop: which runtime prompts are routed through (shell loop, OpenCode engine, or a
+    /// vendor CLI adapter). Set by the picker; `Shell` is the default.
+    pub workshop_connection: crate::app::workshop::WorkshopConnection,
     /// Delivery state from the last clipboard copy during auth.
     pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     /// Generation of the current auth copy feedback and its clear timer.
@@ -1406,6 +1412,7 @@ impl AppView {
             pending_effects: Vec::new(),
             pending_editor: None,
             pending_pager_path: None,
+            pending_workshop_login: None,
             pending_pager_ansi: false,
             minimal_state: crate::minimal_api::MinimalState::default(),
             welcome_menu_index: None,
@@ -1519,6 +1526,7 @@ impl AppView {
             deferred_startup: Default::default(),
             auth_use_oauth: false,
             connection_picker: None,
+            workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
             auth_clipboard_delivery: None,
             auth_clipboard_feedback_generation: 0,
             team_id: None,
@@ -2405,6 +2413,10 @@ impl AppView {
                     cwd: &self.cwd,
                     mid_session_login: self.auth_return_view.is_some(),
                     connection_picker_open: self.connection_picker.is_some(),
+                    connection_picker_key_entry: self
+                        .connection_picker
+                        .as_ref()
+                        .is_some_and(|p| p.key_entry.is_some()),
                     auth_code_input: &mut self.auth_code_input,
                     prompt: &mut self.welcome_prompt,
                     prompt_focused: &mut self.welcome_prompt_focused,
@@ -3054,6 +3066,8 @@ struct WelcomeInputCtx<'a> {
     mid_session_login: bool,
     /// Workshop connection picker is open: it owns every key until it closes.
     connection_picker_open: bool,
+    /// The picker's paste-key prompt is open: printable keys are text, not shortcuts.
+    connection_picker_key_entry: bool,
     auth_code_input: &'a mut LineEditor,
     prompt: &'a mut PromptWidget,
     prompt_focused: &'a mut bool,
@@ -3140,15 +3154,43 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
     // Workshop: the connection picker owns the keyboard while open. It never starts a login on its
     // own; `Enter` outcomes are decided by `workshop_auth::PickerState` in the dispatcher.
     if ctx.connection_picker_open {
+        use workshop_auth::PickerInput;
         return match ev {
+            Event::Paste(text) => {
+                InputOutcome::Action(Action::ConnectionPicker(PickerInput::Paste(text.clone())))
+            }
             Event::Key(key) if key.kind != KeyEventKind::Release => {
-                use workshop_auth::PickerInput;
                 if key!('c', CONTROL).matches(key) || key!('d', CONTROL).matches(key) {
                     return if ctx.mid_session_login {
                         InputOutcome::Action(Action::ConnectionPicker(PickerInput::Back))
                     } else {
                         InputOutcome::Action(Action::Quit)
                     };
+                }
+                if crate::input::key::is_paste_key(key) {
+                    return match crate::clipboard::system_clipboard_get() {
+                        Some(text) => InputOutcome::Action(Action::ConnectionPicker(
+                            PickerInput::Paste(text),
+                        )),
+                        None => InputOutcome::Unchanged,
+                    };
+                }
+                // While a key-entry prompt is open every printable key is text.
+                if ctx.connection_picker_key_entry {
+                    let input = match key.code {
+                        KeyCode::Enter => PickerInput::Enter,
+                        KeyCode::Esc => PickerInput::Back,
+                        KeyCode::Backspace => PickerInput::Backspace,
+                        KeyCode::Char(c)
+                            if !key
+                                .modifiers
+                                .intersects(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
+                            PickerInput::Char(c)
+                        }
+                        _ => return InputOutcome::Unchanged,
+                    };
+                    return InputOutcome::Action(Action::ConnectionPicker(input));
                 }
                 let input = match key.code {
                     KeyCode::Up | KeyCode::Char('k') => PickerInput::Up,
@@ -3158,6 +3200,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                     }
                     KeyCode::Enter => PickerInput::Enter,
                     KeyCode::Esc | KeyCode::Char('q') => PickerInput::Back,
+                    KeyCode::Char('r') => PickerInput::Refresh,
                     _ => return InputOutcome::Unchanged,
                 };
                 InputOutcome::Action(Action::ConnectionPicker(input))

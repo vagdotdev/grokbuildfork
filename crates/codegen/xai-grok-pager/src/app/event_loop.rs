@@ -764,18 +764,60 @@ fn run_pending_suspends(
     presenter: &mut Presenter,
     suspend_retry_after: &mut Option<Instant>,
     suspend_wait_reports: &mut SuspendWaitReports,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<super::actions::Effect>> {
+    let mut follow_up: Vec<super::actions::Effect> = Vec::new();
     let editor_pending = app.pending_editor.is_some();
     let pager_pending = app.pending_pager_path.is_some();
+    let login_pending = app.pending_workshop_login.is_some();
     suspend_wait_reports.reset_missing(editor_pending, pager_pending);
     if !suspend_retry_ready(*suspend_retry_after, Instant::now()) {
-        return Ok(());
+        return Ok(follow_up);
     }
-    if !editor_pending && !pager_pending {
+    if !editor_pending && !pager_pending && !login_pending {
         *suspend_retry_after = None;
-        return Ok(());
+        return Ok(follow_up);
     }
     *suspend_retry_after = None;
+    // Workshop: the vendor CLI's own login owns the terminal for its duration; Workshop never
+    // captures or parses its output, and re-probes the rail when it exits.
+    if let Some((rail, argv)) = app.pending_workshop_login.take() {
+        let mut exit_ok = false;
+        let moved_cursor = match suspend_for_child(
+            app.screen_mode,
+            terminal,
+            input_paused,
+            reader_parked,
+            input_rx,
+            || {
+                if let Some((program, args)) = argv.split_first() {
+                    eprintln!("\nWorkshop: running `{}` — sign in, then this returns to Workshop.\n", argv.join(" "));
+                    exit_ok = std::process::Command::new(program)
+                        .args(args)
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false);
+                }
+            },
+        ) {
+            Ok(moved_cursor) => moved_cursor,
+            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+                requeue_after_suspend_timeout(&mut app.pending_workshop_login, (rail, argv));
+                let _ = defer_suspend_retry(
+                    suspend_retry_after,
+                    &mut suspend_wait_reports.editor_reported,
+                    Instant::now(),
+                );
+                return Ok(follow_up);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        restore_after_child(terminal, app.screen_mode, moved_cursor);
+        follow_up.extend(dispatch::dispatch(
+            Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone { rail, exit_ok }),
+            app,
+        ));
+        presenter.request_presentation(app, terminal, true);
+    }
     if let Some(request) = app.pending_editor.take() {
         let retry_request = request.clone();
         match crate::app::external_editor::prepare(app, request) {
@@ -817,7 +859,7 @@ fn run_pending_suspends(
                             report_suspend_wait(app, EDITOR_SUSPEND_WAIT);
                             presenter.request_presentation(app, terminal, false);
                         }
-                        return Ok(());
+                        return Ok(follow_up);
                     }
                     Err(error) => return Err(error.into()),
                 };
@@ -891,7 +933,7 @@ fn run_pending_suspends(
                     report_suspend_wait(app, TRANSCRIPT_SUSPEND_WAIT);
                     presenter.request_presentation(app, terminal, false);
                 }
-                return Ok(());
+                return Ok(follow_up);
             }
             Err(error) => return Err(error.into()),
         };
@@ -900,7 +942,7 @@ fn run_pending_suspends(
         presenter.request_presentation(app, terminal, true);
         suspend_wait_reports.pager_reported = false;
     }
-    Ok(())
+    Ok(follow_up)
 }
 /// Consume a pending in-process switch between `/minimal` and `/fullscreen`.
 /// Returns `true` when the caller must quit (exec fallback armed on `app.relaunch`).
@@ -1929,7 +1971,7 @@ pub(crate) async fn run(
         if process_effects(workspace_effects, &mut tasks, &mut app, &progress_tx) {
             break;
         }
-        if let Err(e) = run_pending_suspends(
+        match run_pending_suspends(
             &mut app,
             terminal,
             &input_paused,
@@ -1939,9 +1981,16 @@ pub(crate) async fn run(
             &mut suspend_retry_after,
             &mut suspend_wait_reports,
         ) {
-            app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
-            flush_pending_stall(&mut stall_rollup);
-            return Err(e);
+            Ok(follow_up) => {
+                if process_effects(follow_up, &mut tasks, &mut app, &progress_tx) {
+                    break;
+                }
+            }
+            Err(e) => {
+                app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
+                flush_pending_stall(&mut stall_rollup);
+                return Err(e);
+            }
         }
         if run_pending_mode_switch(
             &mut app,
@@ -3175,7 +3224,9 @@ struct RoutedInputEvent {
     is_startup_replay: bool,
 }
 fn tty_suspend_armed(app: &AppView) -> bool {
-    app.pending_editor.is_some() || app.pending_pager_path.is_some()
+    app.pending_editor.is_some()
+        || app.pending_pager_path.is_some()
+        || app.pending_workshop_login.is_some()
 }
 fn normalize_input_event(
     timed: TimedInputEvent,

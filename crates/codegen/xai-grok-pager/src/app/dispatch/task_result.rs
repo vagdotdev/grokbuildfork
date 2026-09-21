@@ -980,6 +980,53 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
+        TaskResult::WorkshopPickerLoaded(snap) => {
+            if let Some(picker) = app.connection_picker.as_mut() {
+                let default_key = snap
+                    .default_selection
+                    .as_ref()
+                    .and_then(|d| d.catalog_key());
+                picker.apply_snapshot(snap);
+                picker.status = None;
+                // Cursor lands on the plan's first-run default (never xAI, never Zen).
+                if let Some(key) = default_key
+                    && let Some(idx) = picker.rows.iter().position(|r| r.id() == key)
+                {
+                    picker.models_selected = idx;
+                }
+            }
+            vec![]
+        }
+        TaskResult::WorkshopConnectDone {
+            provider_id,
+            result,
+        } => {
+            if let Some(picker) = app.connection_picker.as_mut() {
+                match result {
+                    Ok(backend) => {
+                        picker.set_status(format!(
+                            "{provider_id} connected (key saved to {backend}). Refreshing…"
+                        ));
+                        picker.loading = true;
+                        return vec![Effect::WorkshopLoadPicker];
+                    }
+                    Err(e) => picker.set_status(format!("{provider_id}: {e}")),
+                }
+            }
+            vec![]
+        }
+        TaskResult::WorkshopLoginTerminalDone { rail, exit_ok } => {
+            if let Some(picker) = app.connection_picker.as_mut() {
+                picker.set_status(format!(
+                    "{} login {}; re-probing…",
+                    rail.display_name(),
+                    if exit_ok { "finished" } else { "exited with an error" }
+                ));
+                picker.loading = true;
+                return vec![Effect::WorkshopLoadPicker];
+            }
+            vec![]
+        }
         TaskResult::ChangelogFetched { markdown, entries } => {
             app.changelog_markdown = markdown;
             app.changelog_bullets =

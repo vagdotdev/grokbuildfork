@@ -1769,6 +1769,17 @@ pub enum Effect {
     },
     /// Poll for auth URL from the agent (ext request).
     PollAuthUrl { request_seq: u64 },
+    /// Workshop: load the connection picker's rows and rails (local probe, catalogs, CLI detection).
+    WorkshopLoadPicker,
+    /// Workshop: a `[model.<key>]` was written; ask the shell to reload its model list, authenticate
+    /// with the non-interactive method, and switch the active session (if any) to `model_id`.
+    WorkshopActivateModel {
+        request_seq: u64,
+        model_id: String,
+        session: Option<(AgentId, acp::SessionId)>,
+    },
+    /// Workshop: OpenRouter PKCE sign-in (browser + loopback callback), then save the key.
+    WorkshopOpenRouterSignIn,
     /// Submit a manually-pasted auth code (ext request).
     SubmitAuthCode { request_seq: u64, code: String },
     /// Fetch MCP server list from the shell (x.ai/mcp/list).
@@ -2628,6 +2639,18 @@ pub enum TaskResult {
         result: Result<(), SwitchModelError>,
         /// Forwarded from `Effect::SwitchModel.prev_model_id` for rollback on `IncompatibleAgent`.
         prev_model_id: Option<acp::ModelId>,
+    },
+    /// Workshop: picker rows/rails loaded.
+    WorkshopPickerLoaded(workshop_auth::PickerSnapshot),
+    /// Workshop: a connect flow finished (`Ok(secret backend)` or an error message).
+    WorkshopConnectDone {
+        provider_id: String,
+        result: Result<&'static str, String>,
+    },
+    /// Workshop: the terminal login command exited; the rails must be re-probed.
+    WorkshopLoginTerminalDone {
+        rail: workshop_detect::Rail,
+        exit_ok: bool,
     },
     /// Changelog fetched from CDN (both formats).
     ChangelogFetched {
