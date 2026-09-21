@@ -1,0 +1,22 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 02506757..6a9f8070 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -107,6 +107,9 @@ members = [
+     "third_party/graphlib_rust",
+     "third_party/mermaid-to-svg",
+     "third_party/ordered_hashmap",
++    # Workshop overlay crates (docs/workshop/adr/0001-overlay-sync.md).
++    "crates/workshop-auth",
++    "crates/workshop-gates",
+ ]
+ 
+ [workspace.package]
+@@ -321,6 +324,7 @@ xai-compaction-transcript = { path = "crates/codegen/xai-compaction-transcript"
+ xai-computer-hub-core = { path = "crates/common/xai-computer-hub-core" }
+ xai-computer-hub-sdk = { path = "crates/common/xai-computer-hub-sdk" }
+ xai-dirs = { path = "crates/codegen/xai-dirs" }
++workshop-auth = { path = "crates/workshop-auth" }
+ xai-fuzzy-file-search = { path = "crates/codegen/xai-fuzzy-file-search" }
+ xai-gix-status = { path = "crates/codegen/xai-gix-status" }
+ xai-grok-active-sessions = { path = "crates/codegen/xai-grok-active-sessions" }

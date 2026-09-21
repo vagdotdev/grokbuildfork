@@ -1,0 +1,108 @@
+diff --git a/crates/codegen/xai-grok-env/src/lib.rs b/crates/codegen/xai-grok-env/src/lib.rs
+index 63cce9be..5c9346ed 100644
+--- a/crates/codegen/xai-grok-env/src/lib.rs
++++ b/crates/codegen/xai-grok-env/src/lib.rs
+@@ -17,12 +17,19 @@ pub struct GrokBuildEndpoints {
+     pub gateway_ws_url: &'static str,
+     pub ws_origin: &'static str,
+ }
++/// Workshop (gate:no-xai, Gate 3): the compiled production endpoint set is loopback-only.
++/// Workshop has no first-party proxy, asset server, relay or gateway; every inherited auxiliary
++/// service (model list, managed config, feedback, trace upload, relay, cloud sandbox) therefore
++/// fails fast against a closed loopback port instead of reaching an xAI host. `127.0.0.1:1`
++/// (tcpmux) is never listening on a developer machine and cannot be bound without root.
++/// A user who adds the optional xAI connection gets that provider's endpoints from its manifest,
++/// not from this process-wide default. Operators can still override via `GROK_PRODUCTION_*`.
+ const PRODUCTION_ENDPOINTS: GrokBuildEndpoints = GrokBuildEndpoints {
+-    cli_chat_proxy_base_url: "https://cli-chat-proxy.grok.com/v1",
+-    asset_server_url: "https://assets.grok.com",
+-    relay_ws_url: "wss://code.grok.com/ws/code-agent",
+-    gateway_ws_url: "wss://grok.com/ws/gw/",
+-    ws_origin: "https://grok.com",
++    cli_chat_proxy_base_url: "http://127.0.0.1:1/v1",
++    asset_server_url: "http://127.0.0.1:1",
++    relay_ws_url: "ws://127.0.0.1:1/ws/code-agent",
++    gateway_ws_url: "ws://127.0.0.1:1/ws/gw/",
++    ws_origin: "http://127.0.0.1:1",
+ };
+ pub const PROD_CLI_CHAT_PROXY_BASE_URL: &str = PRODUCTION_ENDPOINTS.cli_chat_proxy_base_url;
+ pub const PROD_ASSET_SERVER_URL: &str = PRODUCTION_ENDPOINTS.asset_server_url;
+diff --git a/crates/codegen/xai-grok-shell-base/src/util/changelog.rs b/crates/codegen/xai-grok-shell-base/src/util/changelog.rs
+index 8c1e9633..f5fec182 100644
+--- a/crates/codegen/xai-grok-shell-base/src/util/changelog.rs
++++ b/crates/codegen/xai-grok-shell-base/src/util/changelog.rs
+@@ -9,8 +9,15 @@
+ 
+ use std::path::PathBuf;
+ 
+-/// CDN base for all changelogs (proxies to GCS, cache-friendly).
+-const CHANGELOG_BASE: &str = "https://x.ai/cli/changelogs";
++/// Changelog base. Workshop (gate:no-xai, Gate 3): derived from the neutral asset-server default
++/// (loopback until Workshop publishes changelogs), never the xAI CDN. Operators may repoint it via
++/// `GROK_PRODUCTION_ASSET_SERVER_URL`.
++fn changelog_base() -> String {
++    format!(
++        "{}/changelogs",
++        xai_grok_env::GrokBuildEnvironment::Production.asset_server_url()
++    )
++}
+ const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+ 
+ /// A single structured changelog entry from the published JSON changelog. Shape must match the output of `render_external_json` in `changelog.sh`: `{category, description, breaking_change}`
+@@ -61,7 +68,8 @@ impl ChangelogManager {
+     /// Resolve cache paths from the live process environment (not the `grok_home()` OnceLock).
+     /// A seeded `$GROK_HOME` set on the pager process is always honoured even if some earlier init path cached a different home.
+     fn from_env_home() -> Self {
+-        let home = std::env::var_os("GROK_HOME")
++        let home = std::env::var_os(xai_dirs::WORKSHOP_HOME_ENV)
++            .or_else(|| std::env::var_os(xai_dirs::LEGACY_HOME_ENV))
+             .map(std::path::PathBuf::from)
+             .filter(|p| !p.as_os_str().is_empty())
+             .unwrap_or_else(crate::util::grok_home::grok_home);
+@@ -76,7 +84,7 @@ impl ChangelogManager {
+     /// JSON is cached only after a successful parse; the markdown cache is write-through since it's consumed as raw text.
+     pub fn fetch(&self) -> Changelog {
+         // Always re-resolve from env so a caller holding an older manager (or a stale OnceLock) still reads the live harness home
+-        Self::from_env_home().fetch_with(changelog_offline(), CHANGELOG_BASE)
++        Self::from_env_home().fetch_with(changelog_offline(), &changelog_base())
+     }
+ 
+     /// Fetch using this manager's already-resolved cache paths, an explicit offline flag, and an explicit CDN base. Split out of [`fetch`] so unit tests can drive it against a temp home without touching process-global env.
+@@ -230,7 +238,7 @@ mod tests {
+         .unwrap();
+ 
+         // Offline path: read only the seeded disk cache, no network.
+-        let changelog = manager_for(&home).fetch_with(true, CHANGELOG_BASE);
++        let changelog = manager_for(&home).fetch_with(true, &changelog_base());
+         assert_eq!(
+             changelog.markdown.as_deref(),
+             Some("# seeded offline md\n"),
+diff --git a/crates/codegen/xai-grok-shell/src/agent/config.rs b/crates/codegen/xai-grok-shell/src/agent/config.rs
+index cadd3501..51a13dcf 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/config.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/config.rs
+@@ -45,7 +45,8 @@ pub const DEFAULT_AGENT_TYPE: &str = "grok-build-plan";
+ pub(crate) fn default_agent_type() -> String {
+     DEFAULT_AGENT_TYPE.to_owned()
+ }
+-pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = "https://cli-chat-proxy.grok.com/v1";
++/// Workshop: single source of truth is `xai-grok-env` (loopback placeholder; gate:no-xai, Gate 3).
++pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = xai_grok_env::PROD_CLI_CHAT_PROXY_BASE_URL;
+ pub const XAI_API_BASE_URL_DEFAULT: &str = "https://api.x.ai/v1";
+ const NO_INLINE_CITATIONS_RESPONSE_INCLUDE: &str = "no_inline_citations";
+ /// One or more environment variable names that may hold a model API key.
+diff --git a/crates/codegen/xai-grok-workspace/src/handle.rs b/crates/codegen/xai-grok-workspace/src/handle.rs
+index 60ade535..7575ea4d 100644
+--- a/crates/codegen/xai-grok-workspace/src/handle.rs
++++ b/crates/codegen/xai-grok-workspace/src/handle.rs
+@@ -4289,8 +4289,9 @@ pub(crate) async fn build_local_workspace(
+             workspace_home.display()
+         ))
+     })?;
++    // Workshop (gate:no-xai, Gate 3): the compiled default is the neutral loopback placeholder.
+     let api_base_url = std::env::var("GROK_CLI_CHAT_PROXY_BASE_URL")
+-        .unwrap_or_else(|_| "https://cli-chat-proxy.grok.com/v1".to_string());
++        .unwrap_or_else(|_| xai_grok_env::PROD_CLI_CHAT_PROXY_BASE_URL.to_string());
+     let data_collection_disabled =
+         std::env::var("GROK_WORKSPACE_DATA_COLLECTION_DISABLED").as_deref() != Ok("false");
+     let mut factory = host_kind.session_context_factory(auth.clone(), api_base_url.clone());

@@ -1,0 +1,29 @@
+diff --git a/crates/codegen/xai-grok-models/default_models.json b/crates/codegen/xai-grok-models/default_models.json
+index 9670602b..b1bc61ce 100644
+--- a/crates/codegen/xai-grok-models/default_models.json
++++ b/crates/codegen/xai-grok-models/default_models.json
+@@ -1,9 +1,20 @@
+ {
+-  "default": "grok-4.6",
+-  "web_search": "grok-4.6",
+-  "image_description": "grok-4.6",
+-  "session_summary": "grok-4.6",
++  "default": "workshop-unconfigured",
++  "web_search": "workshop-unconfigured",
++  "image_description": "workshop-unconfigured",
++  "session_summary": "workshop-unconfigured",
+   "models": [
++    {
++      "id": "workshop-unconfigured",
++      "model": "workshop-unconfigured",
++      "model_family": "workshop",
++      "name": "No connection configured",
++      "description": "Workshop has no model connection yet. Open the connection picker (/auth) to add a Local model, an API key, or a subscription CLI.",
++      "context_window": 200000,
++      "api_backend": "chat_completions",
++      "supports_backend_search": false,
++      "supports_reasoning_effort": false
++    },
+     {
+       "id": "grok-4.6",
+       "model": "grok-4.6",

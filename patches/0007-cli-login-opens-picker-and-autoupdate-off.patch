@@ -1,0 +1,103 @@
+diff --git a/crates/codegen/xai-grok-pager-bin/src/main.rs b/crates/codegen/xai-grok-pager-bin/src/main.rs
+index ec8d2084..19fa5ed4 100644
+--- a/crates/codegen/xai-grok-pager-bin/src/main.rs
++++ b/crates/codegen/xai-grok-pager-bin/src/main.rs
+@@ -2330,6 +2330,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+             }
+             Command::Login {
+                 legacy: _,
++                xai,
+                 oauth,
+                 device_auth,
+                 devbox,
+@@ -2338,8 +2339,27 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
+                 let config = xai_grok_shell::config::load_agent_config_disk_only()
+                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
++                // Workshop (gate:no-xai): `workshop login` is the connection picker. The inherited
++                // session login runs only for an explicitly configured provider (enterprise OIDC,
++                // `GROK_OAUTH2_*`, auth-provider command) or the labeled `--xai` opt-in.
++                let grok_com_config = if xai {
++                    config.grok_com_config.clone().with_xai_first_party_oauth2()
++                } else {
++                    config.grok_com_config.clone()
++                };
++                if !grok_com_config.has_session_login_provider()
++                    && grok_com_config.auth_provider_command.is_none()
++                {
++                    let mut picker = workshop_auth::PickerState::new();
++                    picker.run_detection();
++                    print!("{}", workshop_auth::text::cli_login_text(&picker));
++                    xai_grok_shell::instrumentation::finalize_and_exit(0);
++                }
++                if xai {
++                    eprintln!("Workshop: optional xAI account login selected; this opens auth.x.ai.");
++                }
+                 let authenticated = xai_grok_login::run_cli_login(
+-                    config.grok_com_config.clone(),
++                    grok_com_config,
+                     config.login_device_flow,
+                     config.endpoints.proxy_url(),
+                     oauth,
+@@ -2566,6 +2586,14 @@ fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
+     if no_auto_update_flag {
+         return false;
+     }
++    // Workshop (gate:no-xai, Gate 4): no Workshop update channel exists yet, so background
++    // update checks are off unless an operator opts in explicitly. This stays off until
++    // milestone F ships signature verification and a Workshop-owned channel.
++    if !std::env::var_os("WORKSHOP_ENABLE_AUTOUPDATE")
++        .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
++    {
++        return false;
++    }
+     !std::env::var_os("GROK_DISABLE_AUTOUPDATER")
+         .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
+ }
+@@ -3037,30 +3065,37 @@ mod tests {
+     }
+     #[cfg(unix)]
+     #[test]
+-    fn is_managed_install_matches_only_the_bin_grok_target() {
+-        let home =
+-            std::env::temp_dir().join(format!("grok-pager-managed-install-{}", std::process::id()));
++    fn is_managed_install_matches_only_the_bin_workshop_target() {
++        let home = std::env::temp_dir().join(format!(
++            "workshop-managed-install-{}",
++            std::process::id()
++        ));
+         let _ = std::fs::remove_dir_all(&home);
+         std::fs::create_dir_all(home.join("bin")).unwrap();
+         std::fs::create_dir_all(home.join("downloads")).unwrap();
+         assert!(!is_managed_install(
+-            Some(home.join("bin").join("grok")),
++            Some(home.join("bin").join("workshop")),
+             &home
+         ));
+         assert!(!is_managed_install(None, &home));
+         assert!(!is_managed_install(
+-            Some(home.join("bin").join("grok")),
++            Some(home.join("bin").join("workshop")),
+             std::path::Path::new("")
+         ));
+-        let target = home.join("downloads").join("grok-1.2.3");
++        // The layout scripts/install.sh writes: bin/workshop -> ../downloads/workshop-<v>-<platform>.
++        let target = home.join("downloads").join("workshop-1.2.3-linux-x86_64");
+         std::fs::write(&target, b"binary").unwrap();
+-        std::os::unix::fs::symlink(&target, home.join("bin").join("grok")).unwrap();
++        std::os::unix::fs::symlink(
++            std::path::Path::new("../downloads/workshop-1.2.3-linux-x86_64"),
++            home.join("bin").join("workshop"),
++        )
++        .unwrap();
+         assert!(is_managed_install(
+-            Some(home.join("bin").join("grok")),
++            Some(home.join("bin").join("workshop")),
+             &home
+         ));
+         assert!(is_managed_install(Some(target.clone()), &home));
+-        let pinned = home.join("bin").join("grok-9.9.9");
++        let pinned = home.join("bin").join("workshop-9.9.9");
+         std::fs::write(&pinned, b"binary").unwrap();
+         assert!(!is_managed_install(Some(pinned), &home));
+         let _ = std::fs::remove_dir_all(&home);
