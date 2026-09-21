@@ -31,18 +31,6 @@ pub const BUST_21X42: &str = include_str!("../assets/portrait-21x42.txt");
 /// Shade map for [`BUST_21X42`].
 pub const BUST_21X42_SHADE: &str = include_str!("../assets/portrait-21x42.shade.txt");
 
-/// Second photo (seated on lit stairs, head turned right): tonal 14 x 28 bust with the stairs dimmed to 60%.
-pub const BUST2_14X28: &str = include_str!("../assets/portrait2-14x28.txt");
-
-/// Shade map for [`BUST2_14X28`].
-pub const BUST2_14X28_SHADE: &str = include_str!("../assets/portrait2-14x28.shade.txt");
-
-/// Second photo, 7 x 14 silhouette.
-pub const BUST2_7X14: &str = include_str!("../assets/portrait2-7x14.txt");
-
-/// Second photo, 5 x 10 silhouette.
-pub const BUST2_5X10: &str = include_str!("../assets/portrait2-5x10.txt");
-
 /// Passport-style face crop (eyes, nose, mouth fill the square) on an empty background, 7 x 14.
 pub const FACE_7X14: &str = include_str!("../assets/face-7x14.txt");
 
@@ -92,14 +80,6 @@ pub const BUST_3X: HeroArt = HeroArt {
     ..BUST
 };
 
-/// The second photo at every tier (`bust-2x-alt`), for comparison with the default.
-pub const BUST_2X_ALT: HeroArt = HeroArt {
-    large: Some(BUST2_14X28),
-    large_shade: Some(BUST2_14X28_SHADE),
-    full: BUST2_7X14,
-    compact: BUST2_5X10,
-};
-
 /// The face crop, 1x only.
 pub const FACE: HeroArt = HeroArt {
     large: None,
@@ -115,7 +95,7 @@ pub const FACE_2X: HeroArt = HeroArt {
 };
 
 /// Environment variable that picks the art set for a launch: `bust`, `bust-2x`, `bust-2x-flat`,
-/// `bust-2x-alt`, `bust-3x`, `face`, `face-2x`. Anything else is the default, [`BUST_2X`].
+/// `bust-3x`, `face`, `face-2x`. Anything else is the default, [`BUST_2X`].
 pub const HERO_ART_ENV: &str = "WORKSHOP_HERO_ART";
 
 /// The art set for this launch, resolved once from [`HERO_ART_ENV`].
@@ -128,7 +108,6 @@ fn hero_art_named(name: Option<&str>) -> &'static HeroArt {
     match name.map(str::trim) {
         Some("bust") => &BUST,
         Some("bust-2x-flat") => &BUST_2X_FLAT,
-        Some("bust-2x-alt") => &BUST_2X_ALT,
         Some("bust-3x") => &BUST_3X,
         Some("face") => &FACE,
         Some("face-2x") => &FACE_2X,
@@ -216,14 +195,7 @@ mod tests {
 
     #[test]
     fn portraits_match_the_upstream_logo_grids() {
-        for art in [
-            &BUST,
-            &BUST_2X,
-            &BUST_2X_FLAT,
-            &BUST_2X_ALT,
-            &FACE,
-            &FACE_2X,
-        ] {
+        for art in [&BUST, &BUST_2X, &BUST_2X_FLAT, &FACE, &FACE_2X] {
             assert_grid(art.full, 7, 14);
             assert_grid(art.compact, 5, 10);
             if let Some(large) = art.large {
@@ -235,7 +207,7 @@ mod tests {
 
     #[test]
     fn shade_maps_cover_their_grids_with_digits() {
-        for art in [&BUST_2X, &BUST_2X_ALT, &BUST_3X] {
+        for art in [&BUST_2X, &BUST_3X] {
             let (large, shade) = (art.large.unwrap(), art.large_shade.unwrap());
             let glyph_rows = grid(large);
             let shade_rows = grid(shade);
@@ -284,11 +256,6 @@ mod tests {
         assert_eq!(flat.large, Some(BUST_14X28));
         assert!(flat.large_shade.is_none());
         assert_eq!(hero_art_named(Some("bust-3x")).large, Some(BUST_21X42));
-        let alt = hero_art_named(Some("bust-2x-alt"));
-        assert_eq!(alt.large, Some(BUST2_14X28));
-        assert_eq!(alt.large_shade, Some(BUST2_14X28_SHADE));
-        assert_eq!(alt.full, BUST2_7X14);
-        assert_eq!(alt.compact, BUST2_5X10);
         let face = hero_art_named(Some("face"));
         assert!(face.large.is_none());
         assert_eq!(face.full, FACE_7X14);
