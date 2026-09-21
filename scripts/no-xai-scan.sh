@@ -87,13 +87,19 @@ PY
     violation "CI sets GROK_TELEMETRY_BUILD_* (telemetry bake-in)"
   else ok "no GROK_TELEMETRY_BUILD_* assignment in CI or scripts"; fi
 
-  # gate:no-theft — foreign OAuth / keychain / auth-file markers must not exist in any Rust source.
+  # gate:no-theft — foreign OAuth / keychain / auth-file markers must not exist in production Rust.
+  # Test fixtures may name a forbidden string as input to prove it is stripped (e.g. the adapters
+  # env test showing ANTHROPIC_BASE_URL=127.0.0.1:3456 being dropped), so `*test*` files, the gates
+  # crate, and full-line comments are excluded — the same rule the integration_gates fs audit uses.
   local theft_re='Claude Code-credentials|\.codex/auth\.json|\.cursor/sdk/auth\.json|share/opencode/auth\.json|opencode-with-claude|127\.0\.0\.1:3456|provider_autodock'
   local hits
-  hits="$(grep -rEn --include='*.rs' --include='*.toml' --include='*.json' "$theft_re" crates/ 2>/dev/null | grep -v '^crates/workshop-gates/' || true)"
+  hits="$(grep -rEn --include='*.rs' "$theft_re" crates/ 2>/dev/null \
+    | grep -v '^crates/workshop-gates/' \
+    | grep -Ev '/[^:]*test[^:]*\.rs:' \
+    | grep -Ev '^[^:]+:[0-9]+:[[:space:]]*(//|\*|///)' || true)"
   if [ -n "$hits" ]; then
     violation "gate:no-theft markers found:"; printf '%s\n' "$hits" >&2
-  else ok "gate:no-theft: no foreign-credential markers in crates/"; fi
+  else ok "gate:no-theft: no foreign-credential markers in crates/ (production code)"; fi
   if [ -e crates/codegen/xai-grok-pager/src/provider_autodock.rs ]; then
     violation "provider_autodock.rs is present (must not be ported)"
   fi

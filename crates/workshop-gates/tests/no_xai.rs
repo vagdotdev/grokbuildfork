@@ -387,26 +387,44 @@ fn identity_home_is_workshop() {
     }
 }
 
-/// The picker policy: xAI last, never preselected, and only an explicit double-Enter reaches it.
+/// The picker policy: the xAI row is last, never preselected, and only an explicit double-Enter
+/// reaches it; every non-xAI row yields something other than a login.
 #[test]
 fn picker_xai_is_optional_last_and_explicit() {
-    use workshop_auth::{PickerInput, PickerOutcome, PickerState, XAI_CARD_ID};
+    use workshop_auth::{
+        ModelsRow, PickerInput, PickerOutcome, PickerSnapshot, PickerState, models_rows,
+    };
     let mut p = PickerState::new();
-    assert_eq!(p.models.last().map(|c| c.id), Some(XAI_CARD_ID));
-    assert_ne!(p.selected_card().map(|c| c.id), Some(XAI_CARD_ID));
-    // Enter on every non-xAI card never yields a login.
-    let n = p.models.len();
+    let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]);
+    p.apply_snapshot(PickerSnapshot {
+        rows,
+        rails: Vec::new(),
+        default_selection: Some(workshop_providers::select_default(&[], true)),
+        secret_backend: Some("memory"),
+    });
+    assert!(p.rows.last().is_some_and(ModelsRow::is_xai));
+    assert!(!p.selected_row().is_some_and(ModelsRow::is_xai));
+    let n = p.rows.len();
     for i in 0..n {
         p.models_selected = i;
         p.detail_open = false;
         p.xai_armed = false;
-        let id = p.models.get(i).map(|c| c.id).unwrap_or_default();
-        if id == XAI_CARD_ID {
+        if p.rows.get(i).is_some_and(ModelsRow::is_xai) {
             continue;
         }
-        assert!(matches!(
+        assert_ne!(
             p.handle(PickerInput::Enter),
-            PickerOutcome::Changed | PickerOutcome::Close
-        ));
+            PickerOutcome::StartOptionalXaiLogin,
+            "row {i} must not start the xAI login"
+        );
     }
+    // The xAI row needs two explicit Enters.
+    p.models_selected = n - 1;
+    p.detail_open = false;
+    p.xai_armed = false;
+    assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
+    assert_eq!(
+        p.handle(PickerInput::Enter),
+        PickerOutcome::StartOptionalXaiLogin
+    );
 }

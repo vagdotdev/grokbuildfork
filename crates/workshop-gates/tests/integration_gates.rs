@@ -101,7 +101,11 @@ fn config_writer_keeps_secrets_out_of_config() {
     );
 }
 
-/// gate:no-theft — the wired crates contain none of the Blackpen credential-read markers.
+/// gate:no-theft — the wired crates' production code (not tests, not doc comments) contains none of
+/// the Blackpen credential-read markers. Test fixtures may name a forbidden string as *input* to
+/// prove it is stripped (e.g. the env test that shows `ANTHROPIC_BASE_URL=http://127.0.0.1:3456`
+/// being dropped), so `#[cfg(test)]` modules and `*tests*.rs` files are excluded, exactly like the
+/// `scripts/no-xai-scan.sh` source scan.
 #[test]
 fn no_foreign_credential_markers_in_wired_crates() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -113,20 +117,35 @@ fn no_foreign_credential_markers_in_wired_crates() {
         "crates/workshop-adapters/src",
     ] {
         for entry in walk(&root.join(crate_dir)) {
-            // The adapters crate legitimately documents what it must not do; skip comments.
+            let name = entry.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.contains("test") {
+                continue;
+            }
             let text = std::fs::read_to_string(&entry).unwrap_or_default();
+            let mut in_test_mod = false;
+            let mut test_mod_depth = 0i32;
+            let mut depth = 0i32;
             for (n, line) in text.lines().enumerate() {
                 let trimmed = line.trim_start();
-                if trimmed.starts_with("//") || trimmed.starts_with('*') {
-                    continue;
+                // Enter/leave a `#[cfg(test)] mod tests { … }` block by brace depth.
+                if trimmed.starts_with("#[cfg(test)]") {
+                    in_test_mod = true;
+                    test_mod_depth = depth;
                 }
-                for m in markers {
-                    assert!(
-                        !line.contains(m),
-                        "{}:{}: forbidden credential marker `{m}`",
-                        entry.display(),
-                        n + 1
-                    );
+                let is_comment = trimmed.starts_with("//") || trimmed.starts_with('*');
+                if !in_test_mod && !is_comment {
+                    for m in markers {
+                        assert!(
+                            !line.contains(m),
+                            "{}:{}: forbidden credential marker `{m}`",
+                            entry.display(),
+                            n + 1
+                        );
+                    }
+                }
+                depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+                if in_test_mod && depth <= test_mod_depth {
+                    in_test_mod = false;
                 }
             }
         }
