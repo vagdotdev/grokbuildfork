@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/vagdotdev/grokbuildfork/release-channel/channel-manifest.schema.json",
+  "title": "Workshop release-channel manifest",
+  "description": "One document per channel (stable.json, alpha.json) on the `release-channel` branch of the release repo. Consumed by scripts/install.sh and by the in-app updater. Produced only by scripts/release/manifest.sh. Consumers must ignore unknown fields.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "product",
+    "channel",
+    "version",
+    "tag",
+    "published_at",
+    "release_repo",
+    "release_url",
+    "checksums_url",
+    "attested",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Bumped only for breaking layout changes; consumers reject unknown major versions."
+    },
+    "product": { "type": "string", "const": "workshop" },
+    "channel": { "type": "string", "enum": ["stable", "alpha"] },
+    "version": {
+      "type": "string",
+      "description": "Semver of the release this channel currently points at (no leading v). Compared with the compiled-in version by the updater.",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$"
+    },
+    "tag": { "type": "string", "pattern": "^v", "description": "Git tag of the release: v<version>." },
+    "published_at": { "type": "string", "format": "date-time" },
+    "release_repo": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "description": "OWNER/NAME of the GitHub repo hosting the release (the WORKSHOP_RELEASE_REPO variable at publish time)."
+    },
+    "release_url": { "type": "string", "format": "uri" },
+    "checksums_url": { "type": "string", "format": "uri", "description": "SHA256SUMS asset of the release." },
+    "attested": {
+      "type": "boolean",
+      "description": "True when GitHub artifact attestations (SLSA provenance, Sigstore-signed) were generated for the assets. Verify with `gh attestation verify <asset> --repo <release_repo>`."
+    },
+    "previous_version": {
+      "type": ["string", "null"],
+      "description": "Version this channel pointed at before the current one (rollback target); null for the first release."
+    },
+    "previous_tag": { "type": ["string", "null"] },
+    "artifacts": {
+      "type": "object",
+      "description": "Keyed by <os>-<arch> with os in {linux, macos, windows} and arch in {x86_64, aarch64}, matching the updater's detect_platform() label so it can index this map directly.",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^(linux|macos|windows)-(x86_64|aarch64)$" },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["url", "sha256", "size", "format", "binary"],
+        "properties": {
+          "url": { "type": "string", "format": "uri", "description": "Absolute https URL of the archive (loopback http is accepted by consumers only for tests)." },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the archive; identical to the SHA256SUMS entry." },
+          "size": { "type": "integer", "minimum": 1 },
+          "format": { "type": "string", "const": "tar.gz" },
+          "binary": { "type": "string", "description": "Path of the executable inside the archive (workshop, or workshop.exe on Windows)." }
+        }
+      }
+    }
+  }
+}
