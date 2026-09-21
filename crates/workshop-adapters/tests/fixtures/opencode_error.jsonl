@@ -1,0 +1,2 @@
+{"type":"step_start","timestamp":1758480000000,"sessionID":"ses_err","part":{"id":"prt_1","sessionID":"ses_err","messageID":"msg_1","type":"step-start"}}
+{"type":"error","timestamp":1758480000100,"sessionID":"ses_err","error":{"name":"ProviderAuthError","data":{"providerID":"anthropic","message":"Invalid API key"}}}
