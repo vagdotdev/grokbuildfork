@@ -142,10 +142,11 @@ fn anonymous_kilo_path_sends_no_credential_and_a_saved_key_stays_on_its_host() {
         handle.authorize("https://openrouter.ai/api/v1/chat/completions"),
         Err(ProviderError::HostNotAllowed { .. })
     ));
+    // `google` rather than `openrouter`: a sibling test exports OPENROUTER_API_KEY in this process.
     assert!(
         broker.is_connected("kilo")
             && broker.is_connected("ollama")
-            && !broker.is_connected("openrouter")
+            && !broker.is_connected("google")
     );
 }
 

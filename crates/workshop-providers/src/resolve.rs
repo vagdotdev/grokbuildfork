@@ -311,6 +311,49 @@ mod tests {
         );
     }
 
+    /// Every field this spec serializes must exist on upstream `ModelEntryConfig` with the same
+    /// name, so the JSON/TOML form deserializes there. Checked against the upstream source in the
+    /// workspace rather than linking `xai-grok-shell` (a multi-minute build) into this crate.
+    #[test]
+    fn serialized_fields_exist_on_upstream_model_entry_config() {
+        let upstream = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../codegen/xai-grok-shell/src/agent/config.rs");
+        let src = std::fs::read_to_string(&upstream)
+            .expect("upstream config.rs present in the workspace");
+        let start = src
+            .find("pub struct ModelEntryConfig {")
+            .expect("ModelEntryConfig struct");
+        let body = &src[start..];
+        let end = body.find("\n}\n").expect("struct end");
+        let body = &body[..end];
+
+        let tmp = tempfile::tempdir().unwrap();
+        let broker = broker(&tmp);
+        broker.save_api_key("anthropic", "k").unwrap();
+        let spec = resolve_model_entry(
+            &custom_row("anthropic", "claude-sonnet-4-5").unwrap(),
+            &broker,
+        )
+        .unwrap();
+        let json = serde_json::to_value(&spec).unwrap();
+        for field in json.as_object().unwrap().keys() {
+            assert!(
+                body.contains(&format!("pub {field}:")),
+                "ModelEntrySpec field `{field}` is not a ModelEntryConfig field"
+            );
+        }
+        // Representation checks for the shared enums and untagged EnvKeys.
+        assert!(body.contains("pub env_key: Option<EnvKeys>"));
+        assert!(
+            src.contains("#[serde(untagged)]\npub enum EnvKeys"),
+            "EnvKeys must accept an array"
+        );
+        assert_eq!(json["api_backend"], "messages");
+        assert_eq!(json["auth_scheme"], "x_api_key");
+        assert!(json["env_key"].is_array());
+        assert!(json["context_window"].is_u64());
+    }
+
     #[test]
     fn unconnected_keyed_provider_is_an_error_and_local_is_anonymous() {
         let tmp = tempfile::tempdir().unwrap();
