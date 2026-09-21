@@ -68,6 +68,96 @@ index ef39cca6..59d08343 100644
 +⠀⠀⣿⡀⢰⡏⠀⠀⢹⡆⢀⣿⠀⠀
 +⠀⠀⢻⣷⡿⠁⠀⠀⠈⢿⣾⡟⠀⠀
 +⠀⠀⠀⠻⠃⠀⠀⠀⠀⠘⠟⠀⠀⠀
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
+index ab27a76d..d4978540 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
+@@ -1,6 +1,6 @@
+ # Getting Started
+ 
+-Grok Build is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
++Workshop is a terminal-based AI coding agent built as a thin overlay on the public Grok Build tree. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, and manages tasks. It ships **no default model provider**: you connect a local model, an API key, or an installed coding-subscription CLI.
+ 
+ You can use it interactively as a full-screen TUI, run it headlessly for scripting and CI/CD, or integrate it into editors via the Agent Client Protocol (ACP).
+ 
+@@ -8,70 +8,26 @@ You can use it interactively as a full-screen TUI, run it headlessly for scripti
+ 
+ ## Installation
+ 
+-Install the latest stable release (macOS, Linux, or Windows via Git Bash):
++Workshop has no public install channel yet (auto-update is disabled in this build). Build from source with the pinned Rust toolchain and `protoc`:
+ 
+ ```bash
+-curl -fsSL https://x.ai/cli/install.sh | bash
++cargo build --release -p xai-grok-pager-bin
++./target/release/workshop --version
+ ```
+ 
+-Install a specific version:
+-
+-```bash
+-curl -fsSL https://x.ai/cli/install.sh | bash -s 0.1.42
+-```
+-
+-On **Windows (PowerShell)**, use the native PowerShell installer:
+-
+-```powershell
+-irm https://x.ai/cli/install.ps1 | iex
+-```
+-
+-Install a specific version:
+-
+-```powershell
+-$env:GROK_VERSION="0.1.42"; irm https://x.ai/cli/install.ps1 | iex
+-```
+-
+-The PowerShell installer automatically adds `%USERPROFILE%\.grok\bin` to your User PATH. Alternatively, install via [Git for Windows](https://gitforwindows.org/) (Git Bash) or MSYS2 using the bash script above. WSL users get the Linux binary automatically.
+-
+-Verify the installation:
+-
+-```bash
+-grok --version
+-```
+-
+-Update to the latest version at any time:
+-
+-```bash
+-grok update
+-```
+-
+-To fetch a repository through Grove (NFS on macOS, FUSE on Linux), enable
+-`grok clone` with `[clone] enabled = true` in Grove config, `GROK_CLONE=1`,
+-or the enable-both convenience `GROK_GROVE=1` / `[cli] grove = true` in
+-`~/.grok/config.toml`:
+-
+-```bash
+-grok clone <url> [dir]
+-```
+-
+-The default is a depth-1 checkout of the selected branch. Pass `--full-history`
+-for a complete clone. Clone enablement is independent of session / `-w` Grove
+-worktrees (the convenience above turns both on; the specific knobs still win).
+-the grok.com sign-in below — see [grok clone](27-grok-clone.md#authentication)
+-and [Configuration reference](26-config-reference.md).
++Workshop keeps its state in `~/.workshop` (override with `WORKSHOP_HOME`; the upstream `GROK_HOME` is honoured as a deprecated alias).
+ 
+ ---
+ 
+ ## First Launch
+ 
+-Start Grok by running:
++Start Workshop by running:
+ 
+ ```bash
+-grok
++workshop
+ ```
+ 
+-On first launch, Grok opens your browser to authenticate with grok.com. After you sign in, Grok stores your credentials in `~/.grok/auth.json`, where they persist across sessions. Grok refreshes your credentials automatically and prompts you to sign in again when they can no longer be renewed.
++On first launch, Workshop opens the **connection picker**, never a browser sign-in. The **Models** tab lists local servers (Ollama, LM Studio, llama.cpp / vLLM) and bring-your-own-key providers (OpenAI, Anthropic, OpenRouter, a custom OpenAI-compatible endpoint); the **Subscriptions** tab lists the Claude, Codex, and Cursor CLIs Workshop can drive once they are installed and signed in with their own `login` commands. Pick a row to see the `[model.*]` snippet to add to `~/.workshop/config.toml`. The optional xAI card is last on the Models tab and only opens `auth.x.ai` after you confirm it; nothing is contacted until you connect something.
+ 
+ If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
+ 
 diff --git a/crates/codegen/xai-grok-pager/src/views/memory_modal.rs b/crates/codegen/xai-grok-pager/src/views/memory_modal.rs
 index 0d0a7b30..3ebda853 100644
 --- a/crates/codegen/xai-grok-pager/src/views/memory_modal.rs
@@ -125,3 +215,25 @@ index f725ec93..e761eb59 100644
  
  use super::logo::LogoTier;
  use super::{PROMPT_HEIGHT, VERSION_GAP};
+diff --git a/crates/codegen/xai-grok-shell/README.md b/crates/codegen/xai-grok-shell/README.md
+index a22de198..e06e831e 100644
+--- a/crates/codegen/xai-grok-shell/README.md
++++ b/crates/codegen/xai-grok-shell/README.md
+@@ -394,7 +394,7 @@ auth_provider = "litellm"
+ If you've authenticated with `grok login`, you can use the stored credentials to call the CLI chat proxy directly via curl. The proxy requires specific headers that mirror what the grok CLI sends internally:
+ 
+ ```bash
+-curl -s -N -X POST "https://cli-chat-proxy.grok.com/v1/chat/completions" \
++curl -s -N -X POST "$GROK_CLI_CHAT_PROXY_BASE_URL/chat/completions" \
+   -H "Content-Type: application/json" \
+   -H "Authorization: Bearer $(jq -r '."https://accounts.x.ai/sign-in".key' ~/.grok/auth.json)" \
+   -H "X-XAI-Token-Auth: xai-grok-cli" \
+@@ -2501,7 +2501,7 @@ The agent persists all session updates automatically. Clients can reconnect and
+ | Variable                         | Description                                                                                              |
+ | -------------------------------- | -------------------------------------------------------------------------------------------------------- |
+ | `XAI_API_KEY`         | API key from [console.x.ai](https://console.x.ai). Used for custom endpoint auth and API key login      |
+-| `GROK_CLI_CHAT_PROXY_BASE_URL`  | Override the cli-chat-proxy URL (default: `https://cli-chat-proxy.grok.com/v1`)                          |
++| `GROK_CLI_CHAT_PROXY_BASE_URL`  | Override the cli-chat-proxy URL (Workshop default: an unreachable `api.workshop.invalid` placeholder)  |
+ | `GROK_MODELS_BASE_URL`          | Custom base URL for inference. Model list auto-fetched from `{base_url}/models` (see [Custom Models Endpoint](#custom-models-endpoint)) |
+ | `GROK_MODELS_LIST_URL`          | Override the model list URL if it differs from `{GROK_MODELS_BASE_URL}/models`                                              |
+ | `GROK_AUTH_PROVIDER_COMMAND`     | External auth binary (alternative to config file). See [External Auth Provider](#external-auth-provider) |
