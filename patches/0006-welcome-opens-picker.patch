@@ -1,0 +1,592 @@
+diff --git a/crates/codegen/xai-grok-pager-bin/src/main.rs b/crates/codegen/xai-grok-pager-bin/src/main.rs
+index ec8d2084..c53a6b86 100644
+--- a/crates/codegen/xai-grok-pager-bin/src/main.rs
++++ b/crates/codegen/xai-grok-pager-bin/src/main.rs
+@@ -224,7 +224,7 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
+         ),
+     );
+ }
+-/// `grok setup`: rendering and exit codes only; fetch logic lives in `xai_grok_shell::managed_config`.
++/// `workshop setup`: rendering and exit codes only; fetch logic lives in `xai_grok_shell::managed_config`.
+ /// `json` prints the served configuration instead of installing it.
+ #[tracing::instrument(level = "debug", skip_all)]
+ async fn run_setup_command(json: bool) {
+@@ -232,7 +232,7 @@ async fn run_setup_command(json: bool) {
+     if !managed_config::has_principal() {
+         eprintln!("No deployment key or team sign-in found.");
+         eprintln!();
+-        eprintln!("To install managed configuration, sign in with a team using `grok login`,");
++        eprintln!("To install managed configuration, sign in with a team using `workshop login`,");
+         eprintln!("or set a deployment key:");
+         eprintln!();
+         if cfg!(unix) {
+@@ -240,7 +240,7 @@ async fn run_setup_command(json: bool) {
+         } else {
+             eprintln!("  $env:GROK_DEPLOYMENT_KEY=\"<your-key>\"");
+         }
+-        eprintln!("  grok setup");
++        eprintln!("  workshop setup");
+         eprintln!();
+         eprintln!("Or add the key to ~/.grok/config.toml:");
+         eprintln!();
+@@ -280,7 +280,7 @@ async fn run_setup_command(json: bool) {
+         }
+         SetupOutcome::Skipped => {
+             eprintln!(
+-                "Managed configuration was not applied this run (another process held the apply lock, or the credential changed during the fetch). Run `grok setup` again."
++                "Managed configuration was not applied this run (another process held the apply lock, or the credential changed during the fetch). Run `workshop setup` again."
+             );
+         }
+         SetupOutcome::Staged => {
+@@ -572,7 +572,7 @@ async fn run_workspace_mgmt(args: WorkspaceMgmtArgs) -> Result<()> {
+         WorkspaceGate::Unknown => {
+             anyhow::bail!(
+                 "Could not load your settings for `grok workspace`. Check your \
+-             network connection (run `grok login` if you are signed out), then \
++             network connection (run `workshop login` if you are signed out), then \
+              try again."
+             )
+         }
+@@ -681,7 +681,7 @@ async fn spawn_and_connect_leader(
+         agent_config.login_device_flow,
+         agent_config.endpoints.proxy_url(),
+         false,
+-        Some("No cached credentials found. Run `grok login` first."),
++        Some("No cached credentials found. Run `workshop login` first."),
+     )
+     .await?;
+     let env_urls = LeaderEnvUrls::from(&agent_config.grok_com_config);
+@@ -1148,7 +1148,7 @@ fn shutdown_and_flush_telemetry(exit_code: i32) -> ! {
+ }
+ fn finalize_span_profile() {
+     if let Some(path) = xai_grok_telemetry::span_profile::finalize() {
+-        eprintln!("grok: span profile written to {}", path.display());
++        eprintln!("workshop: span profile written to {}", path.display());
+     }
+ }
+ #[tracing::instrument(level = "debug", skip_all)]
+@@ -1183,7 +1183,7 @@ async fn forward_stdio_line_to_leader(
+     }
+ }
+ /// Emitted by both leader guards (server mode and leader-connect) so the two sites can't drift.
+-const PLUGIN_DIR_LEADER_WARNING: &str = "grok: --plugin-dir is ignored in leader mode; run with --no-leader to \
++const PLUGIN_DIR_LEADER_WARNING: &str = "workshop: --plugin-dir is ignored in leader mode; run with --no-leader to \
+      load per-process plugins";
+ /// Run the `agent` subcommand, dispatching to the appropriate mode.
+ #[tracing::instrument(level = "debug", skip_all)]
+@@ -1234,7 +1234,7 @@ async fn run_agent_command(
+     let is_leader = matches!(agent_args.mode, Some(AgentCmd::Leader(_)));
+     if !is_stdio && !is_leader {
+         eprintln!(
+-            "Grok Build (pager) - v{}",
++            "Workshop - v{}",
+             xai_grok_version::display_version_with_commit(
+                 env!("VERSION_WITH_COMMIT"),
+                 xai_grok_update::channel_label(),
+@@ -1282,7 +1282,7 @@ async fn run_agent_command(
+         None,
+     );
+     if let Some(warning) = launch_yolo.blocked_warning {
+-        eprintln!("grok: {warning}");
++        eprintln!("workshop: {warning}");
+     }
+     agent_config.default_yolo_mode = launch_yolo.yolo;
+     agent_config.default_auto_mode = xai_grok_shell::util::config::effective_auto_for_launch(
+@@ -1776,10 +1776,10 @@ impl WorkerCount {
+                 used,
+                 cores,
+             } => Some(format!(
+-                "grok: clamped {GROK_WORKER_THREADS_ENV}={requested} to {used} (valid range is 1..={cores})"
++                "workshop: clamped {GROK_WORKER_THREADS_ENV}={requested} to {used} (valid range is 1..={cores})"
+             )),
+             Self::Ignored { value, .. } => Some(format!(
+-                "grok: ignoring {GROK_WORKER_THREADS_ENV}={value:?} (not a valid integer)"
++                "workshop: ignoring {GROK_WORKER_THREADS_ENV}={value:?} (not a valid integer)"
+             )),
+         }
+     }
+@@ -2015,7 +2015,7 @@ fn main() {
+         xai_grok_shell::agent::external_otel_pin::strip_conflicting_process_env();
+     }
+     let args = configure_process_env(args).unwrap_or_else(|err| {
+-        eprintln!("grok: {err:#}");
++        eprintln!("workshop: {err:#}");
+         std::process::exit(1);
+     });
+     xai_grok_pager::memory_trace::start(xai_grok_pager::memory_trace::default_dir());
+@@ -2068,7 +2068,7 @@ fn main() {
+     builder.worker_threads(workers.get()).enable_all();
+     let runtime =
+         xai_tty_utils::runtime::build_with_blocking_pool(&mut builder).unwrap_or_else(|e| {
+-            eprintln!("grok: failed to start tokio runtime: {e}");
++            eprintln!("workshop: failed to start tokio runtime: {e}");
+             shutdown_and_flush_telemetry(1);
+         });
+     let result = run_and_shutdown(runtime, async_main(args), RUNTIME_SHUTDOWN_GRACE);
+@@ -2330,14 +2330,36 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+             }
+             Command::Login {
+                 legacy: _,
++                xai,
+                 oauth,
+                 device_auth,
+                 devbox,
+             } => {
+                 init_tracing_simple("cli");
+                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
++                if xai {
++                    // Explicit, labeled opt-in: the only CLI path to the inherited xAI flow.
++                    // Recorded before the config is built so `GrokComConfig::default()` sees it.
++                    let home = xai_grok_shell::util::grok_home::grok_home();
++                    workshop_auth::xai_opt_in::enable(&home).map_err(|e| {
++                        anyhow::anyhow!("Failed to record the xAI opt-in in {}: {e}", home.display())
++                    })?;
++                    eprintln!(
++                        "{}: {} This opens auth.x.ai in your browser.",
++                        workshop_branding::PRODUCT_NAME,
++                        workshop_auth::methods::XAI_OPTIONAL_COPY
++                    );
++                }
+                 let config = xai_grok_shell::config::load_agent_config_disk_only()
+                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
++                if config.grok_com_config.is_workshop_placeholder() {
++                    // No operator IdP and no xAI opt-in: there is no provider to sign in to.
++                    // Never let the placeholder issuer reach the network; point at the picker instead.
++                    eprintln!("{}", workshop_auth::methods::PLACEHOLDER_ISSUER_ERROR);
++                    eprintln!("{}", workshop_branding::NO_CONNECTION_HINT);
++                    eprintln!("Optional: `workshop login --xai` signs in with an xAI account.");
++                    xai_grok_shell::instrumentation::finalize_and_exit(1);
++                }
+                 let authenticated = xai_grok_login::run_cli_login(
+                     config.grok_com_config.clone(),
+                     config.login_device_flow,
+@@ -2397,7 +2419,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+             None,
+         );
+         if let Some(warning) = launch_yolo.blocked_warning {
+-            eprintln!("grok: {warning}");
++            eprintln!("workshop: {warning}");
+         }
+         let json_schema = args
+             .json_schema
+@@ -2481,7 +2503,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+             if finish_update_on_exit(adopted, &update_config).await {
+                 eprintln!("Update installed. Run `grok` to start.");
+             } else {
+-                eprintln!("Update did not complete. Run `grok update` to retry.");
++                eprintln!("Update did not complete. Run `workshop update` to retry.");
+             }
+             Ok(())
+         }
+@@ -2656,7 +2678,7 @@ async fn run_update_command(
+         );
+     }
+     let telemetry_cfg = xai_grok_shell::config::load_agent_config_disk_only()
+-        .map_err(|e| tracing::warn!("grok update: telemetry init skipped (agent config: {e})"))
++        .map_err(|e| tracing::warn!("workshop update: telemetry init skipped (agent config: {e})"))
+         .ok();
+     if let Some(agent_cfg) = telemetry_cfg {
+         let auth_manager =
+@@ -2683,7 +2705,7 @@ async fn run_update_command(
+     result?;
+     Ok(())
+ }
+-/// After a successful `grok update`, ask any running leader on this machine that is older than `installed_version`
++/// After a successful `workshop update`, ask any running leader on this machine that is older than `installed_version`
+ /// to relaunch onto the new binary. Best-effort and non-fatal: discovery/connect/control failures are logged and
+ /// skipped.
+ #[tracing::instrument(level = "debug", skip_all)]
+@@ -2843,7 +2865,7 @@ mod tests {
+         );
+         assert_eq!(
+             resolve_worker_override("100000", cores).notice().unwrap(),
+-            "grok: clamped GROK_WORKER_THREADS=100000 to 360 (valid range is 1..=360)"
++            "workshop: clamped GROK_WORKER_THREADS=100000 to 360 (valid range is 1..=360)"
+         );
+     }
+     #[test]
+@@ -2856,7 +2878,7 @@ mod tests {
+         }
+         assert_eq!(
+             resolve_worker_override("abc", cores).notice().unwrap(),
+-            "grok: ignoring GROK_WORKER_THREADS=\"abc\" (not a valid integer)"
++            "workshop: ignoring GROK_WORKER_THREADS=\"abc\" (not a valid integer)"
+         );
+     }
+     #[test]
+diff --git a/crates/codegen/xai-grok-pager/Cargo.toml b/crates/codegen/xai-grok-pager/Cargo.toml
+index dd83e008..754c2552 100644
+--- a/crates/codegen/xai-grok-pager/Cargo.toml
++++ b/crates/codegen/xai-grok-pager/Cargo.toml
+@@ -105,6 +105,7 @@ xai-grok-feedback = { workspace = true }
+ xai-grok-sampling-types = { path = "../xai-grok-sampling-types", optional = true }
+ xai-tool-types = { workspace = true, optional = true }
+ xai-dirs = { workspace = true }
++workshop-auth = { workspace = true, features = ["tui"] }
+ xai-grok-dashboard-store = { workspace = true }
+ # Voice dictation. `audio` (mic capture) is enabled on every target. On
+ # macOS/Windows it links cpal; on Linux it compiles a subprocess-recorder
+diff --git a/crates/codegen/xai-grok-pager/src/app/actions.rs b/crates/codegen/xai-grok-pager/src/app/actions.rs
+index 60687638..3f0dec29 100644
+--- a/crates/codegen/xai-grok-pager/src/app/actions.rs
++++ b/crates/codegen/xai-grok-pager/src/app/actions.rs
+@@ -614,6 +614,11 @@ pub enum Action {
+     SwitchAccount,
+     /// User pressed login on the welcome screen.
+     Login,
++    /// Close the Workshop connection picker without choosing anything (Esc). Returns to the stashed view when opened mid-session.
++    ConnectionPickerClose,
++    /// The user confirmed the optional xAI card in the connection picker: start the labeled interactive flow.
++    /// This is the only path that may send the inherited `grok.com` method.
++    ConnectXaiOptional,
+     /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
+     /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
+     CancelLogin,
+diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
+index 01e2d3c0..f3dfa11d 100644
+--- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
++++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
+@@ -1076,6 +1076,10 @@ pub struct AppView {
+     pub import_claude_modal: Option<crate::views::import_claude_modal::ImportClaudeModalState>,
+     /// Doc viewer overlay for the welcome screen (release notes via Ctrl+L).
+     pub welcome_doc_viewer: Option<crate::views::modal::ActiveModal>,
++    /// Workshop connection picker (Login / `/login` / welcome `l` / cold start). Rendered over the welcome screen; owns input while open.
++    pub connection_picker: Option<workshop_auth::picker::ConnectionPicker>,
++    /// Set when the connection picker closes: the next present clears the terminal so the modal leaves no ghost cells in inline mode.
++    pub pending_full_repaint: bool,
+     /// Whether the pager uses fullscreen (alt-screen) or inline mode.
+     /// Set from the resolved terminal state at startup; updated by the in-process `/minimal` / `/fullscreen` switch (`mode_switch`).
+     pub(crate) screen_mode: super::ScreenMode,
+@@ -1552,6 +1556,8 @@ impl AppView {
+             has_claude_import: false,
+             import_claude_modal: None,
+             welcome_doc_viewer: None,
++            connection_picker: None,
++            pending_full_repaint: false,
+             screen_mode: ScreenMode::Inline,
+             pending_screen_mode_switch: None,
+             show_resolved_model: true,
+@@ -2447,6 +2453,7 @@ impl AppView {
+                     has_claude_import: self.has_claude_import,
+                     import_claude_modal: &mut self.import_claude_modal,
+                     welcome_doc_viewer: &mut self.welcome_doc_viewer,
++                    connection_picker: &mut self.connection_picker,
+                     changelog_markdown: &self.changelog_markdown,
+                     show_changelog_action: self.welcome_show_changelog_action,
+                     has_pending_update: self.pending_update_version.is_some(),
+@@ -3098,6 +3105,7 @@ struct WelcomeInputCtx<'a> {
+     has_claude_import: bool,
+     import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
+     welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
++    connection_picker: &'a mut Option<workshop_auth::picker::ConnectionPicker>,
+     changelog_markdown: &'a Option<String>,
+     /// Whether the welcome menu currently includes a "Changelog" row (above Quit), so index-to-action mapping accounts for it.
+     show_changelog_action: bool,
+@@ -3129,6 +3137,22 @@ struct WelcomeInputCtx<'a> {
+ }
+ /// Welcome view input: overlays first, then composer, then the menu.
+ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
++    if let Some(picker) = ctx.connection_picker.as_mut() {
++        use workshop_auth::picker::PickerOutcome;
++        return match ev {
++            Event::Key(key) if key.kind != crossterm::event::KeyEventKind::Release => {
++                match picker.handle_key(key) {
++                    PickerOutcome::Unchanged => InputOutcome::Unchanged,
++                    PickerOutcome::Changed => InputOutcome::Changed,
++                    PickerOutcome::Close => InputOutcome::Action(Action::ConnectionPickerClose),
++                    PickerOutcome::StartXaiOptionalLogin => {
++                        InputOutcome::Action(Action::ConnectXaiOptional)
++                    }
++                }
++            }
++            _ => InputOutcome::Unchanged,
++        };
++    }
+     if let Some(modal) = ctx.import_claude_modal.as_mut() {
+         use crate::views::import_claude_modal::ImportClaudeModalOutcome;
+         let outcome_to_input = |o: ImportClaudeModalOutcome| match o {
+@@ -4611,6 +4635,22 @@ impl AppView {
+                                     &theme,
+                                 );
+                             }
++                            if let Some(picker) = self.connection_picker.as_ref() {
++                                let theme = crate::theme::Theme::current();
++                                picker.render(
++                                    view_area,
++                                    f.buffer_mut(),
++                                    &workshop_auth::picker::PickerStyle {
++                                        fg: theme.text_primary,
++                                        dim: theme.gray_bright,
++                                        accent: theme.accent_user,
++                                        highlight_bg: theme.bg_highlight,
++                                        border: theme.selection_border,
++                                        success: theme.accent_success,
++                                        warning: theme.warning,
++                                    },
++                                );
++                            }
+                             if !has_access && !self.access_gate_shown_logged {
+                                 self.access_gate_shown_logged = true;
+                                 xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::SuperGrokUpsellShown {
+diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
+index 66bf4e4f..00648de7 100644
+--- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
+@@ -271,6 +271,8 @@ pub(crate) fn test_app() -> AppView {
+         has_claude_import: false,
+         import_claude_modal: None,
+         welcome_doc_viewer: None,
++        connection_picker: None,
++        pending_full_repaint: false,
+         screen_mode: ScreenMode::Inline,
+         pending_screen_mode_switch: None,
+         pending_effects: Vec::new(),
+diff --git a/crates/codegen/xai-grok-pager/src/app/cli.rs b/crates/codegen/xai-grok-pager/src/app/cli.rs
+index 87f63aef..5e23cbdd 100644
+--- a/crates/codegen/xai-grok-pager/src/app/cli.rs
++++ b/crates/codegen/xai-grok-pager/src/app/cli.rs
+@@ -20,12 +20,15 @@ pub enum Command {
+     Leader(LeaderMgmtArgs),
+     /// Sign out and clear cached credentials
+     Logout,
+-    /// Sign in to Grok
++    /// Connect a model or subscription (opens the picker in the TUI; `--xai` for the optional xAI account)
+     Login {
+         /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
+         #[arg(long, hide = true)]
+         legacy: bool,
+-        /// Use Grok OAuth via auth.x.ai.
++        /// Sign in with an xAI account (optional; opens auth.x.ai). Records the opt-in in $WORKSHOP_HOME.
++        #[arg(long = "xai")]
++        xai: bool,
++        /// Use the browser (loopback) OAuth transport for the configured sign-in provider.
+         #[arg(long = "oauth", alias = "oidc", conflicts_with_all = ["device_auth"])]
+         oauth: bool,
+         /// Use device-code authentication for headless/remote environments.
+@@ -394,9 +397,9 @@ pub struct LeaderArgs {
+ }
+ #[derive(Debug, Clone, Parser)]
+ #[command(
+-    name = "grok",
++    name = "workshop",
+     version = xai_grok_version::full_version(),
+-    about = "Grok Build TUI",
++    about = "Workshop: a coding-agent runtime that connects to local models, API keys, or subscription CLIs",
+     disable_version_flag = true,
+     next_display_order = None,
+     help_template = "\
+@@ -830,8 +833,8 @@ impl PagerArgs {
+             .map(std::path::Path::new)
+             .and_then(|p| p.file_name())
+             .and_then(|n| n.to_str())
+-            .filter(|n| *n == "grok" || *n == "agent")
+-            .unwrap_or("grok")
++            .filter(|n| *n == "workshop" || *n == "grok" || *n == "agent")
++            .unwrap_or("workshop")
+             .to_owned();
+         Self::parse_from(std::iter::once(bin_name).chain(std::env::args().skip(1)))
+     }
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
+index 3b578a9d..13267245 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
+@@ -210,15 +210,81 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
+ /// Start an interactive login flow. Triggered by pressing 'l' on the welcome screen or by the `/login` slash command.
+ /// Only the welcome view renders the auth UI (the external auth provider's sign-in URL and status).
+ /// A mid-session invocation therefore stashes the caller's view in `auth_return_view` and switches to `Welcome` so the flow is visible.
++///
++/// Workshop: when the advertised method is the connection picker (`workshop.connect`) or nothing is advertised,
++/// Login opens the picker instead of sending an `AuthenticateRequest`. Only the picker's optional xAI card
++/// (`Action::ConnectXaiOptional`) may start the inherited browser flow. Enterprise `oidc` and external
++/// auth-provider commands are operator configuration and still start directly.
+ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
+     ensure_login_method(app);
++    let opens_picker = matches!(
++        app.login_method_id.as_ref().map(|id| id.0.as_ref()),
++        None | Some(workshop_auth::methods::WORKSHOP_CONNECT_METHOD_ID)
++    ) && !matches!(app.auth_start_mode, AuthMode::Command);
++    if opens_picker {
++        return open_connection_picker(app);
++    }
+     let Some(method_id) = app.login_method_id.clone() else {
+         app.auth_state = AuthState::Pending {
+             error: Some(no_login_method_error(app)),
+         };
+         return vec![];
+     };
++    start_interactive_login(app, method_id)
++}
++
++/// Open the Workshop connection picker over the welcome screen. Presence-only scan (PATH, known dirs,
++/// env-var presence): no network, no credential files. Mid-session callers get their view stashed like
++/// a normal login so `ConnectionPickerClose` / `AuthComplete` can restore it.
++fn open_connection_picker(app: &mut AppView) -> Vec<Effect> {
++    if !matches!(app.active_view, ActiveView::Welcome) {
++        app.auth_return_view = Some(app.active_view);
++        show_welcome(app);
++    } else if app.auth_return_view.is_none() {
++        // Cold start / welcome `l`: nothing is connected yet. Mirror upstream's login screen so the
++        // welcome menu stays on "Connect a model or subscription / Quit" and no session auto-starts
++        // (`session_startup_allowed` requires `AuthState::Done`).
++        app.auth_state = AuthState::Pending { error: None };
++    }
++    let scan = workshop_auth::detect::scan(xai_dirs::home_dir().as_deref());
++    app.connection_picker = Some(workshop_auth::picker::ConnectionPicker::new(
++        &scan,
++        xai_dirs::grok_home(),
++    ));
++    vec![]
++}
+ 
++/// Esc in the picker: nothing chosen. The welcome screen keeps its Pending state (menu: Login / Quit);
++/// a mid-session picker returns to the stashed view.
++pub(super) fn dispatch_connection_picker_close(app: &mut AppView) -> Vec<Effect> {
++    app.connection_picker = None;
++    app.pending_full_repaint = true;
++    if let Some(return_view) = app.auth_return_view.take() {
++        restore_auth_return_view(app, return_view);
++    }
++    vec![]
++}
++
++/// The user confirmed the optional xAI card. The agent already runs with the xAI issuer (opt-in marker
++/// was present at startup), so this starts the inherited flow under its `grok.com` wire id, labeled xAI.
++pub(super) fn dispatch_xai_optional_login(app: &mut AppView) -> Vec<Effect> {
++    app.connection_picker = None;
++    app.pending_full_repaint = true;
++    app.login_label = Some(workshop_auth::methods::XAI_OPTIONAL_LABEL.to_string());
++    app.auth_start_mode = AuthMode::Pending;
++    start_interactive_login(
++        app,
++        agent_client_protocol::AuthMethodId::new(
++            xai_grok_shell::agent::auth_method::GROK_COM_METHOD_ID,
++        ),
++    )
++}
++
++/// The upstream login body: show the auth UI, abort any prior attempt, and send `Authenticate` for `method_id`.
++fn start_interactive_login(
++    app: &mut AppView,
++    method_id: agent_client_protocol::AuthMethodId,
++) -> Vec<Effect> {
+     // Show the auth UI when triggered from inside a session
+     // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
+     if !matches!(app.active_view, ActiveView::Welcome) {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
+index dd53b1ae..8c899eee 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
+@@ -1,7 +1,7 @@
+ //! Top-level action router: maps actions and action results to handlers.
+ use super::auth::{
+-    dispatch_cancel_login, dispatch_login, dispatch_logout, dispatch_submit_auth_code,
+-    dispatch_switch_account,
++    dispatch_cancel_login, dispatch_connection_picker_close, dispatch_login, dispatch_logout,
++    dispatch_submit_auth_code, dispatch_switch_account, dispatch_xai_optional_login,
+ };
+ use super::billing::dispatch_open_supergrok_url;
+ use super::ctx::{
+@@ -1223,6 +1223,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
+             vec![]
+         }
+         Action::Login => dispatch_login(app),
++        Action::ConnectionPickerClose => dispatch_connection_picker_close(app),
++        Action::ConnectXaiOptional => dispatch_xai_optional_login(app),
+         Action::CancelLogin => dispatch_cancel_login(app),
+         Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
+         Action::CopyAuthUrl => {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
+index 2bcc8eff..b75b0970 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
+@@ -281,6 +281,8 @@ fn test_app() -> AppView {
+         relaunch: None,
+         import_claude_modal: None,
+         welcome_doc_viewer: None,
++        connection_picker: None,
++        pending_full_repaint: false,
+         screen_mode: crate::app::ScreenMode::Inline,
+         pending_screen_mode_switch: None,
+         pending_effects: Vec::new(),
+diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
+index d2463b6f..32584c37 100644
+--- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
++++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
+@@ -3446,6 +3446,8 @@ async fn drain_and_process(
+             break;
+         }
+     }
++    // A closed connection picker asks for one clear-and-repaint so inline mode drops its cells.
++    let force_repaint = force_repaint || std::mem::take(&mut app.pending_full_repaint);
+     DrainResult {
+         needs_draw,
+         should_quit: false,
+diff --git a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
+index b828a780..ce14a44e 100644
+--- a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
+@@ -556,7 +556,7 @@ pub(super) fn render_version_badge(
+     match &mode {
+         VersionBadgeMode::Full { .. } => {
+             spans.push(Span::styled(
+-                "Grok Build  ",
++                "Workshop  ",
+                 Style::default()
+                     .fg(theme.text_primary)
+                     .add_modifier(Modifier::BOLD),
+@@ -576,7 +576,7 @@ pub(super) fn render_version_badge(
+         }
+         VersionBadgeMode::HeroInline => {
+             spans.push(Span::styled(
+-                "Grok Build  ",
++                "Workshop  ",
+                 Style::default()
+                     .fg(theme.text_primary)
+                     .add_modifier(Modifier::BOLD),
+@@ -791,8 +791,15 @@ pub fn render_welcome(
+ 
+     let mut result = match params.auth_state {
+         AuthState::Pending { error } => {
+-            let label = params.login_label.unwrap_or("grok.com");
+-            let login_text = format!("Login with {}", label);
++            // Workshop: the default interactive method is the connection picker, so the row reads
++            // "Connect a model or subscription"; an operator IdP / external provider keeps "Login with <label>".
++            let login_text = match params.login_label {
++                Some(label) if label == workshop_auth::methods::WORKSHOP_CONNECT_METHOD_NAME => {
++                    label.to_string()
++                }
++                Some(label) => format!("Login with {}", label),
++                None => workshop_auth::methods::WORKSHOP_CONNECT_METHOD_NAME.to_string(),
++            };
+             let menu = [("l", login_text.as_str()), ("q", "Quit")];
+             let msg = error.as_deref().map(|e| (e, theme.accent_error));
+             let info = PromptInfo {
+@@ -845,7 +852,7 @@ pub fn render_welcome(
+                 content_area,
+                 buf,
+                 Some((
+-                    "Grok Build is not yet available for this account.",
++                    "Workshop is not yet available for this account.",
+                     theme.gray_bright,
+                 )),
+                 &menu,
+@@ -1025,7 +1032,7 @@ fn render_welcome_trust(
+         Line::default(),
+         // Two lines so the warning never clips at narrow / compact widths (a single ~78-char line would truncate "...posing security risks")
+         Line::from(Span::styled(
+-            "Grok Build may run or modify contents in this directory,",
++            "Workshop may run or modify contents in this directory,",
+             Style::default().fg(theme.gray),
+         ))
+         .alignment(Alignment::Center),
+@@ -2718,8 +2725,8 @@ mod tests {
+                 "badge must not label the product: {rendered:?}"
+             );
+         }
+-        assert!(full.contains("Grok Build"), "full badge: {full:?}");
+-        assert!(inline.contains("Grok Build"), "inline badge: {inline:?}");
++        assert!(full.contains("Workshop"), "full badge: {full:?}");
++        assert!(inline.contains("Workshop"), "inline badge: {inline:?}");
+         assert!(footer.contains("acme"), "footer keeps the team: {footer:?}");
+         assert!(
+             !footer.ends_with('\u{2502}'),

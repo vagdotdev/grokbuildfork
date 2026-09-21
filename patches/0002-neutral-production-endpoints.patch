@@ -1,0 +1,261 @@
+diff --git a/crates/codegen/xai-grok-env/src/lib.rs b/crates/codegen/xai-grok-env/src/lib.rs
+index 63cce9be..4d3b9574 100644
+--- a/crates/codegen/xai-grok-env/src/lib.rs
++++ b/crates/codegen/xai-grok-env/src/lib.rs
+@@ -17,12 +17,16 @@ pub struct GrokBuildEndpoints {
+     pub gateway_ws_url: &'static str,
+     pub ws_origin: &'static str,
+ }
++/// Workshop: no first-party backend. Every inherited default points at a reserved
++/// `.invalid` host (RFC 6761), so an unconfigured code path fails at DNS instead of
++/// reaching grok.com / x.ai. A configured connection (`[model.*] base_url`) or the
++/// `GROK_PRODUCTION_*` operator overrides replace these. Pinned by workshop-gates gate 3.
+ const PRODUCTION_ENDPOINTS: GrokBuildEndpoints = GrokBuildEndpoints {
+-    cli_chat_proxy_base_url: "https://cli-chat-proxy.grok.com/v1",
+-    asset_server_url: "https://assets.grok.com",
+-    relay_ws_url: "wss://code.grok.com/ws/code-agent",
+-    gateway_ws_url: "wss://grok.com/ws/gw/",
+-    ws_origin: "https://grok.com",
++    cli_chat_proxy_base_url: "https://api.workshop.invalid/v1",
++    asset_server_url: "https://assets.workshop.invalid",
++    relay_ws_url: "wss://relay.workshop.invalid/ws/code-agent",
++    gateway_ws_url: "wss://gateway.workshop.invalid/ws/gw/",
++    ws_origin: "https://workshop.invalid",
+ };
+ pub const PROD_CLI_CHAT_PROXY_BASE_URL: &str = PRODUCTION_ENDPOINTS.cli_chat_proxy_base_url;
+ pub const PROD_ASSET_SERVER_URL: &str = PRODUCTION_ENDPOINTS.asset_server_url;
+diff --git a/crates/codegen/xai-grok-shell-base/src/env.rs b/crates/codegen/xai-grok-shell-base/src/env.rs
+index 21596136..f68e43db 100644
+--- a/crates/codegen/xai-grok-shell-base/src/env.rs
++++ b/crates/codegen/xai-grok-shell-base/src/env.rs
+@@ -13,7 +13,7 @@ pub use xai_grok_env::{
+     PROD_RELAY_WS_URL, PROD_WS_ORIGIN,
+ };
+ /// Public Computer Hub WebSocket URL used by the local-workspace supervisor (`workspace_server --hub-url`) when `agent_config.hub.url` is unset.
+-pub const PROD_COMPUTER_HUB_WS_URL: &str = "wss://computer-hub.grok.com/v1/tools";
++pub const PROD_COMPUTER_HUB_WS_URL: &str = "wss://computer-hub.workshop.invalid/v1/tools";
+ #[cfg(any(test, feature = "test-support"))]
+ pub use xai_grok_env::EnvVarGuard;
+ /// Env var that opts a process into gateway-bridge mode.
+diff --git a/crates/codegen/xai-grok-shell-base/src/util/changelog.rs b/crates/codegen/xai-grok-shell-base/src/util/changelog.rs
+index 8c1e9633..2d2d2b19 100644
+--- a/crates/codegen/xai-grok-shell-base/src/util/changelog.rs
++++ b/crates/codegen/xai-grok-shell-base/src/util/changelog.rs
+@@ -9,8 +9,12 @@
+ 
+ use std::path::PathBuf;
+ 
+-/// CDN base for all changelogs (proxies to GCS, cache-friendly).
+-const CHANGELOG_BASE: &str = "https://x.ai/cli/changelogs";
++/// CDN base for all changelogs. Workshop has no changelog CDN yet: the base is a reserved
++/// `.invalid` placeholder and [`WORKSHOP_CHANGELOG_FETCH_ENABLED`] keeps `fetch()` on the disk
++/// cache only, so cold start never resolves `x.ai` (caught by the hermetic login proof).
++const CHANGELOG_BASE: &str = "https://changelogs.workshop.invalid/cli/changelogs";
++/// Off until a Workshop-owned changelog host exists (milestone F).
++pub const WORKSHOP_CHANGELOG_FETCH_ENABLED: bool = false;
+ const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+ 
+ /// A single structured changelog entry from the published JSON changelog. Shape must match the output of `render_external_json` in `changelog.sh`: `{category, description, breaking_change}`
+@@ -167,7 +171,8 @@ impl ChangelogManager {
+ /// When set, `ChangelogManager::fetch` skips the CDN and only reads disk cache.
+ /// Used by PTY harness tests that seed `CHANGELOG.{md,json}` under a temp home.
+ fn changelog_offline() -> bool {
+-    std::env::var_os("GROK_CHANGELOG_OFFLINE").is_some_and(|v| !v.is_empty() && v != "0")
++    !WORKSHOP_CHANGELOG_FETCH_ENABLED
++        || std::env::var_os("GROK_CHANGELOG_OFFLINE").is_some_and(|v| !v.is_empty() && v != "0")
+ }
+ 
+ fn read_cache(path: &std::path::Path) -> Option<String> {
+diff --git a/crates/codegen/xai-grok-shell-base/src/util/mod.rs b/crates/codegen/xai-grok-shell-base/src/util/mod.rs
+index 7511a050..4376d1ce 100644
+--- a/crates/codegen/xai-grok-shell-base/src/util/mod.rs
++++ b/crates/codegen/xai-grok-shell-base/src/util/mod.rs
+@@ -383,9 +383,10 @@ mod tests {
+     use super::*;
+     #[test]
+     fn test_is_cli_chat_proxy_url_accepts_proxy_subpath() {
+-        assert!(is_cli_chat_proxy_url(
+-            "https://cli-chat-proxy.grok.com/v1/chat/completions"
+-        ));
++        assert!(is_cli_chat_proxy_url(&format!(
++            "{}/chat/completions",
++            crate::env::PROD_CLI_CHAT_PROXY_BASE_URL
++        )));
+     }
+     #[test]
+     fn test_is_cli_chat_proxy_url_rejects_public_api() {
+@@ -396,11 +397,22 @@ mod tests {
+         assert!(!is_cli_chat_proxy_url(
+             "https://cli-chat-proxy.grok.com.evil.example/v1"
+         ));
++        assert!(!is_cli_chat_proxy_url(
++            "https://api.workshop.invalid.evil.example/v1"
++        ));
+     }
+     #[test]
+     fn test_is_cli_chat_proxy_url_rejects_v11_prefix_confusion() {
++        assert!(!is_cli_chat_proxy_url(&format!(
++            "{}1/chat/completions",
++            crate::env::PROD_CLI_CHAT_PROXY_BASE_URL
++        )));
++    }
++    /// Workshop: the inherited xAI proxy host is not trusted as first-party any more.
++    #[test]
++    fn test_is_cli_chat_proxy_url_rejects_inherited_xai_proxy() {
+         assert!(!is_cli_chat_proxy_url(
+-            "https://cli-chat-proxy.grok.com/v11/chat/completions"
++            "https://cli-chat-proxy.grok.com/v1/chat/completions"
+         ));
+     }
+     #[test]
+@@ -408,9 +420,10 @@ mod tests {
+         assert!(is_xai_api_url("https://api.x.ai/v1"));
+         assert!(is_xai_api_url("https://api.x.ai/v1/chat/completions"));
+         assert!(is_xai_api_url("https://x.ai"));
+-        assert!(is_xai_api_url(
+-            "https://cli-chat-proxy.grok.com/v1/chat/completions"
+-        ));
++        assert!(is_xai_api_url(&format!(
++            "{}/chat/completions",
++            crate::env::PROD_CLI_CHAT_PROXY_BASE_URL
++        )));
+         assert!(!is_xai_api_url("https://api.openai.com/v1"));
+         assert!(!is_xai_api_url("https://api.anthropic.com/v1"));
+         assert!(!is_xai_api_url("https://generativelanguage.googleapis.com"));
+diff --git a/crates/codegen/xai-grok-shell/src/agent/config.rs b/crates/codegen/xai-grok-shell/src/agent/config.rs
+index cadd3501..0c24ef8d 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/config.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/config.rs
+@@ -45,8 +45,12 @@ pub const DEFAULT_AGENT_TYPE: &str = "grok-build-plan";
+ pub(crate) fn default_agent_type() -> String {
+     DEFAULT_AGENT_TYPE.to_owned()
+ }
+-pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = "https://cli-chat-proxy.grok.com/v1";
+-pub const XAI_API_BASE_URL_DEFAULT: &str = "https://api.x.ai/v1";
++/// Workshop: the shell-level proxy fallback is the same `.invalid` placeholder as the compiled
++/// production endpoint set, so no auxiliary service reaches grok.com when nothing is configured.
++pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = crate::env::PROD_CLI_CHAT_PROXY_BASE_URL;
++/// Workshop: auxiliary tools (web search, image describe, voice) have no hidden xAI fallback.
++/// This placeholder fails at DNS until a connection or `GROK_XAI_API_BASE_URL` configures a real host.
++pub const XAI_API_BASE_URL_DEFAULT: &str = "https://api.workshop.invalid/v1";
+ const NO_INLINE_CITATIONS_RESPONSE_INCLUDE: &str = "no_inline_citations";
+ /// One or more environment variable names that may hold a model API key.
+ /// Serde `untagged`: accepts a string or an array in TOML/JSON.
+diff --git a/crates/codegen/xai-grok-shell/src/agent/config_tests.rs b/crates/codegen/xai-grok-shell/src/agent/config_tests.rs
+index 756a9691..aba0a9b0 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/config_tests.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/config_tests.rs
+@@ -3201,7 +3201,7 @@ fn e2e_default_model_with_session_routes_to_proxy() {
+     let sampling = resolve_sampling(model, Some("session-token-123"));
+     assert_eq!(sampling.api_key.as_deref(), Some("session-token-123"));
+     assert_eq!(
+-        sampling.base_url, "https://cli-chat-proxy.grok.com/v1",
++        sampling.base_url, CLI_CHAT_PROXY_BASE_URL_DEFAULT,
+         "session auth should route to cli-chat-proxy, not api.x.ai"
+     );
+ }
+@@ -3227,7 +3227,7 @@ fn e2e_user_config_overrides_prefetched_model() {
+     let mut prefetched = IndexMap::new();
+     prefetched.insert(
+         dm.to_string(),
+-        test_model_entry(dm, "https://cli-chat-proxy.grok.com/v1", None, None, None),
++        test_model_entry(dm, CLI_CHAT_PROXY_BASE_URL_DEFAULT, None, None, None),
+     );
+     let (_, models) = resolve_models_from_toml(
+         &format!(
+@@ -3341,7 +3341,7 @@ fn e2e_duplicate_model_field_both_entries_survive() {
+     assert_eq!(sampling.base_url, "https://inference.example.com/v1");
+     let sampling = resolve_sampling(default, Some("session-key"));
+     assert_eq!(sampling.api_key.as_deref(), Some("session-key"));
+-    assert_eq!(sampling.base_url, "https://cli-chat-proxy.grok.com/v1",);
++    assert_eq!(sampling.base_url, CLI_CHAT_PROXY_BASE_URL_DEFAULT,);
+ }
+ #[test]
+ fn e2e_enterprise_custom_endpoint_skips_xai_defaults() {
+@@ -3385,7 +3385,7 @@ fn e2e_acp_model_info_no_dedup_on_model_field() {
+         "default-grok".to_string(),
+         test_model_entry(
+             crate::models::default_model(),
+-            "https://cli-chat-proxy.grok.com/v1",
++            CLI_CHAT_PROXY_BASE_URL_DEFAULT,
+             None,
+             None,
+             Some("https://api.x.ai/v1"),
+diff --git a/crates/codegen/xai-grok-shell/src/remote/client.rs b/crates/codegen/xai-grok-shell/src/remote/client.rs
+index be95f3a8..20352072 100644
+--- a/crates/codegen/xai-grok-shell/src/remote/client.rs
++++ b/crates/codegen/xai-grok-shell/src/remote/client.rs
+@@ -5,9 +5,10 @@ use serde::{Deserialize, Serialize};
+ use std::time::Duration;
+ use xai_grok_login::backend::{ActiveAuthBackend, AuthBackend};
+ use xai_grok_login::{GrokAuth, GrokComConfig};
+-const GROK_CODE_BACKEND_URL: &str = "https://code.grok.com";
++// Workshop: remote share / permissions backend stays off; placeholder fails at DNS (ADR 0004).
++const GROK_CODE_BACKEND_URL: &str = "https://code.workshop.invalid";
+ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+-const GROK_CODE_WEB_URL: &str = "https://grok.com";
++const GROK_CODE_WEB_URL: &str = "https://workshop.invalid";
+ pub fn share_url(permission_id: &str) -> String {
+     let web_url =
+         std::env::var("GROK_CODE_WEB_URL").unwrap_or_else(|_| GROK_CODE_WEB_URL.to_string());
+diff --git a/crates/codegen/xai-grok-shell/src/remote/client_tests.rs b/crates/codegen/xai-grok-shell/src/remote/client_tests.rs
+index 3301d563..954684f1 100644
+--- a/crates/codegen/xai-grok-shell/src/remote/client_tests.rs
++++ b/crates/codegen/xai-grok-shell/src/remote/client_tests.rs
+@@ -818,7 +818,13 @@ fn deployment_config_url_uses_cli_chat_proxy_when_not_overridden() {
+     )
+     .unwrap();
+     let url = EndpointsConfig::from_config_value(&managed).resolve_managed_config_url();
+-    assert_eq!(url, "https://cli-chat-proxy.grok.com/v1/deployment/config");
++    assert_eq!(
++        url,
++        format!(
++            "{}/deployment/config",
++            crate::agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT
++        )
++    );
+     assert!(
+         !url.contains("acme-corp"),
+         "deployment key would be sent to the inference host: {url}"
+diff --git a/crates/codegen/xai-grok-shell/src/remote/model_source/oai.rs b/crates/codegen/xai-grok-shell/src/remote/model_source/oai.rs
+index fdb1e6d9..0af254ff 100644
+--- a/crates/codegen/xai-grok-shell/src/remote/model_source/oai.rs
++++ b/crates/codegen/xai-grok-shell/src/remote/model_source/oai.rs
+@@ -150,10 +150,22 @@ mod tests {
+             .unwrap(),
+         );
+         let session = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::Session);
+-        assert_eq!(session.url, "https://cli-chat-proxy.grok.com/v1/models");
++        assert_eq!(
++            session.url,
++            format!(
++                "{}/models",
++                crate::agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT
++            )
++        );
+         assert_eq!(session.auth, EndpointAuth::Session);
+         let deployment = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::Deployment);
+-        assert_eq!(deployment.url, "https://cli-chat-proxy.grok.com/v1/models");
++        assert_eq!(
++            deployment.url,
++            format!(
++                "{}/models",
++                crate::agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT
++            )
++        );
+         assert_eq!(deployment.auth, EndpointAuth::Session);
+         let api = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::ApiKey);
+         assert_eq!(api.url, "https://inference.acme-corp.example/xai/v1/models");
+diff --git a/crates/codegen/xai-grok-workspace/src/handle.rs b/crates/codegen/xai-grok-workspace/src/handle.rs
+index 60ade535..e7fb774d 100644
+--- a/crates/codegen/xai-grok-workspace/src/handle.rs
++++ b/crates/codegen/xai-grok-workspace/src/handle.rs
+@@ -4290,7 +4290,7 @@ pub(crate) async fn build_local_workspace(
+         ))
+     })?;
+     let api_base_url = std::env::var("GROK_CLI_CHAT_PROXY_BASE_URL")
+-        .unwrap_or_else(|_| "https://cli-chat-proxy.grok.com/v1".to_string());
++        .unwrap_or_else(|_| xai_grok_env::PROD_CLI_CHAT_PROXY_BASE_URL.to_string());
+     let data_collection_disabled =
+         std::env::var("GROK_WORKSPACE_DATA_COLLECTION_DISABLED").as_deref() != Ok("false");
+     let mut factory = host_kind.session_context_factory(auth.clone(), api_base_url.clone());

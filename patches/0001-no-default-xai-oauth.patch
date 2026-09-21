@@ -1,0 +1,491 @@
+diff --git a/crates/codegen/xai-grok-login/Cargo.toml b/crates/codegen/xai-grok-login/Cargo.toml
+index 45d9103b..8c868afd 100644
+--- a/crates/codegen/xai-grok-login/Cargo.toml
++++ b/crates/codegen/xai-grok-login/Cargo.toml
+@@ -51,6 +51,8 @@ url = { workspace = true }
+ urlencoding = { workspace = true }
+ uuid = { workspace = true, features = ["v4", "v7"] }
+ webbrowser = { workspace = true }
++workshop-auth = { workspace = true }
++xai-dirs = { workspace = true }
+ xai-file-utils = { path = "../xai-file-utils" }
+ xai-grok-auth = { workspace = true, features = ["middleware"] }
+ xai-grok-config = { workspace = true }
+diff --git a/crates/codegen/xai-grok-login/src/config.rs b/crates/codegen/xai-grok-login/src/config.rs
+index adc40cd4..4ac643bb 100644
+--- a/crates/codegen/xai-grok-login/src/config.rs
++++ b/crates/codegen/xai-grok-login/src/config.rs
+@@ -238,22 +238,68 @@ impl OAuth2ProviderConfig {
+         self.base_auth_scope()
+     }
+ }
++impl OAuth2ProviderConfig {
++    /// The xAI OAuth2 provider. Workshop constructs this only after the user
++    /// chose the optional xAI card ([`workshop_auth::xai_opt_in`]); it is never
++    /// the cold-start default.
++    pub fn xai_optional() -> Self {
++        Self {
++            issuer: xai_oauth2_issuer().to_owned(),
++            client_id: obfstr::obfstr!("b1a00492-073a-47ea-816f-4c329264a828").to_owned(),
++            scopes: default_oauth2_scopes(),
++            principal_type: None,
++            principal_id: None,
++            referrer: Some(DEFAULT_OAUTH2_REFERRER.to_owned()),
++        }
++    }
++    /// Workshop's cold-start default: a reserved `.invalid` issuer that fails at
++    /// DNS, so no code path can reach `auth.x.ai` without an explicit opt-in or
++    /// an operator `GROK_OAUTH2_*` / `GROK_OIDC_*` override.
++    pub fn workshop_placeholder() -> Self {
++        Self {
++            issuer: workshop_auth::methods::PLACEHOLDER_OAUTH2_ISSUER.to_owned(),
++            client_id: workshop_auth::methods::PLACEHOLDER_OAUTH2_CLIENT_ID.to_owned(),
++            scopes: default_oauth2_scopes(),
++            principal_type: None,
++            principal_id: None,
++            referrer: None,
++        }
++    }
++    /// `true` when this is [`Self::workshop_placeholder`], i.e. no sign-in provider is configured.
++    pub fn is_workshop_placeholder(&self) -> bool {
++        workshop_auth::methods::is_placeholder_issuer(&self.issuer)
++    }
++}
++impl GrokComConfig {
++    /// `true` when interactive sign-in has no real issuer (Workshop default without xAI opt-in).
++    pub fn is_workshop_placeholder(&self) -> bool {
++        self.oidc.is_none()
++            && self
++                .oauth2
++                .as_ref()
++                .is_none_or(OAuth2ProviderConfig::is_workshop_placeholder)
++    }
++}
++/// Whether the user explicitly opted in to the optional xAI connection, read
++/// from the Workshop home each time so a marker written by the picker is seen
++/// by the next `GrokComConfig::default()` (the running auth manager keeps its
++/// own config; the picker tells the user to restart).
++fn workshop_xai_opt_in() -> bool {
++    xai_dirs::resolve_grok_home().is_some_and(|home| workshop_auth::xai_opt_in::is_enabled(&home))
++}
+ impl Default for GrokComConfig {
+     fn default() -> Self {
+         let oidc = OidcAuthConfig::from_env();
+         let oauth2 = if oidc.is_some() {
+             None
+         } else {
+-            Some(
+-                OAuth2ProviderConfig::from_env().unwrap_or_else(|| OAuth2ProviderConfig {
+-                    issuer: xai_oauth2_issuer().to_owned(),
+-                    client_id: obfstr::obfstr!("b1a00492-073a-47ea-816f-4c329264a828").to_owned(),
+-                    scopes: default_oauth2_scopes(),
+-                    principal_type: None,
+-                    principal_id: None,
+-                    referrer: Some(DEFAULT_OAUTH2_REFERRER.to_owned()),
+-                }),
+-            )
++            Some(OAuth2ProviderConfig::from_env().unwrap_or_else(|| {
++                if workshop_xai_opt_in() {
++                    OAuth2ProviderConfig::xai_optional()
++                } else {
++                    OAuth2ProviderConfig::workshop_placeholder()
++                }
++            }))
+         };
+         Self {
+             grok_ws_origin: std::env::var("GROK_WS_ORIGIN")
+@@ -437,6 +483,51 @@ mod tests {
+             ]
+         );
+     }
++    /// Workshop: the xAI issuer is constructed only behind the explicit opt-in marker.
++    #[test]
++    #[serial_test::serial]
++    fn default_issuer_is_placeholder_unless_xai_opted_in() {
++        let home = tempfile::tempdir().unwrap();
++        let prev_home = std::env::var_os("GROK_HOME");
++        let prev_ws = std::env::var_os("WORKSHOP_HOME");
++        let prev_issuer = std::env::var_os("GROK_OAUTH2_ISSUER");
++        let prev_oidc = std::env::var_os("GROK_OIDC_ISSUER");
++        unsafe {
++            std::env::set_var("GROK_HOME", home.path());
++            std::env::set_var("WORKSHOP_HOME", home.path());
++            std::env::remove_var("GROK_OAUTH2_ISSUER");
++            std::env::remove_var("GROK_OIDC_ISSUER");
++        }
++        let cfg = GrokComConfig::default();
++        assert!(cfg.is_workshop_placeholder());
++        assert_eq!(
++            cfg.oauth2.as_ref().map(|o| o.issuer.as_str()),
++            Some(workshop_auth::methods::PLACEHOLDER_OAUTH2_ISSUER)
++        );
++        workshop_auth::xai_opt_in::enable(home.path()).unwrap();
++        let cfg = GrokComConfig::default();
++        assert!(!cfg.is_workshop_placeholder());
++        assert_eq!(
++            cfg.oauth2.as_ref().map(|o| o.issuer.as_str()),
++            Some(XAI_OAUTH2_ISSUER)
++        );
++        unsafe {
++            match prev_home {
++                Some(v) => std::env::set_var("GROK_HOME", v),
++                None => std::env::remove_var("GROK_HOME"),
++            }
++            match prev_ws {
++                Some(v) => std::env::set_var("WORKSHOP_HOME", v),
++                None => std::env::remove_var("WORKSHOP_HOME"),
++            }
++            if let Some(v) = prev_issuer {
++                std::env::set_var("GROK_OAUTH2_ISSUER", v);
++            }
++            if let Some(v) = prev_oidc {
++                std::env::set_var("GROK_OIDC_ISSUER", v);
++            }
++        }
++    }
+     #[test]
+     fn preferred_method_deserializes_from_toml() {
+         let cfg: GrokComConfig = toml::from_str(
+diff --git a/crates/codegen/xai-grok-shell/Cargo.toml b/crates/codegen/xai-grok-shell/Cargo.toml
+index ee66504f..b844d50f 100644
+--- a/crates/codegen/xai-grok-shell/Cargo.toml
++++ b/crates/codegen/xai-grok-shell/Cargo.toml
+@@ -85,6 +85,7 @@ xai-acp-lib = { workspace = true }
+ axum = { workspace = true, features = ["ws", "multipart"] }
+ backon = { workspace = true }
+ webbrowser = { workspace = true }
++workshop-auth = { workspace = true }
+ tokio-tungstenite = { workspace = true, features = ["rustls-tls-native-roots"] }
+ tokio-rustls = { version = "0.26", default-features = false, features = [
+     "ring",
+diff --git a/crates/codegen/xai-grok-shell/src/agent/auth_method.rs b/crates/codegen/xai-grok-shell/src/agent/auth_method.rs
+index b04eeddf..cb8ebe70 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/auth_method.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/auth_method.rs
+@@ -224,8 +224,14 @@ fn push_interactive_login(
+         let issuer = enterprise_oidc_issuer
+             .expect("enterprise_oidc_issuer is required when has_enterprise_oidc is true");
+         methods.push(oidc_auth_method(issuer, login_label));
+-    } else {
++    } else if has_auth_provider_command {
++        // An operator-configured external auth command is deployment config, not xAI;
++        // it still rides the `grok.com` wire id with `external_provider` meta.
+         methods.push(grok_com_auth_method(login_label, has_auth_provider_command));
++    } else {
++        // Workshop: cold start never advertises the xAI `grok.com` flow. The pager
++        // opens the connection picker for this method; the agent fails closed for it.
++        methods.push(workshop_connect_auth_method());
+     }
+ }
+ 
+@@ -236,6 +242,8 @@ pub enum AuthMethodKind {
+     CachedToken,
+     GrokCom,
+     Oidc,
++    /// Workshop connection picker (`workshop.connect`): interactive, not session-based, never a browser flow.
++    WorkshopConnect,
+     Unknown,
+ }
+ 
+@@ -246,6 +254,7 @@ impl AuthMethodKind {
+             CACHED_TOKEN_AUTH_METHOD_ID => Self::CachedToken,
+             GROK_COM_METHOD_ID => Self::GrokCom,
+             OIDC_METHOD_ID => Self::Oidc,
++            WORKSHOP_CONNECT_METHOD_ID => Self::WorkshopConnect,
+             _ => Self::Unknown,
+         }
+     }
+@@ -260,9 +269,9 @@ impl AuthMethodKind {
+         matches!(self, Self::CachedToken | Self::GrokCom | Self::Oidc)
+     }
+ 
+-    /// Requires user interaction (browser, OIDC redirect, or external auth command).
++    /// Requires user interaction (browser, OIDC redirect, external auth command, or the Workshop picker).
+     pub fn needs_interactive_login(self) -> bool {
+-        matches!(self, Self::GrokCom | Self::Oidc)
++        matches!(self, Self::GrokCom | Self::Oidc | Self::WorkshopConnect)
+     }
+ }
+ 
+@@ -299,14 +308,14 @@ pub(crate) fn session_token_auth_gate(
+ }
+ 
+ pub const AUTH_ERROR_SESSION_EXPIRED: &str =
+-    "Session expired. Run `grok login` to re-authenticate.";
++    "Session expired. Open Login (press `l` on the welcome screen) to reconnect.";
+ 
+-pub const AUTH_ERROR_API_KEY: &str = "Authentication failed. Run `grok login`, set XAI_API_KEY, or add api_key to ~/.grok/config.toml.";
++pub const AUTH_ERROR_API_KEY: &str = "Authentication failed. Open Login to connect a model, set XAI_API_KEY, or add api_key to ~/.workshop/config.toml.";
+ 
+ /// Next ACP method id when `cached_token` cannot proceed (missing / expired / legacy WebLogin), or `None` when fallthrough is forbidden.
+-/// Unpinned: prefer non-interactive `xai.api_key` when advertiseable, else interactive `grok.com`. Pinned `oidc`: **no** fallthrough to api_key; return `None` so the caller fails auth.
++/// Unpinned: prefer non-interactive `xai.api_key` when advertiseable, else the Workshop picker (`workshop.connect`), never the xAI browser flow. Pinned `oidc`: **no** fallthrough to api_key; return `None` so the caller fails auth.
+ /// Pinned `api_key` should not reach this path (cached_token is not advertised).
+-pub(crate) fn method_id_after_cached_token_unavailable(
++pub fn method_id_after_cached_token_unavailable(
+     has_external_api_key: bool,
+     preferred_method: Option<PreferredAuthMethod>,
+ ) -> Option<&'static str> {
+@@ -315,7 +324,7 @@ pub(crate) fn method_id_after_cached_token_unavailable(
+         None => Some(if has_external_api_key {
+             XAI_API_KEY_METHOD_ID
+         } else {
+-            GROK_COM_METHOD_ID
++            WORKSHOP_CONNECT_METHOD_ID
+         }),
+     }
+ }
+@@ -325,7 +334,21 @@ pub const PREFERRED_API_KEY_UNAVAILABLE: &str = "preferred_method=api_key but no
+ 
+ /// Error when `preferred_method=oidc` but the session path cannot proceed.
+ pub const PREFERRED_OIDC_UNAVAILABLE: &str =
+-    "preferred_method=oidc but no session is available. Run `grok login` to authenticate.";
++    "preferred_method=oidc but no session is available. Open Login to reconnect.";
++
++/// Workshop's interactive method. Re-exported so call sites read `auth_method::WORKSHOP_CONNECT_METHOD_ID` like the others.
++pub use workshop_auth::methods::WORKSHOP_CONNECT_METHOD_ID;
++pub(crate) fn workshop_connect_auth_method() -> acp::AuthMethod {
++    acp::AuthMethod::Agent(
++        acp::AuthMethodAgent::new(
++            acp::AuthMethodId::new(WORKSHOP_CONNECT_METHOD_ID),
++            workshop_auth::methods::WORKSHOP_CONNECT_METHOD_NAME.to_string(),
++        )
++        .description(Some(
++            workshop_auth::methods::WORKSHOP_CONNECT_METHOD_DESCRIPTION.to_string(),
++        )),
++    )
++}
+ 
+ pub const XAI_API_KEY_METHOD_ID: &str = "xai.api_key";
+ pub(crate) fn xai_api_key_auth_method() -> acp::AuthMethod {
+@@ -347,7 +370,7 @@ pub(crate) fn cached_token_auth_method() -> acp::AuthMethod {
+             acp::AuthMethodId::new(CACHED_TOKEN_AUTH_METHOD_ID),
+             "cached_token".to_string(),
+         )
+-        .description(Some("Cached token from ~/.grok/auth.json".to_string())),
++        .description(Some("Cached token from ~/.workshop/auth.json".to_string())),
+     )
+ }
+ 
+@@ -402,10 +425,14 @@ mod tests {
+         );
+     }
+ 
+-    /// With no advertiseable API-key credentials, fall to interactive `grok.com`.
++    /// With no advertiseable API-key credentials, fall to the Workshop picker, never the xAI browser flow.
+     #[test]
+-    fn after_cached_token_unavailable_falls_to_grok_com_without_api_key() {
++    fn after_cached_token_unavailable_falls_to_workshop_connect_without_api_key() {
+         assert_eq!(
++            method_id_after_cached_token_unavailable(false, None),
++            Some(WORKSHOP_CONNECT_METHOD_ID),
++        );
++        assert_ne!(
+             method_id_after_cached_token_unavailable(false, None),
+             Some(GROK_COM_METHOD_ID),
+         );
+@@ -452,6 +479,12 @@ mod tests {
+         assert!(!is_session_based_method(&acp::AuthMethodId::new(
+             "unknown-method"
+         )));
++        let connect_id = acp::AuthMethodId::new(WORKSHOP_CONNECT_METHOD_ID);
++        let connect_kind = AuthMethodKind::from_id(&connect_id);
++        assert_eq!(connect_kind, AuthMethodKind::WorkshopConnect);
++        assert!(connect_kind.needs_interactive_login());
++        assert!(!connect_kind.is_session_based());
++        assert!(!connect_kind.is_api_key());
+     }
+ 
+     use xai_grok_test_support::EnvGuard;
+@@ -582,15 +615,25 @@ mod tests {
+         );
+     }
+ 
+-    /// Brand-new user (no API key, no cached token): only `grok.com` is advertised, and the pager will (correctly) show the login screen.
+-    /// `default_auth_method_id` is None so the pager falls back to the advertised login method.
++    /// Brand-new user (no API key, no cached token): only the Workshop picker method is advertised, and the pager will (correctly) show the login screen, which opens the picker.
++    /// `default_auth_method_id` is None so nothing auto-runs. `grok.com` must not appear (gate:no-xai).
+     #[test]
+-    fn fresh_user_only_advertises_grok_com_and_requires_login() {
++    fn fresh_user_only_advertises_workshop_connect_and_requires_login() {
+         let built = build_auth_methods(default_inputs());
+ 
+-        assert_eq!(first_kind(&built.methods), Some(AuthMethodKind::GrokCom));
++        assert_eq!(
++            first_kind(&built.methods),
++            Some(AuthMethodKind::WorkshopConnect)
++        );
+         assert!(built.default_auth_method_id.is_none());
+         assert_eq!(built.methods.len(), 1);
++        assert!(
++            !built
++                .methods
++                .iter()
++                .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::GrokCom),
++            "cold start must never advertise the xAI grok.com flow",
++        );
+     }
+ 
+     /// Enterprise OIDC replaces `grok.com` (mutually exclusive).
+@@ -621,6 +664,13 @@ mod tests {
+                 .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::GrokCom),
+             "grok.com and oidc are mutually exclusive",
+         );
++        assert!(
++            !built
++                .methods
++                .iter()
++                .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::WorkshopConnect),
++            "an enterprise IdP replaces the Workshop picker method",
++        );
+     }
+ 
+     /// `has_auth_provider_command` reaches the `grok.com` method as `meta.external_provider = true`.
+@@ -773,7 +823,7 @@ mod tests {
+         );
+         assert_eq!(
+             first_kind(&built.methods),
+-            Some(AuthMethodKind::GrokCom),
++            Some(AuthMethodKind::WorkshopConnect),
+             "with api-key auth disabled and no cached token, the login method \
+              must lead so the pager requires interactive login",
+         );
+@@ -799,7 +849,10 @@ mod tests {
+             has_external_api_key: false,
+             ..default_inputs()
+         });
+-        assert_eq!(first_kind(&built.methods), Some(AuthMethodKind::GrokCom));
++        assert_eq!(
++            first_kind(&built.methods),
++            Some(AuthMethodKind::WorkshopConnect)
++        );
+     }
+ 
+     #[test]
+@@ -976,8 +1029,8 @@ mod tests {
+         });
+         assert_eq!(
+             first_kind(&built.methods),
+-            Some(AuthMethodKind::GrokCom),
+-            "no cached token AND no api key: pager must show login (grok.com first)",
++            Some(AuthMethodKind::WorkshopConnect),
++            "no cached token AND no api key: pager must show login (workshop.connect first)",
+         );
+     }
+ 
+@@ -1017,7 +1070,7 @@ mod tests {
+         });
+         assert_eq!(
+             method_ids(&built),
+-            vec![CACHED_TOKEN_AUTH_METHOD_ID, GROK_COM_METHOD_ID]
++            vec![CACHED_TOKEN_AUTH_METHOD_ID, WORKSHOP_CONNECT_METHOD_ID]
+         );
+         assert_eq!(default_id(&built), Some(CACHED_TOKEN_AUTH_METHOD_ID));
+     }
+@@ -1030,7 +1083,7 @@ mod tests {
+             preferred_method: Some(PreferredAuthMethod::Oidc),
+             ..default_inputs()
+         });
+-        assert_eq!(method_ids(&built), vec![GROK_COM_METHOD_ID]);
++        assert_eq!(method_ids(&built), vec![WORKSHOP_CONNECT_METHOD_ID]);
+         assert!(built.default_auth_method_id.is_none());
+     }
+ }
+diff --git a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs
+index 72ae07f1..78905d4c 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs
+@@ -787,8 +787,33 @@ impl acp::Agent for MvpAgent {
+                 self.spawn_post_auth_settings(auth_for_settings);
+                 Ok(self.auth_response_with_meta())
+             }
++            auth_method::WORKSHOP_CONNECT_METHOD_ID => {
++                // Workshop: the picker is a client-side surface. Reaching the agent with this
++                // method (headless, ACP client, or a dead cached session with no API key)
++                // fails closed instead of opening a browser.
++                emit_login_span(
++                    false,
++                    auth_method::WORKSHOP_CONNECT_METHOD_ID,
++                    None,
++                    Some("no_connection_configured"),
++                );
++                Err(acp::Error::auth_required()
++                    .data(workshop_auth::methods::NO_CONNECTION_ERROR))
++            }
+             auth_method::GROK_COM_METHOD_ID | auth_method::OIDC_METHOD_ID => {
+                 let grok_ctx = self.auth_manager.grok_com_config();
++                if grok_ctx.is_workshop_placeholder() {
++                    // No operator IdP and no xAI opt-in: there is nothing to discover.
++                    // Never let the placeholder issuer (or a stale grok.com request) reach the network.
++                    emit_login_span(
++                        false,
++                        arguments.method_id.0.as_ref(),
++                        None,
++                        Some("no_sign_in_provider"),
++                    );
++                    return Err(acp::Error::auth_required()
++                        .data(workshop_auth::methods::PLACEHOLDER_ISSUER_ERROR));
++                }
+                 let auth_meta = AuthRequestMeta::from_json(arguments.meta.as_ref());
+                 tracing::info!(
+                     method = arguments.method_id.0.as_ref(),
+diff --git a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs
+index c39b38da..178dab34 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs
+@@ -3827,7 +3827,7 @@ async fn cached_token_fallthrough_prefers_api_key_for_deployment_key() {
+ #[tokio::test(flavor = "current_thread")]
+ #[serial_test::serial]
+ async fn cached_token_fallthrough_respects_kill_switch() {
+-    use crate::agent::auth_method::{GROK_COM_METHOD_ID, XAI_API_KEY_ENV_VAR};
++    use crate::agent::auth_method::{WORKSHOP_CONNECT_METHOD_ID, XAI_API_KEY_ENV_VAR};
+     use xai_grok_test_support::EnvGuard;
+     let _lockdown = EnvGuard::unset("GROK_DISABLE_API_KEY_AUTH");
+     let _key = EnvGuard::set(XAI_API_KEY_ENV_VAR, "test-deployment-key");
+@@ -3837,31 +3837,34 @@ async fn cached_token_fallthrough_respects_kill_switch() {
+             .cached_token_fallthrough_method_id()
+             .as_ref()
+             .map(|id| id.0.as_ref()),
+-        Some(GROK_COM_METHOD_ID),
+-        "disable_api_key_auth must keep the cached_token fallthrough on \
+-         interactive grok.com so XAI_API_KEY can't bypass forced IdP login",
++        Some(WORKSHOP_CONNECT_METHOD_ID),
++        "disable_api_key_auth must keep the cached_token fallthrough on the \
++         interactive Workshop method so XAI_API_KEY can't bypass forced IdP login",
+     );
+ }
+-/// No advertiseable credentials at all (no env key, no kill switch): the user genuinely needs to log in.
+-/// The fallthrough is interactive `grok.com`.
++/// No advertiseable credentials at all (no env key, no kill switch): the user genuinely needs to connect something.
++/// The fallthrough is the Workshop picker method, never the xAI `grok.com` browser flow (gate:no-xai).
+ #[tokio::test(flavor = "current_thread")]
+ #[serial_test::serial]
+-async fn cached_token_fallthrough_falls_to_grok_com_without_credentials() {
++async fn cached_token_fallthrough_falls_to_workshop_connect_without_credentials() {
+     use crate::agent::auth_method::{
+-        GROK_COM_METHOD_ID, LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR,
++        GROK_COM_METHOD_ID, LEGACY_XAI_API_KEY_ENV_VAR, WORKSHOP_CONNECT_METHOD_ID,
++        XAI_API_KEY_ENV_VAR,
+     };
+     use xai_grok_test_support::EnvGuard;
+     let _lockdown = EnvGuard::unset("GROK_DISABLE_API_KEY_AUTH");
+     let _new = EnvGuard::unset(XAI_API_KEY_ENV_VAR);
+     let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
+     let agent = build_minimal_agent_for_tests();
++    let fallthrough = agent.cached_token_fallthrough_method_id();
+     assert_eq!(
+-        agent
+-            .cached_token_fallthrough_method_id()
+-            .as_ref()
+-            .map(|id| id.0.as_ref()),
++        fallthrough.as_ref().map(|id| id.0.as_ref()),
++        Some(WORKSHOP_CONNECT_METHOD_ID),
++        "no API-key creds and no kill switch -> Workshop connection picker",
++    );
++    assert_ne!(
++        fallthrough.as_ref().map(|id| id.0.as_ref()),
+         Some(GROK_COM_METHOD_ID),
+-        "no API-key creds and no kill switch -> interactive grok.com login",
+     );
+ }
+ /// Verifies the 4-state matrix of `(disable_zdr_incompatible_tools, zdr_video_output_s3)`: | ZDR flag | S3 config | Result | |----------|-----------|---------------------------------------------| | false | None | Enabled, no S3 (normal non-ZDR mode) | | true | None | Disabled (ZDR with no escape hatch) | | false | Some | Enabled, S3 **not** threaded (non-ZDR) | | true | Some | Enabled, S3 threaded (ZDR with upload path) |
