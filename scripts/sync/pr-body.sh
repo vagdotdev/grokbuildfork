@@ -129,8 +129,16 @@ status_cell() { # STATUS
   fi
 
   if [[ -s "$R/security-review.txt" ]]; then
-    printf '### Security review required\n\nUpstream changed %s file(s) on `scripts/sync/security-review-paths.txt` (login / OIDC / endpoints / updater / paths / telemetry). Treat this sync as a security review, not a routine refresh (conflict policy rule 7):\n\n' "$(n_lines "$R/security-review.txt")"
-    sed 's/^/- `/; s/$/`/' "$R/security-review.txt"
+    n_sec=$(n_lines "$R/security-review.txt")
+    printf '### Security review required\n\nUpstream changed %s file(s) on `scripts/sync/security-review-paths.txt` (login / OIDC / endpoints / updater / paths / telemetry). Treat this sync as a security review, not a routine refresh (conflict policy rule 7):\n\n' "$n_sec"
+    if (( n_sec > 15 )); then
+      head -n 15 "$R/security-review.txt" | sed 's/^/- `/; s/$/`/'
+      printf '\n<details><summary>%s more</summary>\n\n' "$((n_sec - 15))"
+      tail -n +16 "$R/security-review.txt" | sed 's/^/- `/; s/$/`/'
+      printf '\n</details>\n'
+    else
+      sed 's/^/- `/; s/$/`/' "$R/security-review.txt"
+    fi
     printf '\n'
   fi
 
@@ -196,7 +204,8 @@ status_cell() { # STATUS
   printf -- '- %s overlay file(s) restored from `%s` (patterns: %s)\n' "${OVERLAY_FILE_COUNT:-0}" "${BASE_BRANCH:-$(short_sha "${BASE_SHA:-}")}" "$(paste -sd' ' "$R/overlay-patterns.txt" 2>/dev/null | sed 's/[^ ]*/`&`/g')"
   printf -- '- overlay collisions: %s\n' "${OVERLAY_COLLISION_COUNT:-0}"
   if [[ -s "$R/overlay-collisions.txt" ]]; then sed 's/^/  - `/; s/$/`/' "$R/overlay-collisions.txt"; fi
-  printf -- '- stale files dropped: %s\n' "${DROPPED_FILE_COUNT:-0}"
+  printf -- '- files deleted upstream (routine): %s\n' "${UPSTREAM_DELETED_COUNT:-0}"
+  printf -- '- stale files dropped (neither upstream nor overlay): %s\n' "${DROPPED_FILE_COUNT:-0}"
   if [[ -s "$R/dropped-files.txt" ]]; then
     printf '\n<details><summary>Dropped files (in the base branch, not upstream, not overlay)</summary>\n\n```\n'
     head -n 100 "$R/dropped-files.txt"; printf '```\n</details>\n'

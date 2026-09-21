@@ -87,12 +87,13 @@ path_matches_any() {
   return 1
 }
 
-# filter_matching PATTERN-FILE... reads paths on stdin, prints those matching.
+# filter_paths PATTERN... reads paths on stdin, prints those matching.
 filter_paths() { # filter_paths PATTERN...
   local p
   while IFS= read -r p; do
-    path_matches_any "$p" "$@" && printf '%s\n' "$p"
+    if path_matches_any "$p" "$@"; then printf '%s\n' "$p"; fi
   done
+  return 0
 }
 
 # ---------------------------------------------------------------------------
