@@ -1,0 +1,20 @@
+# Upstream paths whose change turns a sync PR into a security review
+# (docs/upstream-sync.md, conflict policy rule 7). One path prefix or glob per
+# line. These are the files the no-xAI gates patch or depend on: login/OIDC,
+# auth dispatch, production endpoints, updater, home paths, default models,
+# telemetry.
+crates/codegen/xai-grok-login
+crates/codegen/xai-grok-auth
+crates/codegen/xai-grok-shell/src/agent/auth_method.rs
+crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs
+crates/codegen/xai-grok-shell/src/credential_factory.rs
+crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
+crates/codegen/xai-grok-pager/src/slash/commands/login.rs
+crates/codegen/xai-grok-pager/src/provider_autodock.rs
+crates/codegen/xai-grok-env
+crates/codegen/xai-grok-update
+crates/codegen/xai-grok-paths
+crates/codegen/xai-grok-models/default_models.json
+crates/codegen/xai-grok-telemetry
+crates/codegen/xai-mixpanel
+crates/codegen/xai-grok-secrets

@@ -1,0 +1,125 @@
+# Daily pull of the public xai-org/grok-build snapshot. Replaces the
+# upstream-owned tree, replays patches/series, refreshes upstream-lock.toml,
+# builds pager-bin + overlay crates, runs the no-xAI / no-theft gates and opens
+# a sync PR. It never merges: a failed gate patch, build or gate suite opens a
+# red draft PR for a human. Policy and local usage: docs/upstream-sync.md.
+name: sync-upstream
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Upstream ref or commit to sync
+        type: string
+        default: main
+      force:
+        description: Run even if upstream did not move; recreate the sync branch and update its PR
+        type: boolean
+        default: false
+      skip_verify:
+        description: Skip cargo check and the gate suites (replay only; PR is a draft)
+        type: boolean
+        default: false
+
+# The PR is opened with SYNC_PR_TOKEN when present (fine-grained PAT or GitHub
+# App token scoped to this repo: contents + pull-requests write). With the
+# default GITHUB_TOKEN the PR still opens, but pushes made with it do not
+# trigger ci.yml, so the required `no-xai` check would never run on it.
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  PROTOC_VERSION: "29.3"
+  # sha256 of protoc-29.3-linux-x86_64.zip, same digest bin/protoc (dotslash) pins.
+  PROTOC_SHA256: 3e866620c5be27664f3d2fa2d656b5f3e09b5152b42f1bedbf427b333e90021a
+
+jobs:
+  sync:
+    name: sync grok-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the import commit gets the upstream commit as second
+          # parent and `git apply --3way` needs the pre-image blobs.
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_PR_TOKEN || github.token }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "workshop-sync[bot]"
+          git config user.email "workshop-sync@users.noreply.github.com"
+
+      - name: Install protoc ${{ env.PROTOC_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/protoc.zip" \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          echo "${PROTOC_SHA256}  $RUNNER_TEMP/protoc.zip" | sha256sum -c -
+          unzip -q -o "$RUNNER_TEMP/protoc.zip" -d "$RUNNER_TEMP/protoc"
+          sudo install -m 0755 "$RUNNER_TEMP/protoc/bin/protoc" /usr/local/bin/protoc
+          sudo mkdir -p /usr/local/include
+          sudo cp -r "$RUNNER_TEMP/protoc/include/google" /usr/local/include/
+          protoc --version
+          echo "PROTOC=/usr/local/bin/protoc" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: sync-upstream
+          # Only the scheduled/default-branch runs refresh the cache.
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+      - name: Fetch upstream, replace tree, replay patches, verify, open PR
+        id: sync
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PR_TOKEN || github.token }}
+          SYNC_REPORT_DIR: ${{ runner.temp }}/workshop-sync-report
+          INPUT_UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
+          INPUT_FORCE: ${{ inputs.force || 'false' }}
+          INPUT_SKIP_VERIFY: ${{ inputs.skip_verify || 'false' }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          args=(--pr create --base "$BASE_BRANCH" --ref "$INPUT_UPSTREAM_REF")
+          [ "$INPUT_FORCE" = "true" ] && args+=(--force)
+          [ "$INPUT_SKIP_VERIFY" = "true" ] && args+=(--no-verify)
+          scripts/sync/run.sh "${args[@]}"
+
+      - name: Job summary
+        if: always()
+        env:
+          SYNC_REPORT_DIR: ${{ runner.temp }}/workshop-sync-report
+          OUTCOME: ${{ steps.sync.outputs.outcome }}
+          PR_URL: ${{ steps.sync.outputs.pr_url }}
+          UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
+        run: |
+          {
+            echo "## sync-upstream: ${OUTCOME:-failed before verdict}"
+            [ -n "$PR_URL" ] && echo "PR: $PR_URL"
+            [ -n "$UPSTREAM_SHA" ] && echo "upstream: \`$UPSTREAM_SHA\`"
+            echo
+            if [ -f "$SYNC_REPORT_DIR/pr-body.md" ]; then cat "$SYNC_REPORT_DIR/pr-body.md"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: sync-report-${{ github.run_id }}
+          path: ${{ runner.temp }}/workshop-sync-report
+          if-no-files-found: ignore
+          retention-days: 30
