@@ -9,18 +9,19 @@ use ratatui::widgets::{Paragraph, Widget};
 use crate::render::color::blend_color;
 use crate::theme::Theme;
 
-const LOGO: &str = workshop_brand::PORTRAIT;
-const LOGO_SMALL: &str = workshop_brand::PORTRAIT_COMPACT;
-
 /// Height at or above which the small logo is shown (below it, no logo).
 const SMALL_LOGO_MIN_HEIGHT: u16 = 22;
 /// Height at or above which the full logo is shown.
 const FULL_LOGO_MIN_HEIGHT: u16 = 26;
+/// Height at or above which the 2x art is shown, when the brand art set carries one (it is 7 rows taller than the full logo).
+const LARGE_LOGO_MIN_HEIGHT: u16 = 33;
 
 /// Which logo art the stacked column shows.
 /// The terminal height picks the tier; the stacked layout steps it down only while the column would not fit beside the draft.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogoTier {
+    /// The 2x art; only reachable while [`workshop_brand::HeroArt::large`] is set.
+    Large,
     Full,
     Compact,
     Hidden,
@@ -28,24 +29,28 @@ pub enum LogoTier {
 
 impl LogoTier {
     pub fn for_height(window_height: u16) -> Self {
-        Self::for_height_and_hidden(window_height, logo_hidden())
+        Self::for_height_and_hidden(window_height, logo_hidden(), large_enabled())
     }
 
-    /// Takes the legacy-console flag as a parameter so tests can drive it directly.
-    fn for_height_and_hidden(window_height: u16, hidden: bool) -> Self {
+    /// Takes the legacy-console and 2x flags as parameters so tests can drive them directly.
+    fn for_height_and_hidden(window_height: u16, hidden: bool, large: bool) -> Self {
         if hidden || window_height < SMALL_LOGO_MIN_HEIGHT {
             Self::Hidden
         } else if window_height < FULL_LOGO_MIN_HEIGHT {
             Self::Compact
+        } else if large && window_height >= LARGE_LOGO_MIN_HEIGHT {
+            Self::Large
         } else {
             Self::Full
         }
     }
 
     fn art(self) -> Option<&'static str> {
+        let art = workshop_brand::hero_art();
         match self {
-            Self::Full => Some(LOGO),
-            Self::Compact => Some(LOGO_SMALL),
+            Self::Large => art.large,
+            Self::Full => Some(art.full),
+            Self::Compact => Some(art.compact),
             Self::Hidden => None,
         }
     }
@@ -54,9 +59,15 @@ impl LogoTier {
         self.art().map_or(0, count_lines)
     }
 
+    /// Columns the art spans; 0 when the tier paints nothing.
+    pub fn visual_width(self) -> u16 {
+        self.art().map_or(0, visual_width)
+    }
+
     /// The next smaller tier; `None` once hidden.
     pub fn step_down(self) -> Option<Self> {
         match self {
+            Self::Large => Some(Self::Full),
             Self::Full => Some(Self::Compact),
             Self::Compact => Some(Self::Hidden),
             Self::Hidden => None,
@@ -64,12 +75,26 @@ impl LogoTier {
     }
 }
 
+/// Tiers the hero box tries in order, tallest first; each must fit the box before the next is considered.
+/// Hidden is not a candidate: on a legacy console the full tier already paints nothing and spans 0 columns.
+pub fn hero_logo_tiers() -> &'static [LogoTier] {
+    if large_enabled() && !logo_hidden() {
+        &[LogoTier::Large, LogoTier::Full]
+    } else {
+        &[LogoTier::Full]
+    }
+}
+
+fn large_enabled() -> bool {
+    workshop_brand::hero_art().large.is_some()
+}
+
 fn pick_logo(window_height: u16) -> Option<&'static str> {
     pick_logo_for(window_height, logo_hidden())
 }
 
 fn pick_logo_for(window_height: u16, hidden: bool) -> Option<&'static str> {
-    LogoTier::for_height_and_hidden(window_height, hidden).art()
+    LogoTier::for_height_and_hidden(window_height, hidden, large_enabled()).art()
 }
 
 /// The braille art has no ASCII stand-in; see the module doc.
@@ -210,37 +235,12 @@ pub fn render_logo_tier(area: Rect, buf: &mut Buffer, theme: &Theme, tier: LogoT
     }
 }
 
-/// The hero box always shows the full logo: it is laid out beside the menu, so it fits whenever the box does.
-/// These report and render that logo directly, independent of the height-based [`pick_logo`] tiers used by the stacked layout.
-/// When [`logo_hidden`], they report 0 and render nothing.
-pub fn full_logo_line_count() -> u16 {
-    full_logo_line_count_for(logo_hidden())
-}
-
-fn full_logo_line_count_for(hidden: bool) -> u16 {
-    if hidden { 0 } else { count_lines(LOGO) }
-}
-
-pub fn full_logo_visual_width() -> u16 {
-    full_logo_visual_width_for(logo_hidden())
-}
-
-fn full_logo_visual_width_for(hidden: bool) -> u16 {
-    if hidden { 0 } else { visual_width(LOGO) }
-}
-
-pub fn render_full_logo(area: Rect, buf: &mut Buffer, theme: &Theme) {
-    if !logo_hidden() {
-        render_into(area, buf, theme, LOGO);
-    }
-}
-
 /// Line count of the small logo used in minimal's committed welcome card (0 on a legacy Windows console, where the braille art is suppressed).
 pub fn compact_logo_line_count() -> u16 {
     if logo_hidden() {
         0
     } else {
-        count_lines(LOGO_SMALL)
+        LogoTier::Compact.rows()
     }
 }
 
@@ -248,7 +248,7 @@ pub fn compact_logo_line_count() -> u16 {
 /// No-op when the logo is hidden.
 pub fn render_compact_logo(area: Rect, buf: &mut Buffer, theme: &Theme) {
     if !logo_hidden() {
-        render_into(area, buf, theme, LOGO_SMALL);
+        render_logo_tier(area, buf, theme, LogoTier::Compact);
     }
 }
 
@@ -256,49 +256,102 @@ pub fn render_compact_logo(area: Rect, buf: &mut Buffer, theme: &Theme) {
 mod tests {
     use super::*;
 
+    fn tier_for(window_height: u16, hidden: bool, large: bool) -> LogoTier {
+        LogoTier::for_height_and_hidden(window_height, hidden, large)
+    }
+
     #[test]
     fn logo_sizes_by_height() {
-        assert!(pick_logo_for(SMALL_LOGO_MIN_HEIGHT - 1, false).is_none());
         assert_eq!(
-            pick_logo_for(SMALL_LOGO_MIN_HEIGHT, false),
-            Some(LOGO_SMALL)
+            tier_for(SMALL_LOGO_MIN_HEIGHT - 1, false, false),
+            LogoTier::Hidden
         );
         assert_eq!(
-            pick_logo_for(FULL_LOGO_MIN_HEIGHT - 1, false),
-            Some(LOGO_SMALL)
+            tier_for(SMALL_LOGO_MIN_HEIGHT, false, false),
+            LogoTier::Compact
         );
-        assert_eq!(pick_logo_for(FULL_LOGO_MIN_HEIGHT, false), Some(LOGO));
+        assert_eq!(
+            tier_for(FULL_LOGO_MIN_HEIGHT - 1, false, false),
+            LogoTier::Compact
+        );
+        assert_eq!(tier_for(FULL_LOGO_MIN_HEIGHT, false, false), LogoTier::Full);
+        // Without a 2x art set the chain tops out at the full logo, however tall the terminal
+        assert_eq!(
+            tier_for(LARGE_LOGO_MIN_HEIGHT, false, false),
+            LogoTier::Full
+        );
+        assert_eq!(tier_for(u16::MAX, false, false), LogoTier::Full);
+    }
+
+    #[test]
+    fn large_tier_needs_the_2x_art_and_the_height() {
+        assert_eq!(
+            tier_for(LARGE_LOGO_MIN_HEIGHT - 1, false, true),
+            LogoTier::Full
+        );
+        assert_eq!(
+            tier_for(LARGE_LOGO_MIN_HEIGHT, false, true),
+            LogoTier::Large
+        );
+        // Stepping down walks the whole chain, so an overflowing column lands on the same tiers as before
+        assert_eq!(LogoTier::Large.step_down(), Some(LogoTier::Full));
+        assert_eq!(LogoTier::Full.step_down(), Some(LogoTier::Compact));
+        assert_eq!(LogoTier::Compact.step_down(), Some(LogoTier::Hidden));
+        assert_eq!(LogoTier::Hidden.step_down(), None);
     }
 
     // The braille art has no legacy-safe stand-in, so every height tier must collapse to no logo when the legacy-console flag is set
     #[test]
     fn logo_hidden_on_legacy_console_at_every_height() {
-        for h in [0, SMALL_LOGO_MIN_HEIGHT, FULL_LOGO_MIN_HEIGHT, u16::MAX] {
+        for h in [
+            0,
+            SMALL_LOGO_MIN_HEIGHT,
+            FULL_LOGO_MIN_HEIGHT,
+            LARGE_LOGO_MIN_HEIGHT,
+            u16::MAX,
+        ] {
+            assert_eq!(tier_for(h, true, true), LogoTier::Hidden, "height {h}");
             assert!(pick_logo_for(h, true).is_none(), "height {h}");
         }
     }
 
     #[test]
-    fn hero_box_always_uses_full_logo() {
-        // The box renders the full logo regardless of height (it's laid out beside the menu), and it's the large variant, never the small one
-        assert_eq!(full_logo_line_count_for(false), count_lines(LOGO));
-        assert_eq!(full_logo_visual_width_for(false), visual_width(LOGO));
-        assert!(full_logo_line_count_for(false) > count_lines(LOGO_SMALL));
-        assert!(full_logo_visual_width_for(false) > visual_width(LOGO_SMALL));
+    fn tiers_shrink_down_the_chain() {
+        // The hero box lays the art beside the menu, so each tier must be strictly smaller than the one above it in both axes
+        if logo_hidden() {
+            return;
+        }
+        assert!(LogoTier::Full.rows() > LogoTier::Compact.rows());
+        assert!(LogoTier::Full.visual_width() > LogoTier::Compact.visual_width());
+        assert_eq!(LogoTier::Hidden.rows(), 0);
+        assert_eq!(LogoTier::Hidden.visual_width(), 0);
+        if let Some(large) = workshop_brand::hero_art().large {
+            assert_eq!(LogoTier::Large.rows(), count_lines(large));
+            assert!(LogoTier::Large.rows() > LogoTier::Full.rows());
+            assert!(LogoTier::Large.visual_width() > LogoTier::Full.visual_width());
+        } else {
+            assert_eq!(LogoTier::Large.rows(), 0);
+        }
     }
 
     #[test]
-    fn full_logo_helpers_collapse_when_hidden() {
-        assert_eq!(full_logo_line_count_for(true), 0);
-        assert_eq!(full_logo_visual_width_for(true), 0);
+    fn hero_tiers_try_the_tallest_art_first_and_end_on_full() {
+        let tiers = hero_logo_tiers();
+        assert_eq!(tiers.last(), Some(&LogoTier::Full));
+        assert!(!tiers.contains(&LogoTier::Compact));
+        assert!(!tiers.contains(&LogoTier::Hidden));
+        assert_eq!(
+            tiers.contains(&LogoTier::Large),
+            large_enabled() && !logo_hidden()
+        );
     }
 
     #[test]
     fn compact_logo_line_count_matches_small_logo_when_visible() {
         // The minimal welcome card budgets exactly the small logo's rows
         if !logo_hidden() {
-            assert_eq!(compact_logo_line_count(), count_lines(LOGO_SMALL));
-            assert!(compact_logo_line_count() < count_lines(LOGO));
+            assert_eq!(compact_logo_line_count(), LogoTier::Compact.rows());
+            assert!(compact_logo_line_count() < LogoTier::Full.rows());
             assert!(compact_logo_line_count() > 0);
         } else {
             assert_eq!(compact_logo_line_count(), 0);

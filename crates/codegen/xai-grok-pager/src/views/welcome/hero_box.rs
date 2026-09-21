@@ -42,16 +42,18 @@ fn right_col_height(menu_height: u16, info_height: u16) -> u16 {
     1 + subtitle_rows(info_height) + info_gap + info_height + 1 + menu_height
 }
 
-/// Minimum content-area height the hero box needs to render without truncating.
+/// Minimum content-area height the hero box needs to render without truncating with `logo` as its art.
 /// That covers the optional error row, the box, a one-row flex gap, and the fixed rows below (tip + prompt + version).
-/// The box always shows the full-height logo, so a terminal shorter than this falls back to the stacked layout instead of overflowing.
+/// The box shows the whole logo tier, so a terminal shorter than this steps down to the next tier or the stacked layout instead of overflowing.
 pub(super) fn min_content_height(
     input: &WelcomeLayoutInput<'_>,
     info_height: u16,
     prompt_height: u16,
+    logo: LogoTier,
 ) -> u16 {
-    let inner =
-        super::logo::full_logo_line_count().max(right_col_height(input.menu_height, info_height));
+    let inner = logo
+        .rows()
+        .max(right_col_height(input.menu_height, info_height));
     let hero_box_height = 2 + V_PAD * 2 + inner;
     let gap_after_error = if input.error_height > 0 { 1u16 } else { 0 };
     gap_after_error
@@ -64,17 +66,22 @@ pub(super) fn min_content_height(
 /// Largest in-box info-slot height, at most `desired`, for which the hero box still fits beside a one-line prompt.
 /// Lets the expanded announcement grow without ever pushing the box past the fit gate.
 /// The renderer trails a `…` for whatever tail still doesn't fit, so the fallback never overflows.
-fn clamp_info_height(desired: u16, input: &WelcomeLayoutInput<'_>, one_line_prompt: u16) -> u16 {
+fn clamp_info_height(
+    desired: u16,
+    input: &WelcomeLayoutInput<'_>,
+    one_line_prompt: u16,
+    logo: LogoTier,
+) -> u16 {
     (0..=desired)
         .rev()
-        .find(|&h| input.content_area.height >= min_content_height(input, h, one_line_prompt))
+        .find(|&h| input.content_area.height >= min_content_height(input, h, one_line_prompt, logo))
         .unwrap_or(0)
 }
 
 /// Width (cols) of the hero box's left (logo) column, including padding.
 /// Collapses to a small inset when the logo is hidden.
-fn left_col_width() -> u16 {
-    let logo_width = super::logo::full_logo_visual_width();
+fn left_col_width(logo: LogoTier) -> u16 {
+    let logo_width = logo.visual_width();
     if logo_width == 0 {
         H_INSET
     } else {
@@ -82,9 +89,16 @@ fn left_col_width() -> u16 {
     }
 }
 
+/// The box takes the tallest logo tier it can fit, tallest first; the full logo is the last candidate.
 /// A taller draft never reflows the slot: when the box no longer fits beside it, this returns
 /// `None` and the caller falls back to the stacked layout.
 pub(super) fn compute_hero_box(input: &WelcomeLayoutInput<'_>) -> Option<WelcomeLayout> {
+    super::logo::hero_logo_tiers()
+        .iter()
+        .find_map(|&logo| compute_hero_box_with(input, logo))
+}
+
+fn compute_hero_box_with(input: &WelcomeLayoutInput<'_>, logo: LogoTier) -> Option<WelcomeLayout> {
     let content_area = input.content_area;
     let error_height = input.error_height;
     let menu_height = input.menu_height;
@@ -99,7 +113,7 @@ pub(super) fn compute_hero_box(input: &WelcomeLayoutInput<'_>) -> Option<Welcome
     // `hero_info.width == info_slot_width`, so the measured width is the drawn width
     let box_width = content_area.width.saturating_sub(6).min(120);
     let inner_width = box_width.saturating_sub(2);
-    let left_col_width = left_col_width();
+    let left_col_width = left_col_width(logo);
     let right_width = inner_width.saturating_sub(left_col_width);
     let info_slot_width = right_width.saturating_sub(H_INSET);
     let info_height = match input.announcement {
@@ -107,14 +121,15 @@ pub(super) fn compute_hero_box(input: &WelcomeLayoutInput<'_>) -> Option<Welcome
             announcement_desired_rows(ann, info_slot_width, input.expanded, input.has_upgrade_cta),
             input,
             one_line_prompt,
+            logo,
         ),
         None => input.changelog_height,
     };
-    if content_area.height < min_content_height(input, info_height, prompt_height) {
+    if content_area.height < min_content_height(input, info_height, prompt_height, logo) {
         return None;
     }
 
-    let logo_rows = super::logo::full_logo_line_count();
+    let logo_rows = logo.rows();
     let info_gap = if info_height > 0 { 1u16 } else { 0 };
     let inner_height = logo_rows.max(right_col_height(menu_height, info_height));
     let hero_box_height = 2 + V_PAD * 2 + inner_height;
@@ -183,7 +198,7 @@ pub(super) fn compute_hero_box(input: &WelcomeLayoutInput<'_>) -> Option<Welcome
     };
 
     // Left column: balanced padding around the logo; collapses to a small inset when the logo is hidden
-    let logo_width = super::logo::full_logo_visual_width();
+    let logo_width = logo.visual_width();
     // Logo body leans right; shave a column off the left pad to optically center.
     let logo_left_pad = LOGO_H_PAD.saturating_sub(1);
 
@@ -256,8 +271,8 @@ pub(super) fn compute_hero_box(input: &WelcomeLayoutInput<'_>) -> Option<Welcome
         hero_subtitle,
         hero_info,
         hero_menu,
-        // The box paints the full logo through `render_hero_box`; the stacked `logo` rect is empty
-        logo_tier: LogoTier::Hidden,
+        // The tier the box reserved `hero_logo` rows for; `render_hero_box` paints it there (the stacked `logo` rect is empty)
+        logo_tier: logo,
     })
 }
 
@@ -306,7 +321,7 @@ pub(super) fn render_hero_box(
         .border_style(Style::default().fg(border_color));
     border_block.render(layout.hero_box, buf);
 
-    super::logo::render_full_logo(layout.hero_logo, buf, theme);
+    super::logo::render_logo_tier(layout.hero_logo, buf, theme, layout.logo_tier);
 
     super::render_version_badge(
         layout.hero_version,

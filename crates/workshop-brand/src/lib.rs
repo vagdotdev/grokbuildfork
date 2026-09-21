@@ -10,16 +10,55 @@
 
 use std::sync::OnceLock;
 
-/// Hero portrait at the upstream full logo's grid: 7 rows x 14 cols (28 x 28 dots).
-pub const PORTRAIT: &str = include_str!("../assets/portrait-7x14.txt");
+/// Head-and-shoulders bust at the upstream full logo's grid: 7 rows x 14 cols (28 x 28 dots).
+pub const BUST_7X14: &str = include_str!("../assets/portrait-7x14.txt");
 
-/// Compact portrait at the upstream small logo's grid: 5 rows x 10 cols (20 x 20 dots).
-pub const PORTRAIT_COMPACT: &str = include_str!("../assets/portrait-5x10.txt");
+/// Bust at the upstream small logo's grid: 5 rows x 10 cols (20 x 20 dots).
+pub const BUST_5X10: &str = include_str!("../assets/portrait-5x10.txt");
 
-/// 2x portrait: 14 rows x 28 cols (56 x 56 dots). Not wired by default: the hero box grows by
-/// 7 rows with it, so the side-by-side layout needs a terminal of roughly 27+ rows before
-/// the welcome screen falls back to the stacked layout.
-pub const PORTRAIT_2X: &str = include_str!("../assets/portrait-14x28.txt");
+/// 2x bust: 14 rows x 28 cols (56 x 56 dots). Only shown by a `-2x` art set: the hero box grows
+/// by 7 rows with it, so the side-by-side layout needs roughly 27 terminal rows.
+pub const BUST_14X28: &str = include_str!("../assets/portrait-14x28.txt");
+
+/// One art family at the welcome logo tiers.
+pub struct HeroArt {
+    /// 2x tier (14 x 28), tried first when the terminal is tall enough; `None` keeps the upstream tier chain.
+    pub large: Option<&'static str>,
+    /// Full tier (7 x 14), the upstream hero logo grid.
+    pub full: &'static str,
+    /// Compact tier (5 x 10), the upstream small logo grid.
+    pub compact: &'static str,
+}
+
+/// The bust, 1x only (the default).
+pub const BUST: HeroArt = HeroArt {
+    large: None,
+    full: BUST_7X14,
+    compact: BUST_5X10,
+};
+
+/// The bust with the 2x tier enabled.
+pub const BUST_2X: HeroArt = HeroArt {
+    large: Some(BUST_14X28),
+    ..BUST
+};
+
+/// Environment variable that picks the art set for a launch: `bust`, `bust-2x`.
+/// Anything else is the default, [`BUST`].
+pub const HERO_ART_ENV: &str = "WORKSHOP_HERO_ART";
+
+/// The art set for this launch, resolved once from [`HERO_ART_ENV`].
+pub fn hero_art() -> &'static HeroArt {
+    static ART: OnceLock<&'static HeroArt> = OnceLock::new();
+    ART.get_or_init(|| hero_art_named(std::env::var(HERO_ART_ENV).ok().as_deref()))
+}
+
+fn hero_art_named(name: Option<&str>) -> &'static HeroArt {
+    match name.map(str::trim) {
+        Some("bust-2x") => &BUST_2X,
+        _ => &BUST,
+    }
+}
 
 /// The hero titles; one is picked per launch.
 pub const TITLES: [&str; 2] = ["Vagdev's Workshop", "Workshop by Vagdev"];
@@ -89,9 +128,26 @@ mod tests {
 
     #[test]
     fn portraits_match_the_upstream_logo_grids() {
-        assert_grid(PORTRAIT, 7, 14);
-        assert_grid(PORTRAIT_COMPACT, 5, 10);
-        assert_grid(PORTRAIT_2X, 14, 28);
+        for art in [&BUST, &BUST_2X] {
+            assert_grid(art.full, 7, 14);
+            assert_grid(art.compact, 5, 10);
+            if let Some(large) = art.large {
+                assert_grid(large, 14, 28);
+            }
+        }
+    }
+
+    #[test]
+    fn art_sets_default_to_the_1x_bust() {
+        for name in [None, Some(""), Some("bust"), Some("nonsense")] {
+            let art = hero_art_named(name);
+            assert!(art.large.is_none(), "{name:?}");
+            assert_eq!(art.full, BUST_7X14, "{name:?}");
+        }
+        let two_x = hero_art_named(Some(" bust-2x "));
+        assert_eq!(two_x.large, Some(BUST_14X28));
+        assert_eq!(two_x.full, BUST_7X14);
+        assert_eq!(two_x.compact, BUST_5X10);
     }
 
     #[test]
@@ -122,7 +178,7 @@ mod tests {
             "\u{28FF}\u{2800}\u{28FE}"
         );
         assert_eq!(invert("a\n"), "a\n");
-        assert_eq!(invert(&invert(PORTRAIT)), PORTRAIT);
-        assert_grid(&invert(PORTRAIT), 7, 14);
+        assert_eq!(invert(&invert(BUST_7X14)), BUST_7X14);
+        assert_grid(&invert(BUST_7X14), 7, 14);
     }
 }
