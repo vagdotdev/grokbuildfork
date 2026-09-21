@@ -75,7 +75,7 @@ index adc40cd4..bcebf0cc 100644
          Self {
              grok_ws_origin: std::env::var("GROK_WS_ORIGIN")
 diff --git a/crates/codegen/xai-grok-login/src/flow.rs b/crates/codegen/xai-grok-login/src/flow.rs
-index 4607a00d..c0eb3153 100644
+index 4607a00d..fa2bb8a2 100644
 --- a/crates/codegen/xai-grok-login/src/flow.rs
 +++ b/crates/codegen/xai-grok-login/src/flow.rs
 @@ -1391,7 +1391,8 @@ mod tests {
@@ -88,3 +88,55 @@ index 4607a00d..c0eb3153 100644
          assert!(xai.oauth2.is_some() && xai.oidc.is_none());
          assert!(cli_should_use_device(&xai, None, LoginTransportOverride::ForceDevice, "").await);
      }
+@@ -1554,12 +1555,13 @@ mod tests {
+     }
+     #[test]
+     fn weblogin_cred_is_never_compatible() {
+-        let cfg = GrokComConfig::default();
++        // Against a configured (opted-in xAI) provider a legacy WebLogin credential has no issuer to match.
++        let cfg = GrokComConfig::default().with_xai_first_party_oauth2();
+         assert!(!is_cached_credential_compatible(&legacy_auth(), &cfg));
+     }
+     #[test]
+     fn oidc_cred_with_matching_issuer_is_compatible() {
+-        let cfg = GrokComConfig::default();
++        let cfg = GrokComConfig::default().with_xai_first_party_oauth2();
+         assert!(is_cached_credential_compatible(
+             &oidc_auth(XAI_OAUTH2_ISSUER),
+             &cfg,
+@@ -1567,7 +1569,7 @@ mod tests {
+     }
+     #[test]
+     fn external_cred_compatibility_follows_issuer() {
+-        let cfg = GrokComConfig::default();
++        let cfg = GrokComConfig::default().with_xai_first_party_oauth2();
+         assert!(is_cached_credential_compatible(
+             &GrokAuth {
+                 auth_mode: AuthMode::External,
+@@ -1747,7 +1749,7 @@ mod tests {
+     #[tokio::test]
+     async fn run_auth_flow_falls_through_when_no_refresh_token() {
+         let dir = tempfile::tempdir().unwrap();
+-        let mut cfg = GrokComConfig::default();
++        let mut cfg = GrokComConfig::default().with_xai_first_party_oauth2();
+         cfg.oauth2.as_mut().unwrap().issuer = "http://127.0.0.1:1".into();
+         let writer = Arc::new(
+             AuthManager::new(dir.path(), cfg.clone()).with_proxy_base_url("http://127.0.0.1:1"),
+diff --git a/crates/codegen/xai-grok-login/src/manager_tests.rs b/crates/codegen/xai-grok-login/src/manager_tests.rs
+index 236358bb..e785913e 100644
+--- a/crates/codegen/xai-grok-login/src/manager_tests.rs
++++ b/crates/codegen/xai-grok-login/src/manager_tests.rs
+@@ -155,7 +155,13 @@ fn has_usable_token_covers_memory_and_disk() {
+ }
+ #[test]
+ fn auth_scope_uses_oauth2_when_present() {
++    // Workshop: the xAI provider is attached only on explicit opt-in; the default scope is neutral.
+     let cfg = GrokComConfig::default();
++    assert_eq!(
++        cfg.auth_scope(),
++        crate::config::WORKSHOP_NO_PROVIDER_AUTH_SCOPE
++    );
++    let cfg = cfg.with_xai_first_party_oauth2();
+     assert_eq!(
+         cfg.auth_scope(),
+         format!(
