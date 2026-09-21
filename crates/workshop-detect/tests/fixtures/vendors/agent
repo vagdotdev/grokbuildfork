@@ -1,0 +1,21 @@
+#!/bin/sh
+# Fake Cursor Agent CLI for Workshop detection tests.
+# Output shapes copied from Cursor Agent 2026.09.18-9a7762b (`agent --version`, `agent status --format json`).
+[ -n "$FAKE_CLI_STATE_DIR" ] && { echo "cursor $*" >> "$FAKE_CLI_STATE_DIR/calls.cursor"; env > "$FAKE_CLI_STATE_DIR/env.cursor"; }
+case "$1" in
+  --version|-v) echo "2026.09.18-9a7762b"; exit 0 ;;
+  --help|-h)
+    echo "Usage: agent [options] [command] [prompt...]"
+    echo
+    echo "Start the Cursor Agent"
+    exit 0 ;;
+  status|whoami)
+    case "${FAKE_LOGIN_CURSOR:-out}" in
+      in) printf '{\n  "status": "authenticated",\n  "isAuthenticated": true,\n  "hasAccessToken": true,\n  "hasRefreshToken": true,\n  "message": "Logged in"\n}\n'; exit 0 ;;
+      garbage) echo "Logged in as someone"; exit 0 ;;
+      *) printf '{\n  "status": "unauthenticated",\n  "isAuthenticated": false,\n  "hasAccessToken": false,\n  "hasRefreshToken": false,\n  "message": "Not logged in"\n}\n'; exit 0 ;;
+    esac ;;
+  login) echo "fake cursor login"; exit 0 ;;
+esac
+echo "fake cursor-agent: unsupported args: $*" >&2
+exit 64

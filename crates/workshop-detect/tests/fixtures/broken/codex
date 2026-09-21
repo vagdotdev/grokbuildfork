@@ -1,0 +1,4 @@
+#!/bin/sh
+# A codex binary whose --version fails (corrupt install).
+echo "error: failed to start" >&2
+exit 2

@@ -1,0 +1,7 @@
+#!/bin/sh
+# An unrelated program that happens to be called `agent`. It is NOT Cursor.
+case "$1" in
+  --version|-v) echo "agent 1.0.0"; exit 0 ;;
+  --help|-h) echo "Usage: agent [options]"; echo; echo "A generic task runner"; exit 0 ;;
+esac
+exit 0
