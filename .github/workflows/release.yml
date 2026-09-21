@@ -1,0 +1,325 @@
+# Workshop release pipeline.
+#
+# Trigger: push a tag `v<semver>`.  v1.2.3 -> stable channel; v1.2.3-alpha.1 (any
+# prerelease) -> alpha channel + GitHub pre-release.  `workflow_dispatch` runs the
+# same build/checksum/smoke pipeline as a dry run and publishes nothing.
+#
+# Outputs: a GitHub Release on $WORKSHOP_RELEASE_REPO with
+#   workshop-<version>-<platform>.tar.gz  (linux/macos x86_64/aarch64; windows best-effort)
+#   SHA256SUMS
+#   GitHub artifact attestations (SLSA provenance) when the repo is public
+# and an updated channel manifest on the `release-channel` branch, consumed by
+# scripts/install.sh and the in-app updater.
+#
+# Signing: none beyond attestations (decision: no Apple Developer ID / notarization;
+# install.sh clears the macOS quarantine attribute instead).
+#
+# Configuration (Settings -> Secrets and variables -> Actions):
+#   variable WORKSHOP_RELEASE_REPO   OWNER/NAME hosting releases + release-channel branch.
+#                                    Defaults to this repository. Point it at the future
+#                                    public repo when releases move there.
+#   secret   WORKSHOP_RELEASE_TOKEN  Required only when WORKSHOP_RELEASE_REPO is another
+#                                    repo: a token with contents:write on that repo.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  WORKSHOP_RELEASE_REPO: ${{ vars.WORKSHOP_RELEASE_REPO || github.repository }}
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  meta:
+    name: Release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.info.outputs.version }}
+      tag: ${{ steps.info.outputs.tag }}
+      channel: ${{ steps.info.outputs.channel }}
+      prerelease: ${{ steps.info.outputs.prerelease }}
+      publish: ${{ steps.info.outputs.publish }}
+      release_repo: ${{ env.WORKSHOP_RELEASE_REPO }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Derive version and channel
+        id: info
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="$GITHUB_REF_NAME"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            # Dry run: version from the pager-bin manifest plus a prerelease suffix, never published.
+            base=$(grep -m1 '^version' crates/codegen/xai-grok-pager-bin/Cargo.toml | cut -d'"' -f2)
+            tag="v${base}-dryrun.${{ github.run_number }}"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+          scripts/release/tag-info.sh "$tag" | tee -a "$GITHUB_OUTPUT"
+          echo "release repo: $WORKSHOP_RELEASE_REPO"
+
+  lint:
+    name: Lint release scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          shellcheck -s sh scripts/install.sh
+          shellcheck -x scripts/release/*.sh
+      - name: No xAI / Grok distribution URLs in the pipeline
+        run: |
+          # Bracketed characters keep this line from matching itself.
+          if grep -rEn 'x\.ai|grok\.com|@xai[-]official|grok-build-public[-]artifacts' \
+              .github/workflows/release.yml scripts/install.sh scripts/release/; then
+            echo "::error::xAI/Grok distribution URLs are forbidden in Workshop release files"
+            exit 1
+          fi
+      - name: Validate manifest schema is JSON
+        run: jq -e '.["$schema"]' scripts/release/channel-manifest.schema.json
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: [meta, lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04 # oldest supported image -> widest glibc compatibility
+            required: true
+          - platform: linux-aarch64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+            required: true
+          - platform: macos-aarch64
+            target: aarch64-apple-darwin
+            runner: macos-15
+            required: true
+          - platform: macos-x86_64
+            target: x86_64-apple-darwin
+            runner: macos-15-intel
+            required: true
+          - platform: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            required: false # best-effort: never blocks a release
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ !matrix.required }}
+    env:
+      # xai-grok-version stamps this into the binary (`workshop --version`, updater
+      # comparisons). Both names so the tree works before and after the branding patch.
+      GROK_VERSION: ${{ needs.meta.outputs.version }}
+      WORKSHOP_VERSION: ${{ needs.meta.outputs.version }}
+      # Hardened `release-dist` profile from Cargo.toml (thin LTO, codegen-units=1),
+      # stripped for distribution. The `release-dist` *cargo feature* is deliberately
+      # not enabled: it wires remote-settings behaviour Workshop does not ship.
+      CARGO_PROFILE_RELEASE_DIST_STRIP: symbols
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc (same version as bin/protoc's DotSlash pin)
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "29.3"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Point the build at protoc
+        shell: bash
+        run: echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+
+      - name: Install NASM (aws-lc-sys on Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+          rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.platform }}
+
+      - name: Build workshop
+        shell: bash
+        run: cargo build --locked --profile release-dist -p xai-grok-pager-bin --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          scripts/release/package.sh \
+            --version "${{ needs.meta.outputs.version }}" \
+            --platform "${{ matrix.platform }}" \
+            --target-dir "target/${{ matrix.target }}/release-dist" \
+            --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  checksums:
+    name: Checksums and attestations
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      attested: ${{ steps.attested.outputs.attested }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: SHA256SUMS
+        run: |
+          scripts/release/checksums.sh dist
+          scripts/release/checksums.sh --check dist
+
+      # GitHub artifact attestations (Sigstore-signed SLSA provenance) are free on public
+      # repos only; private repos need Enterprise Cloud. Skipped, not faked, while private.
+      - name: Attest build provenance
+        id: attest
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/workshop-*.tar.gz
+            dist/SHA256SUMS
+      - id: attested
+        run: |
+          if [ "${{ steps.attest.outcome }}" = "success" ]; then
+            echo "attested=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "attested=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::artifact attestations skipped (private repository)"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  smoke:
+    name: Install smoke (${{ matrix.runner }})
+    needs: [meta, checksums]
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+      - name: install.sh against a local mirror of the release assets
+        run: |
+          scripts/release/smoke-install.sh \
+            --dist dist \
+            --version "${{ needs.meta.outputs.version }}" \
+            --channel "${{ needs.meta.outputs.channel }}" \
+            --repo "$WORKSHOP_RELEASE_REPO"
+
+  publish:
+    name: Publish GitHub Release
+    needs: [meta, checksums, smoke]
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.WORKSHOP_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+      - name: Check credentials for a cross-repo release
+        if: needs.meta.outputs.release_repo != github.repository
+        run: |
+          if [ -z "${{ secrets.WORKSHOP_RELEASE_TOKEN }}" ]; then
+            echo "::error::WORKSHOP_RELEASE_REPO=${{ needs.meta.outputs.release_repo }} differs from this repo; set secret WORKSHOP_RELEASE_TOKEN (contents:write there)"
+            exit 1
+          fi
+      - name: Release notes
+        run: |
+          scripts/release/release-notes.sh \
+            --version "${{ needs.meta.outputs.version }}" \
+            --tag "${{ needs.meta.outputs.tag }}" \
+            --channel "${{ needs.meta.outputs.channel }}" \
+            --repo "${{ needs.meta.outputs.release_repo }}" \
+            --dist dist \
+            --attested "${{ needs.checksums.outputs.attested }}" > notes.md
+          cat notes.md
+      - name: Create or refresh the release
+        run: |
+          scripts/release/publish-release.sh \
+            --tag "${{ needs.meta.outputs.tag }}" \
+            --version "${{ needs.meta.outputs.version }}" \
+            --channel "${{ needs.meta.outputs.channel }}" \
+            --repo "${{ needs.meta.outputs.release_repo }}" \
+            --source-repo "${{ github.repository }}" \
+            --dist dist \
+            --notes notes.md
+
+  channel:
+    name: Update release-channel manifest
+    needs: [meta, checksums, publish]
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    # Serialize manifest pushes across concurrently published tags.
+    concurrency:
+      group: release-channel-${{ vars.WORKSHOP_RELEASE_REPO || github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.WORKSHOP_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+      - name: Regenerate manifests and push the release-channel branch
+        run: |
+          scripts/release/publish-channel.sh \
+            --version "${{ needs.meta.outputs.version }}" \
+            --tag "${{ needs.meta.outputs.tag }}" \
+            --channel "${{ needs.meta.outputs.channel }}" \
+            --repo "${{ needs.meta.outputs.release_repo }}" \
+            --dist dist \
+            --attested "${{ needs.checksums.outputs.attested }}"
+      - name: Summary
+        run: |
+          {
+            echo "## Workshop ${{ needs.meta.outputs.version }} (${{ needs.meta.outputs.channel }})"
+            echo
+            echo "- Release: https://github.com/${{ needs.meta.outputs.release_repo }}/releases/tag/${{ needs.meta.outputs.tag }}"
+            echo "- Manifest: https://raw.githubusercontent.com/${{ needs.meta.outputs.release_repo }}/release-channel/${{ needs.meta.outputs.channel }}.json"
+            echo "- Install: \`curl -fsSL https://raw.githubusercontent.com/${{ needs.meta.outputs.release_repo }}/release-channel/install.sh | sh\`"
+            echo "- Attested: ${{ needs.checksums.outputs.attested }}"
+          } >> "$GITHUB_STEP_SUMMARY"
