@@ -28,6 +28,16 @@ for light themes):
         --levels 0 1 --gamma 0.75 --strength 1.0 --method fs --keep-bg --bg-scale 0.85 \
         --shade-thresholds 0.3 0.55 --out ../assets/portrait-21x42.txt \
         --shade-out ../assets/portrait-21x42.shade.txt
+    # 2a''. second photo (1179x2293, seated on lit stairs; crop x=120 y=500 side=1000): the stairs
+    #       dimmed to 60% so the side-lit face dominates, a touch of local contrast for the profile
+    python3 dotart.py photo2.jpg --mask mask2.png --crop 120 500 1000 --rows 14 --cols 28 \
+        --levels 0 1 --gamma 0.65 --strength 1.0 --method fs --keep-bg --bg-scale 0.6 \
+        --local 0.6 --local-div 12 --shade-thresholds 0.3 0.55 \
+        --out ../assets/portrait2-14x28.txt --shade-out ../assets/portrait2-14x28.shade.txt
+    python3 dotart.py photo2.jpg --mask mask2.png --crop 120 500 1000 --rows 7  --cols 14 \
+        --levels 0.10 0.45 --strength 0.5 --out ../assets/portrait2-7x14.txt
+    python3 dotart.py photo2.jpg --mask mask2.png --crop 120 500 1000 --rows 5  --cols 10 \
+        --levels 0.10 0.45 --strength 0.4 --out ../assets/portrait2-5x10.txt
     # 2b. face (passport crop x=555 y=215 side=210, background empty, features sharpened)
     python3 dotart.py photo.jpg --mask mask.png --crop 555 215 210 --rows 7  --cols 14 --bg 0 \
         --levels 0.20 0.50 --strength 0.4 --local 1.5 --local-div 12 --out ../assets/face-7x14.txt
