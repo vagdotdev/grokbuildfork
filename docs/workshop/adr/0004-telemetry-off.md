@@ -31,4 +31,10 @@ Status: accepted (M0/A). Owner: Workshop.
 `scripts/no-xai-scan.sh --binary target/debug/workshop` counts the forbidden strings in the built
 binary against `scripts/no-xai-binary-baseline.txt`; the CI `no-egress` smoke runs the binary in a
 network namespace with a logging proxy and fails on any `*.x.ai` / `*.grok.com` /
-`api.mixpanel.com` / `storage.googleapis.com` request.
+`api.mixpanel.com` / `storage.googleapis.com` request. `scripts/hermetic-login-proof.sh` is the
+interactive counterpart for a human-driven session: mount-namespaced `/etc/resolv.conf` pointing at
+a logging DNS stub (every hostname the process tries to resolve is recorded), `strace -f` on
+`connect`/`openat`/`execve`, decoy foreign-credential files, and a verdict file. It is how the
+inherited changelog CDN fetch of `x.ai` and the computer-hub / remote-share literals were found.
+Telemetry's `GROK_TELEMETRY_BUILD_*` compile-time layer is inert in code (patch 0012), so a release
+cannot carry a baked sink even if the build host sets those variables.
