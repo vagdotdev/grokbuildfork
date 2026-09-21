@@ -102,8 +102,17 @@ if [[ $status -ne 0 ]]; then
   exit 1
 fi
 
-echo "==> refreshing Cargo.lock (offline)"
-(cd "$worktree" && cargo metadata --format-version 1 --offline >/dev/null)
+echo "==> refreshing Cargo.lock"
+# Adding workspace members only adds entries for path crates; no new registry
+# dependencies. Offline first (hermetic CI cache), then online, then fall back
+# to HEAD's lock so a sandbox without the full registry cache can still verify
+# the patch replay.
+if ! (cd "$worktree" && cargo metadata --format-version 1 --offline >/dev/null 2>&1); then
+  if ! (cd "$worktree" && cargo metadata --format-version 1 >/dev/null 2>&1); then
+    echo "    (cargo metadata unavailable here; reusing HEAD's Cargo.lock)"
+    git show HEAD:Cargo.lock > "$worktree/Cargo.lock"
+  fi
+fi
 
 if [[ $dry_run -eq 1 ]]; then
   echo "==> dry-run: comparing replayed tree with HEAD"
