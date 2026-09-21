@@ -495,6 +495,16 @@ pub(super) fn handle_auth_complete(
         app.welcome_prompt_focused = !app.is_access_blocked();
         app.auth_code_input.reset();
 
+        // Workshop: a Direct API / Local activation started from the connection picker has now
+        // reloaded the model and authenticated; hand the user back to the home prompt.
+        if let Some(picker) = app.connection_picker.take() {
+            let label = picker
+                .selected_row()
+                .map(|r| r.title())
+                .unwrap_or_else(|| "model".to_owned());
+            app.show_toast(&format!("Connected: {label}"));
+        }
+
         // Mid-session re-auth (`/login` or a 401 prompt): restore the view the user was on instead of running the startup load-session flow
         // The session state lives in `app.agents`, independent of `active_view`, so it is preserved across the auth detour
         if let Some(return_view) = app.auth_return_view.take() {

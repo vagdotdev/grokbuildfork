@@ -99,7 +99,7 @@ pub fn model_table(spec: &ModelEntrySpec) -> toml::Table {
 }
 
 /// Merge `spec` into the TOML document at `path` under `[model.<key>]`, set top-level
-/// `default = "<key>"`, and write it back atomically (0600). Other tables are untouched.
+/// `[models] default = "<key>"`, and write it back atomically (0600). Other tables are untouched.
 /// Returns the config key.
 pub fn activate_model(path: &Path, spec: &ModelEntrySpec) -> Result<String, ConfigWriteError> {
     let display = path.display().to_string();
@@ -131,7 +131,17 @@ pub fn activate_model(path: &Path, spec: &ModelEntrySpec) -> Result<String, Conf
     if let Some(models) = models.as_table_mut() {
         models.insert(key.clone(), toml::Value::Table(model_table(spec)));
     }
-    doc.insert("default".into(), toml::Value::String(key.clone()));
+    // The shell's active model is `[models] default` (`ModelsConfig::default`), which
+    // `x.ai/internal/reload_models` re-reads; a top-level `default` key is not consulted.
+    let models_cfg = doc
+        .entry("models")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    if !models_cfg.is_table() {
+        *models_cfg = toml::Value::Table(toml::Table::new());
+    }
+    if let Some(models_cfg) = models_cfg.as_table_mut() {
+        models_cfg.insert("default".into(), toml::Value::String(key.clone()));
+    }
     let rendered = toml::to_string_pretty(&doc).unwrap_or_else(|_| doc.to_string());
     let header =
         "# Written by the Workshop connection picker (/auth). Secrets are never stored here.\n";
@@ -179,7 +189,12 @@ mod tests {
         let key = activate_model(&path, &spec).unwrap();
         assert_eq!(key, "kilo-kilo-auto-free");
         let doc: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
-        assert_eq!(doc["default"].as_str(), Some("kilo-kilo-auto-free"));
+        assert_eq!(
+            doc["models"]["default"].as_str(),
+            Some("kilo-kilo-auto-free"),
+            "the shell reads [models] default, not a top-level key"
+        );
+        assert!(doc.get("default").is_none());
         let m = &doc["model"]["kilo-kilo-auto-free"];
         assert_eq!(m["model"].as_str(), Some("kilo-auto/free"));
         assert_eq!(

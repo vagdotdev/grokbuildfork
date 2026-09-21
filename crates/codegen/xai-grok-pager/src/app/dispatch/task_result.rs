@@ -1200,6 +1200,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             } = &app.auth_state
                 && *current_seq == request_seq
             {
+                // Workshop: an activation started from the open connection picker failed; say so
+                // in the picker instead of leaving "Connecting…" on screen.
+                if let Some(picker) = app.connection_picker.as_mut() {
+                    picker.set_status(format!("Could not connect: {error}"));
+                }
                 app.auth_state = AuthState::Pending { error: Some(error) };
                 app.auth_code_input.reset();
             }

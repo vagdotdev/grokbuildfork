@@ -317,7 +317,7 @@ index 87f63aef..3dcc57a5 100644
          Self::parse_from(std::iter::once(bin_name).chain(std::env::args().skip(1)))
      }
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
-index 3b578a9d..a31c2222 100644
+index 3b578a9d..cb5b600f 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 @@ -10,6 +10,7 @@ use crate::app::agent_view::AgentView;
@@ -555,6 +555,23 @@ index 3b578a9d..a31c2222 100644
      restore_auth_return_view(app, return_view);
      // This runs on all agents because the login may have been started from the dashboard
      // Clearing the stash alone is not enough
+@@ -318,6 +495,16 @@ pub(super) fn handle_auth_complete(
+         app.welcome_prompt_focused = !app.is_access_blocked();
+         app.auth_code_input.reset();
+ 
++        // Workshop: a Direct API / Local activation started from the connection picker has now
++        // reloaded the model and authenticated; hand the user back to the home prompt.
++        if let Some(picker) = app.connection_picker.take() {
++            let label = picker
++                .selected_row()
++                .map(|r| r.title())
++                .unwrap_or_else(|| "model".to_owned());
++            app.show_toast(&format!("Connected: {label}"));
++        }
++
+         // Mid-session re-auth (`/login` or a 401 prompt): restore the view the user was on instead of running the startup load-session flow
+         // The session state lives in `app.agents`, independent of `active_view`, so it is preserved across the auth detour
+         if let Some(return_view) = app.auth_return_view.take() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
 index dd53b1ae..f85ecdab 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
@@ -579,7 +596,7 @@ index dd53b1ae..f85ecdab 100644
          Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
          Action::CopyAuthUrl => {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
-index ce9c0603..6faa4f4f 100644
+index ce9c0603..7e343f14 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 @@ -980,6 +980,53 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
@@ -636,6 +653,18 @@ index ce9c0603..6faa4f4f 100644
          TaskResult::ChangelogFetched { markdown, entries } => {
              app.changelog_markdown = markdown;
              app.changelog_bullets =
+@@ -1153,6 +1200,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+             } = &app.auth_state
+                 && *current_seq == request_seq
+             {
++                // Workshop: an activation started from the open connection picker failed; say so
++                // in the picker instead of leaving "Connecting…" on screen.
++                if let Some(picker) = app.connection_picker.as_mut() {
++                    picker.set_status(format!("Could not connect: {error}"));
++                }
+                 app.auth_state = AuthState::Pending { error: Some(error) };
+                 app.auth_code_input.reset();
+             }
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 index 495bb46e..131e086e 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
