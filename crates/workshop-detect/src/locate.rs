@@ -188,7 +188,7 @@ pub fn locate(vendor: Vendor, cfg: &DetectConfig) -> Vec<Candidate> {
                 if !is_executable_file(&path) {
                     continue;
                 }
-                let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                let canonical = dunce::canonicalize(&path).unwrap_or_else(|_| path.clone());
                 if seen.insert(canonical) {
                     out.push(Candidate { path, name, source });
                 }

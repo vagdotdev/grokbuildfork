@@ -81,6 +81,10 @@ pub fn run(
         cmd.process_group(0);
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "probe child is its own process group, waited on with a hard timeout, and killed by group on expiry"
+    )]
     let mut child = cmd.spawn().map_err(|e| RunError::Spawn(label.clone(), e))?;
     let stdout = drain(child.stdout.take().expect("stdout piped"));
     let stderr = drain(child.stderr.take().expect("stderr piped"));

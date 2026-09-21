@@ -6,6 +6,7 @@ license.workspace = true
 description = "Workshop overlay: detect official coding-agent CLIs (Claude Code, Codex, Cursor Agent, OpenCode) and their login state without touching vendor credentials"
 
 [dependencies]
+dunce = { workspace = true }
 libc = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
