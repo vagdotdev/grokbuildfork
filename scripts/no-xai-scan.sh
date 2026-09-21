@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Workshop no-xAI / no-theft scan. Exit non-zero on any violation.
 #
+#   scripts/no-xai-scan.sh                           sources, plus the built binary when target/{debug,release}/workshop exists
 #   scripts/no-xai-scan.sh --sources                 scan default-path sources (fast; runs on every PR)
 #   scripts/no-xai-scan.sh --binary target/debug/workshop
 #                                                    count forbidden strings in the built binary and compare
@@ -149,6 +150,13 @@ scan_binary() {
 case "${1:-}" in
   --sources) scan_sources ;;
   --binary) scan_binary "${2:?binary path}" "${3:-}" ;;
+  "")
+    # Bare invocation (scripts/sync/verify.sh): sources always; the binary when a build is present.
+    scan_sources
+    for bin in target/debug/workshop target/release/workshop; do
+      if [ -f "$bin" ]; then scan_binary "$bin"; break; fi
+    done
+    ;;
   *) sed -n '2,13p' "$0"; exit 64 ;;
 esac
 [ "$fail" = 0 ] && { echo "no-xai-scan: PASS"; exit 0; } || { echo "no-xai-scan: FAIL" >&2; exit 1; }
