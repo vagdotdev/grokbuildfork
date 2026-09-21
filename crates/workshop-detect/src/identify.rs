@@ -55,11 +55,16 @@ fn cursor_version_re() -> &'static Regex {
 
 fn semver_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^v?\d+\.\d+\.\d+(?:[-+.][0-9A-Za-z.-]+)?$").expect("valid regex"))
+    RE.get_or_init(|| {
+        Regex::new(r"^v?\d+\.\d+\.\d+(?:[-+.][0-9A-Za-z.-]+)?$").expect("valid regex")
+    })
 }
 
 fn first_line(s: &str) -> &str {
-    s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim()
+    s.lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
 }
 
 /// Parse `--version` output for `vendor`. Returns the version token, or `None` when the output does
@@ -71,7 +76,9 @@ pub fn version_from_output(vendor: Vendor, version_output: &str) -> Option<Strin
         Vendor::Claude => {
             // "2.1.278 (Claude Code)"
             let (ver, rest) = line.split_once(' ')?;
-            rest.trim().eq_ignore_ascii_case("(Claude Code)").then(|| ver.to_string())
+            rest.trim()
+                .eq_ignore_ascii_case("(Claude Code)")
+                .then(|| ver.to_string())
         }
         Vendor::Codex => {
             // "codex-cli 0.155.1"
@@ -90,7 +97,9 @@ pub fn help_matches(vendor: Vendor, help_output: &str) -> bool {
     match vendor {
         Vendor::Claude | Vendor::Codex => true,
         Vendor::Cursor => help.contains("Cursor Agent"),
-        Vendor::OpenCode => help.lines().any(|l| l.trim_start().starts_with("opencode ")),
+        Vendor::OpenCode => help
+            .lines()
+            .any(|l| l.trim_start().starts_with("opencode ")),
     }
 }
 
@@ -98,7 +107,12 @@ fn needs_help_signal(vendor: Vendor) -> bool {
     matches!(vendor, Vendor::Cursor | Vendor::OpenCode)
 }
 
-fn run_probe(path: &Path, args: &[&str], cfg: &DetectConfig, env: &[(OsString, OsString)]) -> Result<ChildOutput, IdentifyError> {
+fn run_probe(
+    path: &Path,
+    args: &[&str],
+    cfg: &DetectConfig,
+    env: &[(OsString, OsString)],
+) -> Result<ChildOutput, IdentifyError> {
     process::run(path, args, None, env, cfg.timeout).map_err(|e| IdentifyError::Unrunnable {
         path: path.to_path_buf(),
         reason: e.to_string(),
@@ -106,14 +120,20 @@ fn run_probe(path: &Path, args: &[&str], cfg: &DetectConfig, env: &[(OsString, O
 }
 
 /// Run `path --version` (and `--help` where needed) and confirm the binary is `vendor`.
-pub fn identify(vendor: Vendor, path: &Path, cfg: &DetectConfig) -> Result<Identity, IdentifyError> {
+pub fn identify(
+    vendor: Vendor,
+    path: &Path,
+    cfg: &DetectConfig,
+) -> Result<Identity, IdentifyError> {
     let env = crate::env::minimal_env(&cfg.extra_env).map_err(|e| IdentifyError::Unrunnable {
         path: path.to_path_buf(),
         reason: e.to_string(),
     })?;
     let out = run_probe(path, &["--version"], cfg, &env)?;
     if out.timed_out {
-        return Err(IdentifyError::TimedOut { path: path.to_path_buf() });
+        return Err(IdentifyError::TimedOut {
+            path: path.to_path_buf(),
+        });
     }
     if out.code != Some(0) {
         return Err(IdentifyError::NonZero {
@@ -121,7 +141,11 @@ pub fn identify(vendor: Vendor, path: &Path, cfg: &DetectConfig) -> Result<Ident
             code: out.code,
         });
     }
-    let combined = if out.stdout.trim().is_empty() { out.stderr.clone() } else { out.stdout.clone() };
+    let combined = if out.stdout.trim().is_empty() {
+        out.stderr.clone()
+    } else {
+        out.stdout.clone()
+    };
     let not_vendor = || IdentifyError::NotVendor {
         path: path.to_path_buf(),
         vendor: vendor.display_name(),
@@ -132,7 +156,9 @@ pub fn identify(vendor: Vendor, path: &Path, cfg: &DetectConfig) -> Result<Ident
     if needs_help_signal(vendor) {
         let help = run_probe(path, &["--help"], cfg, &env)?;
         if help.timed_out {
-            return Err(IdentifyError::TimedOut { path: path.to_path_buf() });
+            return Err(IdentifyError::TimedOut {
+                path: path.to_path_buf(),
+            });
         }
         let text = format!("{}\n{}", help.stdout, help.stderr);
         if !help_matches(vendor, &text) {
@@ -165,7 +191,10 @@ mod tests {
             version_from_output(Vendor::Cursor, "2026.09.18-9a7762b\n"),
             Some("2026.09.18-9a7762b".into())
         );
-        assert_eq!(version_from_output(Vendor::OpenCode, "1.18.31\n"), Some("1.18.31".into()));
+        assert_eq!(
+            version_from_output(Vendor::OpenCode, "1.18.31\n"),
+            Some("1.18.31".into())
+        );
     }
 
     #[test]
@@ -174,8 +203,14 @@ mod tests {
         assert_eq!(version_from_output(Vendor::Cursor, "agent 1.0.0"), None);
         assert_eq!(version_from_output(Vendor::Cursor, "1.2.3"), None);
         // Wrong vendor for the name.
-        assert_eq!(version_from_output(Vendor::Claude, "codex-cli 0.155.1"), None);
-        assert_eq!(version_from_output(Vendor::Codex, "2.1.278 (Claude Code)"), None);
+        assert_eq!(
+            version_from_output(Vendor::Claude, "codex-cli 0.155.1"),
+            None
+        );
+        assert_eq!(
+            version_from_output(Vendor::Codex, "2.1.278 (Claude Code)"),
+            None
+        );
         assert_eq!(version_from_output(Vendor::Claude, "2.1.278"), None);
         assert_eq!(version_from_output(Vendor::OpenCode, "opencode"), None);
         assert_eq!(version_from_output(Vendor::Codex, ""), None);
@@ -183,8 +218,14 @@ mod tests {
 
     #[test]
     fn help_signals() {
-        assert!(help_matches(Vendor::Cursor, "Usage: agent [options]\n\nStart the Cursor Agent\n"));
-        assert!(!help_matches(Vendor::Cursor, "Usage: agent [options]\n\nA generic agent runner\n"));
+        assert!(help_matches(
+            Vendor::Cursor,
+            "Usage: agent [options]\n\nStart the Cursor Agent\n"
+        ));
+        assert!(!help_matches(
+            Vendor::Cursor,
+            "Usage: agent [options]\n\nA generic agent runner\n"
+        ));
         assert!(help_matches(
             Vendor::OpenCode,
             "Commands:\n  opencode completion   generate shell completion script\n  opencode acp\n"

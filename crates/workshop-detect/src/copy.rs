@@ -31,7 +31,12 @@ pub const XAI_OPTIONAL_BODY: &str = "Uses xAI accounts and `auth.x.ai`. Not requ
 /// * `installed`: a verified vendor binary exists.
 /// * `ready`: installed and the official status command says signed in.
 /// * `app_present`: (Cursor only) the desktop app was found.
-pub fn empty_rail_copy(rail: Rail, installed: bool, ready: bool, app_present: bool) -> &'static str {
+pub fn empty_rail_copy(
+    rail: Rail,
+    installed: bool,
+    ready: bool,
+    app_present: bool,
+) -> &'static str {
     match rail {
         Rail::Claude => {
             if !installed {
@@ -86,13 +91,34 @@ mod tests {
 
     #[test]
     fn copy_table_matches_spec() {
-        assert_eq!(empty_rail_copy(Rail::Claude, false, false, false), INSTALL_CLAUDE);
-        assert_eq!(empty_rail_copy(Rail::Codex, false, false, false), INSTALL_CODEX);
-        assert_eq!(empty_rail_copy(Rail::Claude, true, false, false), SIGN_IN_CLAUDE);
-        assert_eq!(empty_rail_copy(Rail::Codex, true, false, false), SIGN_IN_CODEX);
-        assert_eq!(empty_rail_copy(Rail::Cursor, true, false, false), SIGN_IN_CURSOR);
-        assert_eq!(empty_rail_copy(Rail::Cursor, false, false, false), CURSOR_DESKTOP_ONLY);
-        assert_eq!(empty_rail_copy(Rail::Cursor, false, false, true), CURSOR_APP_WITHOUT_CLI);
+        assert_eq!(
+            empty_rail_copy(Rail::Claude, false, false, false),
+            INSTALL_CLAUDE
+        );
+        assert_eq!(
+            empty_rail_copy(Rail::Codex, false, false, false),
+            INSTALL_CODEX
+        );
+        assert_eq!(
+            empty_rail_copy(Rail::Claude, true, false, false),
+            SIGN_IN_CLAUDE
+        );
+        assert_eq!(
+            empty_rail_copy(Rail::Codex, true, false, false),
+            SIGN_IN_CODEX
+        );
+        assert_eq!(
+            empty_rail_copy(Rail::Cursor, true, false, false),
+            SIGN_IN_CURSOR
+        );
+        assert_eq!(
+            empty_rail_copy(Rail::Cursor, false, false, false),
+            CURSOR_DESKTOP_ONLY
+        );
+        assert_eq!(
+            empty_rail_copy(Rail::Cursor, false, false, true),
+            CURSOR_APP_WITHOUT_CLI
+        );
         for rail in Rail::ALL {
             assert_eq!(empty_rail_copy(rail, true, true, true), NO_MODELS);
         }
@@ -101,8 +127,14 @@ mod tests {
     #[test]
     fn connect_rules_match_export() {
         for rail in Rail::ALL {
-            assert!(!needs_connect(rail, true, false), "rail with models never shows Connect");
-            assert!(needs_connect(rail, false, true), "signed-out empty rail shows Connect");
+            assert!(
+                !needs_connect(rail, true, false),
+                "rail with models never shows Connect"
+            );
+            assert!(
+                needs_connect(rail, false, true),
+                "signed-out empty rail shows Connect"
+            );
         }
         assert!(needs_connect(Rail::Claude, true, true));
         assert!(needs_connect(Rail::Codex, true, true));

@@ -117,7 +117,9 @@ pub fn known_dirs(home: &Path) -> Vec<PathBuf> {
     dirs.push(home.join(".claude/local"));
     dirs.push(home.join(".opencode/bin"));
     // macOS app bundles that ship a bin folder.
-    dirs.push(PathBuf::from("/Applications/Cursor.app/Contents/Resources/app/bin"));
+    dirs.push(PathBuf::from(
+        "/Applications/Cursor.app/Contents/Resources/app/bin",
+    ));
     dirs.push(home.join("Applications/Cursor.app/Contents/Resources/app/bin"));
     dirs
 }
@@ -146,7 +148,9 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(not(unix))]
 fn is_executable_file(path: &Path) -> bool {
-    std::fs::metadata(path).map(|m| m.is_file()).unwrap_or(false)
+    std::fs::metadata(path)
+        .map(|m| m.is_file())
+        .unwrap_or(false)
 }
 
 fn executable_variants(dir: &Path, name: &str) -> Vec<PathBuf> {
@@ -176,9 +180,18 @@ pub fn locate(vendor: Vendor, cfg: &DetectConfig) -> Vec<Candidate> {
     if cfg.include_known_dirs
         && let Some(home) = cfg.home_dir()
     {
-        dirs.extend(known_dirs(&home).into_iter().map(|d| (d, CandidateSource::KnownDir)));
+        dirs.extend(
+            known_dirs(&home)
+                .into_iter()
+                .map(|d| (d, CandidateSource::KnownDir)),
+        );
     }
-    dirs.extend(cfg.extra_dirs.iter().cloned().map(|d| (d, CandidateSource::KnownDir)));
+    dirs.extend(
+        cfg.extra_dirs
+            .iter()
+            .cloned()
+            .map(|d| (d, CandidateSource::KnownDir)),
+    );
 
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut out = Vec::new();
@@ -217,7 +230,9 @@ mod tests {
         assert!(dirs.contains(&PathBuf::from("/usr/local/bin")));
         assert!(dirs.contains(&PathBuf::from("/home/u/.local/bin")));
         assert!(dirs.contains(&PathBuf::from("/opt/homebrew/bin")));
-        assert!(dirs.contains(&PathBuf::from("/Applications/Cursor.app/Contents/Resources/app/bin")));
+        assert!(dirs.contains(&PathBuf::from(
+            "/Applications/Cursor.app/Contents/Resources/app/bin"
+        )));
     }
 
     #[cfg(unix)]

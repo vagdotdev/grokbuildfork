@@ -18,7 +18,12 @@ pub enum Vendor {
 }
 
 impl Vendor {
-    pub const ALL: [Vendor; 4] = [Vendor::Claude, Vendor::Codex, Vendor::Cursor, Vendor::OpenCode];
+    pub const ALL: [Vendor; 4] = [
+        Vendor::Claude,
+        Vendor::Codex,
+        Vendor::Cursor,
+        Vendor::OpenCode,
+    ];
 
     /// Stable id used in connection registries and logs.
     pub fn id(self) -> &'static str {
@@ -211,10 +216,19 @@ pub fn rail_state(rail: Rail, probe: &VendorProbe, mut models: Vec<ModelRef>) ->
     if !ready {
         models.clear();
     }
-    models.sort_by(|a, b| a.display().cmp(b.display()).then_with(|| a.key().cmp(&b.key())));
+    models.sort_by(|a, b| {
+        a.display()
+            .cmp(b.display())
+            .then_with(|| a.key().cmp(&b.key()))
+    });
 
     let empty_copy = if models.is_empty() {
-        Some(copy::empty_rail_copy(rail, installed, ready, probe.app_present))
+        Some(copy::empty_rail_copy(
+            rail,
+            installed,
+            ready,
+            probe.app_present,
+        ))
     } else {
         None
     };

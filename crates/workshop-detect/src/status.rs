@@ -30,7 +30,9 @@ pub enum LoginState {
     LoggedIn,
     LoggedOut,
     /// The status command ran but its answer could not be interpreted, or it failed to run.
-    Unknown { reason: String },
+    Unknown {
+        reason: String,
+    },
 }
 
 impl LoginState {
@@ -105,12 +107,18 @@ pub fn interpret_status(vendor: Vendor, out: &ChildOutput) -> LoginState {
             if let Some(map) = json_object(&out.stdout)
                 && let Some(logged_in) = map.get("loggedIn").and_then(|v| v.as_bool())
             {
-                return if logged_in { LoginState::LoggedIn } else { LoginState::LoggedOut };
+                return if logged_in {
+                    LoginState::LoggedIn
+                } else {
+                    LoginState::LoggedOut
+                };
             }
             match out.code {
                 Some(0) => LoginState::LoggedIn,
                 Some(1) => LoginState::LoggedOut,
-                code => LoginState::unknown(format!("claude auth status exited {code:?} without JSON")),
+                code => {
+                    LoginState::unknown(format!("claude auth status exited {code:?} without JSON"))
+                }
             }
         }
         Vendor::Codex => match out.code {
@@ -178,12 +186,21 @@ mod tests {
   "authMethod": "none",
   "apiProvider": "firstParty"
 }"#;
-        assert_eq!(interpret_status(Vendor::Claude, &out(Some(1), logged_out, "")), LoginState::LoggedOut);
+        assert_eq!(
+            interpret_status(Vendor::Claude, &out(Some(1), logged_out, "")),
+            LoginState::LoggedOut
+        );
         let logged_in = r#"{"loggedIn": true, "authMethod": "claude.ai"}"#;
-        assert_eq!(interpret_status(Vendor::Claude, &out(Some(0), logged_in, "")), LoginState::LoggedIn);
+        assert_eq!(
+            interpret_status(Vendor::Claude, &out(Some(0), logged_in, "")),
+            LoginState::LoggedIn
+        );
         // Exit code fallback when the CLI prints text instead of JSON.
         assert_eq!(
-            interpret_status(Vendor::Claude, &out(Some(1), "Not logged in. Run claude auth login", "")),
+            interpret_status(
+                Vendor::Claude,
+                &out(Some(1), "Not logged in. Run claude auth login", "")
+            ),
             LoginState::LoggedOut
         );
         assert!(matches!(
@@ -194,9 +211,15 @@ mod tests {
 
     #[test]
     fn codex_real_outputs() {
-        assert_eq!(interpret_status(Vendor::Codex, &out(Some(1), "Not logged in\n", "")), LoginState::LoggedOut);
         assert_eq!(
-            interpret_status(Vendor::Codex, &out(Some(0), "Logged in using ChatGPT\n", "")),
+            interpret_status(Vendor::Codex, &out(Some(1), "Not logged in\n", "")),
+            LoginState::LoggedOut
+        );
+        assert_eq!(
+            interpret_status(
+                Vendor::Codex,
+                &out(Some(0), "Logged in using ChatGPT\n", "")
+            ),
             LoginState::LoggedIn
         );
         assert!(matches!(
@@ -213,9 +236,19 @@ mod tests {
   "hasAccessToken": false,
   "message": "Not logged in"
 }"#;
-        assert_eq!(interpret_status(Vendor::Cursor, &out(Some(0), logged_out, "")), LoginState::LoggedOut);
         assert_eq!(
-            interpret_status(Vendor::Cursor, &out(Some(0), r#"{"status":"authenticated","isAuthenticated":true}"#, "")),
+            interpret_status(Vendor::Cursor, &out(Some(0), logged_out, "")),
+            LoginState::LoggedOut
+        );
+        assert_eq!(
+            interpret_status(
+                Vendor::Cursor,
+                &out(
+                    Some(0),
+                    r#"{"status":"authenticated","isAuthenticated":true}"#,
+                    ""
+                )
+            ),
             LoginState::LoggedIn
         );
         assert!(matches!(
@@ -229,9 +262,15 @@ mod tests {
         // Real output prints the path of OpenCode's credential file after "Credentials"; Workshop
         // only reads the count and never opens that file, so the path is elided here.
         let none = "\u{1b}[0m\n┌  Credentials \u{1b}[90m~/<opencode credential file>\n│\n└  0 credentials\n";
-        assert_eq!(interpret_status(Vendor::OpenCode, &out(Some(0), none, "")), LoginState::LoggedOut);
+        assert_eq!(
+            interpret_status(Vendor::OpenCode, &out(Some(0), none, "")),
+            LoginState::LoggedOut
+        );
         let one = "┌  Credentials ~/x\n│\n●  anthropic \u{1b}[90moauth\n│\n└  1 credential\n";
-        assert_eq!(interpret_status(Vendor::OpenCode, &out(Some(0), one, "")), LoginState::LoggedIn);
+        assert_eq!(
+            interpret_status(Vendor::OpenCode, &out(Some(0), one, "")),
+            LoginState::LoggedIn
+        );
         assert!(matches!(
             interpret_status(Vendor::OpenCode, &out(Some(0), "something else", "")),
             LoginState::Unknown { .. }
@@ -243,7 +282,10 @@ mod tests {
         let mut o = out(None, "", "");
         o.timed_out = true;
         for v in Vendor::ALL {
-            assert!(matches!(interpret_status(v, &o), LoginState::Unknown { .. }));
+            assert!(matches!(
+                interpret_status(v, &o),
+                LoginState::Unknown { .. }
+            ));
         }
     }
 

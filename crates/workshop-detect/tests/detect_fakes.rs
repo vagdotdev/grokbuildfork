@@ -43,17 +43,31 @@ fn all_four_vendors_detected_and_signed_out() {
 
     for vendor in Vendor::ALL {
         let vp = probe.get(vendor);
-        let id = vp.binary.as_ref().unwrap_or_else(|| panic!("{vendor:?} not detected"));
+        let id = vp
+            .binary
+            .as_ref()
+            .unwrap_or_else(|| panic!("{vendor:?} not detected"));
         assert_eq!(id.vendor, vendor);
         assert_eq!(vp.login, Some(LoginState::LoggedOut), "{vendor:?}");
         assert!(vp.rejected.is_empty(), "{vendor:?}: {:?}", vp.rejected);
     }
     assert_eq!(probe.claude.binary.as_ref().unwrap().version, "2.1.278");
     assert_eq!(probe.codex.binary.as_ref().unwrap().version, "0.155.1");
-    assert_eq!(probe.cursor.binary.as_ref().unwrap().version, "2026.09.18-9a7762b");
+    assert_eq!(
+        probe.cursor.binary.as_ref().unwrap().version,
+        "2026.09.18-9a7762b"
+    );
     assert_eq!(probe.opencode.binary.as_ref().unwrap().version, "1.18.31");
     // `cursor-agent` is preferred over `agent` when both exist in the same directory.
-    assert!(probe.cursor.binary.as_ref().unwrap().path.ends_with("cursor-agent"));
+    assert!(
+        probe
+            .cursor
+            .binary
+            .as_ref()
+            .unwrap()
+            .path
+            .ends_with("cursor-agent")
+    );
 
     let rails = rails(&probe, default_models);
     assert_eq!(rails.each_ref().map(|r| r.rail), Rail::ALL);
@@ -68,8 +82,14 @@ fn all_four_vendors_detected_and_signed_out() {
     assert_eq!(rails[2].empty_copy, Some(copy::SIGN_IN_CURSOR));
 
     // Only the documented commands were run: --version, --help (Cursor/OpenCode), status.
-    assert_eq!(calls(&state, "claude"), "claude --version\nclaude auth status\n");
-    assert_eq!(calls(&state, "codex"), "codex --version\ncodex login status\n");
+    assert_eq!(
+        calls(&state, "claude"),
+        "claude --version\nclaude auth status\n"
+    );
+    assert_eq!(
+        calls(&state, "codex"),
+        "codex --version\ncodex login status\n"
+    );
     assert_eq!(
         calls(&state, "cursor"),
         "cursor --version\ncursor --help\ncursor status --format json\n"
@@ -95,7 +115,11 @@ fn signed_in_rails_are_ready_with_models() {
     );
     let probe = probe_all(&cfg);
     for vendor in Vendor::ALL {
-        assert_eq!(probe.get(vendor).login, Some(LoginState::LoggedIn), "{vendor:?}");
+        assert_eq!(
+            probe.get(vendor).login,
+            Some(LoginState::LoggedIn),
+            "{vendor:?}"
+        );
         assert!(probe.get(vendor).ready());
     }
     let rails = rails(&probe, default_models);
@@ -107,26 +131,42 @@ fn signed_in_rails_are_ready_with_models() {
     }
     // Models are sorted by display name and keyed provider:model.
     let claude_keys: Vec<String> = rails[0].models.iter().map(|m| m.key()).collect();
-    assert_eq!(claude_keys, ["anthropic:haiku", "anthropic:opus", "anthropic:sonnet"]);
+    assert_eq!(
+        claude_keys,
+        ["anthropic:haiku", "anthropic:opus", "anthropic:sonnet"]
+    );
     assert_eq!(
         composer_label(Rail::Claude, &rails[0].models[1]),
         "Claude · Claude Opus"
     );
-    assert_eq!(composer_label(Rail::Cursor, &rails[2].models[0]), "Cursor · Auto");
+    assert_eq!(
+        composer_label(Rail::Cursor, &rails[2].models[0]),
+        "Cursor · Auto"
+    );
 }
 
 #[test]
 fn ready_rail_with_no_models_shows_no_models_copy() {
     let state = tempfile::tempdir().unwrap();
-    let cfg = cfg_with(&["vendors"], &state, &[("FAKE_LOGIN_CLAUDE", "in"), ("FAKE_LOGIN_CURSOR", "in")]);
+    let cfg = cfg_with(
+        &["vendors"],
+        &state,
+        &[("FAKE_LOGIN_CLAUDE", "in"), ("FAKE_LOGIN_CURSOR", "in")],
+    );
     let probe = probe_all(&cfg);
     let rails = rails(&probe, |_| Vec::new());
     assert_eq!(rails[0].pill, Pill::Ready);
     assert_eq!(rails[0].empty_copy, Some(copy::NO_MODELS));
-    assert!(rails[0].show_connect, "Claude ready-but-empty still offers Connect");
+    assert!(
+        rails[0].show_connect,
+        "Claude ready-but-empty still offers Connect"
+    );
     assert_eq!(rails[2].pill, Pill::Ready);
     assert_eq!(rails[2].empty_copy, Some(copy::NO_MODELS));
-    assert!(!rails[2].show_connect, "Cursor ready-but-empty does not offer Connect");
+    assert!(
+        !rails[2].show_connect,
+        "Cursor ready-but-empty does not offer Connect"
+    );
 }
 
 #[test]
@@ -135,11 +175,18 @@ fn impostor_agent_is_not_cursor() {
     // Impostor first on PATH, real vendor dir second: the real one must win.
     let cfg = cfg_with(&["impostors", "vendors"], &state, &[]);
     let vp = probe_vendor(Vendor::Cursor, &cfg);
-    let id = vp.binary.as_ref().expect("real cursor-agent found behind the impostor");
+    let id = vp
+        .binary
+        .as_ref()
+        .expect("real cursor-agent found behind the impostor");
     assert!(id.path.starts_with(fixtures().join("vendors")));
     assert_eq!(vp.rejected.len(), 1);
     assert!(vp.rejected[0].path.ends_with("impostors/agent"));
-    assert!(vp.rejected[0].reason.contains("not Cursor Agent"), "{}", vp.rejected[0].reason);
+    assert!(
+        vp.rejected[0].reason.contains("not Cursor Agent"),
+        "{}",
+        vp.rejected[0].reason
+    );
 
     // Impostor alone: Cursor is not installed.
     let cfg = cfg_with(&["impostors"], &state, &[]);
@@ -187,7 +234,11 @@ fn broken_version_command_is_rejected_not_trusted() {
     let vp = probe_vendor(Vendor::Codex, &cfg);
     assert!(vp.binary.is_none());
     assert_eq!(vp.rejected.len(), 1);
-    assert!(vp.rejected[0].reason.contains("exited with Some(2)"), "{}", vp.rejected[0].reason);
+    assert!(
+        vp.rejected[0].reason.contains("exited with Some(2)"),
+        "{}",
+        vp.rejected[0].reason
+    );
 }
 
 #[test]
@@ -197,7 +248,10 @@ fn hung_cli_times_out_instead_of_blocking() {
     cfg.timeout = Duration::from_millis(400);
     let started = std::time::Instant::now();
     let vp = probe_vendor(Vendor::OpenCode, &cfg);
-    assert!(started.elapsed() < Duration::from_secs(5), "probe must respect the timeout");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "probe must respect the timeout"
+    );
     assert!(vp.binary.is_none());
     let expected = IdentifyError::TimedOut {
         path: fixtures().join("slow/opencode"),
@@ -229,7 +283,11 @@ fn garbage_status_output_is_unknown_and_shows_sign_in() {
         assert!(!probe.get(vendor).ready());
     }
     for r in rails(&probe, default_models) {
-        assert_eq!(r.pill, Pill::SignIn, "unknown login state fails closed to Sign in");
+        assert_eq!(
+            r.pill,
+            Pill::SignIn,
+            "unknown login state fails closed to Sign in"
+        );
     }
 }
 
@@ -245,7 +303,10 @@ fn presence_only_scan_never_runs_status_commands() {
     }
     for vendor in ["claude", "codex", "cursor", "opencode"] {
         let c = calls(&state, vendor);
-        assert!(!c.contains("status") && !c.contains("auth list"), "{vendor}: {c}");
+        assert!(
+            !c.contains("status") && !c.contains("auth list"),
+            "{vendor}: {c}"
+        );
     }
     for r in rails(&probe, default_models) {
         assert_eq!(r.pill, Pill::SignIn);
@@ -271,7 +332,10 @@ fn children_never_see_credentials_or_workshop_secrets() {
     assert!(probe.claude.installed());
     for vendor in ["claude", "codex", "cursor", "opencode"] {
         let env = std::fs::read_to_string(state.path().join(format!("env.{vendor}"))).unwrap();
-        assert!(!env.contains("canary"), "{vendor} child saw a credential:\n{env}");
+        assert!(
+            !env.contains("canary"),
+            "{vendor} child saw a credential:\n{env}"
+        );
         for forbidden in [
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
@@ -280,7 +344,10 @@ fn children_never_see_credentials_or_workshop_secrets() {
             "WORKSHOP_",
             "XAI_",
         ] {
-            assert!(!env.contains(forbidden), "{vendor} child env contains {forbidden}:\n{env}");
+            assert!(
+                !env.contains(forbidden),
+                "{vendor} child env contains {forbidden}:\n{env}"
+            );
         }
         assert!(env.contains("PATH="), "{vendor} child still gets PATH");
         assert!(env.contains("NO_COLOR=1"));

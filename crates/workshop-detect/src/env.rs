@@ -73,8 +73,14 @@ pub const CREDENTIAL_NAMES: &[&str] = &[
 ];
 
 /// Suffixes that mark a variable as credential-like regardless of vendor.
-pub const CREDENTIAL_SUFFIXES: &[&str] =
-    &["_API_KEY", "_AUTH_TOKEN", "_ACCESS_TOKEN", "_REFRESH_TOKEN", "_SECRET", "_PASSWORD"];
+pub const CREDENTIAL_SUFFIXES: &[&str] = &[
+    "_API_KEY",
+    "_AUTH_TOKEN",
+    "_ACCESS_TOKEN",
+    "_REFRESH_TOKEN",
+    "_SECRET",
+    "_PASSWORD",
+];
 
 /// Prefixes that are Workshop-owned or first-party and never belong in a vendor child.
 pub const NEVER_PREFIXES: &[&str] = &["WORKSHOP_", "GROK_", "XAI_"];
@@ -153,10 +159,16 @@ mod tests {
             std::env::set_var("OPENAI_API_KEY", "sk-canary-openai");
         }
         let env = minimal_env(&[]).unwrap();
-        let names: Vec<String> = env.iter().map(|(k, _)| k.to_string_lossy().into_owned()).collect();
+        let names: Vec<String> = env
+            .iter()
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
         assert!(!names.iter().any(|n| n == "WORKSHOP_DETECT_TEST_API_KEY"));
         assert!(!names.iter().any(|n| n == "OPENAI_API_KEY"));
-        assert!(env.iter().all(|(_, v)| !v.to_string_lossy().contains("sk-canary")));
+        assert!(
+            env.iter()
+                .all(|(_, v)| !v.to_string_lossy().contains("sk-canary"))
+        );
         assert!(names.iter().any(|n| n == "NO_COLOR"));
         unsafe {
             std::env::remove_var("WORKSHOP_DETECT_TEST_API_KEY");
@@ -166,11 +178,17 @@ mod tests {
 
     #[test]
     fn extras_cannot_smuggle_credentials() {
-        let err = minimal_env(&[(OsString::from("CURSOR_API_KEY"), OsString::from("x"))])
-            .unwrap_err();
+        let err =
+            minimal_env(&[(OsString::from("CURSOR_API_KEY"), OsString::from("x"))]).unwrap_err();
         assert_eq!(err, CredentialInEnv("CURSOR_API_KEY".into()));
-        let ok = minimal_env(&[(OsString::from("FAKE_CLI_STATE_DIR"), OsString::from("/tmp/x"))])
-            .unwrap();
-        assert!(ok.iter().any(|(k, v)| k == "FAKE_CLI_STATE_DIR" && v == "/tmp/x"));
+        let ok = minimal_env(&[(
+            OsString::from("FAKE_CLI_STATE_DIR"),
+            OsString::from("/tmp/x"),
+        )])
+        .unwrap();
+        assert!(
+            ok.iter()
+                .any(|(k, v)| k == "FAKE_CLI_STATE_DIR" && v == "/tmp/x")
+        );
     }
 }

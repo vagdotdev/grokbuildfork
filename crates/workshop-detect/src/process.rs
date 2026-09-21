@@ -168,8 +168,14 @@ mod tests {
 
     #[test]
     fn strips_csi_and_osc() {
-        assert_eq!(strip_ansi("\u{1b}[91m\u{1b}[1mError: \u{1b}[0mSession"), "Error: Session");
-        assert_eq!(strip_ansi("\u{1b}[0m\n┌  Credentials \u{1b}[90m~/x"), "\n┌  Credentials ~/x");
+        assert_eq!(
+            strip_ansi("\u{1b}[91m\u{1b}[1mError: \u{1b}[0mSession"),
+            "Error: Session"
+        );
+        assert_eq!(
+            strip_ansi("\u{1b}[0m\n┌  Credentials \u{1b}[90m~/x"),
+            "\n┌  Credentials ~/x"
+        );
         assert_eq!(strip_ansi("plain"), "plain");
         assert_eq!(strip_ansi("\u{1b}]0;title\u{7}rest"), "rest");
     }
@@ -210,7 +216,14 @@ mod tests {
     #[test]
     fn environment_is_exactly_what_was_passed() {
         let env = vec![(OsString::from("ONLY_THIS"), OsString::from("1"))];
-        let out = run(Path::new("/usr/bin/env"), &[], None, &env, Duration::from_secs(5)).unwrap();
+        let out = run(
+            Path::new("/usr/bin/env"),
+            &[],
+            None,
+            &env,
+            Duration::from_secs(5),
+        )
+        .unwrap();
         assert_eq!(out.stdout.trim(), "ONLY_THIS=1");
     }
 }
