@@ -1,5 +1,5 @@
 diff --git a/crates/codegen/xai-grok-pager-bin/src/main.rs b/crates/codegen/xai-grok-pager-bin/src/main.rs
-index ec8d2084..4e8d08c6 100644
+index ec8d2084..544bcd0d 100644
 --- a/crates/codegen/xai-grok-pager-bin/src/main.rs
 +++ b/crates/codegen/xai-grok-pager-bin/src/main.rs
 @@ -224,7 +224,7 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
@@ -147,7 +147,7 @@ index ec8d2084..4e8d08c6 100644
 +                    && grok_com_config.auth_provider_command.is_none()
 +                {
 +                    let mut picker = workshop_auth::PickerState::new();
-+                    picker.run_detection();
++                    picker.apply_snapshot(xai_grok_pager::app::workshop::load_picker_snapshot().await);
 +                    print!("{}", workshop_auth::text::cli_login_text(&picker));
 +                    xai_grok_shell::instrumentation::finalize_and_exit(0);
 +                }
