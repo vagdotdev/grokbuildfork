@@ -14,7 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use url::Url;
 
-use crate::config::{ConfigError, ConnectionRecord, ConnectionsFile, read_connections, with_lock, write_connections};
+use crate::config::{
+    ConfigError, ConnectionRecord, ConnectionsFile, read_connections, with_lock, write_connections,
+};
 use crate::manifest::{AuthHeader, CredentialSource, ProviderManifest, manifest};
 use crate::secrets::{SecretError, SecretStore};
 
@@ -30,7 +32,9 @@ pub enum ProviderError {
     NoCredential { provider: String },
     #[error("refusing to send the {provider} credential to {host}: not in its host allowlist")]
     HostNotAllowed { provider: String, host: String },
-    #[error("plaintext http is only allowed on loopback ({0}); confirm a custom dev endpoint explicitly")]
+    #[error(
+        "plaintext http is only allowed on loopback ({0}); confirm a custom dev endpoint explicitly"
+    )]
     PlaintextNotLoopback(String),
     #[error("{0} is not a valid URL")]
     BadUrl(String),
@@ -46,7 +50,9 @@ pub enum ProviderError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CredentialRef {
     /// Present in the process environment (value not read yet).
-    Env { var: String },
+    Env {
+        var: String,
+    },
     /// Saved in the OS keyring by the user.
     Keyring,
     None,
@@ -90,7 +96,11 @@ impl CredentialHandle {
     pub fn authorize(&self, url: &str) -> Result<Option<&str>, ProviderError> {
         let parsed = Url::parse(url).map_err(|_| ProviderError::BadUrl(url.to_string()))?;
         let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
-        if !self.allowed_hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {
+        if !self
+            .allowed_hosts
+            .iter()
+            .any(|h| h.eq_ignore_ascii_case(&host))
+        {
             return Err(ProviderError::HostNotAllowed {
                 provider: self.provider_id.clone(),
                 host,
@@ -103,12 +113,18 @@ impl CredentialHandle {
 
 fn is_loopback_host(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]")
-        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Plaintext `http://` is only acceptable on loopback, or for a custom dev endpoint the user has
 /// explicitly confirmed after seeing the resolved origin.
-pub fn validate_scheme(url: &Url, _allowed_hosts: &[String], confirmed_dev_endpoint: bool) -> Result<(), ProviderError> {
+pub fn validate_scheme(
+    url: &Url,
+    _allowed_hosts: &[String],
+    confirmed_dev_endpoint: bool,
+) -> Result<(), ProviderError> {
     match url.scheme() {
         "https" => Ok(()),
         "http" => {
@@ -116,7 +132,9 @@ pub fn validate_scheme(url: &Url, _allowed_hosts: &[String], confirmed_dev_endpo
             if is_loopback_host(host) || confirmed_dev_endpoint {
                 Ok(())
             } else {
-                Err(ProviderError::PlaintextNotLoopback(url.origin().ascii_serialization()))
+                Err(ProviderError::PlaintextNotLoopback(
+                    url.origin().ascii_serialization(),
+                ))
             }
         }
         other => Err(ProviderError::BadUrl(format!("{other}://"))),
@@ -188,7 +206,9 @@ impl CredentialBroker {
             return Err(ProviderError::EmptyKey);
         }
         if m.auth == AuthHeader::None {
-            return Err(ProviderError::UnknownProvider(format!("{provider_id} takes no credential")));
+            return Err(ProviderError::UnknownProvider(format!(
+                "{provider_id} takes no credential"
+            )));
         }
         let key = key.trim();
         let path = self.connections_path.clone();
@@ -230,7 +250,11 @@ impl CredentialBroker {
         let m = self.manifest_for(provider_id)?;
         let var = match &m.credential {
             CredentialSource::Env { var } => var.clone(),
-            _ => return Err(ProviderError::UnknownProvider(format!("{provider_id} has no env credential"))),
+            _ => {
+                return Err(ProviderError::UnknownProvider(format!(
+                    "{provider_id} has no env credential"
+                )));
+            }
         };
         let record = ConnectionRecord {
             class: m.class,
@@ -241,7 +265,8 @@ impl CredentialBroker {
         let path = self.connections_path.clone();
         with_lock(&path, || {
             let mut file = read_connections(&path)?;
-            file.connections.insert(provider_id.to_string(), record.clone());
+            file.connections
+                .insert(provider_id.to_string(), record.clone());
             write_connections(&path, &file)
         })?;
         Ok(())
@@ -251,7 +276,9 @@ impl CredentialBroker {
     pub fn add_local(&self, provider_id: &str) -> Result<(), ProviderError> {
         let m = self.manifest_for(provider_id)?;
         if !m.is_local() {
-            return Err(ProviderError::UnknownProvider(format!("{provider_id} is not a Local provider")));
+            return Err(ProviderError::UnknownProvider(format!(
+                "{provider_id} is not a Local provider"
+            )));
         }
         let record = ConnectionRecord {
             class: m.class,
@@ -262,7 +289,8 @@ impl CredentialBroker {
         let path = self.connections_path.clone();
         with_lock(&path, || {
             let mut file = read_connections(&path)?;
-            file.connections.insert(provider_id.to_string(), record.clone());
+            file.connections
+                .insert(provider_id.to_string(), record.clone());
             write_connections(&path, &file)
         })?;
         Ok(())
@@ -290,40 +318,49 @@ impl CredentialBroker {
     pub fn credential_ref(&self, provider_id: &str) -> Result<CredentialRef, ProviderError> {
         let m = self.manifest_for(provider_id)?;
         let file = self.connections()?;
-        Ok(match file.connections.get(provider_id).map(|r| &r.credential) {
-            Some(CredentialSource::Keyring) => CredentialRef::Keyring,
-            Some(CredentialSource::Env { var }) => CredentialRef::Env { var: var.clone() },
-            Some(CredentialSource::None) => CredentialRef::None,
-            None => match m.credential {
-                CredentialSource::Env { var } if std::env::var_os(&var).is_some() => CredentialRef::Env { var },
-                _ => CredentialRef::None,
+        Ok(
+            match file.connections.get(provider_id).map(|r| &r.credential) {
+                Some(CredentialSource::Keyring) => CredentialRef::Keyring,
+                Some(CredentialSource::Env { var }) => CredentialRef::Env { var: var.clone() },
+                Some(CredentialSource::None) => CredentialRef::None,
+                None => match m.credential {
+                    CredentialSource::Env { var } if std::env::var_os(&var).is_some() => {
+                        CredentialRef::Env { var }
+                    }
+                    _ => CredentialRef::None,
+                },
             },
-        })
+        )
     }
 
     /// Resolve the credential for a request, bound to the provider's host allowlist.
     pub fn resolve(&self, provider_id: &str) -> Result<CredentialHandle, ProviderError> {
         let m = self.manifest_for(provider_id)?;
         let allowed_hosts: Vec<String> = m.allowed_hosts.iter().map(|h| h.to_string()).collect();
-        let value = match (m.auth, self.credential_ref(provider_id)?) {
-            (AuthHeader::None, _) => None,
-            (_, CredentialRef::Keyring) => Some(self.store.get(provider_id)?.ok_or_else(|| ProviderError::NoCredential {
-                provider: provider_id.to_string(),
-            })?),
-            (_, CredentialRef::Env { var }) => Some(
-                std::env::var(&var)
-                    .ok()
-                    .filter(|v| !v.is_empty())
-                    .ok_or_else(|| ProviderError::NoCredential {
+        let value =
+            match (m.auth, self.credential_ref(provider_id)?) {
+                (AuthHeader::None, _) => None,
+                (_, CredentialRef::Keyring) => {
+                    Some(self.store.get(provider_id)?.ok_or_else(|| {
+                        ProviderError::NoCredential {
+                            provider: provider_id.to_string(),
+                        }
+                    })?)
+                }
+                (_, CredentialRef::Env { var }) => Some(
+                    std::env::var(&var)
+                        .ok()
+                        .filter(|v| !v.is_empty())
+                        .ok_or_else(|| ProviderError::NoCredential {
+                            provider: provider_id.to_string(),
+                        })?,
+                ),
+                (_, CredentialRef::None) => {
+                    return Err(ProviderError::NoCredential {
                         provider: provider_id.to_string(),
-                    })?,
-            ),
-            (_, CredentialRef::None) => {
-                return Err(ProviderError::NoCredential {
-                    provider: provider_id.to_string(),
-                });
-            }
-        };
+                    });
+                }
+            };
         Ok(CredentialHandle {
             provider_id: provider_id.to_string(),
             auth: m.auth,
@@ -360,11 +397,22 @@ mod tests {
         broker.save_api_key("openai", " sk-test-123 ").unwrap();
         assert_eq!(store.get("openai").unwrap().as_deref(), Some("sk-test-123"));
         let text = std::fs::read_to_string(broker.connections_path()).unwrap();
-        assert!(!text.contains("sk-test"), "secret must not be in the connections file: {text}");
+        assert!(
+            !text.contains("sk-test"),
+            "secret must not be in the connections file: {text}"
+        );
         assert!(text.contains(r#""source": "keyring""#));
-        assert_eq!(broker.credential_ref("openai").unwrap(), CredentialRef::Keyring);
+        assert_eq!(
+            broker.credential_ref("openai").unwrap(),
+            CredentialRef::Keyring
+        );
         let handle = broker.resolve("openai").unwrap();
-        assert_eq!(handle.authorize("https://api.openai.com/v1/responses").unwrap(), Some("sk-test-123"));
+        assert_eq!(
+            handle
+                .authorize("https://api.openai.com/v1/responses")
+                .unwrap(),
+            Some("sk-test-123")
+        );
         assert!(format!("{handle:?}").contains("<redacted>"));
     }
 
@@ -398,8 +446,15 @@ mod tests {
         let result = broker.save_api_key("openai", "new-key");
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(result.is_err());
-        assert_eq!(store.get("openai").unwrap().as_deref(), Some("old-key"), "keyring rolled back");
-        assert!(matches!(broker.credential_ref("openai").unwrap(), CredentialRef::Keyring));
+        assert_eq!(
+            store.get("openai").unwrap().as_deref(),
+            Some("old-key"),
+            "keyring rolled back"
+        );
+        assert!(matches!(
+            broker.credential_ref("openai").unwrap(),
+            CredentialRef::Keyring
+        ));
     }
 
     #[cfg(unix)]
@@ -415,7 +470,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (broker, store) = broker(&tmp);
         store.fail_next_set();
-        assert!(matches!(broker.save_api_key("anthropic", "k"), Err(ProviderError::Config(_))));
+        assert!(matches!(
+            broker.save_api_key("anthropic", "k"),
+            Err(ProviderError::Config(_))
+        ));
         assert!(broker.connections().unwrap().connections.is_empty());
     }
 
@@ -423,10 +481,22 @@ mod tests {
     fn rejects_bad_input() {
         let tmp = tempfile::tempdir().unwrap();
         let (broker, _) = broker(&tmp);
-        assert!(matches!(broker.save_api_key("openai", "  "), Err(ProviderError::EmptyKey)));
-        assert!(matches!(broker.save_api_key("../x", "k"), Err(ProviderError::InvalidProviderId(_))));
-        assert!(matches!(broker.save_api_key("nope", "k"), Err(ProviderError::UnknownProvider(_))));
-        assert!(matches!(broker.save_api_key("ollama", "k"), Err(ProviderError::UnknownProvider(_))));
+        assert!(matches!(
+            broker.save_api_key("openai", "  "),
+            Err(ProviderError::EmptyKey)
+        ));
+        assert!(matches!(
+            broker.save_api_key("../x", "k"),
+            Err(ProviderError::InvalidProviderId(_))
+        ));
+        assert!(matches!(
+            broker.save_api_key("nope", "k"),
+            Err(ProviderError::UnknownProvider(_))
+        ));
+        assert!(matches!(
+            broker.save_api_key("ollama", "k"),
+            Err(ProviderError::UnknownProvider(_))
+        ));
     }
 
     #[test]
@@ -437,7 +507,10 @@ mod tests {
         broker.save_api_key("openai", "k").unwrap();
         assert!(broker.forget("openai").unwrap());
         assert!(store.is_empty());
-        assert!(matches!(broker.resolve("openai"), Err(ProviderError::NoCredential { .. })));
+        assert!(matches!(
+            broker.resolve("openai"),
+            Err(ProviderError::NoCredential { .. })
+        ));
     }
 
     #[test]
@@ -447,12 +520,20 @@ mod tests {
         broker.add_local("ollama").unwrap();
         let handle = broker.resolve("ollama").unwrap();
         assert!(!handle.has_value());
-        assert_eq!(handle.authorize("http://127.0.0.1:11434/v1/chat/completions").unwrap(), None);
+        assert_eq!(
+            handle
+                .authorize("http://127.0.0.1:11434/v1/chat/completions")
+                .unwrap(),
+            None
+        );
         assert!(matches!(
             handle.authorize("http://192.168.1.20:11434/v1/chat/completions"),
             Err(ProviderError::HostNotAllowed { .. })
         ));
-        assert!(matches!(broker.add_local("openai"), Err(ProviderError::UnknownProvider(_))));
+        assert!(matches!(
+            broker.add_local("openai"),
+            Err(ProviderError::UnknownProvider(_))
+        ));
     }
 
     #[test]
@@ -460,8 +541,14 @@ mod tests {
         let ok = Url::parse("http://localhost:1234/v1").unwrap();
         assert!(validate_scheme(&ok, &[], false).is_ok());
         let bad = Url::parse("http://example.com/v1").unwrap();
-        assert!(matches!(validate_scheme(&bad, &[], false), Err(ProviderError::PlaintextNotLoopback(_))));
-        assert!(validate_scheme(&bad, &[], true).is_ok(), "confirmed dev endpoint");
+        assert!(matches!(
+            validate_scheme(&bad, &[], false),
+            Err(ProviderError::PlaintextNotLoopback(_))
+        ));
+        assert!(
+            validate_scheme(&bad, &[], true).is_ok(),
+            "confirmed dev endpoint"
+        );
         let https = Url::parse("https://example.com/v1").unwrap();
         assert!(validate_scheme(&https, &[], false).is_ok());
     }

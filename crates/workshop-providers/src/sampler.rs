@@ -69,7 +69,10 @@ mod tests {
 
     #[test]
     fn protocol_maps_onto_api_backend_variants() {
-        assert_eq!(api_backend_for(Protocol::ChatCompletions), ApiBackend::ChatCompletions);
+        assert_eq!(
+            api_backend_for(Protocol::ChatCompletions),
+            ApiBackend::ChatCompletions
+        );
         assert_eq!(api_backend_for(Protocol::Responses), ApiBackend::Responses);
         assert_eq!(api_backend_for(Protocol::Messages), ApiBackend::Messages);
         assert_eq!(auth_scheme_for(AuthHeader::Bearer), AuthScheme::Bearer);
@@ -79,7 +82,10 @@ mod tests {
     #[test]
     fn anthropic_config_carries_version_header_and_x_api_key() {
         let tmp = tempfile::tempdir().unwrap();
-        let broker = CredentialBroker::new(Arc::new(MemorySecretStore::default()), tmp.path().join("c.json"));
+        let broker = CredentialBroker::new(
+            Arc::new(MemorySecretStore::default()),
+            tmp.path().join("c.json"),
+        );
         broker.save_api_key("anthropic", "sk-ant-canary").unwrap();
         let handle = broker.resolve("anthropic").unwrap();
         let model = custom_row("anthropic", "claude-sonnet-4-5").unwrap();
@@ -89,13 +95,21 @@ mod tests {
         assert_eq!(cfg.base_url, "https://api.anthropic.com/v1");
         assert_eq!(cfg.model, "claude-sonnet-4-5");
         assert_eq!(cfg.api_key.as_deref(), Some("sk-ant-canary"));
-        assert_eq!(cfg.extra_headers.get("anthropic-version").map(String::as_str), Some("2023-06-01"));
+        assert_eq!(
+            cfg.extra_headers
+                .get("anthropic-version")
+                .map(String::as_str),
+            Some("2023-06-01")
+        );
     }
 
     #[test]
     fn openai_and_local_configs() {
         let tmp = tempfile::tempdir().unwrap();
-        let broker = CredentialBroker::new(Arc::new(MemorySecretStore::default()), tmp.path().join("c.json"));
+        let broker = CredentialBroker::new(
+            Arc::new(MemorySecretStore::default()),
+            tmp.path().join("c.json"),
+        );
         broker.save_api_key("openai", "sk-openai").unwrap();
         let model = custom_row("openai", "gpt-5").unwrap();
         let cfg = sampler_config_for(&model, &broker.resolve("openai").unwrap()).unwrap();
@@ -115,7 +129,10 @@ mod tests {
     #[test]
     fn a_credential_for_one_provider_never_configures_another() {
         let tmp = tempfile::tempdir().unwrap();
-        let broker = CredentialBroker::new(Arc::new(MemorySecretStore::default()), tmp.path().join("c.json"));
+        let broker = CredentialBroker::new(
+            Arc::new(MemorySecretStore::default()),
+            tmp.path().join("c.json"),
+        );
         broker.save_api_key("openai", "sk-openai-canary").unwrap();
         let openai = broker.resolve("openai").unwrap();
         let openrouter_model = custom_row("openrouter", "openai/gpt-5").unwrap();

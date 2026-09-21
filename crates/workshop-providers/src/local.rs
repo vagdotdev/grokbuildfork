@@ -61,24 +61,37 @@ mod tests {
     fn detects_a_listening_loopback_port_and_nothing_else() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let base_url: &'static str = Box::leak(format!("http://127.0.0.1:{port}/v1").into_boxed_str());
+        let base_url: &'static str =
+            Box::leak(format!("http://127.0.0.1:{port}/v1").into_boxed_str());
         let mut m = crate::manifest::manifest("ollama").unwrap();
         m.base_url = base_url;
-        assert_eq!(probe_local(&m, Duration::from_millis(300)), LocalHealth::Reachable);
+        assert_eq!(
+            probe_local(&m, Duration::from_millis(300)),
+            LocalHealth::Reachable
+        );
         drop(listener);
         // A closed port on loopback is Unreachable, quickly.
         let started = std::time::Instant::now();
-        assert_eq!(probe_local(&m, Duration::from_millis(300)), LocalHealth::Unreachable);
+        assert_eq!(
+            probe_local(&m, Duration::from_millis(300)),
+            LocalHealth::Unreachable
+        );
         assert!(started.elapsed() < Duration::from_secs(2));
 
         let direct = crate::manifest::manifest("openai").unwrap();
-        assert_eq!(probe_local(&direct, Duration::from_millis(300)), LocalHealth::NotLoopback);
+        assert_eq!(
+            probe_local(&direct, Duration::from_millis(300)),
+            LocalHealth::NotLoopback
+        );
     }
 
     #[test]
     fn non_loopback_hosts_are_never_probed() {
         let mut m = crate::manifest::manifest("ollama").unwrap();
         m.base_url = "http://192.168.1.50:11434/v1";
-        assert_eq!(probe_local(&m, Duration::from_millis(100)), LocalHealth::NotLoopback);
+        assert_eq!(
+            probe_local(&m, Duration::from_millis(100)),
+            LocalHealth::NotLoopback
+        );
     }
 }

@@ -119,7 +119,12 @@ impl MemorySecretStore {
 
 impl SecretStore for MemorySecretStore {
     fn get(&self, provider: &str) -> Result<Option<String>, SecretError> {
-        Ok(self.values.lock().expect("memory store lock").get(provider).cloned())
+        Ok(self
+            .values
+            .lock()
+            .expect("memory store lock")
+            .get(provider)
+            .cloned())
     }
 
     fn set(&self, provider: &str, value: &str) -> Result<(), SecretError> {
@@ -139,7 +144,10 @@ impl SecretStore for MemorySecretStore {
     }
 
     fn delete(&self, provider: &str) -> Result<(), SecretError> {
-        self.values.lock().expect("memory store lock").remove(provider);
+        self.values
+            .lock()
+            .expect("memory store lock")
+            .remove(provider);
         Ok(())
     }
 

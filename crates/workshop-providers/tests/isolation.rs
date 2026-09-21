@@ -8,7 +8,10 @@ use workshop_providers::{
 };
 
 fn broker(tmp: &tempfile::TempDir) -> CredentialBroker {
-    CredentialBroker::new(Arc::new(MemorySecretStore::default()), tmp.path().join("home/connections.json"))
+    CredentialBroker::new(
+        Arc::new(MemorySecretStore::default()),
+        tmp.path().join("home/connections.json"),
+    )
 }
 
 #[test]
@@ -16,8 +19,12 @@ fn canary_a_never_reaches_host_b() {
     let tmp = tempfile::tempdir().unwrap();
     let broker = broker(&tmp);
     broker.save_api_key("openai", "CANARY-OPENAI").unwrap();
-    broker.save_api_key("anthropic", "CANARY-ANTHROPIC").unwrap();
-    broker.save_api_key("openrouter", "CANARY-OPENROUTER").unwrap();
+    broker
+        .save_api_key("anthropic", "CANARY-ANTHROPIC")
+        .unwrap();
+    broker
+        .save_api_key("openrouter", "CANARY-OPENROUTER")
+        .unwrap();
     broker.save_api_key("opencode", "CANARY-ZEN").unwrap();
 
     let providers = ["openai", "anthropic", "openrouter", "opencode"];
@@ -39,7 +46,9 @@ fn canary_a_never_reaches_host_b() {
                 assert!(value.starts_with("CANARY-"), "{provider} → {url}");
             } else {
                 match result {
-                    Err(ProviderError::HostNotAllowed { provider: p, .. }) => assert_eq!(&p, provider),
+                    Err(ProviderError::HostNotAllowed { provider: p, .. }) => {
+                        assert_eq!(&p, provider)
+                    }
                     other => panic!("{provider} credential leaked toward {url}: {other:?}"),
                 }
             }
@@ -60,10 +69,18 @@ fn lookalike_and_subdomain_hosts_are_rejected() {
         "https://eu.api.openai.com/v1",
         "http://api.openai.com/v1",
     ] {
-        assert!(handle.authorize(url).is_err(), "{url} must not receive the credential");
+        assert!(
+            handle.authorize(url).is_err(),
+            "{url} must not receive the credential"
+        );
     }
     // Case-insensitive host match is fine; that is still the allowed host.
-    assert_eq!(handle.authorize("https://API.OpenAI.com/v1/responses").unwrap(), Some("CANARY"));
+    assert_eq!(
+        handle
+            .authorize("https://API.OpenAI.com/v1/responses")
+            .unwrap(),
+        Some("CANARY")
+    );
 }
 
 #[test]
@@ -71,7 +88,9 @@ fn sampler_config_never_mixes_provider_and_credential() {
     let tmp = tempfile::tempdir().unwrap();
     let broker = broker(&tmp);
     broker.save_api_key("openai", "CANARY-OPENAI").unwrap();
-    broker.save_api_key("anthropic", "CANARY-ANTHROPIC").unwrap();
+    broker
+        .save_api_key("anthropic", "CANARY-ANTHROPIC")
+        .unwrap();
     broker.add_local("vllm").unwrap();
     let openai = broker.resolve("openai").unwrap();
     let anthropic = broker.resolve("anthropic").unwrap();
@@ -111,7 +130,16 @@ fn env_presence_is_reported_without_the_value() {
     assert!(text.contains("OPENROUTER_API_KEY"));
     assert!(!text.contains("CANARY-ENV"));
     let handle = broker.resolve("openrouter").unwrap();
-    assert_eq!(handle.authorize("https://openrouter.ai/api/v1/chat/completions").unwrap(), Some("CANARY-ENV"));
-    assert!(handle.authorize("https://api.openai.com/v1/responses").is_err());
+    assert_eq!(
+        handle
+            .authorize("https://openrouter.ai/api/v1/chat/completions")
+            .unwrap(),
+        Some("CANARY-ENV")
+    );
+    assert!(
+        handle
+            .authorize("https://api.openai.com/v1/responses")
+            .is_err()
+    );
     unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
 }

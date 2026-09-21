@@ -9,7 +9,11 @@
 //!   optional attribution headers `HTTP-Referer` / `X-Title`.
 //! * OpenCode Zen: `https://opencode.ai/zen/v1` — `/chat/completions`, `/responses`, or
 //!   `/messages` depending on the model; `Authorization: Bearer` with a Zen API key
-//!   (`OPENCODE_API_KEY`). The free rows are zero-price but still need a Zen key over raw HTTP.
+//!   (`OPENCODE_API_KEY`, minted at `opencode.ai/auth`). Zen's keyless free tier is gated to the
+//!   genuine `opencode` client (see `internal/opencode-free-models-proof.md`), so Workshop models
+//!   Zen as a **key-required** provider: the picker shows "Sign in to OpenCode Zen", and the
+//!   zero-price rows only become selectable once a key is connected. Free models without a key
+//!   are reachable only through the `opencode` agent adapter.
 //! * Local servers speak OpenAI Chat Completions on loopback: Ollama `:11434/v1`, LM Studio
 //!   `:1234/v1`, llama.cpp server `:8080/v1`, vLLM `:8000/v1`.
 
@@ -108,6 +112,10 @@ pub struct ProviderManifest {
     pub docs_url: &'static str,
     /// Plaintext HTTP allowed without confirmation (loopback only).
     pub loopback_only: bool,
+    /// Connect action shown while the provider has no credential, e.g. "Sign in to OpenCode Zen".
+    pub connect_copy: Option<&'static str>,
+    /// Where the user mints the key the connect action asks for.
+    pub credential_url: Option<&'static str>,
 }
 
 impl ProviderManifest {
@@ -117,6 +125,11 @@ impl ProviderManifest {
 
     pub fn is_local(&self) -> bool {
         self.class == ProviderClass::Local
+    }
+
+    /// Whether requests need a credential at all.
+    pub fn requires_credential(&self) -> bool {
+        self.auth != AuthHeader::None
     }
 }
 
@@ -138,6 +151,8 @@ pub fn builtin_manifests() -> Vec<ProviderManifest> {
             model_catalog_source: ModelCatalogSource::ModelsEndpoint,
             docs_url: "https://platform.openai.com/docs/api-reference",
             loopback_only: false,
+            connect_copy: Some("Add an OpenAI API key"),
+            credential_url: Some("https://platform.openai.com/api-keys"),
         },
         ProviderManifest {
             id: "anthropic",
@@ -154,6 +169,8 @@ pub fn builtin_manifests() -> Vec<ProviderManifest> {
             model_catalog_source: ModelCatalogSource::ModelsEndpoint,
             docs_url: "https://docs.anthropic.com/en/api/messages",
             loopback_only: false,
+            connect_copy: Some("Add an Anthropic API key"),
+            credential_url: Some("https://console.anthropic.com/settings/keys"),
         },
         ProviderManifest {
             id: "openrouter",
@@ -170,6 +187,8 @@ pub fn builtin_manifests() -> Vec<ProviderManifest> {
             model_catalog_source: ModelCatalogSource::ModelsEndpoint,
             docs_url: "https://openrouter.ai/docs/api-reference/overview",
             loopback_only: false,
+            connect_copy: Some("Add an OpenRouter API key"),
+            credential_url: Some("https://openrouter.ai/settings/keys"),
         },
         ProviderManifest {
             id: "opencode",
@@ -183,9 +202,13 @@ pub fn builtin_manifests() -> Vec<ProviderManifest> {
             credential: CredentialSource::Env {
                 var: "OPENCODE_API_KEY".into(),
             },
-            model_catalog_source: ModelCatalogSource::ModelsEndpoint,
+            model_catalog_source: ModelCatalogSource::ModelsDev {
+                url: "https://models.opencode.ai/api.json".into(),
+            },
             docs_url: "https://opencode.ai/docs/zen/",
             loopback_only: false,
+            connect_copy: Some("Sign in to OpenCode Zen"),
+            credential_url: Some("https://opencode.ai/auth"),
         },
         ProviderManifest {
             id: "ollama",
@@ -200,6 +223,8 @@ pub fn builtin_manifests() -> Vec<ProviderManifest> {
             model_catalog_source: ModelCatalogSource::ModelsEndpoint,
             docs_url: "https://github.com/ollama/ollama/blob/main/docs/openai.md",
             loopback_only: true,
+            connect_copy: None,
+            credential_url: None,
         },
         ProviderManifest {
             id: "lmstudio",
@@ -214,6 +239,8 @@ pub fn builtin_manifests() -> Vec<ProviderManifest> {
             model_catalog_source: ModelCatalogSource::ModelsEndpoint,
             docs_url: "https://lmstudio.ai/docs/app/api/endpoints/openai",
             loopback_only: true,
+            connect_copy: None,
+            credential_url: None,
         },
         ProviderManifest {
             id: "llamacpp",
@@ -228,6 +255,8 @@ pub fn builtin_manifests() -> Vec<ProviderManifest> {
             model_catalog_source: ModelCatalogSource::ModelsEndpoint,
             docs_url: "https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md",
             loopback_only: true,
+            connect_copy: None,
+            credential_url: None,
         },
         ProviderManifest {
             id: "vllm",
@@ -242,6 +271,8 @@ pub fn builtin_manifests() -> Vec<ProviderManifest> {
             model_catalog_source: ModelCatalogSource::ModelsEndpoint,
             docs_url: "https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html",
             loopback_only: true,
+            connect_copy: None,
+            credential_url: None,
         },
     ]
 }
@@ -260,23 +291,59 @@ mod tests {
         let ids: Vec<&str> = builtin_manifests().iter().map(|m| m.id).collect();
         assert_eq!(
             ids,
-            ["openai", "anthropic", "openrouter", "opencode", "ollama", "lmstudio", "llamacpp", "vllm"]
+            [
+                "openai",
+                "anthropic",
+                "openrouter",
+                "opencode",
+                "ollama",
+                "lmstudio",
+                "llamacpp",
+                "vllm"
+            ]
         );
         let anthropic = manifest("anthropic").unwrap();
         assert_eq!(anthropic.protocol, Protocol::Messages);
         assert_eq!(anthropic.auth, AuthHeader::XApiKey);
-        assert!(anthropic.required_headers.contains(&("anthropic-version", "2023-06-01")));
-        assert_eq!(anthropic.endpoint(Protocol::Messages), "https://api.anthropic.com/v1/messages");
-        assert!(matches!(anthropic.credential, CredentialSource::Env { ref var } if var == "ANTHROPIC_API_KEY"));
+        assert!(
+            anthropic
+                .required_headers
+                .contains(&("anthropic-version", "2023-06-01"))
+        );
+        assert_eq!(
+            anthropic.endpoint(Protocol::Messages),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert!(
+            matches!(anthropic.credential, CredentialSource::Env { ref var } if var == "ANTHROPIC_API_KEY")
+        );
 
         let openai = manifest("openai").unwrap();
-        assert_eq!(openai.endpoint(Protocol::Responses), "https://api.openai.com/v1/responses");
-        assert_eq!(openai.endpoint(Protocol::ChatCompletions), "https://api.openai.com/v1/chat/completions");
+        assert_eq!(
+            openai.endpoint(Protocol::Responses),
+            "https://api.openai.com/v1/responses"
+        );
+        assert_eq!(
+            openai.endpoint(Protocol::ChatCompletions),
+            "https://api.openai.com/v1/chat/completions"
+        );
         assert_eq!(openai.auth, AuthHeader::Bearer);
 
         let zen = manifest("opencode").unwrap();
-        assert_eq!(zen.endpoint(Protocol::ChatCompletions), "https://opencode.ai/zen/v1/chat/completions");
+        assert_eq!(
+            zen.endpoint(Protocol::ChatCompletions),
+            "https://opencode.ai/zen/v1/chat/completions"
+        );
         assert_eq!(zen.class, ProviderClass::Direct);
+        assert!(
+            zen.requires_credential(),
+            "Zen is key-required from third-party clients"
+        );
+        assert_eq!(zen.connect_copy, Some("Sign in to OpenCode Zen"));
+        assert_eq!(zen.credential_url, Some("https://opencode.ai/auth"));
+        assert!(
+            matches!(zen.model_catalog_source, ModelCatalogSource::ModelsDev { ref url } if url == "https://models.opencode.ai/api.json")
+        );
     }
 
     #[test]
@@ -285,6 +352,8 @@ mod tests {
             assert!(m.loopback_only, "{}", m.id);
             assert_eq!(m.auth, AuthHeader::None, "{}", m.id);
             assert_eq!(m.credential, CredentialSource::None, "{}", m.id);
+            assert!(!m.requires_credential(), "{}", m.id);
+            assert_eq!(m.connect_copy, None, "{}", m.id);
             assert!(m.base_url.starts_with("http://127.0.0.1:"), "{}", m.id);
             assert_eq!(m.protocol, Protocol::ChatCompletions, "{}", m.id);
         }
@@ -293,11 +362,22 @@ mod tests {
     #[test]
     fn no_manifest_defaults_to_xai_or_grok() {
         for m in builtin_manifests() {
-            assert!(!m.base_url.contains("x.ai") && !m.base_url.contains("grok.com"), "{}", m.id);
+            assert!(
+                !m.base_url.contains("x.ai") && !m.base_url.contains("grok.com"),
+                "{}",
+                m.id
+            );
             for host in m.allowed_hosts {
-                assert!(!host.ends_with("x.ai") && !host.ends_with("grok.com"), "{}", m.id);
+                assert!(
+                    !host.ends_with("x.ai") && !host.ends_with("grok.com"),
+                    "{}",
+                    m.id
+                );
             }
         }
-        assert!(manifest("xai").is_none(), "optional xAI is a separate, user-selected plugin");
+        assert!(
+            manifest("xai").is_none(),
+            "optional xAI is a separate, user-selected plugin"
+        );
     }
 }

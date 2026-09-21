@@ -70,9 +70,13 @@ pub fn ensure_private_dir(dir: &Path) -> Result<(), ConfigError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(dir).map_err(io_err(dir))?.permissions().mode();
+        let mode = std::fs::metadata(dir)
+            .map_err(io_err(dir))?
+            .permissions()
+            .mode();
         if mode & 0o077 != 0 {
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode & 0o700)).map_err(io_err(dir))?;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode & 0o700))
+                .map_err(io_err(dir))?;
         }
     }
     Ok(())
@@ -80,7 +84,11 @@ pub fn ensure_private_dir(dir: &Path) -> Result<(), ConfigError> {
 
 fn open_private(path: &Path, truncate: bool) -> Result<File, ConfigError> {
     let mut options = OpenOptions::new();
-    options.create(true).read(true).write(true).truncate(truncate);
+    options
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(truncate);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -117,7 +125,8 @@ pub fn atomic_write_private(path: &Path, contents: &[u8]) -> Result<(), ConfigEr
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(io_err(path))?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .map_err(io_err(path))?;
         }
         Ok(())
     })();
@@ -134,10 +143,11 @@ pub fn read_connections(path: &Path) -> Result<ConnectionsFile, ConfigError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ConnectionsFile::default()),
         Err(e) => return Err(io_err(path)(e)),
     };
-    let file: ConnectionsFile = serde_json::from_str(&text).map_err(|source| ConfigError::Parse {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let file: ConnectionsFile =
+        serde_json::from_str(&text).map_err(|source| ConfigError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
     if file.version != CONNECTIONS_FILE_VERSION {
         return Err(ConfigError::Version {
             path: path.to_path_buf(),
@@ -155,12 +165,17 @@ pub fn write_connections(path: &Path, file: &ConnectionsFile) -> Result<(), Conf
 
 /// Run `op` while holding an exclusive advisory lock on `<path>.lock`, so two Workshop processes
 /// cannot interleave a read-modify-write.
-pub fn with_lock<T>(path: &Path, op: impl FnOnce() -> Result<T, ConfigError>) -> Result<T, ConfigError> {
+pub fn with_lock<T>(
+    path: &Path,
+    op: impl FnOnce() -> Result<T, ConfigError>,
+) -> Result<T, ConfigError> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     ensure_private_dir(dir)?;
     let lock_path = dir.join(format!(
         ".{}.lock",
-        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
     ));
     let lock = open_private(&lock_path, false)?;
     FileExt::lock_exclusive(&lock).map_err(io_err(&lock_path))?;
@@ -184,9 +199,16 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
             assert_eq!(
-                std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777,
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(path.parent().unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
                 0o700
             );
         }
@@ -204,7 +226,10 @@ mod tests {
         std::fs::write(&path, "{}").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         atomic_write_private(&path, b"{}\n").unwrap();
-        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]
@@ -213,6 +238,9 @@ mod tests {
         let path = tmp.path().join("connections.json");
         assert_eq!(read_connections(&path).unwrap(), ConnectionsFile::default());
         std::fs::write(&path, r#"{"version": 99, "connections": {}}"#).unwrap();
-        assert!(matches!(read_connections(&path), Err(ConfigError::Version { version: 99, .. })));
+        assert!(matches!(
+            read_connections(&path),
+            Err(ConfigError::Version { version: 99, .. })
+        ));
     }
 }

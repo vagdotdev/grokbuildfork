@@ -1,11 +1,14 @@
 //! Workshop Direct API and Local providers.
 //!
 //! * [`manifest`] — typed [`ProviderManifest`]s for the built-in providers: OpenAI, Anthropic (API
-//!   key only), OpenRouter, OpenCode Zen, and the local OpenAI-compatible servers (Ollama, LM
-//!   Studio, llama.cpp, vLLM). A manifest pins the wire protocol, base URL, allowed hosts, auth
-//!   header, required headers, and credential source.
+//!   key only), OpenRouter, OpenCode Zen (key required — "Sign in to OpenCode Zen"), and the local
+//!   OpenAI-compatible servers (Ollama, LM Studio, llama.cpp, vLLM). A manifest pins the wire
+//!   protocol, base URL, allowed hosts, auth header, required headers, credential source, and the
+//!   connect copy shown before a credential exists.
 //! * [`catalog`] — [`CatalogModel`] rows (`provider:model:variant` keys) with protocol, base URL,
-//!   credential source, and a free flag with source + timestamp.
+//!   credential source, price, and a [`FreeTier`] claim with source + timestamp. Zero-price rows
+//!   are never a keyless default; keyless free providers from the ongoing survey slot in as
+//!   [`FreeTier::Keyless`].
 //! * [`secrets`] / [`broker`] — BYOK storage in the OS keyring and an atomic, owner-only
 //!   connections file. Credentials are bound to a provider id, auth scheme, and host allowlist;
 //!   the broker refuses to release a credential for any other host.
@@ -25,10 +28,10 @@ pub mod sampler;
 pub mod secrets;
 
 pub use broker::{CredentialBroker, CredentialHandle, CredentialRef, ProviderError};
-pub use catalog::{Catalog, CatalogModel, CatalogSource, Price};
+pub use catalog::{Catalog, CatalogModel, CatalogSource, FreeTier, PickerGroup, Price};
 pub use config::{ConnectionRecord, ConnectionsFile, atomic_write_private};
 pub use manifest::{
-    AuthHeader, CredentialSource, ProviderClass, ProviderManifest, Protocol, builtin_manifests,
+    AuthHeader, CredentialSource, Protocol, ProviderClass, ProviderManifest, builtin_manifests,
     manifest,
 };
 pub use sampler::{api_backend_for, auth_scheme_for, sampler_config_for};
