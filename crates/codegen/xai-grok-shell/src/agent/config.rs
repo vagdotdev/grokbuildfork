@@ -45,7 +45,8 @@ pub const DEFAULT_AGENT_TYPE: &str = "grok-build-plan";
 pub(crate) fn default_agent_type() -> String {
     DEFAULT_AGENT_TYPE.to_owned()
 }
-pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = "https://cli-chat-proxy.grok.com/v1";
+/// Workshop: single source of truth is `xai-grok-env` (loopback placeholder; gate:no-xai, Gate 3).
+pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = xai_grok_env::PROD_CLI_CHAT_PROXY_BASE_URL;
 pub const XAI_API_BASE_URL_DEFAULT: &str = "https://api.x.ai/v1";
 const NO_INLINE_CITATIONS_RESPONSE_INCLUDE: &str = "no_inline_citations";
 /// One or more environment variable names that may hold a model API key.

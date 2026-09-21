@@ -26,6 +26,8 @@ xai-grok-telemetry = { workspace = true }
 xai-grok-tools = { workspace = true }
 xai-grok-version = { workspace = true }
 flate2 = { workspace = true }
+# Workshop: release artifacts are `.tar.gz`; the updater extracts the single `workshop` member.
+tar = { workspace = true }
 zstd = { workspace = true }
 sha2 = { workspace = true }
 xai-tty-utils = { workspace = true }

@@ -921,9 +921,10 @@ fn test_reinstall_hint_npm_mentions_npm_command() {
     let hint = reinstall_hint("npm", "stable");
     assert!(hint.contains("npm i -g"), "should suggest npm i -g: {hint}");
     assert!(
-        hint.contains("@xai-official/grok"),
-        "should name the package: {hint}"
+        hint.contains(crate::version::NPM_PACKAGE),
+        "should name the Workshop package: {hint}"
     );
+    assert!(!hint.contains("@xai-official"), "must not name the xAI package: {hint}");
 }
 
 #[test]
@@ -934,76 +935,38 @@ fn test_reinstall_hint_gh_release_mentions_gh_command() {
         "should suggest gh release download: {hint}"
     );
     assert!(
-        hint.contains("xai-org-shared/grok-build"),
-        "should name the repo: {hint}"
+        hint.contains(crate::version::GH_RELEASE_REPO),
+        "should name the Workshop repo: {hint}"
     );
+    assert!(!hint.contains("xai-org"), "must not name the xAI repo: {hint}");
 }
 
+/// Workshop (gate:no-xai, Gate 4): no hint, for any installer or channel, may point at the xAI
+/// install scripts. Installers are not published yet, so every internal hint is the from-source line.
 #[test]
-fn test_reinstall_hint_internal_mentions_platform_installer() {
-    let hint = reinstall_hint("internal", "stable");
-    if cfg!(windows) {
-        assert!(hint.contains("irm"), "should suggest irm install: {hint}");
-        assert!(
-            hint.contains("install.ps1"),
-            "should reference install.ps1: {hint}"
-        );
+fn test_reinstall_hint_never_points_at_xai_installers() {
+    for (installer, channel) in [
+        ("internal", "stable"),
+        ("internal", "alpha"),
+        ("internal", "enterprise"),
+        ("internal", "al pha"),
+        ("internal", "x'; rm -rf ~;'"),
+        ("internal", ""),
+        ("homebrew", "stable"),
+        ("", "stable"),
+        ("npm", "alpha"),
+        ("gh-release", "alpha"),
+    ] {
+        let hint = reinstall_hint(installer, channel);
+        for forbidden in ["x.ai/cli", "install.sh", "install.ps1", "@xai-official", "xai-org"] {
+            assert!(
+                !hint.contains(forbidden),
+                "{installer}/{channel:?}: hint must not contain {forbidden}: {hint}"
+            );
+        }
         assert!(
             !hint.contains("GROK_CHANNEL"),
-            "stable must not set channel: {hint}"
-        );
-    } else {
-        assert!(hint.contains("curl"), "should suggest curl install: {hint}");
-        assert!(
-            hint.contains("install.sh"),
-            "should reference install.sh: {hint}"
-        );
-        assert!(
-            !hint.contains("GROK_CHANNEL"),
-            "stable must not set channel: {hint}"
-        );
-    }
-}
-
-#[test]
-fn test_reinstall_hint_internal_alpha_sets_channel() {
-    let hint = reinstall_hint("internal", "alpha");
-    if cfg!(windows) {
-        assert!(
-            hint.contains("$env:GROK_CHANNEL='alpha'"),
-            "alpha should set GROK_CHANNEL: {hint}"
-        );
-    } else {
-        assert!(
-            hint.contains("| GROK_CHANNEL='alpha' bash"),
-            "alpha must set GROK_CHANNEL on bash (the process running \
-             install.sh), not curl: {hint}"
-        );
-    }
-}
-
-#[test]
-fn test_reinstall_hint_enterprise_uses_enterprise_script() {
-    // Enterprise ships via its own bootstrap script (channel hardcoded there), never install.sh with GROK_CHANNEL
-    let hint = reinstall_hint("internal", "enterprise");
-    assert!(
-        hint.contains("/enterprise-install."),
-        "enterprise must use the published enterprise-install script: {hint}"
-    );
-    assert!(
-        !hint.contains("GROK_CHANNEL"),
-        "enterprise script needs no channel env: {hint}"
-    );
-}
-
-#[test]
-fn test_reinstall_hint_malformed_channel_falls_back_to_stable() {
-    // Free-text config channels never reach the shell one-liner unless they are plain [A-Za-z0-9._-] tokens
-    for bad in ["al pha", "x'; rm -rf ~;'", "a\"b", ""] {
-        let hint = reinstall_hint("internal", bad);
-        assert!(
-            !hint.contains("GROK_CHANNEL"),
-            "malformed channel {bad:?} must fall back to stable: {hint}"
+            "{installer}/{channel:?}: no shell one-liner may interpolate a channel: {hint}"
         );
     }
 }
@@ -1021,6 +984,7 @@ fn test_reinstall_hint_empty_falls_back_to_internal() {
     let hint = reinstall_hint("", "stable");
     assert_eq!(hint, reinstall_hint("internal", "stable"));
 }
+
 
 #[test]
 fn test_smoke_test_failure_messages_distinguish_causes() {

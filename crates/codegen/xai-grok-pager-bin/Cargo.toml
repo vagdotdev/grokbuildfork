@@ -4,20 +4,23 @@ version = "1.0.32"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["xAI"]
-default-run = "xai-grok-pager"
+default-run = "workshop"
 
-# Composition-root binary for the Grok Build TUI. The artifact is still named
-# `xai-grok-pager`. This package exists so the binary can link both the pager
-# library and the optional `xai-grok-pager-minimal` render mode: `minimal`
-# depends on `xai-grok-pager`, so the pager library cannot depend back on it
-# (cargo cycle). The binary installs the minimal-mode IoC hooks at startup.
+# Composition-root binary for the Workshop TUI (Workshop overlay: the artifact
+# is named `workshop`; the package keeps its upstream name for sync). This
+# package exists so the binary can link both the pager library and the optional
+# `xai-grok-pager-minimal` render mode: `minimal` depends on `xai-grok-pager`,
+# so the pager library cannot depend back on it (cargo cycle). The binary
+# installs the minimal-mode IoC hooks at startup.
 [[bin]]
-name = "xai-grok-pager"
+name = "workshop"
 path = "src/main.rs"
 
 [dependencies]
 # The pager library (all application logic + the public API main.rs drives).
 xai-grok-pager = { path = "../xai-grok-pager" }
+# Workshop overlay: connection picker policy + text-mode picker for `workshop login`.
+workshop-auth = { path = "../../workshop-auth" }
 # Optional scrollback-native render mode, wired in via the fn-pointer seam.
 xai-grok-pager-minimal = { path = "../xai-grok-pager-minimal" }
 
