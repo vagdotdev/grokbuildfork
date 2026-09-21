@@ -26,7 +26,7 @@ builds, passes the no-xAI gates, and opens a sync PR.
 |---|---|
 | `run.sh` | Orchestrates everything below. `run.sh --pr dry-run` is the local end-to-end. |
 | `fetch-upstream.sh` | Fetches upstream into `refs/sync/upstream-new`, the locked commit into `refs/sync/upstream-lock`; records SHA, `SOURCE_REV`, version, commit date; lists upstream commits and changed files; flags security-review paths. Upstream unchanged → `UPSTREAM_MOVED=0`. |
-| `replace-tree.sh` | `git read-tree -u --reset` the upstream tree, then restore every overlay path from the base commit. Reports stale files dropped and upstream files colliding with overlay paths. |
+| `replace-tree.sh` | `git read-tree -u --reset` the upstream tree, then restore every overlay path from the base commit. Reports upstream deletions, stale files dropped, and upstream files colliding with overlay paths. |
 | `update-lockfile.sh` | Rewrites `upstream-lock.toml` and stages it. |
 | `replay-patches.sh` | Applies the series in order, one commit per patch (details below). |
 | `verify.sh` | `cargo check -p xai-grok-pager-bin` + every `crates/workshop-*` workspace member; `cargo test -p workshop-gates`, `scripts/no-xai-scan.sh`, `cargo test -p workshop-adapters` when present. Commits a refreshed `Cargo.lock`. |
@@ -124,8 +124,10 @@ no-op (dispatch with `force` to rebuild it).
    and the run is red: rename the Workshop path, never overwrite upstream.
 5. **No silent tree replace.** Overlay paths are enumerated
    (`scripts/overlay-paths.txt` or the built-in default) and restored after
-   every fetch; anything else that was in the base branch but not upstream is
-   listed under "stale files dropped" in the PR for a human to confirm.
+   every fetch. Files upstream deleted since the lock are counted as routine
+   deletions; anything else that was in the base branch but is neither upstream
+   nor overlay is listed under "stale files dropped" in the PR for a human to
+   confirm.
 6. **Human review** on every sync PR. Auto-PR ≠ auto-merge.
 7. If upstream changes Login / OIDC / env / updater / paths / telemetry files
    (`security-review-paths.txt`), the sync is a **security review**, not a
@@ -174,6 +176,32 @@ proceed when upstream did not move or the branch exists). The report directory
 (default `$RUNNER_TEMP`/`$TMPDIR`/`/tmp` + `/workshop-sync-report`) holds
 `sync.env`, `patches.tsv`, `changed-files.txt`, `rejects/`, the cargo logs and
 `pr-body.md`; the workflow uploads it as the `sync-report-<run id>` artifact.
+
+## Layout assumptions (reconcile with the M0 overlay)
+
+The scripts were written against the production plan before the M0 overlay
+landed. They assume:
+
+- `patches/series` carries tags as a trailing `# gate:no-xai` style comment
+  (bare tags after the file name also work); patches are `git diff` /
+  `git format-patch` output with `index` lines, `-p1` unless the line says
+  otherwise.
+- `upstream-lock.toml` is flat TOML with string values `source`, `git_sha`,
+  `source_rev`, `version`, `fetched_at`; comments are allowed.
+- The base branch keeps the patched upstream files in its tree (quilt "pushed"
+  state); the sync resets upstream-owned paths and replays, so the base tree
+  and `patches/` must agree.
+- Overlay paths default to `crates/workshop-*`, `patches/`, `scripts/`,
+  `.github/`, `docs/`, `upstream-lock.toml`; `scripts/overlay-paths.txt`
+  (one prefix or glob per line) overrides the list. `scripts/upstream-paths.txt`
+  from the plan is not needed: everything not overlay is upstream.
+- `crates/workshop-*` become workspace members through a patch on the root
+  `Cargo.toml`; `Cargo.lock` is not patched (cargo adds the overlay entries
+  during `verify.sh` and the sync commits the result).
+- Gate suites are discovered by path: `crates/workshop-gates/Cargo.toml`,
+  executable `scripts/no-xai-scan.sh`, `crates/workshop-adapters/Cargo.toml`.
+- The plan's `scripts/sync-upstream.sh` is `scripts/sync/run.sh` here; keep a
+  one-line wrapper at the old name if M0 adds one.
 
 ## Workflow setup
 
