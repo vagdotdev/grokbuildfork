@@ -18,11 +18,28 @@
 //!                                Usage / Done / Error
 //!   -> RunHandle::cancel         SIGINT, then SIGKILL the group
 //! ```
+//!
+//! OpenCode additionally has an engine mode ([`opencode_engine`]): Workshop
+//! runs the genuine `opencode serve` underneath its TUI and drives it over
+//! the loopback session API. That is how OpenCode's free models (Big Pickle
+//! and whatever OpenCode serves free today) become usable with no key — the
+//! free tier is only reachable from the real OpenCode client, so Workshop
+//! mirrors OpenCode's own free catalog instead of impersonating it:
+//!
+//! ```text
+//! opencode_engine::ensure_opencode   detect, or official installer (pinned)
+//!   -> OpenCodeEngine::start         `opencode serve` on a free loopback port
+//!   -> free_models()                 GET /config/providers -> zero-cost opencode/* rows
+//!   -> create_session / prompt       POST prompt_async + SSE /event -> AdapterEvents
+//!   -> TurnHandle::cancel            POST /session/{id}/abort, session survives
+//!   -> shutdown                      SIGTERM, then SIGKILL the group
+//! ```
 
 pub mod adapter;
 pub mod detect;
 pub mod env;
 pub mod event;
+pub mod opencode_engine;
 pub mod probe;
 pub mod status;
 pub mod supervisor;

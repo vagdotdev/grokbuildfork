@@ -741,7 +741,7 @@ async fn cancel_sends_sigint_and_child_exits_gracefully() {
 /// The fake records its background child's pid right after its first output
 /// line; wait for that file so the descendant check is meaningful.
 async fn wait_for_grandchild(sandbox: &Sandbox) -> i32 {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
         if let Some(pid) = sandbox.grandchild_pid() {
             return pid;

@@ -6,6 +6,8 @@
 
 #![allow(dead_code)]
 
+pub mod fake_serve;
+
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -162,6 +164,28 @@ impl Sandbox {
         std::fs::write(self.state().join("exit_code"), code.to_string()).unwrap();
     }
 
+    /// Port the fake `opencode serve` claims to listen on (a real in-test
+    /// server should be bound there).
+    pub fn set_serve_port(&self, port: u16) {
+        std::fs::write(self.state().join("serve_port"), port.to_string()).unwrap();
+    }
+
+    pub fn serve_argv(&self) -> Vec<String> {
+        std::fs::read_to_string(self.state().join("serve_argv.txt"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    pub fn serve_env(&self) -> Vec<String> {
+        std::fs::read_to_string(self.state().join("serve_env.txt"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
     pub fn argv(&self) -> Vec<String> {
         std::fs::read_to_string(self.state().join("argv.txt"))
             .unwrap_or_default()
@@ -261,6 +285,14 @@ if [ "$*" = {status_args} ]; then
   else
     printf '%s\n' {status_out}{redirect}; exit {out_exit}
   fi
+fi
+if [ "$1" = "serve" ]; then
+  printf '%s\n' "$@" > "$state/serve_argv.txt"
+  env > "$state/serve_env.txt"
+  port=$(cat "$state/serve_port")
+  echo "opencode server listening on http://127.0.0.1:$port"
+  trap 'exit 0' TERM
+  while :; do sleep 1; done
 fi
 printf '%s\n' "$@" > "$state/argv.txt"
 cat > "$state/stdin.txt"

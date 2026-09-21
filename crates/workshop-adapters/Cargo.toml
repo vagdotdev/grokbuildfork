@@ -6,10 +6,18 @@ license = "Apache-2.0"
 description = "Workshop agent adapters: detect and spawn the official Claude Code, Codex, Cursor Agent, and OpenCode CLIs; never read another app's credentials"
 
 [dependencies]
+base64 = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+# Loopback-only HTTP/1.1 client for `opencode serve`; no TLS on purpose.
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["process", "io-util", "sync", "time", "rt", "macros"] }
+tokio = { workspace = true, features = ["process", "io-util", "sync", "time", "rt", "macros", "net"] }
 tracing = { workspace = true }
 xai-tty-utils = { workspace = true }
 
@@ -17,8 +25,10 @@ xai-tty-utils = { workspace = true }
 nix = { workspace = true, features = ["signal", "process"] }
 
 [dev-dependencies]
+hyper = { version = "1", features = ["server", "http1"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tokio-stream = { workspace = true }
 
 [lints]
 workspace = true

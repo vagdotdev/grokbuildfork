@@ -178,6 +178,40 @@ pub fn candidate_paths(adapter: &dyn Adapter, opts: &DetectOptions) -> Vec<PathB
     out
 }
 
+/// Run the adapter's identity probes against one executable. `Err(reason)`
+/// when the binary is not (or cannot be shown to be) this vendor's CLI.
+pub async fn verify_binary(
+    adapter: &dyn Adapter,
+    path: &Path,
+    env: &BTreeMap<OsString, OsString>,
+    timeout: Duration,
+) -> Result<InstalledCli, String> {
+    let mut outputs = Vec::new();
+    for args in adapter.identity_probes() {
+        match run_probe(path, args, env, None, timeout).await {
+            Ok(out) => outputs.push(out),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    match adapter.identify(&outputs) {
+        Some(version) => {
+            let pin = adapter.version_pin().classify(&version);
+            tracing::debug!(adapter = %adapter.id(), path = %path.display(), %version, ?pin, "identified vendor cli");
+            Ok(InstalledCli {
+                adapter: adapter.id(),
+                path: path.to_path_buf(),
+                version,
+                pin,
+            })
+        }
+        None => Err(format!(
+            "`{}` did not identify itself as {}",
+            path.display(),
+            adapter.id().display_name()
+        )),
+    }
+}
+
 /// Detect one adapter's CLI.
 pub async fn detect(adapter: &dyn Adapter, opts: &DetectOptions) -> Detection {
     let env = match &opts.probe_env {
@@ -195,39 +229,13 @@ pub async fn detect(adapter: &dyn Adapter, opts: &DetectOptions) -> Detection {
 
     let mut first_unverified: Option<(PathBuf, String)> = None;
     for path in candidate_paths(adapter, opts) {
-        let mut outputs = Vec::new();
-        let mut failure = None;
-        for args in adapter.identity_probes() {
-            match run_probe(&path, args, &env, None, opts.probe_timeout).await {
-                Ok(out) => outputs.push(out),
-                Err(e) => {
-                    failure = Some(e.to_string());
-                    break;
-                }
+        match verify_binary(adapter, &path, &env, opts.probe_timeout).await {
+            Ok(cli) => return Detection::Installed(cli),
+            Err(reason) => {
+                tracing::debug!(adapter = %adapter.id(), path = %path.display(), %reason, "candidate rejected");
+                first_unverified.get_or_insert((path, reason));
             }
         }
-        let reason = match failure {
-            Some(reason) => reason,
-            None => match adapter.identify(&outputs) {
-                Some(version) => {
-                    let pin = adapter.version_pin().classify(&version);
-                    tracing::debug!(adapter = %adapter.id(), path = %path.display(), %version, ?pin, "identified vendor cli");
-                    return Detection::Installed(InstalledCli {
-                        adapter: adapter.id(),
-                        path,
-                        version,
-                        pin,
-                    });
-                }
-                None => format!(
-                    "`{}` did not identify itself as {}",
-                    path.display(),
-                    adapter.id().display_name()
-                ),
-            },
-        };
-        tracing::debug!(adapter = %adapter.id(), path = %path.display(), %reason, "candidate rejected");
-        first_unverified.get_or_insert((path, reason));
     }
 
     match first_unverified {
