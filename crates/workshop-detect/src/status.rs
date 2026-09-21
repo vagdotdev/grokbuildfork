@@ -226,7 +226,9 @@ mod tests {
 
     #[test]
     fn opencode_real_outputs() {
-        let none = "\u{1b}[0m\n┌  Credentials \u{1b}[90m~/.local/share/opencode/auth.json\n│\n└  0 credentials\n";
+        // Real output prints the path of OpenCode's credential file after "Credentials"; Workshop
+        // only reads the count and never opens that file, so the path is elided here.
+        let none = "\u{1b}[0m\n┌  Credentials \u{1b}[90m~/<opencode credential file>\n│\n└  0 credentials\n";
         assert_eq!(interpret_status(Vendor::OpenCode, &out(Some(0), none, "")), LoginState::LoggedOut);
         let one = "┌  Credentials ~/x\n│\n●  anthropic \u{1b}[90moauth\n│\n└  1 credential\n";
         assert_eq!(interpret_status(Vendor::OpenCode, &out(Some(0), one, "")), LoginState::LoggedIn);

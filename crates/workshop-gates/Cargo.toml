@@ -1,0 +1,16 @@
+[package]
+name = "workshop-gates"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Workshop overlay CI gates. gate:no-theft fails the build if any workspace source opens another application's credentials or bundles a foreign OAuth capture path"
+
+[dependencies]
+
+[dev-dependencies]
+regex = { workspace = true }
+tempfile = { workspace = true }
+walkdir = { workspace = true }
+
+[lints]
+workspace = true

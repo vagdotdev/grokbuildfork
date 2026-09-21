@@ -13310,6 +13310,11 @@ dependencies = [
 [[package]]
 name = "workshop-gates"
 version = "0.1.0"
+dependencies = [
+ "regex",
+ "tempfile",
+ "walkdir",
+]
 
 [[package]]
 name = "workshop-providers"
