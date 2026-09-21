@@ -9,8 +9,8 @@ use ratatui::widgets::{Paragraph, Widget};
 use crate::render::color::blend_color;
 use crate::theme::Theme;
 
-const LOGO: &str = include_str!("../../../assets/logo/logo07.txt");
-const LOGO_SMALL: &str = include_str!("../../../assets/logo/logo05.txt");
+const LOGO: &str = workshop_brand::PORTRAIT;
+const LOGO_SMALL: &str = workshop_brand::PORTRAIT_COMPACT;
 
 /// Height at or above which the small logo is shown (below it, no logo).
 const SMALL_LOGO_MIN_HEIGHT: u16 = 22;
@@ -141,6 +141,9 @@ fn shine_opacity(diag: f32, secs: f32) -> f32 {
 }
 
 fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, logo: &str) {
+    // Light themes paint the dots dark, so flip the portrait to keep it a positive image
+    let ink = (!theme.is_dark()).then(|| workshop_brand::invert(logo));
+    let logo = ink.as_deref().unwrap_or(logo);
     let lines: Vec<&str> = non_empty_lines(logo).collect();
     let rows = lines.len().max(1) as f32;
     let cols = lines
