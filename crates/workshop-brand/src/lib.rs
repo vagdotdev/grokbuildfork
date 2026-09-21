@@ -20,6 +20,15 @@ pub const BUST_5X10: &str = include_str!("../assets/portrait-5x10.txt");
 /// by 7 rows with it, so the side-by-side layout needs roughly 27 terminal rows.
 pub const BUST_14X28: &str = include_str!("../assets/portrait-14x28.txt");
 
+/// Passport-style face crop (eyes, nose, mouth fill the square) on an empty background, 7 x 14.
+pub const FACE_7X14: &str = include_str!("../assets/face-7x14.txt");
+
+/// Face crop, 5 x 10.
+pub const FACE_5X10: &str = include_str!("../assets/face-5x10.txt");
+
+/// Face crop, 14 x 28.
+pub const FACE_14X28: &str = include_str!("../assets/face-14x28.txt");
+
 /// One art family at the welcome logo tiers.
 pub struct HeroArt {
     /// 2x tier (14 x 28), tried first when the terminal is tall enough; `None` keeps the upstream tier chain.
@@ -43,7 +52,20 @@ pub const BUST_2X: HeroArt = HeroArt {
     ..BUST
 };
 
-/// Environment variable that picks the art set for a launch: `bust`, `bust-2x`.
+/// The face crop, 1x only.
+pub const FACE: HeroArt = HeroArt {
+    large: None,
+    full: FACE_7X14,
+    compact: FACE_5X10,
+};
+
+/// The face crop with the 2x tier enabled.
+pub const FACE_2X: HeroArt = HeroArt {
+    large: Some(FACE_14X28),
+    ..FACE
+};
+
+/// Environment variable that picks the art set for a launch: `bust`, `bust-2x`, `face`, `face-2x`.
 /// Anything else is the default, [`BUST`].
 pub const HERO_ART_ENV: &str = "WORKSHOP_HERO_ART";
 
@@ -56,6 +78,8 @@ pub fn hero_art() -> &'static HeroArt {
 fn hero_art_named(name: Option<&str>) -> &'static HeroArt {
     match name.map(str::trim) {
         Some("bust-2x") => &BUST_2X,
+        Some("face") => &FACE,
+        Some("face-2x") => &FACE_2X,
         _ => &BUST,
     }
 }
@@ -128,7 +152,7 @@ mod tests {
 
     #[test]
     fn portraits_match_the_upstream_logo_grids() {
-        for art in [&BUST, &BUST_2X] {
+        for art in [&BUST, &BUST_2X, &FACE, &FACE_2X] {
             assert_grid(art.full, 7, 14);
             assert_grid(art.compact, 5, 10);
             if let Some(large) = art.large {
@@ -148,6 +172,11 @@ mod tests {
         assert_eq!(two_x.large, Some(BUST_14X28));
         assert_eq!(two_x.full, BUST_7X14);
         assert_eq!(two_x.compact, BUST_5X10);
+        let face = hero_art_named(Some("face"));
+        assert!(face.large.is_none());
+        assert_eq!(face.full, FACE_7X14);
+        assert_eq!(face.compact, FACE_5X10);
+        assert_eq!(hero_art_named(Some("face-2x")).large, Some(FACE_14X28));
     }
 
     #[test]
@@ -179,6 +208,6 @@ mod tests {
         );
         assert_eq!(invert("a\n"), "a\n");
         assert_eq!(invert(&invert(BUST_7X14)), BUST_7X14);
-        assert_grid(&invert(BUST_7X14), 7, 14);
+        assert_grid(&invert(FACE_7X14), 7, 14);
     }
 }

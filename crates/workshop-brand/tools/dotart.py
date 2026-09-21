@@ -5,17 +5,27 @@ Regenerates the `assets/*.txt` glyph grids from a source photo. The output uses 
 U+2800..U+28FF (blank cells are U+2800, never spaces), one line per terminal row, so the
 pager can size and recolor it exactly like the upstream Grok logo.
 
-Recipe used for the committed assets (photo 1280x720, square crop x=450 y=80 side=400):
+Recipes used for the committed assets (photo 1280x720; dots = light areas, the pager flips bits
+for light themes):
 
     # 1. person mask (one-off, `pip install rembg[cpu]`; white = person)
     python3 -c "from rembg import remove, new_session; from PIL import Image; \
       remove(Image.open('photo.jpg').convert('RGB'), session=new_session('u2net_human_seg'), \
       only_mask=True).save('mask.png')"
-    # 2. glyph grids (dots = light areas; the pager flips bits for light themes)
+    # 2a. bust (head + shoulders, crop x=450 y=80 side=400, background = solid dots)
     python3 dotart.py photo.jpg --mask mask.png --crop 450 80 400 --rows 7  --cols 14 \
         --levels 0.10 0.45 --strength 0.5 --out ../assets/portrait-7x14.txt
+    python3 dotart.py photo.jpg --mask mask.png --crop 450 80 400 --rows 5  --cols 10 \
+        --levels 0.10 0.45 --strength 0.4 --out ../assets/portrait-5x10.txt
     python3 dotart.py photo.jpg --mask mask.png --crop 450 80 400 --rows 14 --cols 28 \
         --levels 0.10 0.60 --strength 0.8 --out ../assets/portrait-14x28.txt
+    # 2b. face (passport crop x=555 y=215 side=210, background empty, features sharpened)
+    python3 dotart.py photo.jpg --mask mask.png --crop 555 215 210 --rows 7  --cols 14 --bg 0 \
+        --levels 0.20 0.50 --strength 0.4 --local 1.5 --local-div 12 --out ../assets/face-7x14.txt
+    python3 dotart.py photo.jpg --mask mask.png --crop 555 215 210 --rows 5  --cols 10 --bg 0 \
+        --levels 0.20 0.50 --strength 0.3 --local 1.5 --local-div 12 --out ../assets/face-5x10.txt
+    python3 dotart.py photo.jpg --mask mask.png --crop 555 215 210 --rows 14 --cols 28 --bg 0 \
+        --levels 0.15 0.65 --strength 0.8 --local 1.0 --local-div 12 --out ../assets/face-14x28.txt
 
 Requires Pillow and numpy. Add `--preview out.png` to render an ideal-lattice preview.
 """
@@ -37,8 +47,8 @@ def crop_square(path, crop, mode):
     return Image.open(path).convert(mode).crop((x0, y0, x0 + side, y0 + side))
 
 
-def tone(photo, mask, cutoff, levels, feather):
-    """Grayscale in [0,1]: person autocontrasted + level-squeezed, background forced to 1.0."""
+def tone(photo, mask, cutoff, levels, feather, local, local_div, bg):
+    """Grayscale in [0,1]: person autocontrasted, locally sharpened, level-squeezed; background forced to `bg`."""
     gray = np.asarray(ImageOps.grayscale(photo), dtype=np.float32)
     if mask is None:
         person = np.ones_like(gray)
@@ -48,9 +58,15 @@ def tone(photo, mask, cutoff, levels, feather):
     sel = gray[person > 0.5] if mask is not None else gray
     lo, hi = np.percentile(sel, cutoff), np.percentile(sel, 100 - cutoff)
     a = np.clip((gray - lo) / max(hi - lo, 1.0), 0.0, 1.0)
+    if local > 0:
+        # unsharp mask at feature scale: pushes eyes, nostrils and lips away from the surrounding skin tone
+        blurred = Image.fromarray((a * 255).astype(np.uint8)).filter(
+            ImageFilter.GaussianBlur(max(1, photo.size[0] // local_div))
+        )
+        a = np.clip(a + local * (a - np.asarray(blurred, dtype=np.float32) / 255.0), 0.0, 1.0)
     lo_in, hi_in = levels
     a = np.clip((a - lo_in) / max(hi_in - lo_in, 1e-3), 0.0, 1.0)
-    return a * person + 1.0 * (1.0 - person)
+    return a * person + bg * (1.0 - person)
 
 
 def downsample(a, dots_w, dots_h):
@@ -121,13 +137,16 @@ def main():
     p.add_argument("--levels", type=float, nargs=2, default=(0.10, 0.45), metavar=("LO", "HI"))
     p.add_argument("--strength", type=float, default=0.5, help="error-diffusion strength 0..1")
     p.add_argument("--feather", type=float, default=2.0)
+    p.add_argument("--local", type=float, default=0.0, help="local-contrast amount (0 = off)")
+    p.add_argument("--local-div", type=int, default=12, help="local-contrast radius = side / this")
+    p.add_argument("--bg", type=float, default=1.0, help="masked background tone: 1 = solid dots, 0 = empty")
     p.add_argument("--out", required=True, help="glyph grid .txt")
     p.add_argument("--preview", help="optional lattice preview PNG")
     args = p.parse_args()
 
     photo = crop_square(args.photo, args.crop, "RGB")
     mask = crop_square(args.mask, args.crop, "L") if args.mask else None
-    a = tone(photo, mask, args.cutoff, args.levels, args.feather)
+    a = tone(photo, mask, args.cutoff, args.levels, args.feather, args.local, args.local_div, args.bg)
     bits = floyd_steinberg(downsample(a, args.cols * 2, args.rows * 4), args.strength)
     rows = to_braille(bits)
     with open(args.out, "w", encoding="utf-8") as f:
