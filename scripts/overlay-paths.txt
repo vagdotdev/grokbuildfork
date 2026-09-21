@@ -1,0 +1,11 @@
+# Workshop-owned paths (one bash glob or path prefix per line; '#' starts a comment).
+# scripts/sync/replace-tree.sh preserves everything matching these when it replaces the tree with a
+# fresh xai-org/grok-build snapshot; everything else is upstream-owned and reset to the snapshot.
+crates/workshop-*
+patches
+scripts
+.github/workflows
+docs/workshop*
+docs/upstream-sync.md
+upstream-lock.toml
+README-Workshop.md

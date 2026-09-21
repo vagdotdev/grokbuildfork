@@ -1,0 +1,113 @@
+# Workshop CI (docs/workshop-production-plan.md sections 1, 2, 10).
+#
+# `no-xai` is the required check: it runs the compiled-default gates (cargo test -p workshop-gates),
+# the default-path source scan, builds the `workshop` binary, scans its strings against the reviewed
+# baseline, and runs a network-namespaced startup smoke that fails on any request to an xAI host.
+# A sync PR that "passes" by dropping a gate patch fails here. Release and upstream-sync workflows
+# live in their own files (release.yml, sync-upstream.yml); this file only carries the gate jobs.
+name: ci
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "patches/**"
+      - "scripts/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "upstream-lock.toml"
+      - ".github/workflows/ci.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Telemetry bake-in (GROK_TELEMETRY_BUILD_*) is forbidden here (ADR 0004); the source scan fails if it appears.
+
+jobs:
+  fmt-check:
+    name: fmt + check (overlay)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+          components: rustfmt, clippy
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "29.3"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workshop
+      - name: rustfmt (overlay crates)
+        run: cargo fmt -p workshop-auth -p workshop-gates -- --check
+      - name: cargo check (overlay crates + pager-bin)
+        run: cargo check -p workshop-auth -p workshop-gates -p xai-grok-pager-bin
+      - name: clippy (overlay crates, warnings denied)
+        run: cargo clippy -p workshop-auth -p workshop-gates -- -D warnings
+
+  no-xai:
+    name: no-xai gates (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "29.3"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workshop
+      - name: Source scan (gates 1-4 defaults, identity, telemetry, gate:no-theft)
+        run: scripts/no-xai-scan.sh --sources
+      - name: patches/ agree with the tree (quilt pushed state)
+        run: |
+          git fetch --no-tags origin "$(sed -n 's/^git_sha = "\(.*\)"/\1/p' upstream-lock.toml)" || true
+          scripts/regenerate-patches.sh --check
+      - name: Compiled-default gates
+        run: cargo test -p workshop-gates -- --nocapture
+      - name: Overlay unit tests
+        run: cargo test -p workshop-auth
+      - name: Upstream auth tests touched by the gate patches
+        run: |
+          cargo test -p xai-grok-login --lib config::
+          cargo test -p xai-grok-shell --lib agent::auth_method::
+          cargo test -p xai-grok-update --lib reinstall_hint
+          cargo test -p xai-dirs
+      - name: Build the workshop binary
+        run: cargo build -p xai-grok-pager-bin --bin workshop
+      - name: Binary string scan against reviewed baseline
+        run: scripts/no-xai-scan.sh --binary target/debug/workshop
+      - name: Startup + Login smoke with zero xAI egress (network namespace)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq strace iproute2 python3
+          scripts/no-egress-smoke.sh target/debug/workshop
+      - name: PTY smoke — Login opens the picker, never grok.com
+        env:
+          WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
+        run: cargo test -p workshop-gates --test pty_login_picker -- --nocapture --include-ignored
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: no-xai-evidence
+          path: |
+            target/no-egress/
+            target/pty-evidence/
+          if-no-files-found: ignore
