@@ -156,6 +156,20 @@ pub fn strip_comments(src: &str) -> String {
     out
 }
 
+/// Source with trailing `#[cfg(test)]` modules removed. Test modules may use
+/// forbidden hosts as negative examples; they are not compiled into the binary.
+pub fn strip_test_modules(src: &str) -> &str {
+    match src.find("#[cfg(test)]") {
+        Some(idx) => src.get(..idx).unwrap_or(src),
+        None => src,
+    }
+}
+
+/// Comments and test modules removed: what a default-path source gate scans.
+pub fn scannable_source(src: &str) -> String {
+    strip_comments(strip_test_modules(src))
+}
+
 /// `true` when `url` names an xAI / Grok production host.
 pub fn url_has_forbidden_host(url: &str) -> bool {
     let Ok(parsed) = url::Url::parse(url) else {
@@ -181,6 +195,13 @@ mod tests {
         assert!(!stripped.contains("auth.x.ai"));
         assert!(!stripped.contains("grok.com"));
         assert!(stripped.contains("let b = 1;"));
+    }
+
+    #[test]
+    fn strip_test_modules_cuts_at_cfg_test() {
+        let src = "fn a() {}\n#[cfg(test)]\nmod tests { const X: &str = \"https://x.ai/cli\"; }";
+        assert_eq!(strip_test_modules(src), "fn a() {}\n");
+        assert!(!scannable_source(src).contains("x.ai"));
     }
 
     #[test]

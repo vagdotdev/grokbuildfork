@@ -13465,6 +13465,7 @@ dependencies = [
  "pretty_assertions",
  "tempfile",
  "tracing",
+ "workshop-branding",
 ]
 
 [[package]]
@@ -13928,6 +13929,8 @@ dependencies = [
  "urlencoding",
  "uuid",
  "webbrowser",
+ "workshop-auth",
+ "xai-dirs",
  "xai-file-utils",
  "xai-grok-auth",
  "xai-grok-config",
@@ -14169,6 +14172,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "windows-sys 0.59.0",
+ "workshop-auth",
  "xai-acp-lib",
  "xai-chat-state",
  "xai-crash-handler",
@@ -14232,6 +14236,8 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "workshop-auth",
+ "workshop-branding",
  "xai-acp-lib",
  "xai-crash-handler",
  "xai-grok-active-sessions",
@@ -14626,6 +14632,7 @@ dependencies = [
  "walkdir",
  "webbrowser",
  "windows 0.61.3",
+ "workshop-auth",
  "xai-acp-lib",
  "xai-agent-lifecycle",
  "xai-chat-state",

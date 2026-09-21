@@ -3446,6 +3446,8 @@ async fn drain_and_process(
             break;
         }
     }
+    // A closed connection picker asks for one clear-and-repaint so inline mode drops its cells.
+    let force_repaint = force_repaint || std::mem::take(&mut app.pending_full_repaint);
     DrainResult {
         needs_draw,
         should_quit: false,

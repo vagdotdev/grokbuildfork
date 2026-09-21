@@ -20,12 +20,15 @@ pub enum Command {
     Leader(LeaderMgmtArgs),
     /// Sign out and clear cached credentials
     Logout,
-    /// Sign in to Grok
+    /// Connect a model or subscription (opens the picker in the TUI; `--xai` for the optional xAI account)
     Login {
         /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
         #[arg(long, hide = true)]
         legacy: bool,
-        /// Use Grok OAuth via auth.x.ai.
+        /// Sign in with an xAI account (optional; opens auth.x.ai). Records the opt-in in $WORKSHOP_HOME.
+        #[arg(long = "xai")]
+        xai: bool,
+        /// Use the browser (loopback) OAuth transport for the configured sign-in provider.
         #[arg(long = "oauth", alias = "oidc", conflicts_with_all = ["device_auth"])]
         oauth: bool,
         /// Use device-code authentication for headless/remote environments.
@@ -394,9 +397,9 @@ pub struct LeaderArgs {
 }
 #[derive(Debug, Clone, Parser)]
 #[command(
-    name = "grok",
+    name = "workshop",
     version = xai_grok_version::full_version(),
-    about = "Grok Build TUI",
+    about = "Workshop: a coding-agent runtime that connects to local models, API keys, or subscription CLIs",
     disable_version_flag = true,
     next_display_order = None,
     help_template = "\
@@ -830,8 +833,8 @@ impl PagerArgs {
             .map(std::path::Path::new)
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
-            .filter(|n| *n == "grok" || *n == "agent")
-            .unwrap_or("grok")
+            .filter(|n| *n == "workshop" || *n == "grok" || *n == "agent")
+            .unwrap_or("workshop")
             .to_owned();
         Self::parse_from(std::iter::once(bin_name).chain(std::env::args().skip(1)))
     }

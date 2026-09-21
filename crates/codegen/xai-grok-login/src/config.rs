@@ -238,22 +238,68 @@ impl OAuth2ProviderConfig {
         self.base_auth_scope()
     }
 }
+impl OAuth2ProviderConfig {
+    /// The xAI OAuth2 provider. Workshop constructs this only after the user
+    /// chose the optional xAI card ([`workshop_auth::xai_opt_in`]); it is never
+    /// the cold-start default.
+    pub fn xai_optional() -> Self {
+        Self {
+            issuer: xai_oauth2_issuer().to_owned(),
+            client_id: obfstr::obfstr!("b1a00492-073a-47ea-816f-4c329264a828").to_owned(),
+            scopes: default_oauth2_scopes(),
+            principal_type: None,
+            principal_id: None,
+            referrer: Some(DEFAULT_OAUTH2_REFERRER.to_owned()),
+        }
+    }
+    /// Workshop's cold-start default: a reserved `.invalid` issuer that fails at
+    /// DNS, so no code path can reach `auth.x.ai` without an explicit opt-in or
+    /// an operator `GROK_OAUTH2_*` / `GROK_OIDC_*` override.
+    pub fn workshop_placeholder() -> Self {
+        Self {
+            issuer: workshop_auth::methods::PLACEHOLDER_OAUTH2_ISSUER.to_owned(),
+            client_id: workshop_auth::methods::PLACEHOLDER_OAUTH2_CLIENT_ID.to_owned(),
+            scopes: default_oauth2_scopes(),
+            principal_type: None,
+            principal_id: None,
+            referrer: None,
+        }
+    }
+    /// `true` when this is [`Self::workshop_placeholder`], i.e. no sign-in provider is configured.
+    pub fn is_workshop_placeholder(&self) -> bool {
+        workshop_auth::methods::is_placeholder_issuer(&self.issuer)
+    }
+}
+impl GrokComConfig {
+    /// `true` when interactive sign-in has no real issuer (Workshop default without xAI opt-in).
+    pub fn is_workshop_placeholder(&self) -> bool {
+        self.oidc.is_none()
+            && self
+                .oauth2
+                .as_ref()
+                .is_none_or(OAuth2ProviderConfig::is_workshop_placeholder)
+    }
+}
+/// Whether the user explicitly opted in to the optional xAI connection, read
+/// from the Workshop home each time so a marker written by the picker is seen
+/// by the next `GrokComConfig::default()` (the running auth manager keeps its
+/// own config; the picker tells the user to restart).
+fn workshop_xai_opt_in() -> bool {
+    xai_dirs::resolve_grok_home().is_some_and(|home| workshop_auth::xai_opt_in::is_enabled(&home))
+}
 impl Default for GrokComConfig {
     fn default() -> Self {
         let oidc = OidcAuthConfig::from_env();
         let oauth2 = if oidc.is_some() {
             None
         } else {
-            Some(
-                OAuth2ProviderConfig::from_env().unwrap_or_else(|| OAuth2ProviderConfig {
-                    issuer: xai_oauth2_issuer().to_owned(),
-                    client_id: obfstr::obfstr!("b1a00492-073a-47ea-816f-4c329264a828").to_owned(),
-                    scopes: default_oauth2_scopes(),
-                    principal_type: None,
-                    principal_id: None,
-                    referrer: Some(DEFAULT_OAUTH2_REFERRER.to_owned()),
-                }),
-            )
+            Some(OAuth2ProviderConfig::from_env().unwrap_or_else(|| {
+                if workshop_xai_opt_in() {
+                    OAuth2ProviderConfig::xai_optional()
+                } else {
+                    OAuth2ProviderConfig::workshop_placeholder()
+                }
+            }))
         };
         Self {
             grok_ws_origin: std::env::var("GROK_WS_ORIGIN")
@@ -436,6 +482,51 @@ mod tests {
                 "workspaces:write",
             ]
         );
+    }
+    /// Workshop: the xAI issuer is constructed only behind the explicit opt-in marker.
+    #[test]
+    #[serial_test::serial]
+    fn default_issuer_is_placeholder_unless_xai_opted_in() {
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("GROK_HOME");
+        let prev_ws = std::env::var_os("WORKSHOP_HOME");
+        let prev_issuer = std::env::var_os("GROK_OAUTH2_ISSUER");
+        let prev_oidc = std::env::var_os("GROK_OIDC_ISSUER");
+        unsafe {
+            std::env::set_var("GROK_HOME", home.path());
+            std::env::set_var("WORKSHOP_HOME", home.path());
+            std::env::remove_var("GROK_OAUTH2_ISSUER");
+            std::env::remove_var("GROK_OIDC_ISSUER");
+        }
+        let cfg = GrokComConfig::default();
+        assert!(cfg.is_workshop_placeholder());
+        assert_eq!(
+            cfg.oauth2.as_ref().map(|o| o.issuer.as_str()),
+            Some(workshop_auth::methods::PLACEHOLDER_OAUTH2_ISSUER)
+        );
+        workshop_auth::xai_opt_in::enable(home.path()).unwrap();
+        let cfg = GrokComConfig::default();
+        assert!(!cfg.is_workshop_placeholder());
+        assert_eq!(
+            cfg.oauth2.as_ref().map(|o| o.issuer.as_str()),
+            Some(XAI_OAUTH2_ISSUER)
+        );
+        unsafe {
+            match prev_home {
+                Some(v) => std::env::set_var("GROK_HOME", v),
+                None => std::env::remove_var("GROK_HOME"),
+            }
+            match prev_ws {
+                Some(v) => std::env::set_var("WORKSHOP_HOME", v),
+                None => std::env::remove_var("WORKSHOP_HOME"),
+            }
+            if let Some(v) = prev_issuer {
+                std::env::set_var("GROK_OAUTH2_ISSUER", v);
+            }
+            if let Some(v) = prev_oidc {
+                std::env::set_var("GROK_OIDC_ISSUER", v);
+            }
+        }
     }
     #[test]
     fn preferred_method_deserializes_from_toml() {

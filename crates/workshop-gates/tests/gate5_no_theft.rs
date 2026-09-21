@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use workshop_gates::{repo_root, strip_comments};
+use workshop_gates::{repo_root, scannable_source};
 
 /// Literals that only appear in code that reads or replays foreign credentials.
 const FORBIDDEN_LITERALS: &[&str] = &[
@@ -50,7 +50,7 @@ fn no_source_opens_foreign_credentials() {
         let Ok(src) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let code = strip_comments(&src);
+        let code = scannable_source(&src);
         for needle in FORBIDDEN_LITERALS {
             if code.contains(needle) {
                 offenders.push(format!(
@@ -92,7 +92,7 @@ fn the_scan_detects_the_july_dock_pattern() {
         let opencode = data_dir.join("opencode").join("auth.json");
         let opencode2 = home.join(".local/share/opencode/auth.json");
     "#;
-    let code = strip_comments(july_dock_excerpt);
+    let code = scannable_source(july_dock_excerpt);
     assert!(
         FORBIDDEN_LITERALS.iter().any(|needle| code.contains(needle)),
         "forbidden list no longer matches the dock's credential paths"

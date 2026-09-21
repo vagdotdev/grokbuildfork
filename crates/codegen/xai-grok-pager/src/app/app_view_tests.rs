@@ -271,6 +271,8 @@ pub(crate) fn test_app() -> AppView {
         has_claude_import: false,
         import_claude_modal: None,
         welcome_doc_viewer: None,
+        connection_picker: None,
+        pending_full_repaint: false,
         screen_mode: ScreenMode::Inline,
         pending_screen_mode_switch: None,
         pending_effects: Vec::new(),

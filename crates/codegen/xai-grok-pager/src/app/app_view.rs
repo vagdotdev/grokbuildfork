@@ -1076,6 +1076,10 @@ pub struct AppView {
     pub import_claude_modal: Option<crate::views::import_claude_modal::ImportClaudeModalState>,
     /// Doc viewer overlay for the welcome screen (release notes via Ctrl+L).
     pub welcome_doc_viewer: Option<crate::views::modal::ActiveModal>,
+    /// Workshop connection picker (Login / `/login` / welcome `l` / cold start). Rendered over the welcome screen; owns input while open.
+    pub connection_picker: Option<workshop_auth::picker::ConnectionPicker>,
+    /// Set when the connection picker closes: the next present clears the terminal so the modal leaves no ghost cells in inline mode.
+    pub pending_full_repaint: bool,
     /// Whether the pager uses fullscreen (alt-screen) or inline mode.
     /// Set from the resolved terminal state at startup; updated by the in-process `/minimal` / `/fullscreen` switch (`mode_switch`).
     pub(crate) screen_mode: super::ScreenMode,
@@ -1552,6 +1556,8 @@ impl AppView {
             has_claude_import: false,
             import_claude_modal: None,
             welcome_doc_viewer: None,
+            connection_picker: None,
+            pending_full_repaint: false,
             screen_mode: ScreenMode::Inline,
             pending_screen_mode_switch: None,
             show_resolved_model: true,
@@ -2447,6 +2453,7 @@ impl AppView {
                     has_claude_import: self.has_claude_import,
                     import_claude_modal: &mut self.import_claude_modal,
                     welcome_doc_viewer: &mut self.welcome_doc_viewer,
+                    connection_picker: &mut self.connection_picker,
                     changelog_markdown: &self.changelog_markdown,
                     show_changelog_action: self.welcome_show_changelog_action,
                     has_pending_update: self.pending_update_version.is_some(),
@@ -3098,6 +3105,7 @@ struct WelcomeInputCtx<'a> {
     has_claude_import: bool,
     import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
     welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
+    connection_picker: &'a mut Option<workshop_auth::picker::ConnectionPicker>,
     changelog_markdown: &'a Option<String>,
     /// Whether the welcome menu currently includes a "Changelog" row (above Quit), so index-to-action mapping accounts for it.
     show_changelog_action: bool,
@@ -3129,6 +3137,22 @@ struct WelcomeInputCtx<'a> {
 }
 /// Welcome view input: overlays first, then composer, then the menu.
 fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
+    if let Some(picker) = ctx.connection_picker.as_mut() {
+        use workshop_auth::picker::PickerOutcome;
+        return match ev {
+            Event::Key(key) if key.kind != crossterm::event::KeyEventKind::Release => {
+                match picker.handle_key(key) {
+                    PickerOutcome::Unchanged => InputOutcome::Unchanged,
+                    PickerOutcome::Changed => InputOutcome::Changed,
+                    PickerOutcome::Close => InputOutcome::Action(Action::ConnectionPickerClose),
+                    PickerOutcome::StartXaiOptionalLogin => {
+                        InputOutcome::Action(Action::ConnectXaiOptional)
+                    }
+                }
+            }
+            _ => InputOutcome::Unchanged,
+        };
+    }
     if let Some(modal) = ctx.import_claude_modal.as_mut() {
         use crate::views::import_claude_modal::ImportClaudeModalOutcome;
         let outcome_to_input = |o: ImportClaudeModalOutcome| match o {
@@ -4609,6 +4633,22 @@ impl AppView {
                                     cached_lines,
                                     compact,
                                     &theme,
+                                );
+                            }
+                            if let Some(picker) = self.connection_picker.as_ref() {
+                                let theme = crate::theme::Theme::current();
+                                picker.render(
+                                    view_area,
+                                    f.buffer_mut(),
+                                    &workshop_auth::picker::PickerStyle {
+                                        fg: theme.text_primary,
+                                        dim: theme.gray_bright,
+                                        accent: theme.accent_user,
+                                        highlight_bg: theme.bg_highlight,
+                                        border: theme.selection_border,
+                                        success: theme.accent_success,
+                                        warning: theme.warning,
+                                    },
                                 );
                             }
                             if !has_access && !self.access_gate_shown_logged {

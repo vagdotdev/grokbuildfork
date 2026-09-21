@@ -787,8 +787,33 @@ impl acp::Agent for MvpAgent {
                 self.spawn_post_auth_settings(auth_for_settings);
                 Ok(self.auth_response_with_meta())
             }
+            auth_method::WORKSHOP_CONNECT_METHOD_ID => {
+                // Workshop: the picker is a client-side surface. Reaching the agent with this
+                // method (headless, ACP client, or a dead cached session with no API key)
+                // fails closed instead of opening a browser.
+                emit_login_span(
+                    false,
+                    auth_method::WORKSHOP_CONNECT_METHOD_ID,
+                    None,
+                    Some("no_connection_configured"),
+                );
+                Err(acp::Error::auth_required()
+                    .data(workshop_auth::methods::NO_CONNECTION_ERROR))
+            }
             auth_method::GROK_COM_METHOD_ID | auth_method::OIDC_METHOD_ID => {
                 let grok_ctx = self.auth_manager.grok_com_config();
+                if grok_ctx.is_workshop_placeholder() {
+                    // No operator IdP and no xAI opt-in: there is nothing to discover.
+                    // Never let the placeholder issuer (or a stale grok.com request) reach the network.
+                    emit_login_span(
+                        false,
+                        arguments.method_id.0.as_ref(),
+                        None,
+                        Some("no_sign_in_provider"),
+                    );
+                    return Err(acp::Error::auth_required()
+                        .data(workshop_auth::methods::PLACEHOLDER_ISSUER_ERROR));
+                }
                 let auth_meta = AuthRequestMeta::from_json(arguments.meta.as_ref());
                 tracing::info!(
                     method = arguments.method_id.0.as_ref(),

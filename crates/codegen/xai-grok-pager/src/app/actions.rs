@@ -614,6 +614,11 @@ pub enum Action {
     SwitchAccount,
     /// User pressed login on the welcome screen.
     Login,
+    /// Close the Workshop connection picker without choosing anything (Esc). Returns to the stashed view when opened mid-session.
+    ConnectionPickerClose,
+    /// The user confirmed the optional xAI card in the connection picker: start the labeled interactive flow.
+    /// This is the only path that may send the inherited `grok.com` method.
+    ConnectXaiOptional,
     /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
     /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
     CancelLogin,

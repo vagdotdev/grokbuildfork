@@ -11,7 +11,7 @@
 //! source is checked with comments stripped, so a comment naming the
 //! forbidden thing is allowed but a live constant is not.
 
-use workshop_gates::{repo_root, strip_comments};
+use workshop_gates::{repo_root, scannable_source};
 
 const FORBIDDEN_UPDATE_TARGETS: &[&str] = &[
     "https://x.ai/cli",
@@ -34,7 +34,7 @@ fn gh_release_repo_is_not_xai() {
 fn updater_source_defaults_are_not_xai() {
     let path = repo_root().join("crates/codegen/xai-grok-update/src/version.rs");
     let src = std::fs::read_to_string(&path).expect("read version.rs");
-    let code = strip_comments(&src);
+    let code = scannable_source(&src);
     let offenders: Vec<&str> = FORBIDDEN_UPDATE_TARGETS
         .iter()
         .copied()
@@ -51,7 +51,7 @@ fn updater_source_defaults_are_not_xai() {
 fn auto_update_is_compiled_off() {
     let path = repo_root().join("crates/codegen/xai-grok-update/src/auto_update.rs");
     let src = std::fs::read_to_string(&path).expect("read auto_update.rs");
-    let code = strip_comments(&src);
+    let code = scannable_source(&src);
     assert!(
         code.contains("WORKSHOP_AUTO_UPDATE_ENABLED: bool = false"),
         "auto_update.rs has no compile-time off switch; Workshop has no update channel yet"

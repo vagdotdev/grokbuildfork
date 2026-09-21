@@ -210,15 +210,81 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
 /// Start an interactive login flow. Triggered by pressing 'l' on the welcome screen or by the `/login` slash command.
 /// Only the welcome view renders the auth UI (the external auth provider's sign-in URL and status).
 /// A mid-session invocation therefore stashes the caller's view in `auth_return_view` and switches to `Welcome` so the flow is visible.
+///
+/// Workshop: when the advertised method is the connection picker (`workshop.connect`) or nothing is advertised,
+/// Login opens the picker instead of sending an `AuthenticateRequest`. Only the picker's optional xAI card
+/// (`Action::ConnectXaiOptional`) may start the inherited browser flow. Enterprise `oidc` and external
+/// auth-provider commands are operator configuration and still start directly.
 pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
     ensure_login_method(app);
+    let opens_picker = matches!(
+        app.login_method_id.as_ref().map(|id| id.0.as_ref()),
+        None | Some(workshop_auth::methods::WORKSHOP_CONNECT_METHOD_ID)
+    ) && !matches!(app.auth_start_mode, AuthMode::Command);
+    if opens_picker {
+        return open_connection_picker(app);
+    }
     let Some(method_id) = app.login_method_id.clone() else {
         app.auth_state = AuthState::Pending {
             error: Some(no_login_method_error(app)),
         };
         return vec![];
     };
+    start_interactive_login(app, method_id)
+}
 
+/// Open the Workshop connection picker over the welcome screen. Presence-only scan (PATH, known dirs,
+/// env-var presence): no network, no credential files. Mid-session callers get their view stashed like
+/// a normal login so `ConnectionPickerClose` / `AuthComplete` can restore it.
+fn open_connection_picker(app: &mut AppView) -> Vec<Effect> {
+    if !matches!(app.active_view, ActiveView::Welcome) {
+        app.auth_return_view = Some(app.active_view);
+        show_welcome(app);
+    } else if app.auth_return_view.is_none() {
+        // Cold start / welcome `l`: nothing is connected yet. Mirror upstream's login screen so the
+        // welcome menu stays on "Connect a model or subscription / Quit" and no session auto-starts
+        // (`session_startup_allowed` requires `AuthState::Done`).
+        app.auth_state = AuthState::Pending { error: None };
+    }
+    let scan = workshop_auth::detect::scan(xai_dirs::home_dir().as_deref());
+    app.connection_picker = Some(workshop_auth::picker::ConnectionPicker::new(
+        &scan,
+        xai_dirs::grok_home(),
+    ));
+    vec![]
+}
+
+/// Esc in the picker: nothing chosen. The welcome screen keeps its Pending state (menu: Login / Quit);
+/// a mid-session picker returns to the stashed view.
+pub(super) fn dispatch_connection_picker_close(app: &mut AppView) -> Vec<Effect> {
+    app.connection_picker = None;
+    app.pending_full_repaint = true;
+    if let Some(return_view) = app.auth_return_view.take() {
+        restore_auth_return_view(app, return_view);
+    }
+    vec![]
+}
+
+/// The user confirmed the optional xAI card. The agent already runs with the xAI issuer (opt-in marker
+/// was present at startup), so this starts the inherited flow under its `grok.com` wire id, labeled xAI.
+pub(super) fn dispatch_xai_optional_login(app: &mut AppView) -> Vec<Effect> {
+    app.connection_picker = None;
+    app.pending_full_repaint = true;
+    app.login_label = Some(workshop_auth::methods::XAI_OPTIONAL_LABEL.to_string());
+    app.auth_start_mode = AuthMode::Pending;
+    start_interactive_login(
+        app,
+        agent_client_protocol::AuthMethodId::new(
+            xai_grok_shell::agent::auth_method::GROK_COM_METHOD_ID,
+        ),
+    )
+}
+
+/// The upstream login body: show the auth UI, abort any prior attempt, and send `Authenticate` for `method_id`.
+fn start_interactive_login(
+    app: &mut AppView,
+    method_id: agent_client_protocol::AuthMethodId,
+) -> Vec<Effect> {
     // Show the auth UI when triggered from inside a session
     // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
     if !matches!(app.active_view, ActiveView::Welcome) {

@@ -79,6 +79,13 @@ fn shell_auxiliary_api_default_is_not_xai() {
         "PROD_COMPUTER_HUB_WS_URL = {}",
         xai_grok_shell_base::env::PROD_COMPUTER_HUB_WS_URL
     );
+    // The shell's own proxy fallback (used when `[endpoints] cli_chat_proxy_base_url` is unset)
+    // is a separate constant from PRODUCTION_ENDPOINTS and must be neutral too.
+    assert!(
+        !url_has_forbidden_host(xai_grok_shell::agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT),
+        "CLI_CHAT_PROXY_BASE_URL_DEFAULT = {}",
+        xai_grok_shell::agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT
+    );
 }
 
 #[test]
