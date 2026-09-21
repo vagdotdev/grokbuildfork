@@ -1,0 +1,256 @@
+{
+ "opencode": {
+  "id": "opencode",
+  "env": [
+   "OPENCODE_API_KEY"
+  ],
+  "npm": "@ai-sdk/openai-compatible",
+  "api": "https://opencode.ai/zen/v1",
+  "name": "OpenCode Zen",
+  "doc": "https://opencode.ai/docs/zen",
+  "models": {
+   "big-pickle": {
+    "id": "big-pickle",
+    "name": "Big Pickle",
+    "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool us",
+    "family": "big-pickle",
+    "attachment": false,
+    "reasoning": true,
+    "reasoning_options": [],
+    "tool_call": true,
+    "interleaved": {
+     "field": "reasoning_content"
+    },
+    "structured_output": true,
+    "temperature": true,
+    "knowledge": "2025-01",
+    "release_date": "2025-10-17",
+    "last_updated": "2025-10-17",
+    "modalities": {
+     "input": [
+      "text"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "open_weights": false,
+    "limit": {
+     "context": 200000,
+     "input": 160000,
+     "output": 32000
+    },
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cache_read": 0,
+     "cache_write": 0
+    }
+   },
+   "gpt-5-nano": {
+    "id": "gpt-5-nano",
+    "name": "GPT-5 Nano",
+    "description": "Compact GPT model for low-latency assistance and high-volume workloads",
+    "family": "gpt-nano",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "minimal",
+       "low",
+       "medium",
+       "high"
+      ]
+     }
+    ],
+    "tool_call": true,
+    "structured_output": true,
+    "temperature": false,
+    "knowledge": "2024-05-30",
+    "release_date": "2025-08-07",
+    "last_updated": "2025-08-07",
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "open_weights": false,
+    "limit": {
+     "context": 400000,
+     "input": 272000,
+     "output": 128000
+    },
+    "provider": {
+     "npm": "@ai-sdk/openai"
+    },
+    "cost": {
+     "input": 0.05,
+     "output": 0.4,
+     "cache_read": 0.005
+    }
+   }
+  }
+ },
+ "openrouter": {
+  "id": "openrouter",
+  "env": [
+   "OPENROUTER_API_KEY"
+  ],
+  "npm": "@openrouter/ai-sdk-provider",
+  "api": "https://openrouter.ai/api/v1",
+  "name": "OpenRouter",
+  "doc": "https://openrouter.ai/models",
+  "models": {
+   "openrouter/free": {
+    "id": "openrouter/free",
+    "name": "Free Models Router",
+    "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [],
+    "tool_call": true,
+    "structured_output": true,
+    "temperature": true,
+    "release_date": "2026-02-01",
+    "last_updated": "2026-02-01",
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "open_weights": false,
+    "limit": {
+     "context": 200000,
+     "input": 200000,
+     "output": 8000
+    },
+    "cost": {
+     "input": 0,
+     "output": 0
+    }
+   },
+   "nvidia/nemotron-3-super-120b-a12b:free": {
+    "id": "nvidia/nemotron-3-super-120b-a12b:free",
+    "name": "Nemotron 3 Super (free)",
+    "description": "Nemotron middle tier for collaborative agents and high-volume reasoning workload",
+    "family": "nemotron",
+    "attachment": false,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "toggle"
+     },
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium"
+      ]
+     },
+     {
+      "type": "budget_tokens"
+     }
+    ],
+    "tool_call": true,
+    "structured_output": true,
+    "temperature": true,
+    "release_date": "2026-03-11",
+    "last_updated": "2026-03-11",
+    "modalities": {
+     "input": [
+      "text"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "open_weights": true,
+    "limit": {
+     "context": 262144,
+     "output": 235929
+    },
+    "cost": {
+     "input": 0,
+     "output": 0
+    }
+   },
+   "anthropic/claude-sonnet-4.6": {
+    "id": "anthropic/claude-sonnet-4.6",
+    "name": "Claude Sonnet 4.6",
+    "description": "Claude workhorse for coding agents, careful analysis, and production cost contro",
+    "family": "claude-sonnet",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "toggle"
+     },
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "max"
+      ]
+     }
+    ],
+    "tool_call": true,
+    "structured_output": true,
+    "temperature": true,
+    "knowledge": "2025-08-31",
+    "release_date": "2026-02-17",
+    "last_updated": "2026-03-13",
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "open_weights": false,
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "cost": {
+     "input": 3,
+     "output": 15,
+     "cache_read": 0.3,
+     "cache_write": 3.75,
+     "tiers": [
+      {
+       "input": 6,
+       "output": 22.5,
+       "cache_read": 0.6,
+       "cache_write": 7.5,
+       "tier": {
+        "type": "context",
+        "size": 200000
+       }
+      }
+     ],
+     "context_over_200k": {
+      "input": 6,
+      "output": 22.5,
+      "cache_read": 0.6,
+      "cache_write": 7.5
+     }
+    }
+   }
+  }
+ }
+}

@@ -13295,15 +13295,24 @@ dependencies = [
 name = "workshop-providers"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "fs2",
+ "futures-util",
  "indexmap",
  "keyring",
+ "rand 0.9.5",
+ "reqwest 0.12.24",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "url",
  "uuid",
+ "wiremock",
+ "xai-dirs",
+ "xai-grok-extra-ca",
  "xai-grok-sampler",
  "xai-grok-sampling-types",
 ]

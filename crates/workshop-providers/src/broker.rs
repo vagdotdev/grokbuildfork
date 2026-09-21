@@ -50,11 +50,12 @@ pub enum ProviderError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CredentialRef {
     /// Present in the process environment (value not read yet).
-    Env {
-        var: String,
-    },
+    Env { var: String },
     /// Saved in the OS keyring by the user.
     Keyring,
+    /// Saved in the owner-only fallback file (no keyring was available).
+    File,
+    /// Anonymous access (Kilo `:free`, local servers) or nothing configured.
     None,
 }
 
@@ -205,7 +206,7 @@ impl CredentialBroker {
         if key.trim().is_empty() {
             return Err(ProviderError::EmptyKey);
         }
-        if m.auth == AuthHeader::None {
+        if m.auth == AuthHeader::None || !m.accepts_key() {
             return Err(ProviderError::UnknownProvider(format!(
                 "{provider_id} takes no credential"
             )));
@@ -213,10 +214,10 @@ impl CredentialBroker {
         let key = key.trim();
         let path = self.connections_path.clone();
         let store = Arc::clone(&self.store);
-        let record = ConnectionRecord {
+        let mut record = ConnectionRecord {
             class: m.class,
             credential: CredentialSource::Keyring,
-            allowed_hosts: m.allowed_hosts.iter().map(|h| h.to_string()).collect(),
+            allowed_hosts: m.allowed_hosts.clone(),
             saved_at: now_secs(),
         };
         let provider = provider_id.to_string();
@@ -224,11 +225,11 @@ impl CredentialBroker {
             // Read first so a broken connections file never leaves a half-saved keyring entry.
             let mut file = read_connections(&path)?;
             let previous = store.get(&provider).map_err(config_wrap)?;
-            store.set(&provider, key).map_err(config_wrap)?;
+            record.credential = store.set(&provider, key).map_err(config_wrap)?;
             file.connections.insert(provider.clone(), record.clone());
             if let Err(error) = write_connections(&path, &file) {
                 let rollback = match previous {
-                    Some(v) => store.set(&provider, &v),
+                    Some(v) => store.set(&provider, &v).map(|_| ()),
                     None => store.delete(&provider),
                 };
                 return Err(match rollback {
@@ -259,7 +260,32 @@ impl CredentialBroker {
         let record = ConnectionRecord {
             class: m.class,
             credential: CredentialSource::Env { var },
-            allowed_hosts: m.allowed_hosts.iter().map(|h| h.to_string()).collect(),
+            allowed_hosts: m.allowed_hosts.clone(),
+            saved_at: now_secs(),
+        };
+        let path = self.connections_path.clone();
+        with_lock(&path, || {
+            let mut file = read_connections(&path)?;
+            file.connections
+                .insert(provider_id.to_string(), record.clone());
+            write_connections(&path, &file)
+        })?;
+        Ok(())
+    }
+
+    /// Record a credential-free connection: a Local server, or an anonymous hosted pool such as
+    /// Kilo `:free`.
+    pub fn add_anonymous(&self, provider_id: &str) -> Result<(), ProviderError> {
+        let m = self.manifest_for(provider_id)?;
+        if m.requires_credential() {
+            return Err(ProviderError::UnknownProvider(format!(
+                "{provider_id} requires a credential"
+            )));
+        }
+        let record = ConnectionRecord {
+            class: m.class,
+            credential: CredentialSource::None,
+            allowed_hosts: m.allowed_hosts.clone(),
             saved_at: now_secs(),
         };
         let path = self.connections_path.clone();
@@ -280,20 +306,7 @@ impl CredentialBroker {
                 "{provider_id} is not a Local provider"
             )));
         }
-        let record = ConnectionRecord {
-            class: m.class,
-            credential: CredentialSource::None,
-            allowed_hosts: m.allowed_hosts.iter().map(|h| h.to_string()).collect(),
-            saved_at: now_secs(),
-        };
-        let path = self.connections_path.clone();
-        with_lock(&path, || {
-            let mut file = read_connections(&path)?;
-            file.connections
-                .insert(provider_id.to_string(), record.clone());
-            write_connections(&path, &file)
-        })?;
-        Ok(())
+        self.add_anonymous(provider_id)
     }
 
     /// `workshop auth logout <provider>` for Direct API: delete Workshop's own secret and record.
@@ -314,6 +327,19 @@ impl CredentialBroker {
         Ok(existed)
     }
 
+    /// Whether the picker should treat the provider as connected: it needs no credential, or one
+    /// is recorded / present in the environment.
+    pub fn is_connected(&self, provider_id: &str) -> bool {
+        match self.manifest_for(provider_id) {
+            Ok(m) if !m.requires_credential() => true,
+            Ok(_) => !matches!(
+                self.credential_ref(provider_id),
+                Ok(CredentialRef::None) | Err(_)
+            ),
+            Err(_) => false,
+        }
+    }
+
     /// Where the credential would come from, without reading it.
     pub fn credential_ref(&self, provider_id: &str) -> Result<CredentialRef, ProviderError> {
         let m = self.manifest_for(provider_id)?;
@@ -321,6 +347,7 @@ impl CredentialBroker {
         Ok(
             match file.connections.get(provider_id).map(|r| &r.credential) {
                 Some(CredentialSource::Keyring) => CredentialRef::Keyring,
+                Some(CredentialSource::File) => CredentialRef::File,
                 Some(CredentialSource::Env { var }) => CredentialRef::Env { var: var.clone() },
                 Some(CredentialSource::None) => CredentialRef::None,
                 None => match m.credential {
@@ -336,31 +363,32 @@ impl CredentialBroker {
     /// Resolve the credential for a request, bound to the provider's host allowlist.
     pub fn resolve(&self, provider_id: &str) -> Result<CredentialHandle, ProviderError> {
         let m = self.manifest_for(provider_id)?;
-        let allowed_hosts: Vec<String> = m.allowed_hosts.iter().map(|h| h.to_string()).collect();
-        let value =
-            match (m.auth, self.credential_ref(provider_id)?) {
-                (AuthHeader::None, _) => None,
-                (_, CredentialRef::Keyring) => {
-                    Some(self.store.get(provider_id)?.ok_or_else(|| {
-                        ProviderError::NoCredential {
-                            provider: provider_id.to_string(),
-                        }
-                    })?)
-                }
-                (_, CredentialRef::Env { var }) => Some(
-                    std::env::var(&var)
-                        .ok()
-                        .filter(|v| !v.is_empty())
-                        .ok_or_else(|| ProviderError::NoCredential {
-                            provider: provider_id.to_string(),
-                        })?,
-                ),
-                (_, CredentialRef::None) => {
-                    return Err(ProviderError::NoCredential {
+        let allowed_hosts: Vec<String> = m.allowed_hosts.clone();
+        let value = match (m.auth, self.credential_ref(provider_id)?) {
+            (AuthHeader::None, _) => None,
+            // Anonymous-capable providers (Kilo `:free`) send no credential unless one was saved.
+            (_, CredentialRef::None) if !m.requires_credential() => None,
+            (_, CredentialRef::Keyring | CredentialRef::File) => Some(
+                self.store
+                    .get(provider_id)?
+                    .ok_or_else(|| ProviderError::NoCredential {
                         provider: provider_id.to_string(),
-                    });
-                }
-            };
+                    })?,
+            ),
+            (_, CredentialRef::Env { var }) => Some(
+                std::env::var(&var)
+                    .ok()
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| ProviderError::NoCredential {
+                        provider: provider_id.to_string(),
+                    })?,
+            ),
+            (_, CredentialRef::None) => {
+                return Err(ProviderError::NoCredential {
+                    provider: provider_id.to_string(),
+                });
+            }
+        };
         Ok(CredentialHandle {
             provider_id: provider_id.to_string(),
             auth: m.auth,

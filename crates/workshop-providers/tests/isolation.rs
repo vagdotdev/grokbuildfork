@@ -113,6 +113,43 @@ fn sampler_config_never_mixes_provider_and_credential() {
 }
 
 #[test]
+fn anonymous_kilo_path_sends_no_credential_and_a_saved_key_stays_on_its_host() {
+    let tmp = tempfile::tempdir().unwrap();
+    let broker = broker(&tmp);
+    let kilo = workshop_providers::Catalog::builtin()
+        .get("kilo:kilo-auto/free")
+        .unwrap()
+        .clone();
+    // Nothing configured: the keyless pool resolves to a handle with no value.
+    let handle = broker.resolve("kilo").unwrap();
+    assert!(!handle.has_value());
+    let cfg = sampler_config_for(&kilo, &handle).unwrap();
+    assert_eq!(
+        cfg.api_key, None,
+        "anonymous requests carry no Authorization header"
+    );
+    assert_eq!(cfg.base_url, "https://api.kilo.ai/api/gateway");
+    // An optional saved key is bound to api.kilo.ai and nothing else.
+    broker.save_api_key("kilo", "CANARY-KILO").unwrap();
+    let handle = broker.resolve("kilo").unwrap();
+    assert_eq!(
+        handle
+            .authorize("https://api.kilo.ai/api/gateway/chat/completions")
+            .unwrap(),
+        Some("CANARY-KILO")
+    );
+    assert!(matches!(
+        handle.authorize("https://openrouter.ai/api/v1/chat/completions"),
+        Err(ProviderError::HostNotAllowed { .. })
+    ));
+    assert!(
+        broker.is_connected("kilo")
+            && broker.is_connected("ollama")
+            && !broker.is_connected("openrouter")
+    );
+}
+
+#[test]
 fn env_presence_is_reported_without_the_value() {
     let tmp = tempfile::tempdir().unwrap();
     let broker = broker(&tmp);

@@ -1,0 +1,443 @@
+{
+ "data": [
+  {
+   "id": "kilo-auto/free",
+   "name": "Auto Free",
+   "created": 0,
+   "description": "Rotates through available free models. Limited capability and no credits required. [Learn more](https://kilo.ai/docs/cod",
+   "architecture": {
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other"
+   },
+   "top_provider": {
+    "is_moderated": false,
+    "context_length": 256000,
+    "max_completion_tokens": 10000
+   },
+   "pricing": {
+    "prompt": "0",
+    "completion": "0",
+    "input_cache_read": "0",
+    "input_cache_write": "0",
+    "request": "0",
+    "image": "0",
+    "web_search": "0",
+    "internal_reasoning": "0"
+   },
+   "context_length": 256000,
+   "supported_parameters": [
+    "max_tokens",
+    "temperature",
+    "tools",
+    "reasoning",
+    "include_reasoning"
+   ],
+   "opencode": {},
+   "preferredIndex": 1,
+   "isFree": true,
+   "mayTrainOnYourPrompts": true,
+   "autoRouting": {
+    "models": [
+     "dots-studio/dots-3-note-preview:free",
+     "inclusionai/ling-3.0-flash-vl:free",
+     "nex-agi/nex-n2.5-pro:free",
+     "nvidia/nemotron-3-ultra-550b-a55b:free",
+     "poolside/laguna-s-2.1:free"
+    ]
+   }
+  },
+  {
+   "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+   "name": "NVIDIA: Nemotron 3 Ultra (free)",
+   "created": 1780551208,
+   "description": "NVIDIA Nemotron 3 Ultra is an open frontier-reasoning and orchestration model from NVIDIA, with 55B active parameters ou",
+   "architecture": {
+    "modality": "text->text",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other"
+   },
+   "top_provider": {
+    "is_moderated": false,
+    "context_length": 1000000,
+    "max_completion_tokens": 65536
+   },
+   "pricing": {
+    "prompt": "0",
+    "completion": "0",
+    "discount": 0
+   },
+   "context_length": 1000000,
+   "per_request_limits": null,
+   "supported_parameters": [
+    "include_reasoning",
+    "max_tokens",
+    "reasoning",
+    "reasoning_effort",
+    "seed",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_p"
+   ],
+   "expiration_date": null,
+   "preferredIndex": 3,
+   "isFree": true,
+   "mayTrainOnYourPrompts": true,
+   "opencode": {
+    "variants": {
+     "none": {
+      "reasoning": {
+       "enabled": false,
+       "effort": "none"
+      }
+     },
+     "medium": {
+      "reasoning": {
+       "enabled": true,
+       "effort": "medium"
+      }
+     },
+     "high": {
+      "reasoning": {
+       "enabled": true,
+       "effort": "high"
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "qwen/qwen3.8-27b:free",
+   "name": "Qwen: Qwen3.8 27B (free)",
+   "created": 1786722910,
+   "description": "Qwen3.8 27B is an open-weight dense vision-language model from Qwen. It is suited for coding, professional workflows, re",
+   "architecture": {
+    "modality": "text+image+video->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "video"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Qwen"
+   },
+   "top_provider": {
+    "is_moderated": false,
+    "context_length": 262144,
+    "max_completion_tokens": 235929
+   },
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "context_length": 262144,
+   "per_request_limits": null,
+   "supported_parameters": [
+    "frequency_penalty",
+    "include_reasoning",
+    "max_tokens",
+    "presence_penalty",
+    "reasoning",
+    "reasoning_effort",
+    "repetition_penalty",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_p"
+   ],
+   "expiration_date": null,
+   "isFree": true,
+   "mayTrainOnYourPrompts": true,
+   "opencode": {
+    "variants": {
+     "none": {
+      "reasoning": {
+       "enabled": false,
+       "effort": "none"
+      }
+     },
+     "low": {
+      "reasoning": {
+       "enabled": true,
+       "effort": "low"
+      }
+     },
+     "medium": {
+      "reasoning": {
+       "enabled": true,
+       "effort": "medium"
+      }
+     },
+     "xhigh": {
+      "reasoning": {
+       "enabled": true,
+       "effort": "xhigh"
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "z-ai/glm-5.2:free",
+   "name": "Z.ai: GLM 5.2 (free)",
+   "created": 1781631930,
+   "description": "GLM 5.2 is a large-scale reasoning model from Z.ai. It supports text input and output with a 1M-token context window, an",
+   "architecture": {
+    "modality": "text->text",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other"
+   },
+   "top_provider": {
+    "is_moderated": false,
+    "context_length": 32768,
+    "max_completion_tokens": 29491
+   },
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "context_length": 32768,
+   "per_request_limits": null,
+   "supported_parameters": [
+    "frequency_penalty",
+    "include_reasoning",
+    "max_tokens",
+    "min_p",
+    "presence_penalty",
+    "reasoning",
+    "reasoning_effort",
+    "repetition_penalty",
+    "seed",
+    "stop",
+    "temperature",
+    "top_k",
+    "top_p"
+   ],
+   "expiration_date": null,
+   "isFree": true,
+   "mayTrainOnYourPrompts": true,
+   "opencode": {
+    "variants": {
+     "none": {
+      "reasoning": {
+       "enabled": false,
+       "effort": "none"
+      }
+     },
+     "high": {
+      "reasoning": {
+       "enabled": true,
+       "effort": "high"
+      }
+     },
+     "xhigh": {
+      "reasoning": {
+       "enabled": true,
+       "effort": "xhigh"
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "nvidia/nemotron-3-super-120b-a12b:free",
+   "name": "NVIDIA: Nemotron 3 Super (free)",
+   "created": 1773245239,
+   "description": "NVIDIA Nemotron 3 Super is a 120B-parameter open hybrid MoE model, activating just 12B parameters for maximum compute ef",
+   "architecture": {
+    "modality": "text->text",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other"
+   },
+   "top_provider": {
+    "is_moderated": false,
+    "context_length": 262144,
+    "max_completion_tokens": 235929
+   },
+   "pricing": {
+    "prompt": "0",
+    "completion": "0",
+    "discount": 0
+   },
+   "context_length": 262144,
+   "per_request_limits": null,
+   "supported_parameters": [
+    "include_reasoning",
+    "max_tokens",
+    "reasoning",
+    "reasoning_effort",
+    "response_format",
+    "seed",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_p"
+   ],
+   "expiration_date": null,
+   "terminalBench": {
+    "overallScore": 0.15505618,
+    "avgAttemptCostUsd": 0
+   },
+   "isFree": true,
+   "mayTrainOnYourPrompts": true,
+   "opencode": {
+    "variants": {
+     "none": {
+      "reasoning": {
+       "enabled": false,
+       "effort": "none"
+      }
+     },
+     "low": {
+      "reasoning": {
+       "enabled": true,
+       "effort": "low"
+      }
+     },
+     "medium": {
+      "reasoning": {
+       "enabled": true,
+       "effort": "medium"
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "openrouter/free",
+   "name": "OpenRouter Free Models Router",
+   "created": 1769917427,
+   "description": "The simplest way to get free inference. openrouter/free is a router that selects free models at random from the models a",
+   "architecture": {
+    "modality": "text+image->text",
+    "input_modalities": [
+     "text",
+     "image"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Router"
+   },
+   "top_provider": {
+    "is_moderated": false,
+    "context_length": null,
+    "max_completion_tokens": null
+   },
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "context_length": 200000,
+   "per_request_limits": null,
+   "supported_parameters": [
+    "frequency_penalty",
+    "include_reasoning",
+    "logprobs",
+    "max_completion_tokens",
+    "max_tokens",
+    "min_p",
+    "presence_penalty",
+    "reasoning",
+    "reasoning_effort",
+    "repetition_penalty",
+    "response_format",
+    "seed",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_k",
+    "top_logprobs",
+    "top_p"
+   ],
+   "expiration_date": null,
+   "isFree": true,
+   "mayTrainOnYourPrompts": true,
+   "opencode": {}
+  },
+  {
+   "id": "kilo-auto/efficient",
+   "name": "Auto Efficient",
+   "created": 0,
+   "description": "Routes each request to the cheapest model that gets the job done, based on continuously benchmarked accuracy and cost.",
+   "architecture": {
+    "input_modalities": [
+     "text",
+     "image"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other"
+   },
+   "top_provider": {
+    "is_moderated": false,
+    "context_length": 1000000,
+    "max_completion_tokens": 65536
+   },
+   "pricing": {
+    "prompt": "-1",
+    "completion": "-1",
+    "request": "0",
+    "image": "0",
+    "web_search": "0",
+    "internal_reasoning": "0"
+   },
+   "context_length": 1000000,
+   "supported_parameters": [
+    "max_tokens",
+    "temperature",
+    "tools",
+    "reasoning",
+    "include_reasoning"
+   ],
+   "opencode": {},
+   "preferredIndex": 0,
+   "isFree": false,
+   "mayTrainOnYourPrompts": false,
+   "autoRouting": {
+    "models": [
+     "anthropic/claude-sonnet-5",
+     "deepseek/deepseek-v4.1-flash",
+     "kwaipilot/kat-coder-pro-v2.5",
+     "meta/muse-spark-1.3-contributor",
+     "minimax/minimax-m3",
+     "moonshotai/kimi-k3",
+     "openai/gpt-5.6-luna",
+     "thinkingmachines/inkling",
+     "x-ai/grok-4.6",
+     "xiaomi/mimo-v2.5-pro",
+     "z-ai/glm-5.3",
+     "z-ai/glm-5.3-flash"
+    ]
+   }
+  }
+ ]
+}
