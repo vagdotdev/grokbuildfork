@@ -4487,7 +4487,10 @@ impl AppView {
                                         &self.hidden_announcement_ids,
                                     )
                                 })
-                                .or(self.announcement.as_ref());
+                                .or(self.announcement.as_ref())
+                                .filter(|a| {
+                                    workshop_brand::hero_shows_announcement(a.severity.as_deref())
+                                });
                             let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                 prompt_focus: if self.welcome_prompt_focused {
                                     WelcomePromptFocus::Focused

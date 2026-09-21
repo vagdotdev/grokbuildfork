@@ -283,7 +283,7 @@ pub(super) struct WelcomeLayout {
     /// In-box info slot: it shows either the announcement or the changelog (the announcement takes priority).
     pub(super) hero_info: Rect,
     pub(super) hero_menu: Rect,
-    /// The art the stacked `logo` rows were reserved for; paint it with [`render_logo_tier`].
+    /// The art the stacked `logo` rows (or the hero box's `hero_logo` rows) were reserved for; paint it with [`render_logo_tier`].
     pub(super) logo_tier: LogoTier,
 }
 
@@ -556,7 +556,7 @@ pub(super) fn render_version_badge(
     match &mode {
         VersionBadgeMode::Full { .. } => {
             spans.push(Span::styled(
-                "Grok Build  ",
+                format!("{}  ", workshop_brand::title()),
                 Style::default()
                     .fg(theme.text_primary)
                     .add_modifier(Modifier::BOLD),
@@ -576,7 +576,7 @@ pub(super) fn render_version_badge(
         }
         VersionBadgeMode::HeroInline => {
             spans.push(Span::styled(
-                "Grok Build  ",
+                format!("{}  ", workshop_brand::title()),
                 Style::default()
                     .fg(theme.text_primary)
                     .add_modifier(Modifier::BOLD),
@@ -2734,8 +2734,9 @@ mod tests {
                 "badge must not label the product: {rendered:?}"
             );
         }
-        assert!(full.contains("Grok Build"), "full badge: {full:?}");
-        assert!(inline.contains("Grok Build"), "inline badge: {inline:?}");
+        let title = workshop_brand::title();
+        assert!(full.contains(title), "full badge: {full:?}");
+        assert!(inline.contains(title), "inline badge: {inline:?}");
         assert!(footer.contains("acme"), "footer keeps the team: {footer:?}");
         assert!(
             !footer.ends_with('\u{2502}'),
@@ -3713,7 +3714,7 @@ mod tests {
         };
         let one_line = WelcomeLayout::compute(input(None));
         assert_eq!(one_line.logo_tier, LogoTier::Full);
-        assert_eq!(one_line.logo.height, logo::full_logo_line_count());
+        assert_eq!(one_line.logo.height, LogoTier::Full.rows());
 
         let tall = WelcomeLayout::compute(input(Some(13)));
         assert_eq!(tall.logo_tier, LogoTier::Compact);
@@ -3833,7 +3834,7 @@ mod tests {
 
         let mut buf = Buffer::empty(area);
         let _ = render_welcome(area, &mut buf, &params, &mut prompt, &mut picker);
-        assert_eq!(painted_logo_rows(&buf), logo::full_logo_line_count());
+        assert_eq!(painted_logo_rows(&buf), LogoTier::Full.rows());
 
         prompt.set_text(&["line"; 30].join("\n"));
         let mut buf = Buffer::empty(area);
@@ -4113,8 +4114,12 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            hero_box::min_content_height(&input, with_ann.hero_info.height, PROMPT_HEIGHT)
-                <= area.height,
+            hero_box::min_content_height(
+                &input,
+                with_ann.hero_info.height,
+                PROMPT_HEIGHT,
+                with_ann.logo_tier
+            ) <= area.height,
             "clamped slot must keep the box within the area"
         );
     }
@@ -4601,7 +4606,8 @@ the usual channels. "
             hero_box::min_content_height(
                 &short_input,
                 short_expanded.hero_info.height,
-                PROMPT_HEIGHT
+                PROMPT_HEIGHT,
+                short_expanded.logo_tier
             ) <= short.height
         );
     }

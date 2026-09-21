@@ -13307,6 +13307,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "workshop-brand"
+version = "0.1.0"
+
+[[package]]
 name = "workshop-detect"
 version = "0.1.0"
 dependencies = [
@@ -14322,6 +14326,7 @@ dependencies = [
  "walkdir",
  "windows-sys 0.59.0",
  "workshop-auth",
+ "workshop-brand",
  "xai-acp-lib",
  "xai-chat-state",
  "xai-crash-handler",
@@ -14425,6 +14430,7 @@ dependencies = [
  "similar",
  "tracing",
  "uuid",
+ "workshop-brand",
  "xai-grok-pager",
  "xai-grok-pager-diff",
  "xai-grok-shell",
