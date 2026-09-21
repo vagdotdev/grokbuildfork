@@ -1,2 +1,0 @@
-# gate:no-theft allowlist — one repo-relative path per line. Reviewed; keep empty when possible.
-# The gate's own test file is always excluded and does not need to be listed.

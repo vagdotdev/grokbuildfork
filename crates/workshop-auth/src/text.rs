@@ -6,7 +6,9 @@ use crate::{ModelsRow, PickerState, PickerTab, RowKind};
 pub fn render(state: &PickerState) -> String {
     let mut out = String::new();
     out.push_str("Workshop — connect a model\n");
-    out.push_str("Workshop never signs you in anywhere by default. Pick how it should reach a model.\n\n");
+    out.push_str(
+        "Workshop never signs you in anywhere by default. Pick how it should reach a model.\n\n",
+    );
 
     out.push_str(&format!("[{}]\n", PickerTab::Models.title()));
     let mut last_group: Option<&str> = None;
@@ -104,7 +106,10 @@ mod tests {
         let claude = t.find("Claude ").unwrap();
         let codex = t.find("Codex ").unwrap();
         let cursor = t.find("Cursor ").unwrap();
-        assert!(claude < codex && codex < cursor, "rail order Claude, Codex, Cursor");
+        assert!(
+            claude < codex && codex < cursor,
+            "rail order Claude, Codex, Cursor"
+        );
         assert!(t.contains("[Sign in]"));
         let xai = t.find("xAI (optional)").unwrap();
         let add_later = t.find("Add a connection later").unwrap();

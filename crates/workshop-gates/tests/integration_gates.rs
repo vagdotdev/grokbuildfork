@@ -78,13 +78,18 @@ fn config_writer_keeps_secrets_out_of_config() {
         Arc::new(MemorySecretStore::default()),
         tmp.path().join("connections.json"),
     );
-    broker.save_api_key("anthropic", "sk-ant-DO-NOT-WRITE").unwrap();
+    broker
+        .save_api_key("anthropic", "sk-ant-DO-NOT-WRITE")
+        .unwrap();
     let row = workshop_providers::catalog::custom_row("anthropic", "claude-sonnet-4-5").unwrap();
     let spec = resolve_model_entry(&row, &broker).unwrap();
     let path = tmp.path().join("config.toml");
     workshop_auth::config_write::activate_model(&path, &spec).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
-    assert!(!text.contains("sk-ant-DO-NOT-WRITE"), "secret leaked into config: {text}");
+    assert!(
+        !text.contains("sk-ant-DO-NOT-WRITE"),
+        "secret leaked into config: {text}"
+    );
     assert!(text.contains("WORKSHOP_ANTHROPIC_API_KEY"));
 
     // A keyless row gets the anonymous sentinel and no env_key.

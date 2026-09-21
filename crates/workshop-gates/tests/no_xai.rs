@@ -80,7 +80,10 @@ fn gate1_default_grok_com_config_has_no_xai_issuer() {
             !url_hits_forbidden_host(issuer),
             "default issuer points at xAI: {issuer}"
         );
-        assert_ne!(issuer, "http://localhost:22255", "local xAI stand-in is not a default");
+        assert_ne!(
+            issuer, "http://localhost:22255",
+            "local xAI stand-in is not a default"
+        );
     }
     assert!(
         cfg.oauth2.is_none() && cfg.oidc.is_none(),
@@ -229,7 +232,11 @@ fn gate2_pager_startup_metadata_has_no_login_method() {
         preferred_method: None,
     });
     let first: Option<&acp::AuthMethod> = built.methods.first();
-    assert!(first.is_none(), "default set must be empty, got {:?}", ids(&built));
+    assert!(
+        first.is_none(),
+        "default set must be empty, got {:?}",
+        ids(&built)
+    );
 }
 
 // ───────────────────────── Gate 3 — production endpoints ─────────────────────────
@@ -262,7 +269,10 @@ fn gate3_production_endpoints_are_loopback_only() {
         xai_grok_env::PROD_CLI_CHAT_PROXY_BASE_URL
     );
     let proxy = xai_grok_shell::agent::config::EndpointsConfig::default().proxy_url();
-    assert!(url_is_loopback(&proxy), "EndpointsConfig::proxy_url() default: {proxy}");
+    assert!(
+        url_is_loopback(&proxy),
+        "EndpointsConfig::proxy_url() default: {proxy}"
+    );
 }
 
 /// Default model and aux-tool models are not Grok models routed through the proxy.
@@ -306,10 +316,16 @@ fn gate4_updater_constants_are_not_xai_channels() {
             "@xai-official",
             "xai-org-shared",
         ] {
-            assert!(!s.contains(bad), "{s} still points at xAI infrastructure ({bad})");
+            assert!(
+                !s.contains(bad),
+                "{s} still points at xAI infrastructure ({bad})"
+            );
         }
     }
-    assert!(!url_hits_forbidden_host(CHANNEL_BASE_URL), "{CHANNEL_BASE_URL}");
+    assert!(
+        !url_hits_forbidden_host(CHANNEL_BASE_URL),
+        "{CHANNEL_BASE_URL}"
+    );
     assert_eq!(RELEASE_REPO.split('/').count(), 2, "{RELEASE_REPO}");
     assert_eq!(GH_RELEASE_REPO, RELEASE_REPO);
     assert_eq!(
@@ -352,7 +368,10 @@ fn telemetry_has_no_baked_endpoint_or_token() {
     assert_eq!(cfg.events_api_key, None, "events API key baked in");
     assert_eq!(cfg.mixpanel_token, None, "Mixpanel token baked in");
     assert!(!cfg.mixpanel_enabled, "Mixpanel enabled by default");
-    assert_eq!(cfg.enabled, None, "telemetry must not be force-enabled by default");
+    assert_eq!(
+        cfg.enabled, None,
+        "telemetry must not be force-enabled by default"
+    );
 }
 
 // ───────────────────────── Identity ─────────────────────────

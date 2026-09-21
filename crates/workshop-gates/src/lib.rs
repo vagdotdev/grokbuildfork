@@ -191,7 +191,10 @@ mod tests {
             host_of("wss://code.grok.com:443/ws").as_deref(),
             Some("code.grok.com")
         );
-        assert_eq!(host_of("http://127.0.0.1:1/v1").as_deref(), Some("127.0.0.1"));
+        assert_eq!(
+            host_of("http://127.0.0.1:1/v1").as_deref(),
+            Some("127.0.0.1")
+        );
         assert_eq!(host_of("http://[::1]:8080/").as_deref(), Some("::1"));
         assert_eq!(host_of("not a url"), None);
     }
@@ -200,7 +203,9 @@ mod tests {
     fn forbidden_hosts() {
         assert!(url_hits_forbidden_host("https://auth.x.ai"));
         assert!(url_hits_forbidden_host("https://accounts.x.ai/sign-in"));
-        assert!(url_hits_forbidden_host("https://cli-chat-proxy.grok.com/v1"));
+        assert!(url_hits_forbidden_host(
+            "https://cli-chat-proxy.grok.com/v1"
+        ));
         assert!(url_hits_forbidden_host("wss://grok.com/ws/gw/"));
         assert!(url_hits_forbidden_host("https://api.mixpanel.com/track"));
         assert!(url_hits_forbidden_host(

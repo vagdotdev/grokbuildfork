@@ -17,9 +17,10 @@
 //! export: three rails (Claude, Codex, Cursor), one pill per rail (Detecting, Ready, Sign in), and
 //! per-rail model radios keyed `provider:model:variant`.
 //!
-//! `tests/no_theft.rs` is the workspace-wide **gate:no-theft** scan (foreign credential files,
-//! keychain items, and Claude OAuth capture paths); it is parked here until the overlay gates
-//! crate exists and should move there unchanged.
+//! The workspace-wide **gate:no-theft** scan (foreign credential files, keychain items, and
+//! Claude OAuth capture paths) lives in the overlay gates crate:
+//! `crates/workshop-gates/tests/no_theft.rs` (source, comments and `#[cfg(test)]` stripped) plus
+//! `scripts/no-theft-fs-audit.sh` (runtime strace audit with decoy credential files).
 
 pub mod copy;
 pub mod env;

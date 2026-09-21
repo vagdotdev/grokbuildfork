@@ -635,7 +635,9 @@ fn row_detail_lines(
                 model.source.name, model.source.as_of
             ));
             if *locked {
-                lines.push("This provider needs a credential first — press Enter to connect.".into());
+                lines.push(
+                    "This provider needs a credential first — press Enter to connect.".into(),
+                );
             } else {
                 lines.push(format!(
                     "Enter writes [model.{}] to {cfg} and makes it the active model. Turns run \
@@ -647,7 +649,10 @@ fn row_detail_lines(
             if let Some(DefaultSelection::KiloFree { primary, .. }) = default_selection
                 && model.model_id == *primary
             {
-                lines.push("First-run default: the free community pool (Direct API · Free · shared pool).".into());
+                lines.push(
+                    "First-run default: the free community pool (Direct API · Free · shared pool)."
+                        .into(),
+                );
             }
         }
         RowKind::ConnectProvider {
@@ -727,7 +732,9 @@ fn rail_detail_lines(rail: &RailState, selected_model: usize) -> Vec<String> {
                 m.display()
             ));
         }
-        lines.push("Enter routes the session through the official CLI in an isolated worktree.".into());
+        lines.push(
+            "Enter routes the session through the official CLI in an isolated worktree.".into(),
+        );
     }
     lines
 }

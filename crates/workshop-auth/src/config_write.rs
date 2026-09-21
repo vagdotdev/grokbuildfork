@@ -41,7 +41,10 @@ pub enum ConfigWriteError {
 pub fn model_table(spec: &ModelEntrySpec) -> toml::Table {
     let mut t = toml::Table::new();
     t.insert("model".into(), toml::Value::String(spec.model.clone()));
-    t.insert("base_url".into(), toml::Value::String(spec.base_url.clone()));
+    t.insert(
+        "base_url".into(),
+        toml::Value::String(spec.base_url.clone()),
+    );
     t.insert("name".into(), toml::Value::String(spec.name.clone()));
     t.insert(
         "api_backend".into(),
@@ -71,8 +74,7 @@ pub fn model_table(spec: &ModelEntrySpec) -> toml::Table {
                 toml::Value::String(ANONYMOUS_API_KEY_SENTINEL.into()),
             );
         }
-        CredentialInjection::ProcessEnv { var }
-        | CredentialInjection::FromBroker { var, .. } => {
+        CredentialInjection::ProcessEnv { var } | CredentialInjection::FromBroker { var, .. } => {
             t.insert("env_key".into(), toml::Value::String(var.clone()));
         }
     }
@@ -81,7 +83,10 @@ pub fn model_table(spec: &ModelEntrySpec) -> toml::Table {
         toml::Value::Integer(spec.context_window.get() as i64),
     );
     if let Some(m) = spec.max_completion_tokens {
-        t.insert("max_completion_tokens".into(), toml::Value::Integer(m as i64));
+        t.insert(
+            "max_completion_tokens".into(),
+            toml::Value::Integer(m as i64),
+        );
     }
     if !spec.extra_headers.is_empty() {
         let mut h = toml::Table::new();
@@ -128,7 +133,8 @@ pub fn activate_model(path: &Path, spec: &ModelEntrySpec) -> Result<String, Conf
     }
     doc.insert("default".into(), toml::Value::String(key.clone()));
     let rendered = toml::to_string_pretty(&doc).unwrap_or_else(|_| doc.to_string());
-    let header = "# Written by the Workshop connection picker (/auth). Secrets are never stored here.\n";
+    let header =
+        "# Written by the Workshop connection picker (/auth). Secrets are never stored here.\n";
     let body = if rendered.starts_with('#') {
         rendered
     } else {
@@ -176,10 +182,17 @@ mod tests {
         assert_eq!(doc["default"].as_str(), Some("kilo-kilo-auto-free"));
         let m = &doc["model"]["kilo-kilo-auto-free"];
         assert_eq!(m["model"].as_str(), Some("kilo-auto/free"));
-        assert_eq!(m["base_url"].as_str(), Some("https://api.kilo.ai/api/gateway"));
+        assert_eq!(
+            m["base_url"].as_str(),
+            Some("https://api.kilo.ai/api/gateway")
+        );
         assert_eq!(m["api_key"].as_str(), Some(ANONYMOUS_API_KEY_SENTINEL));
         assert!(m.get("env_key").is_none());
-        assert_eq!(doc["features"]["telemetry"].as_bool(), Some(false), "other tables kept");
+        assert_eq!(
+            doc["features"]["telemetry"].as_bool(),
+            Some(false),
+            "other tables kept"
+        );
     }
 
     #[test]
@@ -187,7 +200,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let b = broker(&tmp);
         b.save_api_key("anthropic", "sk-ant-secret").unwrap();
-        let row = workshop_providers::catalog::custom_row("anthropic", "claude-sonnet-4-5").unwrap();
+        let row =
+            workshop_providers::catalog::custom_row("anthropic", "claude-sonnet-4-5").unwrap();
         let spec = resolve_model_entry(&row, &b).unwrap();
         let path = tmp.path().join("config.toml");
         activate_model(&path, &spec).unwrap();

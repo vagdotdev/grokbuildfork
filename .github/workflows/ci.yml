@@ -52,11 +52,12 @@ jobs:
         with:
           shared-key: workshop
       - name: rustfmt (overlay crates)
-        run: cargo fmt -p workshop-auth -p workshop-gates -- --check
+        run: cargo fmt -p workshop-auth -p workshop-gates -p workshop-providers -p workshop-detect -p workshop-adapters -p workshop-brand -p workshop-voice -- --check
       - name: cargo check (overlay crates + pager-bin)
-        run: cargo check -p workshop-auth -p workshop-gates -p xai-grok-pager-bin
+        run: cargo check -p workshop-auth -p workshop-gates -p workshop-providers -p workshop-detect -p workshop-adapters -p workshop-brand -p xai-grok-pager-bin
       - name: clippy (overlay crates, warnings denied)
-        run: cargo clippy -p workshop-auth -p workshop-gates -- -D warnings
+        # workshop-voice (whisper.cpp via cmake) joins check/clippy when the voice patch is wired.
+        run: cargo clippy -p workshop-auth -p workshop-gates -p workshop-providers -p workshop-detect -p workshop-adapters -p workshop-brand -- -D warnings
 
   no-xai:
     name: no-xai gates (required)
@@ -83,7 +84,7 @@ jobs:
       - name: Compiled-default gates
         run: cargo test -p workshop-gates -- --nocapture
       - name: Overlay unit tests
-        run: cargo test -p workshop-auth
+        run: cargo test -p workshop-auth -p workshop-providers -p workshop-detect -p workshop-adapters -p workshop-brand
       - name: Upstream unit tests touched by the gate patches
         run: |
           cargo test -p xai-grok-login --lib -- config:: manager::tests::auth_scope flow::tests::weblogin_cred flow::tests::oidc_cred flow::tests::external_cred flow::tests::run_auth_flow_falls_through
@@ -99,6 +100,8 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq strace iproute2 python3
           scripts/no-egress-smoke.sh target/debug/workshop
+      - name: gate:no-theft runtime — decoy foreign credentials are never opened (strace)
+        run: scripts/no-theft-fs-audit.sh target/debug/workshop target/no-egress/no-theft-fs-audit.log
       - name: PTY smoke — Login opens the picker, never grok.com
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop

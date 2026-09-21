@@ -12,10 +12,7 @@ use xai_grok_pager_pty_harness::PtyHarness;
 fn evidence_dir() -> PathBuf {
     let dir = std::env::var_os("WORKSHOP_PTY_EVIDENCE_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/pty-evidence")
-        });
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/pty-evidence"));
     std::fs::create_dir_all(&dir).expect("create evidence dir");
     dir
 }
@@ -38,6 +35,26 @@ fn assert_no_xai(h: &PtyHarness, step: &str) {
             "{step}: screen shows {bad:?}\n{screen}"
         );
     }
+}
+
+/// Press Down until the `›`-marked (selected) row contains `needle`. The Models tab is a flat
+/// list built from the live provider catalog, so row indices are data, not constants.
+fn move_selection_to(h: &mut PtyHarness, needle: &str) {
+    for _ in 0..40 {
+        let screen = h.screen_contents();
+        if screen
+            .lines()
+            .any(|l| l.contains('\u{203a}') && l.contains(needle))
+        {
+            return;
+        }
+        h.inject_keys(b"\x1b[B").unwrap();
+        h.update(Duration::from_millis(80));
+    }
+    panic!(
+        "never reached a selected row containing {needle:?}\nscreen:\n{}",
+        h.screen_contents()
+    );
 }
 
 fn wait_for(h: &mut PtyHarness, text: &str, secs: u64) {
@@ -94,30 +111,32 @@ fn first_run_and_login_open_the_picker_not_grok_com() {
         screen.find("Codex").unwrap(),
         screen.find("Cursor").unwrap(),
     );
-    assert!(c < x && x < u, "rail order Claude, Codex, Cursor:\n{screen}");
     assert!(
-        screen.contains("[Sign in]") || screen.contains("[Detecting]") || screen.contains("[Ready]"),
+        c < x && x < u,
+        "rail order Claude, Codex, Cursor:\n{screen}"
+    );
+    assert!(
+        screen.contains("[Sign in]")
+            || screen.contains("[Detecting]")
+            || screen.contains("[Ready]"),
         "a pill is shown:\n{screen}"
     );
     snapshot(&h, &dir, "02-picker-subscriptions");
 
-    // 3. Back to Models; open the OpenAI card detail (never a login).
+    // 3. Back to Models; Enter on the OpenAI row opens a key-entry prompt (never a login, never
+    //    an echo of the key).
     h.inject_keys(b"\t").unwrap();
     h.update(Duration::from_millis(300));
-    h.inject_keys(b"\x1b[B").unwrap(); // Down → OpenAI API
-    h.update(Duration::from_millis(200));
+    move_selection_to(&mut h, "OpenAI API key");
     h.inject_keys(b"\r").unwrap();
-    wait_for(&mut h, "OPENAI_API_KEY", 5);
-    assert_no_xai(&h, "openai detail");
-    snapshot(&h, &dir, "03-picker-openai-detail");
-    h.inject_keys(b"\x1b").unwrap(); // close detail
+    wait_for(&mut h, "paste or type your key", 5);
+    assert_no_xai(&h, "openai key entry");
+    snapshot(&h, &dir, "03-picker-openai-key-entry");
+    h.inject_keys(b"\x1b").unwrap(); // cancel key entry
     h.update(Duration::from_millis(300));
 
-    // 4. Move to the last card (xAI optional): first Enter only shows the labeled copy.
-    for _ in 0..8 {
-        h.inject_keys(b"\x1b[B").unwrap();
-        h.update(Duration::from_millis(60));
-    }
+    // 4. Move to the last row (xAI optional): first Enter only shows the labeled copy.
+    move_selection_to(&mut h, "xAI (optional)");
     h.inject_keys(b"\r").unwrap();
     wait_for(&mut h, "Not required.", 5);
     wait_for(&mut h, "Press Enter again", 5);

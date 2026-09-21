@@ -13,9 +13,19 @@ use std::path::Path;
 
 use workshop_gates::{THEFT_MARKERS, files_under, repo_root, scannable_source};
 
-/// Files allowed to name the forbidden things: the gates themselves (comments are stripped anyway).
+/// Files allowed to name the forbidden things: the gates themselves (comments are stripped anyway),
+/// and test code. `#[cfg(test)]` modules are stripped by [`scannable_source`]; integration-test
+/// targets (`crates/*/tests/**`, `*test*.rs`) are separate crates that never link into the binary,
+/// and they legitimately plant decoy credential files / name a marker as *input* to prove it is
+/// never read or is dropped (e.g. workshop-adapters `tests/common/mod.rs`, `fake_cli_e2e.rs`).
+/// The runtime half, `scripts/no-theft-fs-audit.sh`, covers what the binary actually opens.
 fn allowlisted(path: &Path) -> bool {
-    path.to_string_lossy().contains("/crates/workshop-gates/")
+    let s = path.to_string_lossy();
+    s.contains("/crates/workshop-gates/")
+        || s.contains("/tests/")
+        || path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().contains("test"))
 }
 
 fn scannable_files(root: &Path) -> Vec<std::path::PathBuf> {
