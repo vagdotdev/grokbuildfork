@@ -13,7 +13,7 @@ pub use xai_grok_env::{
     PROD_RELAY_WS_URL, PROD_WS_ORIGIN,
 };
 /// Public Computer Hub WebSocket URL used by the local-workspace supervisor (`workspace_server --hub-url`) when `agent_config.hub.url` is unset.
-pub const PROD_COMPUTER_HUB_WS_URL: &str = "wss://computer-hub.grok.com/v1/tools";
+pub const PROD_COMPUTER_HUB_WS_URL: &str = "wss://computer-hub.workshop.invalid/v1/tools";
 #[cfg(any(test, feature = "test-support"))]
 pub use xai_grok_env::EnvVarGuard;
 /// Env var that opts a process into gateway-bridge mode.

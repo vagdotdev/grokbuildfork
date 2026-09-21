@@ -1,11 +1,12 @@
 //! Home-directory resolution generally: USERPROFILE-first `home_dir`, plus
-//! grok-home (`$GROK_HOME` or `<home>/.grok`). Shared by `xai-grok-config`
-//! and `xai-fast-worktree`.
+//! the Workshop home (`$WORKSHOP_HOME`, legacy `$GROK_HOME`, or `<home>/.workshop`).
+//! Shared by `xai-grok-config` and `xai-fast-worktree`. The Rust names keep
+//! upstream's `grok_home` spelling so the overlay keeps replaying (ADR 0001).
 //!
 //! Which function to call:
 //! - [`grok_home`]: the usual choice, a cached, created path to build on.
 //! - [`user_grok_home`]: `None` instead of a cwd fallback when no home resolves.
-//! - [`default_grok_home`]: the `<home>/.grok` default, ignoring `$GROK_HOME`, so callers can detect an override.
+//! - [`default_grok_home`]: the `<home>/.workshop` default, ignoring the env overrides, so callers can detect an override.
 //! - [`resolve_grok_home`]: a fresh, uncached resolve.
 //! - [`resolve_grok_home_with_source`]: [`resolve_grok_home`] plus where the path came from.
 //! - [`home_dir`]: the home directory itself, for sibling dot dirs (`~/.claude`, `~/.agents`, ...).
@@ -24,9 +25,11 @@ use std::sync::OnceLock;
 /// environment at the asking site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GrokHomeSource {
-    /// A non-empty `$GROK_HOME` override.
+    /// A non-empty `$WORKSHOP_HOME` override.
     EnvOverride,
-    /// `<home>/.grok` derived from the home directory.
+    /// A non-empty legacy `$GROK_HOME` override (warning alias; plan §5 allows it for at most two pre-GA releases).
+    LegacyEnvOverride,
+    /// `<home>/.workshop` derived from the home directory.
     HomeDefault,
 }
 
@@ -38,22 +41,26 @@ pub fn home_dir() -> Option<PathBuf> {
     std::env::home_dir()
 }
 
-/// `<home>/.grok`, canonicalized via `dunce` (not `std::fs::canonicalize`,
+/// `<home>/.workshop`, canonicalized via `dunce` (not `std::fs::canonicalize`,
 /// which yields Windows `\\?\` verbatim paths).
 fn grok_home_in(home: &Path) -> PathBuf {
     dunce::canonicalize(home)
         .unwrap_or_else(|_| home.to_path_buf())
-        .join(".grok")
+        .join(workshop_branding::HOME_DIR_NAME)
 }
 
-/// `$GROK_HOME` verbatim when non-empty, else `<home>/.grok`.
+/// `$WORKSHOP_HOME` verbatim when non-empty, else legacy `$GROK_HOME`, else `<home>/.workshop`.
 /// Used as-is (not canonicalized) so literal prefix checks and symlink guards still see original components.
 fn resolve_grok_home_from(
+    workshop_home_env: Option<&OsStr>,
     grok_home_env: Option<&OsStr>,
     os_home: Option<&Path>,
 ) -> Option<(PathBuf, GrokHomeSource)> {
-    if let Some(env) = grok_home_env.filter(|env| !env.is_empty()) {
+    if let Some(env) = workshop_home_env.filter(|env| !env.is_empty()) {
         return Some((PathBuf::from(env), GrokHomeSource::EnvOverride));
+    }
+    if let Some(env) = grok_home_env.filter(|env| !env.is_empty()) {
+        return Some((PathBuf::from(env), GrokHomeSource::LegacyEnvOverride));
     }
     os_home.map(|home| (grok_home_in(home), GrokHomeSource::HomeDefault))
 }
@@ -66,12 +73,13 @@ pub fn resolve_grok_home() -> Option<PathBuf> {
 /// [`resolve_grok_home`] plus the [`GrokHomeSource`] the path came from.
 pub fn resolve_grok_home_with_source() -> Option<(PathBuf, GrokHomeSource)> {
     resolve_grok_home_from(
-        std::env::var_os("GROK_HOME").as_deref(),
+        std::env::var_os(workshop_branding::HOME_ENV).as_deref(),
+        std::env::var_os(workshop_branding::LEGACY_HOME_ENV).as_deref(),
         home_dir().as_deref(),
     )
 }
 
-/// The default `<home>/.grok`, used when `$GROK_HOME` is unset.
+/// The default `<home>/.workshop`, used when neither env override is set.
 pub fn default_grok_home() -> PathBuf {
     grok_home_in(&home_dir().unwrap_or_else(|| PathBuf::from(".")))
 }
@@ -82,9 +90,20 @@ pub fn grok_home() -> PathBuf {
     static GROK_HOME: OnceLock<PathBuf> = OnceLock::new();
     GROK_HOME
         .get_or_init(|| {
-            let home = resolve_grok_home().unwrap_or_else(default_grok_home);
+            let resolved = resolve_grok_home_with_source();
+            if let Some((path, GrokHomeSource::LegacyEnvOverride)) = &resolved {
+                tracing::warn!(
+                    path = %path.display(),
+                    "{} is a deprecated alias; set {} instead",
+                    workshop_branding::LEGACY_HOME_ENV,
+                    workshop_branding::HOME_ENV
+                );
+            }
+            let home = resolved
+                .map(|(home, _)| home)
+                .unwrap_or_else(default_grok_home);
             if let Err(err) = std::fs::create_dir_all(&home) {
-                tracing::warn!(path = %home.display(), %err, "failed to create grok home");
+                tracing::warn!(path = %home.display(), %err, "failed to create workshop home");
             }
             home
         })
@@ -104,11 +123,40 @@ mod tests {
 
     #[test]
     fn env_wins_over_os_home() {
-        let resolved =
-            resolve_grok_home_from(Some(OsStr::new("/custom/home")), Some(Path::new("/home/u")));
+        let resolved = resolve_grok_home_from(
+            Some(OsStr::new("/custom/home")),
+            None,
+            Some(Path::new("/home/u")),
+        );
         assert_eq!(
             resolved,
             Some((PathBuf::from("/custom/home"), GrokHomeSource::EnvOverride))
+        );
+    }
+
+    #[test]
+    fn workshop_home_wins_over_legacy_grok_home() {
+        let resolved = resolve_grok_home_from(
+            Some(OsStr::new("/custom/workshop")),
+            Some(OsStr::new("/custom/grok")),
+            Some(Path::new("/home/u")),
+        );
+        assert_eq!(
+            resolved,
+            Some((PathBuf::from("/custom/workshop"), GrokHomeSource::EnvOverride))
+        );
+    }
+
+    #[test]
+    fn legacy_grok_home_is_honoured_as_an_alias() {
+        let resolved = resolve_grok_home_from(
+            None,
+            Some(OsStr::new("/custom/grok")),
+            Some(Path::new("/home/u")),
+        );
+        assert_eq!(
+            resolved,
+            Some((PathBuf::from("/custom/grok"), GrokHomeSource::LegacyEnvOverride))
         );
     }
 
@@ -117,7 +165,7 @@ mod tests {
         // A real, existing dir whose canonical form differs (macOS symlinks
         // `/var` -> `/private/var`): the env value must come back unchanged.
         let tmp = tempfile::tempdir().unwrap();
-        let resolved = resolve_grok_home_from(Some(tmp.path().as_os_str()), None);
+        let resolved = resolve_grok_home_from(Some(tmp.path().as_os_str()), None, None);
         assert_eq!(
             resolved,
             Some((tmp.path().to_path_buf(), GrokHomeSource::EnvOverride))
@@ -127,11 +175,12 @@ mod tests {
     #[test]
     fn empty_env_falls_through_to_os_home() {
         let tmp = tempfile::tempdir().unwrap();
-        let resolved = resolve_grok_home_from(Some(&OsString::new()), Some(tmp.path()));
+        let resolved =
+            resolve_grok_home_from(Some(&OsString::new()), Some(&OsString::new()), Some(tmp.path()));
         assert_eq!(
             resolved,
             Some((
-                dunce::canonicalize(tmp.path()).unwrap().join(".grok"),
+                dunce::canonicalize(tmp.path()).unwrap().join(".workshop"),
                 GrokHomeSource::HomeDefault
             ))
         );
@@ -144,13 +193,17 @@ mod tests {
         // comparisons. No-op assertion on Unix.
         let home = default_grok_home();
         assert!(!home.to_string_lossy().starts_with(r"\\?\"));
-        assert!(home.ends_with(".grok"));
+        assert!(home.ends_with(".workshop"));
     }
 
     #[test]
     fn none_when_nothing_resolves() {
         assert_eq!(
-            resolve_grok_home_from(/* grok_home_env */ None, /* os_home */ None),
+            resolve_grok_home_from(
+                /* workshop_home_env */ None,
+                /* grok_home_env */ None,
+                /* os_home */ None
+            ),
             None
         );
     }

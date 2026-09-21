@@ -10,15 +10,17 @@ use xai_grok_shell::env::GrokBuildEnvironment;
 use xai_grok_shell::util::grok_home::grok_home;
 
 const TTL_SECONDS_BEFORE_AUTO_UPDATE: Duration = Duration::from_secs(60 * 30);
-const NPM_PACKAGE: &str = "@xai-official/grok";
-pub const GH_RELEASE_REPO: &str = "xai-org-shared/grok-build";
+// Workshop has no release channel yet (milestone F). Every inherited xAI channel constant is a
+// reserved `.invalid` placeholder and `auto_update::WORKSHOP_AUTO_UPDATE_ENABLED` is false, so
+// nothing here is ever fetched. Pinned by workshop-gates gate 4.
+pub(crate) const NPM_PACKAGE: &str = "workshop-cli-placeholder";
+pub const GH_RELEASE_REPO: &str = "workshop-placeholder/workshop";
 
-/// Primary CLI base URL: Cloudflare-fronted x.ai endpoint with edge caching for binaries and origin-respecting no-cache for channel pointers.
-pub(crate) const CLI_BASE_URL_PRIMARY: &str = "https://x.ai/cli";
+/// Primary CLI base URL placeholder; replaced by the signed Workshop channel in milestone F.
+pub(crate) const CLI_BASE_URL_PRIMARY: &str = "https://updates.workshop.invalid/cli";
 
-/// Fallback CLI base URL: direct GCS, used when the primary is unreachable (Cloudflare outage, regional CF egress issue, DNS hijack, etc.).
-pub(crate) const CLI_BASE_URL_FALLBACK: &str =
-    "https://storage.googleapis.com/grok-build-public-artifacts/cli";
+/// Fallback CLI base URL placeholder; replaced by the signed Workshop channel in milestone F.
+pub(crate) const CLI_BASE_URL_FALLBACK: &str = "https://updates-fallback.workshop.invalid/cli";
 
 /// CLI base URLs in preference order.
 /// Callers (channel-pointer fetch, binary download, in-app updater) try each in turn and stop at the first success.

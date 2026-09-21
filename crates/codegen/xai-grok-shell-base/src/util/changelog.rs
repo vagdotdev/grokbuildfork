@@ -9,8 +9,12 @@
 
 use std::path::PathBuf;
 
-/// CDN base for all changelogs (proxies to GCS, cache-friendly).
-const CHANGELOG_BASE: &str = "https://x.ai/cli/changelogs";
+/// CDN base for all changelogs. Workshop has no changelog CDN yet: the base is a reserved
+/// `.invalid` placeholder and [`WORKSHOP_CHANGELOG_FETCH_ENABLED`] keeps `fetch()` on the disk
+/// cache only, so cold start never resolves `x.ai` (caught by the hermetic login proof).
+const CHANGELOG_BASE: &str = "https://changelogs.workshop.invalid/cli/changelogs";
+/// Off until a Workshop-owned changelog host exists (milestone F).
+pub const WORKSHOP_CHANGELOG_FETCH_ENABLED: bool = false;
 const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// A single structured changelog entry from the published JSON changelog. Shape must match the output of `render_external_json` in `changelog.sh`: `{category, description, breaking_change}`
@@ -167,7 +171,8 @@ impl ChangelogManager {
 /// When set, `ChangelogManager::fetch` skips the CDN and only reads disk cache.
 /// Used by PTY harness tests that seed `CHANGELOG.{md,json}` under a temp home.
 fn changelog_offline() -> bool {
-    std::env::var_os("GROK_CHANGELOG_OFFLINE").is_some_and(|v| !v.is_empty() && v != "0")
+    !WORKSHOP_CHANGELOG_FETCH_ENABLED
+        || std::env::var_os("GROK_CHANGELOG_OFFLINE").is_some_and(|v| !v.is_empty() && v != "0")
 }
 
 fn read_cache(path: &std::path::Path) -> Option<String> {

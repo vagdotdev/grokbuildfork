@@ -1,3 +1,31 @@
+# Workshop
+
+**Workshop** is a personal, de-Grok-branded coding-agent runtime built as a thin
+overlay on the public [Grok Build](https://github.com/xai-org/grok-build) tree.
+A user who has never heard of xAI can install it, press `l`, and connect a
+local model (Ollama, LM Studio, llama.cpp, vLLM), an API key (OpenAI,
+Anthropic, OpenRouter, custom OpenAI-compatible), or an installed
+coding-subscription CLI (`claude`, `codex`, `cursor-agent`, `opencode`).
+Login never opens `auth.x.ai`; the optional xAI card is last, labeled, and
+requires an explicit opt-in.
+
+| | |
+|---|---|
+| Binary | `workshop` (built from `crates/codegen/xai-grok-pager-bin`) |
+| Home | `~/.workshop`, or `$WORKSHOP_HOME` (`$GROK_HOME` is a deprecated alias) |
+| Telemetry | off; no events URL or Mixpanel token is baked into a build |
+| Updater | off until Workshop owns a signed channel |
+| Upstream | pinned in `upstream-lock.toml`; replayed by `scripts/sync-upstream.sh` |
+| Gates | `cargo test -p workshop-gates` (must fail on a pristine upstream snapshot) |
+| Design | `docs/workshop/adr/` |
+
+Crate names, proto packages, and Rust identifiers stay `xai-grok-*` so the
+overlay keeps replaying onto new upstream snapshots (ADR 0001). Everything
+below this line is the upstream Grok Build README, kept for reference; where
+it says `grok`, the Workshop binary is `workshop`.
+
+---
+
 <div align="center">
 
 <h1>

@@ -47,32 +47,40 @@ fn manual_install_cmd(channel: &str) -> String {
         && channel
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    // Workshop: the install-script base follows the (placeholder) channel constant, never x.ai.
+    let base = crate::version::CLI_BASE_URL_PRIMARY;
     if channel == "enterprise" {
         // Enterprise has its own bootstrap script; it needs no channel env.
         return if cfg!(windows) {
-            "irm https://x.ai/cli/enterprise-install.ps1 | iex".to_string()
+            format!("irm {base}/enterprise-install.ps1 | iex")
         } else {
-            "curl -fsSL https://x.ai/cli/enterprise-install.sh | bash".to_string()
+            format!("curl -fsSL {base}/enterprise-install.sh | bash")
         };
     }
     if is_stable_channel(channel) || !safe {
         return if cfg!(windows) {
-            "irm https://x.ai/cli/install.ps1 | iex".to_string()
+            format!("irm {base}/install.ps1 | iex")
         } else {
-            "curl -fsSL https://x.ai/cli/install.sh | bash".to_string()
+            format!("curl -fsSL {base}/install.sh | bash")
         };
     }
     if cfg!(windows) {
-        format!("$env:GROK_CHANNEL='{channel}'; irm https://x.ai/cli/install.ps1 | iex")
+        format!("$env:GROK_CHANNEL='{channel}'; irm {base}/install.ps1 | iex")
     } else {
-        format!("curl -fsSL https://x.ai/cli/install.sh | GROK_CHANNEL='{channel}' bash")
+        format!("curl -fsSL {base}/install.sh | GROK_CHANNEL='{channel}' bash")
     }
 }
 
 fn reinstall_hint(installer: &str, channel: &str) -> String {
     match installer {
-        "npm" => "Please reinstall via npm:\n  npm i -g @xai-official/grok".to_string(),
-        "gh-release" => "Please reinstall via GitHub Releases:\n  gh release download --repo xai-org-shared/grok-build --pattern 'grok-*' --output grok && chmod +x grok".to_string(),
+        "npm" => format!(
+            "Please reinstall via npm:\n  npm i -g {}",
+            crate::version::NPM_PACKAGE
+        ),
+        "gh-release" => format!(
+            "Please reinstall via GitHub Releases:\n  gh release download --repo {} --pattern 'workshop-*' --output workshop && chmod +x workshop",
+            crate::version::GH_RELEASE_REPO
+        ),
         _ => format!("Please reinstall via:\n  {}", manual_install_cmd(channel)),
     }
 }
@@ -164,6 +172,14 @@ pub fn classify_install_error(err: &anyhow::Error) -> CliUpdateErrorKind {
     }
 }
 
+/// Workshop ships no update channel yet: every update entry point returns early with
+/// [`AUTO_UPDATE_DISABLED_MESSAGE`] and makes no request. Milestone F flips this once a signed,
+/// downgrade-protected Workshop channel exists (ADR 0004).
+pub const WORKSHOP_AUTO_UPDATE_ENABLED: bool = false;
+
+/// User-facing explanation printed by `workshop update` and shown in `--check` output.
+pub const AUTO_UPDATE_DISABLED_MESSAGE: &str = "Auto-update is disabled in this Workshop build: no Workshop update channel exists yet. Update by reinstalling from the source you installed from.";
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStatus {
@@ -185,7 +201,7 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
 
     if let Some(error) = status.error.as_deref() {
         println!(
-            "Grok Build - v{} [{}]",
+            "Workshop - v{} [{}]",
             status.current_version, status.channel
         );
         println!("Update check failed: {error}");
@@ -197,24 +213,24 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
     if status.update_available {
         if let Some(latest_version) = status.latest_version.as_deref() {
             println!(
-                "A new version of Grok Build is available: {} -> {}{}",
+                "A new version of Workshop is available: {} -> {}{}",
                 status.current_version, latest_version, channel_label
             );
         } else {
-            println!("A new version of Grok Build is available.");
+            println!("A new version of Workshop is available.");
         }
         return Ok(());
     }
 
     if let Some(latest_version) = status.latest_version.as_deref() {
         println!(
-            "Grok Build - v{} (latest: {}){}",
+            "Workshop - v{} (latest: {}){}",
             status.current_version, latest_version, channel_label
         );
         return Ok(());
     }
 
-    println!("Grok Build - v{}{}", status.current_version, channel_label);
+    println!("Workshop - v{}{}", status.current_version, channel_label);
     Ok(())
 }
 
@@ -224,6 +240,18 @@ pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
     let current_config = config::load_config().await;
     let auto_update = current_config.cli.auto_update;
     let channel = update_config.channel.clone();
+
+    if !WORKSHOP_AUTO_UPDATE_ENABLED {
+        return UpdateStatus {
+            current_version,
+            latest_version: None,
+            update_available: false,
+            installer,
+            channel,
+            auto_update: Some(false),
+            error: Some(AUTO_UPDATE_DISABLED_MESSAGE.to_string()),
+        };
+    }
 
     let Some(ref inst) = installer else {
         return UpdateStatus {
@@ -348,6 +376,9 @@ async fn fetch_update_plan(
 /// `None` means stay put.
 /// Gates on the installer (via `installer_allows_downgrade`) so npm is never downgraded; the decision depends on the installer, never the caller.
 pub async fn auto_update_target(update_config: &UpdateConfig) -> Option<(&'static str, String)> {
+    if !WORKSHOP_AUTO_UPDATE_ENABLED {
+        return None;
+    }
     let installer = get_installer().await?;
     let current = get_installed_grok_version();
     let policy = config::VersionPolicy::resolve();
@@ -389,6 +420,9 @@ pub async fn ensure_latest_on_disk(update_config: &UpdateConfig) -> Result<Ensur
         installed: None,
         relaunch_needed: false,
     };
+    if !WORKSHOP_AUTO_UPDATE_ENABLED {
+        return Ok(outcome);
+    }
     let Some(installer) = get_installer().await else {
         return Ok(outcome);
     };
@@ -565,6 +599,9 @@ impl BackgroundUpdateCheck {
 /// binary is older than the channel pointer. If `auto_update` is enabled and the on-disk install is also behind the
 /// pointer, kicks off a download (a detached `grok update` child). Only the restart hint is shown.
 pub async fn check_update_background(update_config: &UpdateConfig) -> BackgroundUpdateCheck {
+    if !WORKSHOP_AUTO_UPDATE_ENABLED {
+        return BackgroundUpdateCheck::none();
+    }
     let Some(installer) = get_installer().await else {
         return BackgroundUpdateCheck::none();
     };
@@ -651,6 +688,9 @@ pub async fn run_update_if_available(
     trigger: CliUpdateTrigger,
     update_config: &UpdateConfig,
 ) -> Result<bool> {
+    if !WORKSHOP_AUTO_UPDATE_ENABLED {
+        return Ok(false);
+    }
     let Some(inst) = get_installer().await else {
         return Ok(false);
     };
@@ -2360,7 +2400,7 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
     warn_if_other_grok_processes_running();
 
     let version_arg = match target {
-        Some(ver) => format!("@xai-official/grok@{ver}"),
+        Some(ver) => format!("{}@{ver}", crate::version::NPM_PACKAGE),
         None => {
             // All current callers resolve the version via get_latest_version (max(stable, alpha) for the alpha channel) before reaching here
             // Falling back to a raw dist-tag would bypass that logic, so warn loudly if this path is ever hit
@@ -2369,7 +2409,8 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
                 "install_npm called without a resolved version, falling back to dist-tag"
             );
             format!(
-                "@xai-official/grok@{}",
+                "{}@{}",
+                crate::version::NPM_PACKAGE,
                 if channel == "alpha" {
                     "alpha"
                 } else {
@@ -2445,6 +2486,10 @@ pub async fn run_update(
     trigger: CliUpdateTrigger,
 ) -> Result<Option<String>> {
     apply_channel_switch(channel_switch, update_config).await;
+    if !WORKSHOP_AUTO_UPDATE_ENABLED {
+        eprintln!("{AUTO_UPDATE_DISABLED_MESSAGE}");
+        return Ok(None);
+    }
     let installer = match get_installer().await {
         Some(i) => i,
         None => {

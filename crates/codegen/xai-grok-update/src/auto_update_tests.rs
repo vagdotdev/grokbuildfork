@@ -921,8 +921,12 @@ fn test_reinstall_hint_npm_mentions_npm_command() {
     let hint = reinstall_hint("npm", "stable");
     assert!(hint.contains("npm i -g"), "should suggest npm i -g: {hint}");
     assert!(
-        hint.contains("@xai-official/grok"),
+        hint.contains(crate::version::NPM_PACKAGE),
         "should name the package: {hint}"
+    );
+    assert!(
+        !hint.contains("@xai-official/grok"),
+        "Workshop must not point users at the xAI npm package: {hint}"
     );
 }
 
@@ -934,8 +938,12 @@ fn test_reinstall_hint_gh_release_mentions_gh_command() {
         "should suggest gh release download: {hint}"
     );
     assert!(
-        hint.contains("xai-org-shared/grok-build"),
+        hint.contains(crate::version::GH_RELEASE_REPO),
         "should name the repo: {hint}"
+    );
+    assert!(
+        !hint.contains("xai-org-shared/grok-build"),
+        "Workshop must not point users at the xAI release repo: {hint}"
     );
 }
 

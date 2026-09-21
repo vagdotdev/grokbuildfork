@@ -45,8 +45,12 @@ pub const DEFAULT_AGENT_TYPE: &str = "grok-build-plan";
 pub(crate) fn default_agent_type() -> String {
     DEFAULT_AGENT_TYPE.to_owned()
 }
-pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = "https://cli-chat-proxy.grok.com/v1";
-pub const XAI_API_BASE_URL_DEFAULT: &str = "https://api.x.ai/v1";
+/// Workshop: the shell-level proxy fallback is the same `.invalid` placeholder as the compiled
+/// production endpoint set, so no auxiliary service reaches grok.com when nothing is configured.
+pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = crate::env::PROD_CLI_CHAT_PROXY_BASE_URL;
+/// Workshop: auxiliary tools (web search, image describe, voice) have no hidden xAI fallback.
+/// This placeholder fails at DNS until a connection or `GROK_XAI_API_BASE_URL` configures a real host.
+pub const XAI_API_BASE_URL_DEFAULT: &str = "https://api.workshop.invalid/v1";
 const NO_INLINE_CITATIONS_RESPONSE_INCLUDE: &str = "no_inline_citations";
 /// One or more environment variable names that may hold a model API key.
 /// Serde `untagged`: accepts a string or an array in TOML/JSON.

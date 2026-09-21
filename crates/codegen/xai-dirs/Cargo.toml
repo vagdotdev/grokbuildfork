@@ -3,11 +3,12 @@ license = "Apache-2.0"
 edition.workspace = true
 name = "xai-dirs"
 version = "0.1.0"
-description = "Home-directory resolution generally: USERPROFILE-first home_dir, plus grok-home ($GROK_HOME or <home>/.grok)"
+description = "Home-directory resolution generally: USERPROFILE-first home_dir, plus the Workshop home ($WORKSHOP_HOME, legacy $GROK_HOME, or <home>/.workshop)"
 
 [dependencies]
 dunce = { workspace = true }
 tracing = { workspace = true }
+workshop-branding = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

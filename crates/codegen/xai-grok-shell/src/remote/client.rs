@@ -5,9 +5,10 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use xai_grok_login::backend::{ActiveAuthBackend, AuthBackend};
 use xai_grok_login::{GrokAuth, GrokComConfig};
-const GROK_CODE_BACKEND_URL: &str = "https://code.grok.com";
+// Workshop: remote share / permissions backend stays off; placeholder fails at DNS (ADR 0004).
+const GROK_CODE_BACKEND_URL: &str = "https://code.workshop.invalid";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-const GROK_CODE_WEB_URL: &str = "https://grok.com";
+const GROK_CODE_WEB_URL: &str = "https://workshop.invalid";
 pub fn share_url(permission_id: &str) -> String {
     let web_url =
         std::env::var("GROK_CODE_WEB_URL").unwrap_or_else(|_| GROK_CODE_WEB_URL.to_string());

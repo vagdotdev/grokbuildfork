@@ -17,12 +17,16 @@ pub struct GrokBuildEndpoints {
     pub gateway_ws_url: &'static str,
     pub ws_origin: &'static str,
 }
+/// Workshop: no first-party backend. Every inherited default points at a reserved
+/// `.invalid` host (RFC 6761), so an unconfigured code path fails at DNS instead of
+/// reaching grok.com / x.ai. A configured connection (`[model.*] base_url`) or the
+/// `GROK_PRODUCTION_*` operator overrides replace these. Pinned by workshop-gates gate 3.
 const PRODUCTION_ENDPOINTS: GrokBuildEndpoints = GrokBuildEndpoints {
-    cli_chat_proxy_base_url: "https://cli-chat-proxy.grok.com/v1",
-    asset_server_url: "https://assets.grok.com",
-    relay_ws_url: "wss://code.grok.com/ws/code-agent",
-    gateway_ws_url: "wss://grok.com/ws/gw/",
-    ws_origin: "https://grok.com",
+    cli_chat_proxy_base_url: "https://api.workshop.invalid/v1",
+    asset_server_url: "https://assets.workshop.invalid",
+    relay_ws_url: "wss://relay.workshop.invalid/ws/code-agent",
+    gateway_ws_url: "wss://gateway.workshop.invalid/ws/gw/",
+    ws_origin: "https://workshop.invalid",
 };
 pub const PROD_CLI_CHAT_PROXY_BASE_URL: &str = PRODUCTION_ENDPOINTS.cli_chat_proxy_base_url;
 pub const PROD_ASSET_SERVER_URL: &str = PRODUCTION_ENDPOINTS.asset_server_url;
