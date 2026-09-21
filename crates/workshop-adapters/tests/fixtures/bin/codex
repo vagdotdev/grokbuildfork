@@ -1,0 +1,45 @@
+#!/bin/sh
+# Fake Codex CLI (shapes from Codex CLI 0.155.1 and the documented `codex exec --json` stream).
+. "$(dirname "$0")/_common.sh"
+record codex "$@"
+case "$1" in
+  --version|-V) echo "codex-cli 0.155.1"; exit 0 ;;
+  --help|-h) echo "Codex CLI"; echo; echo "Usage: codex [OPTIONS] [PROMPT]"; exit 0 ;;
+  login)
+    case "$2" in
+      status)
+        case "${FAKE_LOGIN_CODEX:-out}" in
+          in) echo "Logged in using ChatGPT"; exit 0 ;;
+          garbage) echo "thread 'main' panicked" >&2; exit 101 ;;
+          *) echo "Not logged in"; exit 1 ;;
+        esac ;;
+      "") echo "fake codex login"; exit 0 ;;
+    esac ;;
+  exec) ;;
+  *) echo "fake codex: unsupported args: $*" >&2; exit 64 ;;
+esac
+# ---- run mode: codex exec --json --color never --sandbox X -C DIR [resume ID] PROMPT
+record_run codex "$@"
+session=""; prev=""
+for a in "$@"; do
+  [ "$prev" = "resume" ] && session="$a"
+  prev="$a"
+done
+[ -n "$session" ] || session=$(new_session fake-codex)
+turn=$(next_turn "$session")
+echo "Reading additional input from stdin..." >&2
+printf '{"type":"thread.started","thread_id":"%s"}\n' "$session"
+printf '{"type":"turn.started"}\n'
+case "$(mode)" in
+  fail)
+    printf '{"type":"turn.failed","error":{"message":"401 Unauthorized"}}\n'
+    exit 1 ;;
+esac
+apply_mode codex || exit 0
+printf '{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"bash -lc ls","status":"in_progress"}}\n'
+sleep 0.05
+printf '{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"bash -lc ls","status":"completed","exit_code":0,"aggregated_output":"README.md"}}\n'
+printf '{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"turn %s of %s"}}\n' "$turn" "$session"
+printf '{"type":"turn.completed","usage":{"input_tokens":24763,"cached_input_tokens":24448,"output_tokens":122,"reasoning_output_tokens":0}}\n'
+[ "$(mode)" = "exit_nonzero" ] && exit 3
+exit 0

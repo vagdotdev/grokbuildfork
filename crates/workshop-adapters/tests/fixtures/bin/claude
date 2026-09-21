@@ -1,0 +1,47 @@
+#!/bin/sh
+# Fake Claude Code CLI (shapes from Claude Code 2.1.278).
+. "$(dirname "$0")/_common.sh"
+record claude "$@"
+case "$1" in
+  --version|-v) echo "2.1.278 (Claude Code)"; exit 0 ;;
+  --help|-h) echo "Usage: claude [options] [command] [prompt]"; echo; echo "Claude Code - starts an interactive session by default, use -p/--print for"; exit 0 ;;
+  auth)
+    case "$2" in
+      status)
+        case "${FAKE_LOGIN_CLAUDE:-out}" in
+          in) printf '{"loggedIn": true, "authMethod": "claude.ai"}\n'; exit 0 ;;
+          garbage) echo "???"; exit 7 ;;
+          *) printf '{"loggedIn": false, "authMethod": "none"}\n'; exit 1 ;;
+        esac ;;
+      login) echo "fake claude login"; exit 0 ;;
+    esac ;;
+  -p) ;;
+  *) echo "fake claude: unsupported args: $*" >&2; exit 64 ;;
+esac
+# ---- run mode: claude -p --output-format stream-json --verbose ... [--resume ID] PROMPT
+record_run claude "$@"
+session=""; prev=""
+for a in "$@"; do
+  [ "$prev" = "--resume" ] && session="$a"
+  prev="$a"
+done
+for a in "$@"; do prompt="$a"; done
+[ -n "$session" ] || session=$(new_session fake-claude)
+turn=$(next_turn "$session")
+printf '{"type":"system","subtype":"init","cwd":"%s","session_id":"%s","tools":["Read","Glob","Grep"],"model":"claude-fake","permissionMode":"default","claude_code_version":"2.1.278"}\n' "$(pwd)" "$session"
+case "$(mode)" in
+  fail)
+    printf '{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Not logged in · Please run /login"}]},"session_id":"%s","error":"authentication_failed","is_api_error_message":true}\n' "$session"
+    printf '{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"Not logged in · Please run /login","session_id":"%s","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0}}\n' "$session"
+    exit 1 ;;
+esac
+apply_mode claude || exit 0
+printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Looking at the repository."}]},"session_id":"%s"}\n' "$session"
+sleep 0.05
+printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"README.md"}}]},"session_id":"%s"}\n' "$session"
+printf '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"# hello","is_error":false}]},"session_id":"%s"}\n' "$session"
+sleep 0.05
+printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"turn %s of %s"}]},"session_id":"%s"}\n' "$turn" "$session" "$session"
+printf '{"type":"result","subtype":"success","is_error":false,"duration_ms":120,"num_turns":%s,"result":"turn %s of %s","session_id":"%s","total_cost_usd":0.0123,"usage":{"input_tokens":100,"output_tokens":20}}\n' "$turn" "$turn" "$session" "$session"
+[ "$(mode)" = "exit_nonzero" ] && exit 3
+exit 0

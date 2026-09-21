@@ -1,0 +1,44 @@
+#!/bin/sh
+# Fake OpenCode CLI (shapes from OpenCode 1.18.31 `opencode run --format json`).
+. "$(dirname "$0")/_common.sh"
+record opencode "$@"
+case "$1" in
+  --version|-v) echo "1.18.31"; exit 0 ;;
+  --help|-h) echo "Commands:"; echo "  opencode completion          generate shell completion script"; echo "  opencode run [message..]     run opencode with a message"; exit 0 ;;
+  auth)
+    case "$2" in
+      list|ls)
+        printf '\033[0m\n\342\224\214  Credentials \033[90m<fake credential store>\033[0m\n\342\224\202\n'
+        case "${FAKE_LOGIN_OPENCODE:-out}" in
+          in) printf '\342\227\217  anthropic \033[90moauth\033[0m\n\342\224\202\n\342\224\224  1 credential\n'; exit 0 ;;
+          garbage) echo "boom"; exit 0 ;;
+          *) printf '\342\224\224  0 credentials\n'; exit 0 ;;
+        esac ;;
+      login) echo "fake opencode login"; exit 0 ;;
+    esac ;;
+  run) ;;
+  *) echo "fake opencode: unsupported args: $*" >&2; exit 64 ;;
+esac
+# ---- run mode: opencode run --format json --dir DIR [--session ID] PROMPT
+record_run opencode "$@"
+session=""; prev=""
+for a in "$@"; do
+  [ "$prev" = "--session" ] && session="$a"
+  prev="$a"
+done
+[ -n "$session" ] || session="ses_fake$$"
+turn=$(next_turn "$session")
+case "$(mode)" in
+  fail)
+    printf '{"type":"error","timestamp":1,"sessionID":"%s","error":{"name":"ProviderAuthError","data":{"providerID":"anthropic","message":"Provider anthropic is not configured"}}}\n' "$session"
+    exit 1 ;;
+esac
+printf '{"type":"step_start","timestamp":1790020980662,"sessionID":"%s","part":{"id":"prt_1","messageID":"msg_1","sessionID":"%s","type":"step-start"}}\n' "$session" "$session"
+apply_mode opencode || exit 0
+printf '{"type":"tool","timestamp":1790020980680,"sessionID":"%s","part":{"id":"prt_t","messageID":"msg_1","sessionID":"%s","type":"tool","callID":"call_1","tool":"read","state":{"status":"running","input":{"filePath":"README.md"}}}}\n' "$session" "$session"
+sleep 0.05
+printf '{"type":"tool","timestamp":1790020980690,"sessionID":"%s","part":{"id":"prt_t","messageID":"msg_1","sessionID":"%s","type":"tool","callID":"call_1","tool":"read","state":{"status":"completed","input":{"filePath":"README.md"},"output":"# hello","title":"README.md"}}}\n' "$session" "$session"
+printf '{"type":"text","timestamp":1790020980702,"sessionID":"%s","part":{"id":"prt_2","messageID":"msg_1","sessionID":"%s","type":"text","text":"turn %s of %s"}}\n' "$session" "$session" "$turn" "$session"
+printf '{"type":"step_finish","timestamp":1790020980714,"sessionID":"%s","part":{"id":"prt_3","reason":"stop","messageID":"msg_1","sessionID":"%s","type":"step-finish","tokens":{"total":7901,"input":6105,"output":4,"reasoning":0,"cache":{"write":0,"read":1792}},"cost":0}}\n' "$session" "$session"
+[ "$(mode)" = "exit_nonzero" ] && exit 3
+exit 0
