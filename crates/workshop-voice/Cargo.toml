@@ -1,0 +1,51 @@
+[package]
+name = "workshop-voice"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+description = "Workshop overlay: provider-neutral speech-to-text (SttBackend) behind the upstream voice UX; local whisper.cpp by default, xAI only when the user connected it"
+
+[dependencies]
+reqwest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "rt-multi-thread", "fs", "io-util"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+xai-dirs = { workspace = true }
+xai-grok-extra-ca = { workspace = true }
+# Upstream voice crate, reused for the pager-facing types (`VoiceCommand`, `VoiceEvent`,
+# `VoiceConfig`, the language catalog) and, with `audio`, the platform mic capture.
+# The xAI STT client inside it is only linked behind the `xai` feature below.
+xai-grok-voice = { path = "../codegen/xai-grok-voice", default-features = false }
+
+# whisper.cpp bindings. `tracing_backend` routes ggml/whisper C logs into `tracing` so
+# nothing is printed on the TUI's stderr. Metal is enabled on macOS only (Apple Silicon
+# GPU); every other target runs the CPU path (AVX2/AVX-512 on x86, NEON on arm64).
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", features = ["tracing_backend", "metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+whisper-rs = { version = "0.16", features = ["tracing_backend"] }
+
+[dev-dependencies]
+hound = "3.5"
+tokio = { workspace = true, features = ["full", "test-util"] }
+tracing-subscriber = { workspace = true }
+
+[features]
+default = ["audio"]
+# Compile the real microphone capture (`MicCapture`) on top of upstream's platform backends.
+# Off in CI sandboxes without an audio device; the pipeline still runs with a test capture.
+audio = ["xai-grok-voice/audio"]
+# Link the upstream xAI streaming STT client as an `SttBackend`. Off by default: Workshop
+# never contacts `api.x.ai` unless the user connected the optional xAI provider.
+xai = []
+
+[[example]]
+name = "bench_wav"
+path = "examples/bench_wav.rs"
+
+[lints]
+workspace = true
