@@ -1,0 +1,14 @@
+# Workshop patch series, replayed onto the upstream snapshot in upstream-lock.toml
+# by scripts/sync-upstream.sh (quilt order, one file per line).
+# Tags: gate:no-xai / gate:no-theft patches are never skippable; product and
+# branding patches may be deferred in a sync PR only with a TODO(sync) that
+# names the user-visible gap and never re-enables xAI login, endpoints, or updater.
+0000-workspace-overlay-members.patch      # gate:no-xai
+0001-no-default-xai-oauth.patch           # gate:no-xai
+0002-neutral-production-endpoints.patch   # gate:no-xai
+0003-disable-xai-updater.patch            # gate:no-xai
+0004-workshop-home-and-bin.patch          # branding
+0005-default-models-not-grok.patch        # gate:no-xai
+0006-welcome-opens-picker.patch           # gate:no-xai
+0007-telemetry-off-no-mixpanel.patch      # product
+0008-workshop-user-visible-strings.patch  # branding

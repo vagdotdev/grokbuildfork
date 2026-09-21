@@ -1,0 +1,22 @@
+# Paths reset to the fetched upstream tree on every sync, before the patch
+# series is replayed. Everything not listed here and not in overlay-paths.txt
+# is an error the sync must surface (an untracked product file outside the
+# overlay), so the two lists stay a complete partition of the repo.
+.cargo
+bin
+crates/build
+crates/codegen
+crates/common
+prod
+third_party
+Cargo.toml
+Cargo.lock
+clippy.toml
+rustfmt.toml
+rust-toolchain.toml
+CONTRIBUTING.md
+LICENSE
+README.md
+SECURITY.md
+SOURCE_REV
+THIRD-PARTY-NOTICES

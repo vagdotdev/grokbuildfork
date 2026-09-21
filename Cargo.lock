@@ -13179,6 +13179,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "workshop-auth"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "ratatui",
+ "serde",
+ "tempfile",
+ "toml",
+ "unicode-width 0.2.0",
+ "which",
+ "workshop-branding",
+]
+
+[[package]]
+name = "workshop-branding"
+version = "0.1.0"
+
+[[package]]
+name = "workshop-gates"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "url",
+ "walkdir",
+ "workshop-branding",
+ "xai-dirs",
+ "xai-grok-env",
+ "xai-grok-login",
+ "xai-grok-models",
+ "xai-grok-shell",
+ "xai-grok-shell-base",
+ "xai-grok-telemetry",
+ "xai-grok-update",
+]
+
+[[package]]
 name = "write-fonts"
 version = "0.43.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

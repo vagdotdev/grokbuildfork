@@ -1,0 +1,12 @@
+# Paths Workshop owns. They do not exist upstream and are restored verbatim
+# after every upstream fetch (plan §2, conflict policy rule 5).
+# One path per line; directories include everything beneath them.
+crates/workshop-auth
+crates/workshop-branding
+crates/workshop-gates
+patches
+scripts
+docs/workshop
+upstream-lock.toml
+.github/workflows/ci.yml
+.github/workflows/sync-upstream.yml

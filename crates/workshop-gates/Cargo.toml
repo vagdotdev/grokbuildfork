@@ -1,0 +1,30 @@
+[package]
+name = "workshop-gates"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+description = "Workshop no-xAI and no-token-theft gates. Every test here must FAIL on a pristine xai-org/grok-build snapshot and PASS once the patch series is applied. CI job `no-xai` runs `cargo test -p workshop-gates`."
+
+[lints]
+workspace = true
+
+# No library: the crate exists for its integration tests, one binary per gate
+# so a failing gate reports as an assertion, not a compile error in a sibling.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+workshop-branding = { path = "../workshop-branding" }
+tempfile = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+walkdir = { workspace = true }
+xai-dirs = { workspace = true }
+xai-grok-env = { workspace = true }
+xai-grok-login = { workspace = true }
+xai-grok-models = { workspace = true }
+xai-grok-shell = { workspace = true }
+xai-grok-shell-base = { workspace = true }
+xai-grok-telemetry = { workspace = true }
+xai-grok-update = { path = "../codegen/xai-grok-update" }

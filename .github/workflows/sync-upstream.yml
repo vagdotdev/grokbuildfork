@@ -1,0 +1,48 @@
+name: sync-upstream
+
+# Scheduled overlay replay onto the newest xai-org/grok-build snapshot (plan §2).
+# Milestone F wires the auto-PR step; until then this job proves the replay and
+# uploads .rej files on failure. It never merges and never skips a gate patch.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "xai-org/grok-build ref to replay onto (default: main)"
+        default: main
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: exit early when upstream did not move
+        id: moved
+        run: |
+          locked="$(sed -n 's/^git_sha = "\(.*\)"/\1/p' upstream-lock.toml)"
+          latest="$(git ls-remote https://github.com/xai-org/grok-build "${{ github.event.inputs.upstream_ref || 'main' }}" | cut -f1)"
+          echo "locked=$locked latest=$latest"
+          if [ "$locked" = "$latest" ]; then echo "moved=false" >> "$GITHUB_OUTPUT"; else echo "moved=true" >> "$GITHUB_OUTPUT"; fi
+      - name: replay the patch series and run the gates
+        if: steps.moved.outputs.moved == 'true'
+        run: scripts/sync-upstream.sh --upstream-ref "${{ github.event.inputs.upstream_ref || 'main' }}" --gates --keep
+      - name: upload rejects on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-rejects
+          path: /tmp/workshop-sync.*/**/*.rej
+          if-no-files-found: ignore

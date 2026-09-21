@@ -1,0 +1,12 @@
+# Upstream snapshot the Workshop overlay is replayed onto.
+# Updated by scripts/sync-upstream.sh; never edit the SHAs by hand without a sync PR.
+source = "https://github.com/xai-org/grok-build"
+# Public snapshot commit on xai-org/grok-build ("Synced from monorepo").
+git_sha = "482711333c7195dc16a272777f86086d615e2afb"
+# Commit in this repo whose tree is byte-identical to the upstream snapshot (overlay base).
+base_commit = "aca883c7d33092b7dfdb65ecaf213e094b64dbcc"
+# Monorepo pointer recorded in SOURCE_REV; informational only, do not fetch.
+source_rev = "be7ce6e8cffe46d20bef9834b211616082ee866b"
+# xai-grok-pager-bin version / README version of the snapshot.
+version = "1.0.32"
+fetched_at = "2026-09-16"

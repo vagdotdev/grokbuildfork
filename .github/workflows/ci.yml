@@ -1,0 +1,73 @@
+name: ci
+
+# Workshop-owned CI (plan §10 "PR fast" lane). Upstream ships no workflows; the
+# overlay owns these files (scripts/overlay-paths.txt).
+on:
+  pull_request:
+  push:
+    branches: [main, "workshop/**"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  fmt:
+    name: fmt (overlay crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+          components: rustfmt
+      - run: cargo fmt -p workshop-auth -p workshop-branding -p workshop-gates -- --check
+
+  overlay-check:
+    name: cargo check (overlay crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - run: cargo check -p workshop-auth --features tui -p workshop-branding
+      - run: cargo test -p workshop-auth --features tui -p workshop-branding
+
+  no-xai:
+    # Required on every PR that touches crates/ or patches/ (plan §1).
+    name: no-xai gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: gates (cargo tests against the compiled defaults)
+        run: cargo test -p workshop-gates
+      - name: forbidden-default source scan
+        run: scripts/no-xai-scan.sh /nonexistent-binary-source-scan-only
+
+  patch-replay:
+    name: patch series replays onto the locked upstream
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - run: cargo fetch
+      - run: scripts/sync-upstream.sh --dry-run

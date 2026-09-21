@@ -1,0 +1,11 @@
+[package]
+name = "workshop-branding"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+description = "Workshop user-visible identity: product name, binary name, home directory, env vars. No dependencies so the lowest upstream crates can use it."
+
+[lints]
+workspace = true
+
+[dependencies]
