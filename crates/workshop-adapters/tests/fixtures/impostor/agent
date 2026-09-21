@@ -1,8 +1,0 @@
-#!/bin/sh
-# An unrelated program called `agent`. Workshop must not run it as Cursor.
-[ -n "$FAKE_CLI_STATE_DIR" ] && echo "impostor $*" >> "$FAKE_CLI_STATE_DIR/calls.impostor"
-case "$1" in
-  --version|-v) echo "agent 1.0.0"; exit 0 ;;
-  --help|-h) echo "Usage: agent [options]"; echo; echo "A generic task runner"; exit 0 ;;
-esac
-echo "impostor ran!" ; exit 0

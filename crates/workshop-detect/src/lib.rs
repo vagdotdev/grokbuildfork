@@ -16,6 +16,10 @@
 //! The picker data model ([`Rail`], [`Pill`], [`RailState`], [`copy`]) mirrors the Blackpen picker
 //! export: three rails (Claude, Codex, Cursor), one pill per rail (Detecting, Ready, Sign in), and
 //! per-rail model radios keyed `provider:model:variant`.
+//!
+//! `tests/no_theft.rs` is the workspace-wide **gate:no-theft** scan (foreign credential files,
+//! keychain items, and Claude OAuth capture paths); it is parked here until the overlay gates
+//! crate exists and should move there unchanged.
 
 pub mod copy;
 pub mod env;
@@ -26,7 +30,7 @@ pub mod probe;
 pub mod process;
 pub mod status;
 
-pub use identify::{Identity, IdentifyError, identify};
+pub use identify::{IdentifyError, Identity, identify};
 pub use locate::{Candidate, CandidateSource, DetectConfig, known_dirs, locate};
 pub use model::{ModelRef, Pill, Rail, RailState, Vendor, composer_label, rail_state, rails};
 pub use probe::{Probe, Rejected, VendorProbe, probe_all, probe_vendor};

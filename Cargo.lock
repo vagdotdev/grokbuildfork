@@ -13277,23 +13277,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "workshop-adapters"
-version = "0.1.0"
-dependencies = [
- "dunce",
- "libc",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "workshop-detect",
- "xai-tty-utils",
-]
-
-[[package]]
 name = "workshop-detect"
 version = "0.1.0"
 dependencies = [
@@ -13305,14 +13288,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "wait-timeout",
-]
-
-[[package]]
-name = "workshop-gates"
-version = "0.1.0"
-dependencies = [
- "regex",
- "tempfile",
  "walkdir",
 ]
 

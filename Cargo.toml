@@ -102,10 +102,7 @@ members = [
     "crates/common/xai-tool-runtime",
     "crates/common/xai-tool-types",
     "crates/common/xai-tracing",
-    "crates/workshop-adapters",
-    "crates/workshop-detect",
-    "crates/workshop-gates",
-    "crates/workshop-providers",
+    "crates/workshop-detect", "crates/workshop-providers",
     "prod/mc/cli-chat-proxy-types",
     "third_party/dagre_rust",
     "third_party/graphlib_rust",
@@ -384,7 +381,6 @@ xai-tool-runtime = { path = "crates/common/xai-tool-runtime" }
 xai-tool-types = { path = "crates/common/xai-tool-types" }
 xai-tracing = { path = "crates/common/xai-tracing" }
 xai-tty-utils = { path = "crates/codegen/xai-tty-utils" }
-workshop-detect = { path = "crates/workshop-detect" }
 zbus = { version = "5" }
 zip = "3"
 zstd = "0.13"

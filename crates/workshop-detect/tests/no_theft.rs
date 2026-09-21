@@ -1,5 +1,8 @@
 //! gate:no-theft
 //!
+//! Lives in `workshop-detect` until the overlay `workshop-gates` crate (owned by the M0 overlay
+//! work) is in the tree; move it there unchanged when it is.
+//!
 //! Scans every text file under the workspace (`crates/`, `prod/`, `third_party/`, `bin/`,
 //! `patches/`, `scripts/`, and the root manifests) and fails if any of them references a foreign
 //! credential store or a Claude OAuth capture path. The plan forbids these outright; the picker
@@ -95,7 +98,8 @@ fn regexes() -> &'static Vec<(&'static Forbidden, Regex)> {
             .map(|f| {
                 (
                     f,
-                    Regex::new(&format!("(?i){}", f.pattern)).unwrap_or_else(|e| panic!("{}: {e}", f.id)),
+                    Regex::new(&format!("(?i){}", f.pattern))
+                        .unwrap_or_else(|e| panic!("{}: {e}", f.id)),
                 )
             })
             .collect()
@@ -106,7 +110,8 @@ fn regexes() -> &'static Vec<(&'static Forbidden, Regex)> {
 fn regex_set() -> &'static RegexSet {
     static SET: OnceLock<RegexSet> = OnceLock::new();
     SET.get_or_init(|| {
-        RegexSet::new(FORBIDDEN.iter().map(|f| format!("(?i){}", f.pattern))).expect("valid patterns")
+        RegexSet::new(FORBIDDEN.iter().map(|f| format!("(?i){}", f.pattern)))
+            .expect("valid patterns")
     })
 }
 
@@ -114,7 +119,7 @@ fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
-        .expect("crates/workshop-gates sits two levels below the workspace root")
+        .expect("crates/workshop-detect sits two levels below the workspace root")
         .to_path_buf()
 }
 
@@ -131,7 +136,7 @@ struct Hit {
 }
 
 fn allowlist(root: &Path) -> Vec<PathBuf> {
-    let file = root.join("crates/workshop-gates/no-theft-allowlist.txt");
+    let file = root.join("crates/workshop-detect/no-theft-allowlist.txt");
     std::fs::read_to_string(file)
         .unwrap_or_default()
         .lines()
@@ -142,7 +147,9 @@ fn allowlist(root: &Path) -> Vec<PathBuf> {
 }
 
 fn scan_file(path: &Path, hits: &mut Vec<Hit>) {
-    let Ok(bytes) = std::fs::read(path) else { return };
+    let Ok(bytes) = std::fs::read(path) else {
+        return;
+    };
     if bytes.contains(&0) {
         return; // binary
     }
@@ -177,7 +184,9 @@ fn scan(root: &Path, exclude: &[PathBuf]) -> Vec<Hit> {
             .into_iter()
             .filter_entry(|e| {
                 !(e.file_type().is_dir()
-                    && e.file_name().to_str().is_some_and(|n| SKIP_DIR_NAMES.contains(&n)))
+                    && e.file_name()
+                        .to_str()
+                        .is_some_and(|n| SKIP_DIR_NAMES.contains(&n)))
             })
             .filter_map(Result::ok)
         {
@@ -202,7 +211,9 @@ fn scan(root: &Path, exclude: &[PathBuf]) -> Vec<Hit> {
 }
 
 fn report(hits: &[Hit], root: &Path) -> String {
-    let mut out = String::from("gate:no-theft FAILED — forbidden credential access or OAuth capture path referenced:\n");
+    let mut out = String::from(
+        "gate:no-theft FAILED — forbidden credential access or OAuth capture path referenced:\n",
+    );
     for h in hits {
         let rel = h.path.strip_prefix(root).unwrap_or(&h.path);
         out.push_str(&format!(
@@ -214,14 +225,16 @@ fn report(hits: &[Hit], root: &Path) -> String {
             h.excerpt
         ));
     }
-    out.push_str("Remove the reference. Workshop spawns official CLIs and stores only its own secrets.\n");
+    out.push_str(
+        "Remove the reference. Workshop spawns official CLIs and stores only its own secrets.\n",
+    );
     out
 }
 
 #[test]
 fn workspace_never_touches_foreign_credentials_or_claude_oauth() {
     let root = workspace_root();
-    let this_file = root.join("crates/workshop-gates/tests/no_theft.rs");
+    let this_file = root.join("crates/workshop-detect/tests/no_theft.rs");
     let mut exclude = allowlist(&root);
     exclude.push(this_file);
     let hits = scan(&root, &exclude);
@@ -232,7 +245,11 @@ fn workspace_never_touches_foreign_credentials_or_claude_oauth() {
 fn deleted_autodock_module_is_absent() {
     let root = workspace_root();
     let autodock = root.join("crates/codegen/xai-grok-pager/src/provider_autodock.rs");
-    assert!(!autodock.exists(), "{} must stay deleted", autodock.display());
+    assert!(
+        !autodock.exists(),
+        "{} must stay deleted",
+        autodock.display()
+    );
 }
 
 #[test]
@@ -245,7 +262,11 @@ fn allowlist_is_reviewed_and_narrow() {
         entries.len()
     );
     for e in &entries {
-        assert!(e.is_file(), "allowlisted path does not exist: {}", e.display());
+        assert!(
+            e.is_file(),
+            "allowlisted path does not exist: {}",
+            e.display()
+        );
     }
 }
 
@@ -256,34 +277,76 @@ fn scanner_detects_each_forbidden_pattern() {
     let crates = tmp.path().join("crates/planted/src");
     std::fs::create_dir_all(&crates).unwrap();
     let samples: &[(&str, &str)] = &[
-        ("codex-auth-json", r#"let p = home.join(".codex/auth.json");"#),
-        ("opencode-auth-json", r#"read_json(join(data, "opencode", "auth.json")) // ~/.local/share/opencode/auth.json"#),
-        ("opencode-sqlite-db", r#"open("~/.local/share/opencode/opencode.db")"#),
-        ("claude-code-keychain-item", r#"security find-generic-password -s "Claude Code-credentials""#),
-        ("claude-code-credentials-file", r#"fs::read("~/.claude/.credentials.json")"#),
-        ("claude-keychain-lookup", r#"Command::new("security").args(["find-generic-password", "-s", "Claude Code"])"#),
-        ("cursor-sdk-auth-json", r#"join(homedir(), ".cursor", "sdk", "auth.json") // ~/.cursor/sdk/auth.json"#),
+        (
+            "codex-auth-json",
+            r#"let p = home.join(".codex/auth.json");"#,
+        ),
+        (
+            "opencode-auth-json",
+            r#"read_json(join(data, "opencode", "auth.json")) // ~/.local/share/opencode/auth.json"#,
+        ),
+        (
+            "opencode-sqlite-db",
+            r#"open("~/.local/share/opencode/opencode.db")"#,
+        ),
+        (
+            "claude-code-keychain-item",
+            r#"security find-generic-password -s "Claude Code-credentials""#,
+        ),
+        (
+            "claude-code-credentials-file",
+            r#"fs::read("~/.claude/.credentials.json")"#,
+        ),
+        (
+            "claude-keychain-lookup",
+            r#"Command::new("security").args(["find-generic-password", "-s", "Claude Code"])"#,
+        ),
+        (
+            "cursor-sdk-auth-json",
+            r#"join(homedir(), ".cursor", "sdk", "auth.json") // ~/.cursor/sdk/auth.json"#,
+        ),
         ("cursor-state-db", r#"sqlite::open("state.vscdb")"#),
         ("provider-autodock", "mod provider_autodock;"),
-        ("opencode-with-claude", r#"plugin: ["opencode-with-claude"],"#),
-        ("meridian-loopback-proxy", r#"baseURL: "http://127.0.0.1:3456","#),
-        ("claude-oauth-endpoint", r#"const AUTH = "https://claude.com/oauth/authorize";"#),
-        ("claude-code-oauth-client-id", r#"client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e"#),
+        (
+            "opencode-with-claude",
+            r#"plugin: ["opencode-with-claude"],"#,
+        ),
+        (
+            "meridian-loopback-proxy",
+            r#"baseURL: "http://127.0.0.1:3456","#,
+        ),
+        (
+            "claude-oauth-endpoint",
+            r#"const AUTH = "https://claude.com/oauth/authorize";"#,
+        ),
+        (
+            "claude-code-oauth-client-id",
+            r#"client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e"#,
+        ),
     ];
     for (i, (_, line)) in samples.iter().enumerate() {
-        std::fs::write(crates.join(format!("f{i}.rs")), format!("// planted\n{line}\n")).unwrap();
+        std::fs::write(
+            crates.join(format!("f{i}.rs")),
+            format!("// planted\n{line}\n"),
+        )
+        .unwrap();
     }
     let hits = scan(tmp.path(), &[]);
     for (id, line) in samples {
         assert!(
-            hits.iter().any(|h| h.id == *id && h.excerpt.contains(line.trim())),
+            hits.iter()
+                .any(|h| h.id == *id && h.excerpt.contains(line.trim())),
             "scanner missed [{id}] in {line:?}; hits: {:?}",
             hits.iter().map(|h| h.id).collect::<Vec<_>>()
         );
     }
     // Every declared pattern was exercised at least once.
     for f in FORBIDDEN {
-        assert!(samples.iter().any(|(id, _)| id == &f.id), "no sample for {}", f.id);
+        assert!(
+            samples.iter().any(|(id, _)| id == &f.id),
+            "no sample for {}",
+            f.id
+        );
     }
 
     // Legitimate mentions of the products themselves do not trip the gate.
@@ -298,5 +361,9 @@ fn scanner_detects_each_forbidden_pattern() {
     .unwrap();
     let mut only_clean = Vec::new();
     scan_file(&clean, &mut only_clean);
-    assert!(only_clean.is_empty(), "false positives: {:?}", only_clean.iter().map(|h| h.id).collect::<Vec<_>>());
+    assert!(
+        only_clean.is_empty(),
+        "false positives: {:?}",
+        only_clean.iter().map(|h| h.id).collect::<Vec<_>>()
+    );
 }
