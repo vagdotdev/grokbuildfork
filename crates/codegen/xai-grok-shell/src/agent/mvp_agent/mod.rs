@@ -1059,6 +1059,10 @@ struct AuthRequestMeta {
     /// Scopes `x.ai/auth/cancel` so a delayed cancel cannot tear down a successor login.
     #[serde(default)]
     request_seq: Option<u64>,
+    /// Workshop: the user explicitly selected the labeled "xAI (optional)" connection card.
+    /// Only then may the inherited xAI OAuth2 flow run when no session-login provider is configured.
+    #[serde(default)]
+    workshop_xai_opt_in: bool,
 }
 impl AuthRequestMeta {
     /// `--oauth` forces loopback; otherwise default (loopback).

@@ -66,6 +66,10 @@ pub struct AuthMethodsBuildInputs<'a> {
     pub login_label: Option<&'a str>,
     /// True if `grok_com_config.auth_provider_command` is configured (sets `meta.external_provider = true` on the `grok.com` method).
     pub has_auth_provider_command: bool,
+    /// True if an OAuth2 session-login provider is configured (`grok_com_config.oauth2.is_some()`).
+    /// Workshop default is `false`: without a provider the interactive `grok.com` method is never
+    /// advertised, so cold start opens the connection picker instead of a browser (gate:no-xai, Gate 2).
+    pub has_oauth2_provider: bool,
     /// Config pin (`[auth] preferred_method`).
     /// `None` keeps multi-method fallthrough; `Some` is fail-closed (only that method family).
     pub preferred_method: Option<PreferredAuthMethod>,
@@ -93,6 +97,7 @@ pub fn build_auth_methods(inputs: AuthMethodsBuildInputs<'_>) -> BuiltAuthMethod
         enterprise_oidc_issuer,
         login_label,
         has_auth_provider_command,
+        has_oauth2_provider,
         preferred_method,
     } = inputs;
 
@@ -104,6 +109,7 @@ pub fn build_auth_methods(inputs: AuthMethodsBuildInputs<'_>) -> BuiltAuthMethod
             enterprise_oidc_issuer,
             login_label,
             has_auth_provider_command,
+            has_oauth2_provider,
         ),
         None => build_unpinned(
             has_external_api_key,
@@ -112,6 +118,7 @@ pub fn build_auth_methods(inputs: AuthMethodsBuildInputs<'_>) -> BuiltAuthMethod
             enterprise_oidc_issuer,
             login_label,
             has_auth_provider_command,
+            has_oauth2_provider,
         ),
     }
 }
@@ -140,6 +147,7 @@ fn build_pinned_oidc(
     enterprise_oidc_issuer: Option<&str>,
     login_label: Option<&str>,
     has_auth_provider_command: bool,
+    has_oauth2_provider: bool,
 ) -> BuiltAuthMethods {
     let mut methods: Vec<acp::AuthMethod> = Vec::new();
     let mut default_auth_method_id: Option<acp::AuthMethodId> = None;
@@ -155,6 +163,7 @@ fn build_pinned_oidc(
         enterprise_oidc_issuer,
         login_label,
         has_auth_provider_command,
+        has_oauth2_provider,
     );
 
     BuiltAuthMethods {
@@ -170,6 +179,7 @@ fn build_unpinned(
     enterprise_oidc_issuer: Option<&str>,
     login_label: Option<&str>,
     has_auth_provider_command: bool,
+    has_oauth2_provider: bool,
 ) -> BuiltAuthMethods {
     let mut methods: Vec<acp::AuthMethod> = Vec::new();
     let mut default_auth_method_id: Option<acp::AuthMethodId> = None;
@@ -202,6 +212,7 @@ fn build_unpinned(
         enterprise_oidc_issuer,
         login_label,
         has_auth_provider_command,
+        has_oauth2_provider,
     );
 
     BuiltAuthMethods {
@@ -210,12 +221,17 @@ fn build_unpinned(
     }
 }
 
+/// Push the interactive login method, if any is configured.
+/// Enterprise OIDC wins; otherwise `grok.com` is pushed **only** when an OAuth2 provider (or an
+/// external auth-provider command, which rides on the same method id) is configured. With neither,
+/// nothing is pushed: the pager then shows the connection picker (Workshop default).
 fn push_interactive_login(
     methods: &mut Vec<acp::AuthMethod>,
     has_enterprise_oidc: bool,
     enterprise_oidc_issuer: Option<&str>,
     login_label: Option<&str>,
     has_auth_provider_command: bool,
+    has_oauth2_provider: bool,
 ) {
     if has_enterprise_oidc {
         // Caller invariant: `enterprise_oidc_issuer` MUST be `Some(...)` when `has_enterprise_oidc` is true
@@ -224,7 +240,7 @@ fn push_interactive_login(
         let issuer = enterprise_oidc_issuer
             .expect("enterprise_oidc_issuer is required when has_enterprise_oidc is true");
         methods.push(oidc_auth_method(issuer, login_label));
-    } else {
+    } else if has_oauth2_provider || has_auth_provider_command {
         methods.push(grok_com_auth_method(login_label, has_auth_provider_command));
     }
 }
@@ -304,19 +320,20 @@ pub const AUTH_ERROR_SESSION_EXPIRED: &str =
 pub const AUTH_ERROR_API_KEY: &str = "Authentication failed. Run `grok login`, set XAI_API_KEY, or add api_key to ~/.grok/config.toml.";
 
 /// Next ACP method id when `cached_token` cannot proceed (missing / expired / legacy WebLogin), or `None` when fallthrough is forbidden.
-/// Unpinned: prefer non-interactive `xai.api_key` when advertiseable, else interactive `grok.com`. Pinned `oidc`: **no** fallthrough to api_key; return `None` so the caller fails auth.
-/// Pinned `api_key` should not reach this path (cached_token is not advertised).
+/// Unpinned: prefer non-interactive `xai.api_key` when advertiseable, else interactive `grok.com` **only if a
+/// session-login provider is configured** (`has_session_login_provider`); with neither, `None` so the caller fails
+/// closed instead of opening a browser (Workshop default). Pinned `oidc`: **no** fallthrough to api_key; return
+/// `None` so the caller fails auth. Pinned `api_key` should not reach this path (cached_token is not advertised).
 pub(crate) fn method_id_after_cached_token_unavailable(
     has_external_api_key: bool,
+    has_session_login_provider: bool,
     preferred_method: Option<PreferredAuthMethod>,
 ) -> Option<&'static str> {
     match preferred_method {
         Some(PreferredAuthMethod::Oidc) | Some(PreferredAuthMethod::ApiKey) => None,
-        None => Some(if has_external_api_key {
-            XAI_API_KEY_METHOD_ID
-        } else {
-            GROK_COM_METHOD_ID
-        }),
+        None if has_external_api_key => Some(XAI_API_KEY_METHOD_ID),
+        None if has_session_login_provider => Some(GROK_COM_METHOD_ID),
+        None => None,
     }
 }
 
@@ -326,6 +343,10 @@ pub const PREFERRED_API_KEY_UNAVAILABLE: &str = "preferred_method=api_key but no
 /// Error when `preferred_method=oidc` but the session path cannot proceed.
 pub const PREFERRED_OIDC_UNAVAILABLE: &str =
     "preferred_method=oidc but no session is available. Run `grok login` to authenticate.";
+
+/// Error when an interactive session login is requested but no session-login provider is configured
+/// and the optional xAI card was not selected (Workshop default).
+pub const NO_SESSION_LOGIN_PROVIDER: &str = "No connection configured. Open the connection picker (/auth) to add a Local model, an API key, a subscription CLI, or the optional xAI account.";
 
 pub const XAI_API_KEY_METHOD_ID: &str = "xai.api_key";
 pub(crate) fn xai_api_key_auth_method() -> acp::AuthMethod {
@@ -397,7 +418,7 @@ mod tests {
     #[test]
     fn after_cached_token_unavailable_prefers_api_key_when_advertiseable() {
         assert_eq!(
-            method_id_after_cached_token_unavailable(true, None),
+            method_id_after_cached_token_unavailable(true, true, None),
             Some(XAI_API_KEY_METHOD_ID),
         );
     }
@@ -406,7 +427,7 @@ mod tests {
     #[test]
     fn after_cached_token_unavailable_falls_to_grok_com_without_api_key() {
         assert_eq!(
-            method_id_after_cached_token_unavailable(false, None),
+            method_id_after_cached_token_unavailable(false, true, None),
             Some(GROK_COM_METHOD_ID),
         );
     }
@@ -415,11 +436,11 @@ mod tests {
     #[test]
     fn after_cached_token_unavailable_fails_closed_when_pinned() {
         assert_eq!(
-            method_id_after_cached_token_unavailable(true, Some(PreferredAuthMethod::Oidc)),
+            method_id_after_cached_token_unavailable(true, true, Some(PreferredAuthMethod::Oidc)),
             None,
         );
         assert_eq!(
-            method_id_after_cached_token_unavailable(true, Some(PreferredAuthMethod::ApiKey)),
+            method_id_after_cached_token_unavailable(true, true, Some(PreferredAuthMethod::ApiKey)),
             None,
         );
     }
@@ -468,6 +489,9 @@ mod tests {
             enterprise_oidc_issuer: None,
             login_label: None,
             has_auth_provider_command: false,
+            // These inherited tests describe a deployment with the xAI OAuth2 provider
+            // configured. Workshop's default (`false`) is pinned separately below.
+            has_oauth2_provider: true,
             preferred_method: None,
         }
     }
@@ -591,6 +615,34 @@ mod tests {
         assert_eq!(first_kind(&built.methods), Some(AuthMethodKind::GrokCom));
         assert!(built.default_auth_method_id.is_none());
         assert_eq!(built.methods.len(), 1);
+    }
+
+    /// Workshop default (gate:no-xai, Gate 2): with no OAuth2 provider configured, a brand-new user
+    /// gets an EMPTY method list — no `grok.com`, nothing interactive. The pager shows the picker.
+    #[test]
+    fn workshop_default_without_provider_advertises_nothing() {
+        let built = build_auth_methods(AuthMethodsBuildInputs {
+            has_oauth2_provider: false,
+            ..default_inputs()
+        });
+        assert!(built.methods.is_empty(), "{:?}", method_ids(&built));
+        assert!(built.default_auth_method_id.is_none());
+        let pinned = build_auth_methods(AuthMethodsBuildInputs {
+            has_oauth2_provider: false,
+            preferred_method: Some(PreferredAuthMethod::Oidc),
+            ..default_inputs()
+        });
+        assert!(pinned.methods.is_empty(), "{:?}", method_ids(&pinned));
+    }
+
+    /// Without a session-login provider the cached-token fallthrough fails closed (no browser).
+    #[test]
+    fn workshop_default_cached_token_fallthrough_fails_closed() {
+        assert_eq!(method_id_after_cached_token_unavailable(false, false, None), None);
+        assert_eq!(
+            method_id_after_cached_token_unavailable(true, false, None),
+            Some(XAI_API_KEY_METHOD_ID),
+        );
     }
 
     /// Enterprise OIDC replaces `grok.com` (mutually exclusive).

@@ -113,6 +113,8 @@ xai-grok-dashboard-store = { workspace = true }
 xai-grok-voice = { path = "../xai-grok-voice", default-features = false, features = ["audio"] }
 xai-grok-login = { workspace = true }
 xai-grok-shell = { workspace = true }
+# Workshop overlay: connection picker state (Login / welcome `l` / `/login` / `/auth` / `/models`).
+workshop-auth = { path = "../../workshop-auth" }
 # The status-line contract: the config the user writes and the payload the
 # agent sends. A leaf crate rather than the agent's, so the client reads it
 # from upstream of the crate that fills it in.

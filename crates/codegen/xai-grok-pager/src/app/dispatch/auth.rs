@@ -10,6 +10,7 @@ use crate::app::agent_view::AgentView;
 use crate::app::app_view::{ActiveView, AppView, AuthMode, AuthState};
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::SessionEvent;
+use agent_client_protocol as acp;
 
 // ---------------------------------------------------------------------------
 // Auth dispatch
@@ -207,24 +208,78 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
     }
 }
 
-/// Start an interactive login flow. Triggered by pressing 'l' on the welcome screen or by the `/login` slash command.
-/// Only the welcome view renders the auth UI (the external auth provider's sign-in URL and status).
-/// A mid-session invocation therefore stashes the caller's view in `auth_return_view` and switches to `Welcome` so the flow is visible.
+/// Login. Triggered by pressing 'l' on the welcome screen, by `/login`, `/auth`, `/models`, and at first run.
+///
+/// Workshop: this opens the **connection picker** and never sends an `AuthenticateRequest` by itself
+/// (gate:no-xai, Gate 2). The inherited interactive session login runs only from the picker's labeled
+/// optional xAI card (`dispatch_connection_picker` → `start_optional_xai_login`).
+/// Only the welcome view renders the picker, so a mid-session invocation stashes the caller's view in
+/// `auth_return_view` and switches to `Welcome`, exactly like the inherited auth UI did.
 pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
-    ensure_login_method(app);
-    let Some(method_id) = app.login_method_id.clone() else {
-        app.auth_state = AuthState::Pending {
-            error: Some(no_login_method_error(app)),
-        };
-        return vec![];
-    };
+    dispatch_open_connection_picker(app, workshop_auth::PickerTab::Models)
+}
 
-    // Show the auth UI when triggered from inside a session
-    // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
+/// Open the connection picker on `tab` (Workshop). Idempotent while already open.
+pub(super) fn dispatch_open_connection_picker(
+    app: &mut AppView,
+    tab: workshop_auth::PickerTab,
+) -> Vec<Effect> {
     if !matches!(app.active_view, ActiveView::Welcome) {
         app.auth_return_view = Some(app.active_view);
         show_welcome(app);
     }
+    // A login attempt in flight (e.g. the optional xAI flow) is abandoned when the picker reopens.
+    if matches!(app.auth_state, AuthState::Authenticating { .. }) {
+        abort_prior_auth(app);
+        app.auth_state = AuthState::Pending { error: None };
+    }
+    match app.connection_picker.as_mut() {
+        Some(picker) => picker.tab = tab,
+        None => {
+            let mut picker = workshop_auth::PickerState::new().with_tab(tab);
+            // Presence-only: PATH + well-known dirs. No auth files, no child processes.
+            picker.run_detection();
+            app.connection_picker = Some(picker);
+        }
+    }
+    vec![]
+}
+
+/// Route a key press to the open connection picker (Workshop).
+pub(super) fn dispatch_connection_picker(
+    app: &mut AppView,
+    input: workshop_auth::PickerInput,
+) -> Vec<Effect> {
+    let Some(picker) = app.connection_picker.as_mut() else {
+        return vec![];
+    };
+    match picker.handle(input) {
+        workshop_auth::PickerOutcome::Changed => vec![],
+        workshop_auth::PickerOutcome::AdapterLogin(_) => vec![],
+        workshop_auth::PickerOutcome::Close => {
+            app.connection_picker = None;
+            // Return to the session the picker was opened from, if any. Before any connection is
+            // configured the welcome screen stays on the (auth-pending) home, never on a browser.
+            if let Some(return_view) = app.auth_return_view.take() {
+                restore_auth_return_view(app, return_view);
+            }
+            vec![]
+        }
+        workshop_auth::PickerOutcome::StartOptionalXaiLogin => {
+            app.connection_picker = None;
+            start_optional_xai_login(app)
+        }
+    }
+}
+
+/// The only path to the inherited xAI OIDC flow: the user selected the labeled optional xAI card
+/// (and confirmed). Sends `grok.com` with `workshop_xai_opt_in`, which the shell requires before it
+/// attaches the xAI OAuth2 provider when none is configured.
+fn start_optional_xai_login(app: &mut AppView) -> Vec<Effect> {
+    let method_id = app.login_method_id.clone().unwrap_or_else(|| {
+        acp::AuthMethodId::new(xai_grok_shell::agent::auth_method::GROK_COM_METHOD_ID)
+    });
+    app.login_label = Some("xAI (optional)".to_owned());
 
     abort_prior_auth(app);
 
@@ -244,6 +299,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
             method_id,
             use_oauth: app.auth_use_oauth,
             force_interactive: true,
+            xai_opt_in: true,
         },
         Effect::PollAuthUrl { request_seq },
     ]
@@ -267,6 +323,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
     app.auth_state = AuthState::Done;
     app.auth_show_raw_url = false;
     app.auth_code_input.reset();
+    // Workshop: a picker opened mid-session closes with the login it hosted.
+    app.connection_picker = None;
     restore_auth_return_view(app, return_view);
     // This runs on all agents because the login may have been started from the dashboard
     // Clearing the stash alone is not enough

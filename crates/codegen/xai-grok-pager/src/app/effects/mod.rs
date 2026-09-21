@@ -213,7 +213,7 @@ pub(crate) fn execute(
             let abort_handle = tasks
                 .spawn(async move {
                     send_logout(&tx).await;
-                    send_authenticate(&tx, request_seq, method_id, use_oauth, false)
+                    send_authenticate(&tx, request_seq, method_id, use_oauth, false, false)
                         .await
                 });
             meta.auth_abort_handle = Some((request_seq, abort_handle));
@@ -2308,6 +2308,7 @@ pub(crate) fn execute(
             method_id,
             use_oauth,
             force_interactive,
+            xai_opt_in,
         } => {
             let tx = acp_tx.clone();
             let abort_handle = tasks
@@ -2318,6 +2319,7 @@ pub(crate) fn execute(
                             method_id,
                             use_oauth,
                             force_interactive,
+                            xai_opt_in,
                         )
                         .await
                 });

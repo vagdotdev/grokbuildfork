@@ -687,6 +687,8 @@ pub struct WelcomeRenderParams<'a> {
     pub consent_state: &'a crate::app::consent::ConsentState,
     pub consent_hover_link: Option<usize>,
     pub login_label: Option<&'a str>,
+    /// Workshop connection picker; when `Some` it replaces the welcome content (any auth state).
+    pub connection_picker: Option<&'a workshop_auth::PickerState>,
     pub auth_code_input: &'a str,
     pub auth_code_cursor_byte: usize,
     pub clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
@@ -789,10 +791,24 @@ pub fn render_welcome(
     };
     render_top_bar(top_bar_inner, buf, &theme, None);
 
+    // Workshop: the connection picker is the login surface. It paints over the whole content
+    // area regardless of auth state (first run, `l`, `/login`, `/auth`, `/models`).
+    if let Some(picker) = params.connection_picker {
+        crate::views::connection_picker::render(content_area, buf, &theme, picker, h_margin);
+        return WelcomeRenderResult {
+            post_flush_escapes: crate::terminal::overlay::clear().map(Into::into),
+            ..Default::default()
+        };
+    }
+
     let mut result = match params.auth_state {
         AuthState::Pending { error } => {
-            let label = params.login_label.unwrap_or("grok.com");
-            let login_text = format!("Login with {}", label);
+            // Workshop: no session-login provider is advertised by default, so the row opens the
+            // connection picker rather than "Login with grok.com".
+            let login_text = match params.login_label {
+                Some(label) => format!("Login with {label}"),
+                None => "Connect a model".to_owned(),
+            };
             let menu = [("l", login_text.as_str()), ("q", "Quit")];
             let msg = error.as_deref().map(|e| (e, theme.accent_error));
             let info = PromptInfo {
@@ -2862,6 +2878,7 @@ mod tests {
             consent_state: &ConsentState::Done,
             consent_hover_link: None,
             login_label: None,
+            connection_picker: None,
             auth_code_input: "",
             auth_code_cursor_byte: 0,
             clipboard_delivery: None,

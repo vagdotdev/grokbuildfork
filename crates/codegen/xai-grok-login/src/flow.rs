@@ -1391,7 +1391,8 @@ mod tests {
             !cli_should_use_device(&cfg, None, LoginTransportOverride::ForceDevice, "").await,
             "enterprise OIDC must stay on loopback"
         );
-        let xai = GrokComConfig::default();
+        // Workshop: the xAI OAuth2 provider is attached only on explicit opt-in.
+        let xai = GrokComConfig::default().with_xai_first_party_oauth2();
         assert!(xai.oauth2.is_some() && xai.oidc.is_none());
         assert!(cli_should_use_device(&xai, None, LoginTransportOverride::ForceDevice, "").await);
     }

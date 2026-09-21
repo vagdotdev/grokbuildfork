@@ -991,6 +991,10 @@ pub struct AppView {
     pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
     /// Whether deferred welcome-screen login should force OAuth.
     pub auth_use_oauth: bool,
+    /// Workshop connection picker, open when `Some`. It is the only default auth surface: Login,
+    /// welcome `l`, `/login`, `/auth`, `/models` and first run all open it. Rendered on the welcome
+    /// view; keys are routed to it while open.
+    pub connection_picker: Option<workshop_auth::PickerState>,
     /// Delivery state from the last clipboard copy during auth.
     pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     /// Generation of the current auth copy feedback and its clear timer.
@@ -1514,6 +1518,7 @@ impl AppView {
             auth_url_poll_handle: None,
             deferred_startup: Default::default(),
             auth_use_oauth: false,
+            connection_picker: None,
             auth_clipboard_delivery: None,
             auth_clipboard_feedback_generation: 0,
             team_id: None,
@@ -2399,6 +2404,7 @@ impl AppView {
                     arrived_at,
                     cwd: &self.cwd,
                     mid_session_login: self.auth_return_view.is_some(),
+                    connection_picker_open: self.connection_picker.is_some(),
                     auth_code_input: &mut self.auth_code_input,
                     prompt: &mut self.welcome_prompt,
                     prompt_focused: &mut self.welcome_prompt_focused,
@@ -3046,6 +3052,8 @@ struct WelcomeInputCtx<'a> {
     /// `true` when the welcome screen is showing only to host a login flow that was started from inside a session.
     /// Esc / `q` then cancel the login and return to the session rather than quitting the app.
     mid_session_login: bool,
+    /// Workshop connection picker is open: it owns every key until it closes.
+    connection_picker_open: bool,
     auth_code_input: &'a mut LineEditor,
     prompt: &'a mut PromptWidget,
     prompt_focused: &'a mut bool,
@@ -3129,6 +3137,34 @@ struct WelcomeInputCtx<'a> {
 }
 /// Welcome view input: overlays first, then composer, then the menu.
 fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
+    // Workshop: the connection picker owns the keyboard while open. It never starts a login on its
+    // own; `Enter` outcomes are decided by `workshop_auth::PickerState` in the dispatcher.
+    if ctx.connection_picker_open {
+        return match ev {
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                use workshop_auth::PickerInput;
+                if key!('c', CONTROL).matches(key) || key!('d', CONTROL).matches(key) {
+                    return if ctx.mid_session_login {
+                        InputOutcome::Action(Action::ConnectionPicker(PickerInput::Back))
+                    } else {
+                        InputOutcome::Action(Action::Quit)
+                    };
+                }
+                let input = match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => PickerInput::Up,
+                    KeyCode::Down | KeyCode::Char('j') => PickerInput::Down,
+                    KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                        PickerInput::SwitchTab
+                    }
+                    KeyCode::Enter => PickerInput::Enter,
+                    KeyCode::Esc | KeyCode::Char('q') => PickerInput::Back,
+                    _ => return InputOutcome::Unchanged,
+                };
+                InputOutcome::Action(Action::ConnectionPicker(input))
+            }
+            _ => InputOutcome::Unchanged,
+        };
+    }
     if let Some(modal) = ctx.import_claude_modal.as_mut() {
         use crate::views::import_claude_modal::ImportClaudeModalOutcome;
         let outcome_to_input = |o: ImportClaudeModalOutcome| match o {
@@ -4464,6 +4500,7 @@ impl AppView {
                                 consent_state: &self.consent_state,
                                 consent_hover_link: self.welcome_consent_hover_link,
                                 login_label: self.login_label.as_deref(),
+                                connection_picker: self.connection_picker.as_ref(),
                                 auth_code_input: self.auth_code_input.text(),
                                 auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                 clipboard_delivery: self.auth_clipboard_delivery,

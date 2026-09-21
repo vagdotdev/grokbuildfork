@@ -5,6 +5,8 @@ pub mod announcements;
 pub mod block_viewer;
 pub mod btw_overlay;
 pub mod completion_dropdown;
+/// Workshop overlay: connection picker view.
+pub mod connection_picker;
 pub mod context_bar;
 pub mod credit_bar;
 pub mod dashboard;

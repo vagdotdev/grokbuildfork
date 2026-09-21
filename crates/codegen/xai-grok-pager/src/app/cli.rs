@@ -20,12 +20,15 @@ pub enum Command {
     Leader(LeaderMgmtArgs),
     /// Sign out and clear cached credentials
     Logout,
-    /// Sign in to Grok
+    /// Show the connection picker (Local model, API key, subscription CLI, optional xAI)
     Login {
         /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
         #[arg(long, hide = true)]
         legacy: bool,
-        /// Use Grok OAuth via auth.x.ai.
+        /// Optional: sign in with an xAI account (opens auth.x.ai). Never the default.
+        #[arg(long = "xai")]
+        xai: bool,
+        /// Use the loopback OAuth transport for a configured session-login provider.
         #[arg(long = "oauth", alias = "oidc", conflicts_with_all = ["device_auth"])]
         oauth: bool,
         /// Use device-code authentication for headless/remote environments.

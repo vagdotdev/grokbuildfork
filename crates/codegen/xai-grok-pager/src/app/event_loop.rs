@@ -1270,16 +1270,12 @@ pub(crate) async fn run(
         );
     }
     let mut post_render_effects = if needs_interactive_login {
+        // Workshop: an empty method list is the default cold start (no session-login provider,
+        // no key, no cached session). It opens the connection picker, never a browser.
         if connection.auth_methods.is_empty() {
-            app.auth_state = super::app_view::AuthState::Pending {
-                error: Some(
-                    xai_grok_shell::agent::auth_method::PREFERRED_API_KEY_UNAVAILABLE.to_string(),
-                ),
-            };
-            vec![]
-        } else {
-            dispatch::dispatch(Action::Login, &mut app)
+            app.auth_state = super::app_view::AuthState::Pending { error: None };
         }
+        dispatch::dispatch(Action::Login, &mut app)
     } else {
         vec![]
     };
