@@ -180,6 +180,7 @@ fn test_app() -> AppView {
         auth_url_poll_handle: None,
         deferred_startup: Default::default(),
         auth_use_oauth: false,
+        connection_picker: None,
         auth_clipboard_delivery: None,
         auth_clipboard_feedback_generation: 0,
         team_id: None,
@@ -581,6 +582,23 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
     std::fs::create_dir_all(&sess_dir).expect("plant session dir");
     std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
     sess_dir
+}
+/// Workshop: `Action::Login` opens the connection picker and never sends `Authenticate` by itself.
+/// The inherited interactive flow these tests exercise starts only from the picker's labeled optional
+/// xAI card (two explicit Enters), so drive the picker there.
+pub(super) fn start_login_flow(app: &mut AppView) -> Vec<Effect> {
+    use workshop_auth::PickerInput;
+    dispatch(Action::Login, app);
+    let cards = app
+        .connection_picker
+        .as_ref()
+        .map(|p| p.models.len())
+        .expect("Login must open the connection picker");
+    for _ in 0..cards {
+        dispatch(Action::ConnectionPicker(PickerInput::Down), app);
+    }
+    dispatch(Action::ConnectionPicker(PickerInput::Enter), app); // shows the labeled copy (arms)
+    dispatch(Action::ConnectionPicker(PickerInput::Enter), app) // starts the flow
 }
 /// Extract the in-flight auth request sequence, panicking if the auth state is not `Authenticating`.
 fn authenticating_seq(app: &AppView) -> u64 {

@@ -1943,8 +1943,9 @@ fn gated_worktree_with_none_companions_preserves_stashed_label_and_ref() {
     assert!(!app.deferred_startup.worktree);
 }
 /// `/login` from inside a session must move to the welcome screen and stash the agent view for restoration.
-/// The welcome screen is the only view that renders the auth flow / external-provider URL.
-/// Regression: "external auth provider /login does nothing mid-session".
+/// The welcome screen is the only view that renders the connection picker and the auth flow.
+/// Workshop: Login alone opens the picker (no Authenticate); the inherited flow starts only from
+/// the optional xAI card, which still needs the stashed view and the welcome screen.
 #[test]
 fn login_mid_session_switches_to_welcome_and_stashes_view() {
     let mut app = test_app_with_agent();
@@ -1952,12 +1953,19 @@ fn login_mid_session_switches_to_welcome_and_stashes_view() {
     let effects = dispatch(Action::Login, &mut app);
     assert_eq!(app.active_view, ActiveView::Welcome);
     assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
+    assert!(app.connection_picker.is_some(), "Login opens the picker");
+    assert!(
+        effects.is_empty() && !matches!(app.auth_state, AuthState::Authenticating { .. }),
+        "Login alone must not kick off an auth flow",
+    );
+    let effects = start_login_flow(&mut app);
+    assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
     assert!(matches!(app.auth_state, AuthState::Authenticating { .. }));
     assert!(
         effects
             .iter()
             .any(|e| matches!(e, Effect::Authenticate { .. })),
-        "must still kick off the auth flow",
+        "the optional xAI card still kicks off the inherited auth flow",
     );
 }
 /// A mid-session `/login` switches to the welcome view to host the auth flow.
@@ -1985,7 +1993,7 @@ fn auth_complete_strips_reauth_prompt_after_mid_session_login() {
         .unwrap()
         .scrollback
         .push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
-    dispatch(Action::Login, &mut app);
+    start_login_flow(&mut app);
     let seq = authenticating_seq(&app);
     dispatch(
         Action::TaskComplete(TaskResult::AuthComplete {
@@ -2026,7 +2034,7 @@ fn auth_complete_retries_stashed_prompt_after_mid_session_login() {
             chip_elements: Vec::new(),
         });
     }
-    dispatch(Action::Login, &mut app);
+    start_login_flow(&mut app);
     let seq = authenticating_seq(&app);
     let effects = dispatch(
         Action::TaskComplete(TaskResult::AuthComplete {

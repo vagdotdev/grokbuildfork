@@ -5,7 +5,7 @@
 0003-neutral-production-endpoints.patch	gate:no-xai	crates/codegen/xai-grok-env/src/lib.rs crates/codegen/xai-grok-shell/src/agent/config.rs crates/codegen/xai-grok-shell-base/src/util/changelog.rs crates/codegen/xai-grok-workspace/src/handle.rs
 0004-disable-xai-updater.patch	gate:no-xai	crates/codegen/xai-grok-update
 0005-default-models-not-grok.patch	gate:no-xai	crates/codegen/xai-grok-models/default_models.json
-0006-welcome-opens-picker.patch	gate:no-xai	crates/codegen/xai-grok-pager
+0006-welcome-opens-picker.patch	gate:no-xai	crates/codegen/xai-grok-pager crates/codegen/xai-grok-shell/src/session/slash_commands.rs
 0007-cli-login-opens-picker-and-autoupdate-off.patch	gate:no-xai	crates/codegen/xai-grok-pager-bin/src/main.rs
 0008-workshop-home-and-bin.patch	branding	crates/codegen/xai-dirs/src/lib.rs crates/codegen/xai-grok-pager-bin/Cargo.toml crates/codegen/xai-grok-config/src/paths.rs
 0009-workspace-members.patch	product	Cargo.toml

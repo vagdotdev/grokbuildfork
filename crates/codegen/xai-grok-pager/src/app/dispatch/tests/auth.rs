@@ -2,25 +2,6 @@
 
 use super::*;
 
-/// Workshop: `Action::Login` opens the connection picker and never sends `Authenticate` by itself.
-/// The inherited interactive flow these tests exercise starts only from the picker's labeled
-/// optional xAI card (two explicit Enters), so drive the picker there.
-fn start_login_flow(app: &mut AppView) -> Vec<Effect> {
-    use workshop_auth::PickerInput;
-    dispatch(Action::Login, app);
-    let cards = app
-        .connection_picker
-        .as_ref()
-        .map(|p| p.models.len())
-        .expect("Login must open the connection picker");
-    for _ in 0..cards {
-        dispatch(Action::ConnectionPicker(PickerInput::Down), app);
-    }
-    dispatch(Action::ConnectionPicker(PickerInput::Enter), app); // shows the labeled copy (arms)
-    dispatch(Action::ConnectionPicker(PickerInput::Enter), app) // starts the flow
-}
-
-
 #[test]
 fn cta_mcps_loaded_needs_auth_opens_modal_and_seeds() {
     use crate::app::agent_view::CtaPhase;

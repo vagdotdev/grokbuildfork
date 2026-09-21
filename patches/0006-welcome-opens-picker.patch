@@ -11,6 +11,18 @@ index dd83e008..d6becc11 100644
  # The status-line contract: the config the user writes and the payload the
  # agent sends. A leaf crate rather than the agent's, so the client reads it
  # from upstream of the crate that fills it in.
+diff --git a/crates/codegen/xai-grok-pager/src/acp/mod.rs b/crates/codegen/xai-grok-pager/src/acp/mod.rs
+index d63bea59..5663ad57 100644
+--- a/crates/codegen/xai-grok-pager/src/acp/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/acp/mod.rs
+@@ -881,6 +881,7 @@ mod tests {
+             enterprise_oidc_issuer: None,
+             login_label: None,
+             has_auth_provider_command: false,
++            has_oauth2_provider: false,
+             preferred_method: None,
+         });
+         let (needs, label, method_id, mode) = startup_auth_metadata(&built.methods);
 diff --git a/crates/codegen/xai-grok-pager/src/app/actions.rs b/crates/codegen/xai-grok-pager/src/app/actions.rs
 index 60687638..821c2b3f 100644
 --- a/crates/codegen/xai-grok-pager/src/app/actions.rs
@@ -121,6 +133,18 @@ index 01e2d3c0..f07d4780 100644
                                  auth_code_input: self.auth_code_input.text(),
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
+diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
+index 66bf4e4f..e0ea86be 100644
+--- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
+@@ -169,6 +169,7 @@ pub(crate) fn test_app() -> AppView {
+         auth_url_poll_handle: None,
+         deferred_startup: Default::default(),
+         auth_use_oauth: false,
++        connection_picker: None,
+         auth_clipboard_delivery: None,
+         auth_clipboard_feedback_generation: 0,
+         team_id: None,
 diff --git a/crates/codegen/xai-grok-pager/src/app/cli.rs b/crates/codegen/xai-grok-pager/src/app/cli.rs
 index 87f63aef..4486201a 100644
 --- a/crates/codegen/xai-grok-pager/src/app/cli.rs
@@ -287,36 +311,10 @@ index dd53b1ae..f85ecdab 100644
          Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
          Action::CopyAuthUrl => {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
-index 495bb46e..750d2ac8 100644
+index 495bb46e..131e086e 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
-@@ -2,6 +2,25 @@
- 
- use super::*;
- 
-+/// Workshop: `Action::Login` opens the connection picker and never sends `Authenticate` by itself.
-+/// The inherited interactive flow these tests exercise starts only from the picker's labeled
-+/// optional xAI card (two explicit Enters), so drive the picker there.
-+fn start_login_flow(app: &mut AppView) -> Vec<Effect> {
-+    use workshop_auth::PickerInput;
-+    dispatch(Action::Login, app);
-+    let cards = app
-+        .connection_picker
-+        .as_ref()
-+        .map(|p| p.models.len())
-+        .expect("Login must open the connection picker");
-+    for _ in 0..cards {
-+        dispatch(Action::ConnectionPicker(PickerInput::Down), app);
-+    }
-+    dispatch(Action::ConnectionPicker(PickerInput::Enter), app); // shows the labeled copy (arms)
-+    dispatch(Action::ConnectionPicker(PickerInput::Enter), app) // starts the flow
-+}
-+
-+
- #[test]
- fn cta_mcps_loaded_needs_auth_opens_modal_and_seeds() {
-     use crate::app::agent_view::CtaPhase;
-@@ -396,7 +415,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
+@@ -396,7 +396,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
          "PromptResponse must stash the compact-held prompt for AuthComplete"
      );
  
@@ -325,7 +323,7 @@ index 495bb46e..750d2ac8 100644
      let seq = authenticating_seq(&app);
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -556,9 +575,10 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
+@@ -556,9 +556,10 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
      );
  }
  
@@ -338,7 +336,7 @@ index 495bb46e..750d2ac8 100644
      let mut app = test_app_with_agent();
      app.auth_methods.clear();
      app.login_method_id = None;
-@@ -569,21 +589,94 @@ fn login_with_empty_auth_methods_fails_closed() {
+@@ -569,21 +570,94 @@ fn login_with_empty_auth_methods_fails_closed() {
          effects.is_empty(),
          "must not start Authenticate without an advertised method"
      );
@@ -441,7 +439,7 @@ index 495bb46e..750d2ac8 100644
  }
  
  /// Puts the app in `Authenticating` with a live task's abort handle installed, as the event loop would.
-@@ -593,7 +686,7 @@ fn install_live_auth_task(
+@@ -593,7 +667,7 @@ fn install_live_auth_task(
      app: &mut AppView,
      rt: &tokio::runtime::Runtime,
  ) -> (tokio::task::JoinHandle<()>, u64) {
@@ -450,7 +448,7 @@ index 495bb46e..750d2ac8 100644
      let task = rt.spawn(std::future::pending::<()>());
      match &mut app.auth_state {
          AuthState::Authenticating {
-@@ -623,7 +716,7 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -623,7 +697,7 @@ fn login_while_authenticating_aborts_prior_task() {
      let mut app = test_app_with_agent();
      let (prior_task, first_seq) = install_live_auth_task(&mut app, &rt);
  
@@ -459,7 +457,7 @@ index 495bb46e..750d2ac8 100644
  
      rt.block_on(async {
          assert!(
-@@ -653,12 +746,12 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -653,12 +727,12 @@ fn login_while_authenticating_aborts_prior_task() {
  #[test]
  fn stale_auth_complete_after_relogin_is_ignored() {
      let mut app = test_app_with_agent();
@@ -474,7 +472,7 @@ index 495bb46e..750d2ac8 100644
  
      dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -724,7 +817,7 @@ fn cancel_login_aborts_prior_task() {
+@@ -724,7 +798,7 @@ fn cancel_login_aborts_prior_task() {
  #[test]
  fn cancel_login_restores_view() {
      let mut app = test_app_with_agent();
@@ -483,6 +481,123 @@ index 495bb46e..750d2ac8 100644
      assert_eq!(app.active_view, ActiveView::Welcome);
      let prior_seq = match &app.auth_state {
          AuthState::Authenticating { request_seq, .. } => *request_seq,
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs
+index 2c596c26..ac90774d 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs
+@@ -1048,7 +1048,7 @@ fn auth_complete_retries_stashed_prompt_from_dashboard() {
+             }],
+         });
+     app.active_view = ActiveView::AgentDashboard;
+-    dispatch(Action::Login, &mut app);
++    start_login_flow(&mut app);
+     let seq = authenticating_seq(&app);
+     let effects = dispatch(
+         Action::TaskComplete(TaskResult::AuthComplete {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
+index 2bcc8eff..cfabb6e7 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
+@@ -180,6 +180,7 @@ fn test_app() -> AppView {
+         auth_url_poll_handle: None,
+         deferred_startup: Default::default(),
+         auth_use_oauth: false,
++        connection_picker: None,
+         auth_clipboard_delivery: None,
+         auth_clipboard_feedback_generation: 0,
+         team_id: None,
+@@ -582,6 +583,23 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
+     std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
+     sess_dir
+ }
++/// Workshop: `Action::Login` opens the connection picker and never sends `Authenticate` by itself.
++/// The inherited interactive flow these tests exercise starts only from the picker's labeled optional
++/// xAI card (two explicit Enters), so drive the picker there.
++pub(super) fn start_login_flow(app: &mut AppView) -> Vec<Effect> {
++    use workshop_auth::PickerInput;
++    dispatch(Action::Login, app);
++    let cards = app
++        .connection_picker
++        .as_ref()
++        .map(|p| p.models.len())
++        .expect("Login must open the connection picker");
++    for _ in 0..cards {
++        dispatch(Action::ConnectionPicker(PickerInput::Down), app);
++    }
++    dispatch(Action::ConnectionPicker(PickerInput::Enter), app); // shows the labeled copy (arms)
++    dispatch(Action::ConnectionPicker(PickerInput::Enter), app) // starts the flow
++}
+ /// Extract the in-flight auth request sequence, panicking if the auth state is not `Authenticating`.
+ fn authenticating_seq(app: &AppView) -> u64 {
+     match app.auth_state {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
+index 1b4d9b52..e3c9d4ae 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
+@@ -1943,8 +1943,9 @@ fn gated_worktree_with_none_companions_preserves_stashed_label_and_ref() {
+     assert!(!app.deferred_startup.worktree);
+ }
+ /// `/login` from inside a session must move to the welcome screen and stash the agent view for restoration.
+-/// The welcome screen is the only view that renders the auth flow / external-provider URL.
+-/// Regression: "external auth provider /login does nothing mid-session".
++/// The welcome screen is the only view that renders the connection picker and the auth flow.
++/// Workshop: Login alone opens the picker (no Authenticate); the inherited flow starts only from
++/// the optional xAI card, which still needs the stashed view and the welcome screen.
+ #[test]
+ fn login_mid_session_switches_to_welcome_and_stashes_view() {
+     let mut app = test_app_with_agent();
+@@ -1952,12 +1953,19 @@ fn login_mid_session_switches_to_welcome_and_stashes_view() {
+     let effects = dispatch(Action::Login, &mut app);
+     assert_eq!(app.active_view, ActiveView::Welcome);
+     assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
++    assert!(app.connection_picker.is_some(), "Login opens the picker");
++    assert!(
++        effects.is_empty() && !matches!(app.auth_state, AuthState::Authenticating { .. }),
++        "Login alone must not kick off an auth flow",
++    );
++    let effects = start_login_flow(&mut app);
++    assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
+     assert!(matches!(app.auth_state, AuthState::Authenticating { .. }));
+     assert!(
+         effects
+             .iter()
+             .any(|e| matches!(e, Effect::Authenticate { .. })),
+-        "must still kick off the auth flow",
++        "the optional xAI card still kicks off the inherited auth flow",
+     );
+ }
+ /// A mid-session `/login` switches to the welcome view to host the auth flow.
+@@ -1985,7 +1993,7 @@ fn auth_complete_strips_reauth_prompt_after_mid_session_login() {
+         .unwrap()
+         .scrollback
+         .push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
+-    dispatch(Action::Login, &mut app);
++    start_login_flow(&mut app);
+     let seq = authenticating_seq(&app);
+     dispatch(
+         Action::TaskComplete(TaskResult::AuthComplete {
+@@ -2026,7 +2034,7 @@ fn auth_complete_retries_stashed_prompt_after_mid_session_login() {
+             chip_elements: Vec::new(),
+         });
+     }
+-    dispatch(Action::Login, &mut app);
++    start_login_flow(&mut app);
+     let seq = authenticating_seq(&app);
+     let effects = dispatch(
+         Action::TaskComplete(TaskResult::AuthComplete {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/load.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/load.rs
+index 214080bf..a2f4ab86 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/load.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/load.rs
+@@ -918,7 +918,7 @@ fn session_restored_sticky_chat_sets_conversation_entry() {
+ #[test]
+ fn auth_complete_restores_view_after_mid_session_login() {
+     let mut app = test_app_with_agent();
+-    dispatch(Action::Login, &mut app);
++    start_login_flow(&mut app);
+     let seq = authenticating_seq(&app);
+     assert_eq!(app.active_view, ActiveView::Welcome);
+     dispatch(
 diff --git a/crates/codegen/xai-grok-pager/src/app/effects/helpers.rs b/crates/codegen/xai-grok-pager/src/app/effects/helpers.rs
 index ae86c5bf..5e173153 100644
 --- a/crates/codegen/xai-grok-pager/src/app/effects/helpers.rs
@@ -974,3 +1089,23 @@ index b828a780..d4c83ae4 100644
              auth_code_input: "",
              auth_code_cursor_byte: 0,
              clipboard_delivery: None,
+diff --git a/crates/codegen/xai-grok-shell/src/session/slash_commands.rs b/crates/codegen/xai-grok-shell/src/session/slash_commands.rs
+index 998e218b..03011597 100644
+--- a/crates/codegen/xai-grok-shell/src/session/slash_commands.rs
++++ b/crates/codegen/xai-grok-shell/src/session/slash_commands.rs
+@@ -454,6 +454,7 @@ pub const PAGER_COMMAND_KEYS: &[&str] = &[
+     "agents-dashboard",
+     "always-approve",
+     "announcements",
++    "auth", // Workshop: connection picker
+     "auto",
+     "btw",
+     "cd",
+@@ -509,6 +510,7 @@ pub const PAGER_COMMAND_KEYS: &[&str] = &[
+     "minimal",
+     "ml",
+     "model",
++    "models", // Workshop: connection picker
+     "multiline",
+     "new",
+     "onboarding",

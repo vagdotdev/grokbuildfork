@@ -454,6 +454,7 @@ pub const PAGER_COMMAND_KEYS: &[&str] = &[
     "agents-dashboard",
     "always-approve",
     "announcements",
+    "auth", // Workshop: connection picker
     "auto",
     "btw",
     "cd",
@@ -509,6 +510,7 @@ pub const PAGER_COMMAND_KEYS: &[&str] = &[
     "minimal",
     "ml",
     "model",
+    "models", // Workshop: connection picker
     "multiline",
     "new",
     "onboarding",
