@@ -16,9 +16,20 @@ pub const BUST_7X14: &str = include_str!("../assets/portrait-7x14.txt");
 /// Bust at the upstream small logo's grid: 5 rows x 10 cols (20 x 20 dots).
 pub const BUST_5X10: &str = include_str!("../assets/portrait-5x10.txt");
 
-/// 2x bust: 14 rows x 28 cols (56 x 56 dots). Only shown by a `-2x` art set: the hero box grows
-/// by 7 rows with it, so the side-by-side layout needs roughly 27 terminal rows.
+/// 2x bust: 14 rows x 28 cols (56 x 56 dots), Floyd-Steinberg dithered over the full tonal range.
+/// Only shown by a `-2x` art set: the hero box grows by 7 rows with it, so the side-by-side layout
+/// needs roughly 27 terminal rows.
 pub const BUST_14X28: &str = include_str!("../assets/portrait-14x28.txt");
+
+/// Per-cell shade map for [`BUST_14X28`]: one digit per cell, `0` dark / `1` mid / `2` bright,
+/// from the cell's mean luminance before dithering. The renderer maps it onto theme shades.
+pub const BUST_14X28_SHADE: &str = include_str!("../assets/portrait-14x28.shade.txt");
+
+/// 3x bust: 21 rows x 42 cols (84 x 84 dots), for size comparison only; the box grows to 25 rows.
+pub const BUST_21X42: &str = include_str!("../assets/portrait-21x42.txt");
+
+/// Shade map for [`BUST_21X42`].
+pub const BUST_21X42_SHADE: &str = include_str!("../assets/portrait-21x42.shade.txt");
 
 /// Passport-style face crop (eyes, nose, mouth fill the square) on an empty background, 7 x 14.
 pub const FACE_7X14: &str = include_str!("../assets/face-7x14.txt");
@@ -31,8 +42,10 @@ pub const FACE_14X28: &str = include_str!("../assets/face-14x28.txt");
 
 /// One art family at the welcome logo tiers.
 pub struct HeroArt {
-    /// 2x tier (14 x 28), tried first when the terminal is tall enough; `None` keeps the upstream tier chain.
+    /// Large tier (2x or 3x grid), tried first when the terminal is tall enough; `None` keeps the upstream tier chain.
     pub large: Option<&'static str>,
+    /// Shade map for `large` (same grid, digits `0`-`2`); `None` paints every cell in the resting gray.
+    pub large_shade: Option<&'static str>,
     /// Full tier (7 x 14), the upstream hero logo grid.
     pub full: &'static str,
     /// Compact tier (5 x 10), the upstream small logo grid.
@@ -42,19 +55,35 @@ pub struct HeroArt {
 /// The bust, 1x only (the default).
 pub const BUST: HeroArt = HeroArt {
     large: None,
+    large_shade: None,
     full: BUST_7X14,
     compact: BUST_5X10,
 };
 
-/// The bust with the 2x tier enabled.
+/// The bust with the tonal 2x tier and per-cell shading.
 pub const BUST_2X: HeroArt = HeroArt {
     large: Some(BUST_14X28),
+    large_shade: Some(BUST_14X28_SHADE),
+    ..BUST
+};
+
+/// [`BUST_2X`] without shading (dither only), for comparison.
+pub const BUST_2X_FLAT: HeroArt = HeroArt {
+    large_shade: None,
+    ..BUST_2X
+};
+
+/// The bust with the 3x tier, for comparison.
+pub const BUST_3X: HeroArt = HeroArt {
+    large: Some(BUST_21X42),
+    large_shade: Some(BUST_21X42_SHADE),
     ..BUST
 };
 
 /// The face crop, 1x only.
 pub const FACE: HeroArt = HeroArt {
     large: None,
+    large_shade: None,
     full: FACE_7X14,
     compact: FACE_5X10,
 };
@@ -65,8 +94,8 @@ pub const FACE_2X: HeroArt = HeroArt {
     ..FACE
 };
 
-/// Environment variable that picks the art set for a launch: `bust`, `bust-2x`, `face`, `face-2x`.
-/// Anything else is the default, [`BUST`].
+/// Environment variable that picks the art set for a launch: `bust`, `bust-2x`, `bust-2x-flat`,
+/// `bust-3x`, `face`, `face-2x`. Anything else is the default, [`BUST`].
 pub const HERO_ART_ENV: &str = "WORKSHOP_HERO_ART";
 
 /// The art set for this launch, resolved once from [`HERO_ART_ENV`].
@@ -78,10 +107,24 @@ pub fn hero_art() -> &'static HeroArt {
 fn hero_art_named(name: Option<&str>) -> &'static HeroArt {
     match name.map(str::trim) {
         Some("bust-2x") => &BUST_2X,
+        Some("bust-2x-flat") => &BUST_2X_FLAT,
+        Some("bust-3x") => &BUST_3X,
         Some("face") => &FACE,
         Some("face-2x") => &FACE_2X,
         _ => &BUST,
     }
+}
+
+/// Shade level of the cell at (`row`, `col`) in a shade map: `0` dark, `1` mid, `2` bright.
+/// Missing or malformed cells read as `1`, the resting tone.
+pub fn shade_level(shade: &str, row: usize, col: usize) -> u8 {
+    shade
+        .lines()
+        .filter(|l| !l.is_empty())
+        .nth(row)
+        .and_then(|line| line.as_bytes().get(col))
+        .filter(|b| (b'0'..=b'2').contains(b))
+        .map_or(1, |b| b - b'0')
 }
 
 /// The hero titles; one is picked per launch.
@@ -152,13 +195,45 @@ mod tests {
 
     #[test]
     fn portraits_match_the_upstream_logo_grids() {
-        for art in [&BUST, &BUST_2X, &FACE, &FACE_2X] {
+        for art in [&BUST, &BUST_2X, &BUST_2X_FLAT, &FACE, &FACE_2X] {
             assert_grid(art.full, 7, 14);
             assert_grid(art.compact, 5, 10);
             if let Some(large) = art.large {
                 assert_grid(large, 14, 28);
             }
         }
+        assert_grid(BUST_3X.large.unwrap(), 21, 42);
+    }
+
+    #[test]
+    fn shade_maps_cover_their_grids_with_digits() {
+        for art in [&BUST_2X, &BUST_3X] {
+            let (large, shade) = (art.large.unwrap(), art.large_shade.unwrap());
+            let glyph_rows = grid(large);
+            let shade_rows = grid(shade);
+            assert_eq!(shade_rows.len(), glyph_rows.len());
+            for (g, s) in glyph_rows.iter().zip(&shade_rows) {
+                assert_eq!(s.len(), g.chars().count(), "{s:?}");
+                assert!(s.bytes().all(|b| (b'0'..=b'2').contains(&b)), "{s:?}");
+            }
+            // The tonal 2x has to carry all three tones, or the shading would be a no-op
+            for level in [b'0', b'1', b'2'] {
+                assert!(shade.bytes().any(|b| b == level));
+            }
+        }
+        assert!(BUST_2X_FLAT.large_shade.is_none());
+        assert!(BUST.large_shade.is_none() && FACE_2X.large_shade.is_none());
+    }
+
+    #[test]
+    fn shade_level_reads_digits_and_defaults_to_mid() {
+        let shade = "012\n201\n";
+        assert_eq!(shade_level(shade, 0, 0), 0);
+        assert_eq!(shade_level(shade, 0, 2), 2);
+        assert_eq!(shade_level(shade, 1, 0), 2);
+        assert_eq!(shade_level(shade, 1, 3), 1, "past the row end");
+        assert_eq!(shade_level(shade, 5, 0), 1, "past the last row");
+        assert_eq!(shade_level("x", 0, 0), 1, "non-digit");
     }
 
     #[test]
@@ -170,8 +245,13 @@ mod tests {
         }
         let two_x = hero_art_named(Some(" bust-2x "));
         assert_eq!(two_x.large, Some(BUST_14X28));
+        assert_eq!(two_x.large_shade, Some(BUST_14X28_SHADE));
         assert_eq!(two_x.full, BUST_7X14);
         assert_eq!(two_x.compact, BUST_5X10);
+        let flat = hero_art_named(Some("bust-2x-flat"));
+        assert_eq!(flat.large, Some(BUST_14X28));
+        assert!(flat.large_shade.is_none());
+        assert_eq!(hero_art_named(Some("bust-3x")).large, Some(BUST_21X42));
         let face = hero_art_named(Some("face"));
         assert!(face.large.is_none());
         assert_eq!(face.full, FACE_7X14);
