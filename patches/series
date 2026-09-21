@@ -12,3 +12,7 @@
 0008-workshop-home-and-bin.patch  # branding
 0009-workspace-members.patch  # product
 0010-shell-test-target-compiles.patch  # product
+0011-neutral-aux-endpoints.patch  # gate:no-xai
+0012-telemetry-build-env-inert.patch  # product
+0013-workshop-user-visible-strings.patch  # branding
+0014-pty-harness-workshop-binary.patch  # product

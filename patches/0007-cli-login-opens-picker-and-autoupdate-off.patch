@@ -1,7 +1,128 @@
 diff --git a/crates/codegen/xai-grok-pager-bin/src/main.rs b/crates/codegen/xai-grok-pager-bin/src/main.rs
-index ec8d2084..19fa5ed4 100644
+index ec8d2084..4e8d08c6 100644
 --- a/crates/codegen/xai-grok-pager-bin/src/main.rs
 +++ b/crates/codegen/xai-grok-pager-bin/src/main.rs
+@@ -224,7 +224,7 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
+         ),
+     );
+ }
+-/// `grok setup`: rendering and exit codes only; fetch logic lives in `xai_grok_shell::managed_config`.
++/// `workshop setup`: rendering and exit codes only; fetch logic lives in `xai_grok_shell::managed_config`.
+ /// `json` prints the served configuration instead of installing it.
+ #[tracing::instrument(level = "debug", skip_all)]
+ async fn run_setup_command(json: bool) {
+@@ -232,7 +232,7 @@ async fn run_setup_command(json: bool) {
+     if !managed_config::has_principal() {
+         eprintln!("No deployment key or team sign-in found.");
+         eprintln!();
+-        eprintln!("To install managed configuration, sign in with a team using `grok login`,");
++        eprintln!("To install managed configuration, sign in with a team using `workshop login`,");
+         eprintln!("or set a deployment key:");
+         eprintln!();
+         if cfg!(unix) {
+@@ -240,7 +240,7 @@ async fn run_setup_command(json: bool) {
+         } else {
+             eprintln!("  $env:GROK_DEPLOYMENT_KEY=\"<your-key>\"");
+         }
+-        eprintln!("  grok setup");
++        eprintln!("  workshop setup");
+         eprintln!();
+         eprintln!("Or add the key to ~/.grok/config.toml:");
+         eprintln!();
+@@ -280,7 +280,7 @@ async fn run_setup_command(json: bool) {
+         }
+         SetupOutcome::Skipped => {
+             eprintln!(
+-                "Managed configuration was not applied this run (another process held the apply lock, or the credential changed during the fetch). Run `grok setup` again."
++                "Managed configuration was not applied this run (another process held the apply lock, or the credential changed during the fetch). Run `workshop setup` again."
+             );
+         }
+         SetupOutcome::Staged => {
+@@ -572,7 +572,7 @@ async fn run_workspace_mgmt(args: WorkspaceMgmtArgs) -> Result<()> {
+         WorkspaceGate::Unknown => {
+             anyhow::bail!(
+                 "Could not load your settings for `grok workspace`. Check your \
+-             network connection (run `grok login` if you are signed out), then \
++             network connection (run `workshop login` if you are signed out), then \
+              try again."
+             )
+         }
+@@ -681,7 +681,7 @@ async fn spawn_and_connect_leader(
+         agent_config.login_device_flow,
+         agent_config.endpoints.proxy_url(),
+         false,
+-        Some("No cached credentials found. Run `grok login` first."),
++        Some("No cached credentials found. Run `workshop login` first."),
+     )
+     .await?;
+     let env_urls = LeaderEnvUrls::from(&agent_config.grok_com_config);
+@@ -1148,7 +1148,7 @@ fn shutdown_and_flush_telemetry(exit_code: i32) -> ! {
+ }
+ fn finalize_span_profile() {
+     if let Some(path) = xai_grok_telemetry::span_profile::finalize() {
+-        eprintln!("grok: span profile written to {}", path.display());
++        eprintln!("workshop: span profile written to {}", path.display());
+     }
+ }
+ #[tracing::instrument(level = "debug", skip_all)]
+@@ -1183,7 +1183,7 @@ async fn forward_stdio_line_to_leader(
+     }
+ }
+ /// Emitted by both leader guards (server mode and leader-connect) so the two sites can't drift.
+-const PLUGIN_DIR_LEADER_WARNING: &str = "grok: --plugin-dir is ignored in leader mode; run with --no-leader to \
++const PLUGIN_DIR_LEADER_WARNING: &str = "workshop: --plugin-dir is ignored in leader mode; run with --no-leader to \
+      load per-process plugins";
+ /// Run the `agent` subcommand, dispatching to the appropriate mode.
+ #[tracing::instrument(level = "debug", skip_all)]
+@@ -1234,7 +1234,7 @@ async fn run_agent_command(
+     let is_leader = matches!(agent_args.mode, Some(AgentCmd::Leader(_)));
+     if !is_stdio && !is_leader {
+         eprintln!(
+-            "Grok Build (pager) - v{}",
++            "Workshop - v{}",
+             xai_grok_version::display_version_with_commit(
+                 env!("VERSION_WITH_COMMIT"),
+                 xai_grok_update::channel_label(),
+@@ -1282,7 +1282,7 @@ async fn run_agent_command(
+         None,
+     );
+     if let Some(warning) = launch_yolo.blocked_warning {
+-        eprintln!("grok: {warning}");
++        eprintln!("workshop: {warning}");
+     }
+     agent_config.default_yolo_mode = launch_yolo.yolo;
+     agent_config.default_auto_mode = xai_grok_shell::util::config::effective_auto_for_launch(
+@@ -1776,10 +1776,10 @@ impl WorkerCount {
+                 used,
+                 cores,
+             } => Some(format!(
+-                "grok: clamped {GROK_WORKER_THREADS_ENV}={requested} to {used} (valid range is 1..={cores})"
++                "workshop: clamped {GROK_WORKER_THREADS_ENV}={requested} to {used} (valid range is 1..={cores})"
+             )),
+             Self::Ignored { value, .. } => Some(format!(
+-                "grok: ignoring {GROK_WORKER_THREADS_ENV}={value:?} (not a valid integer)"
++                "workshop: ignoring {GROK_WORKER_THREADS_ENV}={value:?} (not a valid integer)"
+             )),
+         }
+     }
+@@ -2015,7 +2015,7 @@ fn main() {
+         xai_grok_shell::agent::external_otel_pin::strip_conflicting_process_env();
+     }
+     let args = configure_process_env(args).unwrap_or_else(|err| {
+-        eprintln!("grok: {err:#}");
++        eprintln!("workshop: {err:#}");
+         std::process::exit(1);
+     });
+     xai_grok_pager::memory_trace::start(xai_grok_pager::memory_trace::default_dir());
+@@ -2068,7 +2068,7 @@ fn main() {
+     builder.worker_threads(workers.get()).enable_all();
+     let runtime =
+         xai_tty_utils::runtime::build_with_blocking_pool(&mut builder).unwrap_or_else(|e| {
+-            eprintln!("grok: failed to start tokio runtime: {e}");
++            eprintln!("workshop: failed to start tokio runtime: {e}");
+             shutdown_and_flush_telemetry(1);
+         });
+     let result = run_and_shutdown(runtime, async_main(args), RUNTIME_SHUTDOWN_GRACE);
 @@ -2330,6 +2330,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
              }
              Command::Login {
@@ -39,6 +160,24 @@ index ec8d2084..19fa5ed4 100644
                      config.login_device_flow,
                      config.endpoints.proxy_url(),
                      oauth,
+@@ -2397,7 +2417,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+             None,
+         );
+         if let Some(warning) = launch_yolo.blocked_warning {
+-            eprintln!("grok: {warning}");
++            eprintln!("workshop: {warning}");
+         }
+         let json_schema = args
+             .json_schema
+@@ -2481,7 +2501,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+             if finish_update_on_exit(adopted, &update_config).await {
+                 eprintln!("Update installed. Run `grok` to start.");
+             } else {
+-                eprintln!("Update did not complete. Run `grok update` to retry.");
++                eprintln!("Update did not complete. Run `workshop update` to retry.");
+             }
+             Ok(())
+         }
 @@ -2566,6 +2586,14 @@ fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
      if no_auto_update_flag {
          return false;
@@ -54,6 +193,42 @@ index ec8d2084..19fa5ed4 100644
      !std::env::var_os("GROK_DISABLE_AUTOUPDATER")
          .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
  }
+@@ -2656,7 +2684,7 @@ async fn run_update_command(
+         );
+     }
+     let telemetry_cfg = xai_grok_shell::config::load_agent_config_disk_only()
+-        .map_err(|e| tracing::warn!("grok update: telemetry init skipped (agent config: {e})"))
++        .map_err(|e| tracing::warn!("workshop update: telemetry init skipped (agent config: {e})"))
+         .ok();
+     if let Some(agent_cfg) = telemetry_cfg {
+         let auth_manager =
+@@ -2683,7 +2711,7 @@ async fn run_update_command(
+     result?;
+     Ok(())
+ }
+-/// After a successful `grok update`, ask any running leader on this machine that is older than `installed_version`
++/// After a successful `workshop update`, ask any running leader on this machine that is older than `installed_version`
+ /// to relaunch onto the new binary. Best-effort and non-fatal: discovery/connect/control failures are logged and
+ /// skipped.
+ #[tracing::instrument(level = "debug", skip_all)]
+@@ -2843,7 +2871,7 @@ mod tests {
+         );
+         assert_eq!(
+             resolve_worker_override("100000", cores).notice().unwrap(),
+-            "grok: clamped GROK_WORKER_THREADS=100000 to 360 (valid range is 1..=360)"
++            "workshop: clamped GROK_WORKER_THREADS=100000 to 360 (valid range is 1..=360)"
+         );
+     }
+     #[test]
+@@ -2856,7 +2884,7 @@ mod tests {
+         }
+         assert_eq!(
+             resolve_worker_override("abc", cores).notice().unwrap(),
+-            "grok: ignoring GROK_WORKER_THREADS=\"abc\" (not a valid integer)"
++            "workshop: ignoring GROK_WORKER_THREADS=\"abc\" (not a valid integer)"
+         );
+     }
+     #[test]
 @@ -3037,30 +3065,37 @@ mod tests {
      }
      #[cfg(unix)]

@@ -1,7 +1,7 @@
 auth.x.ai 9
 accounts.x.ai 6
-cli-chat-proxy.grok.com 2
-x.ai/cli 7
+cli-chat-proxy.grok.com 0
+x.ai/cli 0
 @xai-official 0
 grok-build-public-artifacts 0
 xai-org-shared/grok-build 0

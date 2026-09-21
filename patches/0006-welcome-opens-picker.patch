@@ -146,7 +146,7 @@ index 66bf4e4f..e0ea86be 100644
          auth_clipboard_feedback_generation: 0,
          team_id: None,
 diff --git a/crates/codegen/xai-grok-pager/src/app/cli.rs b/crates/codegen/xai-grok-pager/src/app/cli.rs
-index 87f63aef..4486201a 100644
+index 87f63aef..3dcc57a5 100644
 --- a/crates/codegen/xai-grok-pager/src/app/cli.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/cli.rs
 @@ -20,12 +20,15 @@ pub enum Command {
@@ -167,6 +167,29 @@ index 87f63aef..4486201a 100644
          #[arg(long = "oauth", alias = "oidc", conflicts_with_all = ["device_auth"])]
          oauth: bool,
          /// Use device-code authentication for headless/remote environments.
+@@ -394,9 +397,9 @@ pub struct LeaderArgs {
+ }
+ #[derive(Debug, Clone, Parser)]
+ #[command(
+-    name = "grok",
++    name = "workshop",
+     version = xai_grok_version::full_version(),
+-    about = "Grok Build TUI",
++    about = "Workshop: a coding-agent runtime that connects to local models, API keys, or subscription CLIs",
+     disable_version_flag = true,
+     next_display_order = None,
+     help_template = "\
+@@ -830,8 +833,8 @@ impl PagerArgs {
+             .map(std::path::Path::new)
+             .and_then(|p| p.file_name())
+             .and_then(|n| n.to_str())
+-            .filter(|n| *n == "grok" || *n == "agent")
+-            .unwrap_or("grok")
++            .filter(|n| *n == "workshop" || *n == "grok" || *n == "agent")
++            .unwrap_or("workshop")
+             .to_owned();
+         Self::parse_from(std::iter::once(bin_name).chain(std::env::args().skip(1)))
+     }
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 index 3b578a9d..ecbb0ff3 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
@@ -1042,9 +1065,27 @@ index b158019b..f01abbdc 100644
  pub mod credit_bar;
  pub mod dashboard;
 diff --git a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
-index b828a780..d4c83ae4 100644
+index b828a780..0d5c14b1 100644
 --- a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
+@@ -556,7 +556,7 @@ pub(super) fn render_version_badge(
+     match &mode {
+         VersionBadgeMode::Full { .. } => {
+             spans.push(Span::styled(
+-                "Grok Build  ",
++                "Workshop  ",
+                 Style::default()
+                     .fg(theme.text_primary)
+                     .add_modifier(Modifier::BOLD),
+@@ -576,7 +576,7 @@ pub(super) fn render_version_badge(
+         }
+         VersionBadgeMode::HeroInline => {
+             spans.push(Span::styled(
+-                "Grok Build  ",
++                "Workshop  ",
+                 Style::default()
+                     .fg(theme.text_primary)
+                     .add_modifier(Modifier::BOLD),
 @@ -687,6 +687,8 @@ pub struct WelcomeRenderParams<'a> {
      pub consent_state: &'a crate::app::consent::ConsentState,
      pub consent_hover_link: Option<usize>,
@@ -1081,6 +1122,35 @@ index b828a780..d4c83ae4 100644
              let menu = [("l", login_text.as_str()), ("q", "Quit")];
              let msg = error.as_deref().map(|e| (e, theme.accent_error));
              let info = PromptInfo {
+@@ -845,7 +861,7 @@ pub fn render_welcome(
+                 content_area,
+                 buf,
+                 Some((
+-                    "Grok Build is not yet available for this account.",
++                    "Workshop is not yet available for this account.",
+                     theme.gray_bright,
+                 )),
+                 &menu,
+@@ -1025,7 +1041,7 @@ fn render_welcome_trust(
+         Line::default(),
+         // Two lines so the warning never clips at narrow / compact widths (a single ~78-char line would truncate "...posing security risks")
+         Line::from(Span::styled(
+-            "Grok Build may run or modify contents in this directory,",
++            "Workshop may run or modify contents in this directory,",
+             Style::default().fg(theme.gray),
+         ))
+         .alignment(Alignment::Center),
+@@ -2718,8 +2734,8 @@ mod tests {
+                 "badge must not label the product: {rendered:?}"
+             );
+         }
+-        assert!(full.contains("Grok Build"), "full badge: {full:?}");
+-        assert!(inline.contains("Grok Build"), "inline badge: {inline:?}");
++        assert!(full.contains("Workshop"), "full badge: {full:?}");
++        assert!(inline.contains("Workshop"), "inline badge: {inline:?}");
+         assert!(footer.contains("acme"), "footer keeps the team: {footer:?}");
+         assert!(
+             !footer.ends_with('\u{2502}'),
 @@ -2862,6 +2878,7 @@ mod tests {
              consent_state: &ConsentState::Done,
              consent_hover_link: None,

@@ -106,11 +106,11 @@ PY
 
 BASELINE="scripts/no-xai-binary-baseline.txt"
 NEEDLES=(auth.x.ai accounts.x.ai cli-chat-proxy.grok.com x.ai/cli @xai-official grok-build-public-artifacts xai-org-shared/grok-build api.mixpanel.com)
-# Needles that must be zero in the binary regardless of baseline (fully replaced surfaces: updater).
-# `x.ai/cli` is baseline-tracked instead: the remaining occurrences are embedded end-user docs
-# (xai-grok-pager/docs/user-guide/01-getting-started.md, xai-grok-shell/README.md) that no code path
-# fetches; the milestone B doc rebrand takes them to 0 and the baseline ratchets down with it.
-ZERO_NEEDLES=(@xai-official grok-build-public-artifacts xai-org-shared/grok-build)
+# Needles that must be zero in the binary regardless of baseline (fully replaced surfaces: the
+# updater channel, the xAI proxy host, and the x.ai/cli install/CDN paths — the embedded end-user
+# docs that used to carry the last `x.ai/cli` and `cli-chat-proxy.grok.com` mentions were rebranded
+# in the milestone B string patch, so any reappearance is a regression, not a baseline drift).
+ZERO_NEEDLES=(@xai-official grok-build-public-artifacts xai-org-shared/grok-build x.ai/cli cli-chat-proxy.grok.com)
 
 scan_binary() {
   local bin="$1" write="${2:-}"

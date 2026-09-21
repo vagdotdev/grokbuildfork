@@ -1,6 +1,6 @@
 # Getting Started
 
-Grok Build is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
+Workshop is a terminal-based AI coding agent built as a thin overlay on the public Grok Build tree. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, and manages tasks. It ships **no default model provider**: you connect a local model, an API key, or an installed coding-subscription CLI.
 
 You can use it interactively as a full-screen TUI, run it headlessly for scripting and CI/CD, or integrate it into editors via the Agent Client Protocol (ACP).
 
@@ -8,70 +8,26 @@ You can use it interactively as a full-screen TUI, run it headlessly for scripti
 
 ## Installation
 
-Install the latest stable release (macOS, Linux, or Windows via Git Bash):
+Workshop has no public install channel yet (auto-update is disabled in this build). Build from source with the pinned Rust toolchain and `protoc`:
 
 ```bash
-curl -fsSL https://x.ai/cli/install.sh | bash
+cargo build --release -p xai-grok-pager-bin
+./target/release/workshop --version
 ```
 
-Install a specific version:
-
-```bash
-curl -fsSL https://x.ai/cli/install.sh | bash -s 0.1.42
-```
-
-On **Windows (PowerShell)**, use the native PowerShell installer:
-
-```powershell
-irm https://x.ai/cli/install.ps1 | iex
-```
-
-Install a specific version:
-
-```powershell
-$env:GROK_VERSION="0.1.42"; irm https://x.ai/cli/install.ps1 | iex
-```
-
-The PowerShell installer automatically adds `%USERPROFILE%\.grok\bin` to your User PATH. Alternatively, install via [Git for Windows](https://gitforwindows.org/) (Git Bash) or MSYS2 using the bash script above. WSL users get the Linux binary automatically.
-
-Verify the installation:
-
-```bash
-grok --version
-```
-
-Update to the latest version at any time:
-
-```bash
-grok update
-```
-
-To fetch a repository through Grove (NFS on macOS, FUSE on Linux), enable
-`grok clone` with `[clone] enabled = true` in Grove config, `GROK_CLONE=1`,
-or the enable-both convenience `GROK_GROVE=1` / `[cli] grove = true` in
-`~/.grok/config.toml`:
-
-```bash
-grok clone <url> [dir]
-```
-
-The default is a depth-1 checkout of the selected branch. Pass `--full-history`
-for a complete clone. Clone enablement is independent of session / `-w` Grove
-worktrees (the convenience above turns both on; the specific knobs still win).
-the grok.com sign-in below — see [grok clone](27-grok-clone.md#authentication)
-and [Configuration reference](26-config-reference.md).
+Workshop keeps its state in `~/.workshop` (override with `WORKSHOP_HOME`; the upstream `GROK_HOME` is honoured as a deprecated alias).
 
 ---
 
 ## First Launch
 
-Start Grok by running:
+Start Workshop by running:
 
 ```bash
-grok
+workshop
 ```
 
-On first launch, Grok opens your browser to authenticate with grok.com. After you sign in, Grok stores your credentials in `~/.grok/auth.json`, where they persist across sessions. Grok refreshes your credentials automatically and prompts you to sign in again when they can no longer be renewed.
+On first launch, Workshop opens the **connection picker**, never a browser sign-in. The **Models** tab lists local servers (Ollama, LM Studio, llama.cpp / vLLM) and bring-your-own-key providers (OpenAI, Anthropic, OpenRouter, a custom OpenAI-compatible endpoint); the **Subscriptions** tab lists the Claude, Codex, and Cursor CLIs Workshop can drive once they are installed and signed in with their own `login` commands. Pick a row to see the `[model.*]` snippet to add to `~/.workshop/config.toml`. The optional xAI card is last on the Models tab and only opens the xAI sign-in page after you confirm it; nothing is contacted until you connect something.
 
 If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
 
