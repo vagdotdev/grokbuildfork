@@ -52,7 +52,7 @@ pub struct HeroArt {
     pub compact: &'static str,
 }
 
-/// The bust, 1x only (the default).
+/// The bust, 1x only (`bust`); also the fallback tiers of every bust set.
 pub const BUST: HeroArt = HeroArt {
     large: None,
     large_shade: None,
@@ -60,7 +60,7 @@ pub const BUST: HeroArt = HeroArt {
     compact: BUST_5X10,
 };
 
-/// The bust with the tonal 2x tier and per-cell shading.
+/// The bust with the tonal 2x tier and per-cell shading: the default art set.
 pub const BUST_2X: HeroArt = HeroArt {
     large: Some(BUST_14X28),
     large_shade: Some(BUST_14X28_SHADE),
@@ -95,7 +95,7 @@ pub const FACE_2X: HeroArt = HeroArt {
 };
 
 /// Environment variable that picks the art set for a launch: `bust`, `bust-2x`, `bust-2x-flat`,
-/// `bust-3x`, `face`, `face-2x`. Anything else is the default, [`BUST`].
+/// `bust-3x`, `face`, `face-2x`. Anything else is the default, [`BUST_2X`].
 pub const HERO_ART_ENV: &str = "WORKSHOP_HERO_ART";
 
 /// The art set for this launch, resolved once from [`HERO_ART_ENV`].
@@ -106,12 +106,12 @@ pub fn hero_art() -> &'static HeroArt {
 
 fn hero_art_named(name: Option<&str>) -> &'static HeroArt {
     match name.map(str::trim) {
-        Some("bust-2x") => &BUST_2X,
+        Some("bust") => &BUST,
         Some("bust-2x-flat") => &BUST_2X_FLAT,
         Some("bust-3x") => &BUST_3X,
         Some("face") => &FACE,
         Some("face-2x") => &FACE_2X,
-        _ => &BUST,
+        _ => &BUST_2X,
     }
 }
 
@@ -237,12 +237,16 @@ mod tests {
     }
 
     #[test]
-    fn art_sets_default_to_the_1x_bust() {
-        for name in [None, Some(""), Some("bust"), Some("nonsense")] {
+    fn art_sets_default_to_the_tonal_2x_bust() {
+        for name in [None, Some(""), Some("bust-2x"), Some("nonsense")] {
             let art = hero_art_named(name);
-            assert!(art.large.is_none(), "{name:?}");
+            assert_eq!(art.large, Some(BUST_14X28), "{name:?}");
+            assert_eq!(art.large_shade, Some(BUST_14X28_SHADE), "{name:?}");
             assert_eq!(art.full, BUST_7X14, "{name:?}");
         }
+        let one_x = hero_art_named(Some(" bust "));
+        assert!(one_x.large.is_none());
+        assert_eq!(one_x.full, BUST_7X14);
         let two_x = hero_art_named(Some(" bust-2x "));
         assert_eq!(two_x.large, Some(BUST_14X28));
         assert_eq!(two_x.large_shade, Some(BUST_14X28_SHADE));

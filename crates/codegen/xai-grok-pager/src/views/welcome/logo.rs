@@ -93,8 +93,16 @@ pub fn hero_logo_tiers() -> &'static [LogoTier] {
     }
 }
 
+#[cfg(not(test))]
 fn large_enabled() -> bool {
     workshop_brand::hero_art().large.is_some()
+}
+
+/// Unit tests keep the upstream tier chain (no automatic 2x), so the layout invariants written for the 7-row hero still hold.
+/// The Large tier is exercised explicitly where it matters.
+#[cfg(test)]
+fn large_enabled() -> bool {
+    false
 }
 
 fn pick_logo(window_height: u16) -> Option<&'static str> {

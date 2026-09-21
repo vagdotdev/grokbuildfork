@@ -730,6 +730,45 @@ managed devices and accounts. Report security incidents";
     }
 
     #[test]
+    fn large_tier_grows_the_box_and_yields_to_full_when_short() {
+        // Skipped when the launch art carries no 2x grid (WORKSHOP_HERO_ART=bust)
+        if LogoTier::Large.rows() == 0 {
+            return;
+        }
+        let input = || WelcomeLayoutInput {
+            content_area: Rect::new(0, 0, 120, 60),
+            menu_height: 4,
+            tip_height: 1,
+            ..Default::default()
+        };
+        let large = compute_hero_box_with(&input(), LogoTier::Large).expect("2x fits at 120x60");
+        let full = compute_hero_box_with(&input(), LogoTier::Full).expect("1x fits at 120x60");
+        assert_eq!(large.logo_tier, LogoTier::Large);
+        assert_eq!(
+            large.hero_box.height,
+            2 + V_PAD * 2 + LogoTier::Large.rows(),
+            "the box wraps the whole 2x art"
+        );
+        assert_eq!(large.hero_logo.height, LogoTier::Large.rows());
+        assert_eq!(full.hero_box.height, 2 + V_PAD * 2 + LogoTier::Full.rows());
+        assert!(
+            large.hero_version.x > full.hero_version.x,
+            "the right column moves over for the wider art"
+        );
+
+        // 120x24 holds the 1x box but not the 2x one, so the tier loop lands on Full
+        let short = WelcomeLayoutInput {
+            content_area: Rect::new(0, 0, 120, 24),
+            ..input()
+        };
+        assert!(compute_hero_box_with(&short, LogoTier::Large).is_none());
+        assert_eq!(
+            compute_hero_box_with(&short, LogoTier::Full).map(|l| l.logo_tier),
+            Some(LogoTier::Full)
+        );
+    }
+
+    #[test]
     fn wrap_short_text_single_line() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
         render_wrapped_text(
