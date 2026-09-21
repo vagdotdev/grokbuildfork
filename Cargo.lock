@@ -13179,6 +13179,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "workshop-brand"
+version = "0.1.0"
+
+[[package]]
 name = "write-fonts"
 version = "0.43.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
