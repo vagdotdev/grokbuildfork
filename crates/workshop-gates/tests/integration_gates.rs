@@ -2,10 +2,11 @@
 //!
 //! * the first-run default selection is never xAI and never OpenCode Zen;
 //! * the OpenCode engine's child environment never carries `OPENCODE_PERMISSION`;
-//! * the picker config writer keeps secrets out of `config.toml`;
-//! * the no-token-theft filesystem markers are absent from the wired crates.
+//! * the picker config writer keeps secrets out of `config.toml`.
 //!
-//! The binary string / egress gates stay in `scripts/no-xai-scan.sh` and `scripts/no-egress-smoke.sh`.
+//! gate:no-theft (source marker scan + runtime fs audit) lives in `no_theft.rs` /
+//! `scripts/no-theft-fs-audit.sh`; the binary string / egress gates stay in
+//! `scripts/no-xai-scan.sh` and `scripts/no-egress-smoke.sh`.
 
 use std::ffi::OsString;
 
@@ -99,71 +100,4 @@ fn config_writer_keeps_secrets_out_of_config() {
         xai_grok_shell::agent::config::WORKSHOP_ANONYMOUS_API_KEY,
         "the picker sentinel and the shell sentinel must be the same string"
     );
-}
-
-/// gate:no-theft — the wired crates' production code (not tests, not doc comments) contains none of
-/// the Blackpen credential-read markers. Test fixtures may name a forbidden string as *input* to
-/// prove it is stripped (e.g. the env test that shows `ANTHROPIC_BASE_URL=http://127.0.0.1:3456`
-/// being dropped), so `#[cfg(test)]` modules and `*tests*.rs` files are excluded, exactly like the
-/// `scripts/no-xai-scan.sh` source scan.
-#[test]
-fn no_foreign_credential_markers_in_wired_crates() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let markers = workshop_gates::THEFT_MARKERS;
-    for crate_dir in [
-        "crates/workshop-auth/src",
-        "crates/workshop-providers/src",
-        "crates/workshop-detect/src",
-        "crates/workshop-adapters/src",
-    ] {
-        for entry in walk(&root.join(crate_dir)) {
-            let name = entry.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name.contains("test") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&entry).unwrap_or_default();
-            let mut in_test_mod = false;
-            let mut test_mod_depth = 0i32;
-            let mut depth = 0i32;
-            for (n, line) in text.lines().enumerate() {
-                let trimmed = line.trim_start();
-                // Enter/leave a `#[cfg(test)] mod tests { … }` block by brace depth.
-                if trimmed.starts_with("#[cfg(test)]") {
-                    in_test_mod = true;
-                    test_mod_depth = depth;
-                }
-                let is_comment = trimmed.starts_with("//") || trimmed.starts_with('*');
-                if !in_test_mod && !is_comment {
-                    for m in markers {
-                        assert!(
-                            !line.contains(m),
-                            "{}:{}: forbidden credential marker `{m}`",
-                            entry.display(),
-                            n + 1
-                        );
-                    }
-                }
-                depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
-                if in_test_mod && depth <= test_mod_depth {
-                    in_test_mod = false;
-                }
-            }
-        }
-    }
-}
-
-fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return out;
-    };
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            out.extend(walk(&p));
-        } else if p.extension().is_some_and(|x| x == "rs") {
-            out.push(p);
-        }
-    }
-    out
 }

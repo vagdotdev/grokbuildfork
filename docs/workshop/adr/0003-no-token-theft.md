@@ -26,4 +26,8 @@ it exits and never claims success from a file's existence.
 
 `scripts/no-xai-scan.sh --sources` greps `crates/` for the markers in
 `workshop_gates::THEFT_MARKERS`; `crates/workshop-auth` is additionally checked for any `auth.json`
-/ keychain access. Milestone E adds a filesystem audit of adapter runs.
+/ keychain access. The same list runs as a cargo test (`crates/workshop-gates/tests/no_theft.rs`,
+comments and `#[cfg(test)]` modules stripped, with a self-check that the July dock's paths still
+match). `scripts/no-theft-fs-audit.sh` is the runtime half: decoy credential files under a
+throwaway `HOME`, the binary under `strace -f` in a network-less namespace, zero `openat` on those
+paths. Milestone E extends the filesystem audit to adapter runs.

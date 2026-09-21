@@ -13383,6 +13383,7 @@ dependencies = [
  "xai-grok-models",
  "xai-grok-pager-pty-harness",
  "xai-grok-shell",
+ "xai-grok-shell-base",
  "xai-grok-telemetry",
  "xai-grok-update",
 ]

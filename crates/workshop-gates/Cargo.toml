@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 xai-grok-login = { workspace = true }
 xai-grok-shell = { workspace = true }
+xai-grok-shell-base = { workspace = true }
 xai-grok-env = { workspace = true }
 xai-grok-update = { path = "../codegen/xai-grok-update" }
 xai-grok-models = { workspace = true }

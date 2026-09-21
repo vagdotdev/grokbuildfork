@@ -7,11 +7,11 @@ Use it interactively as a TUI, or integrate it into your own apps via headless m
 ## Quick Start
 
 ```bash
-# Install
-curl -fsSL https://x.ai/cli/install.sh | bash
+# Build (Workshop has no public install channel yet)
+cargo build --release -p xai-grok-pager-bin
 
 # Interactive TUI
-grok
+workshop
 
 # Headless (for scripts/automation)
 grok -p "Explain this codebase"
@@ -58,11 +58,8 @@ grok agent stdio
 ## Installation
 
 ```bash
-# Install latest stable
-curl -fsSL https://x.ai/cli/install.sh | bash
-
-# Install a specific version
-curl -fsSL https://x.ai/cli/install.sh | bash -s 0.1.42
+# Workshop ships no install script or update channel yet: build the `workshop` binary from source.
+cargo build --release -p xai-grok-pager-bin
 ```
 
 Verify installation:
@@ -394,7 +391,7 @@ auth_provider = "litellm"
 If you've authenticated with `grok login`, you can use the stored credentials to call the CLI chat proxy directly via curl. The proxy requires specific headers that mirror what the grok CLI sends internally:
 
 ```bash
-curl -s -N -X POST "https://cli-chat-proxy.grok.com/v1/chat/completions" \
+curl -s -N -X POST "$GROK_CLI_CHAT_PROXY_BASE_URL/chat/completions" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(jq -r '."https://accounts.x.ai/sign-in".key' ~/.grok/auth.json)" \
   -H "X-XAI-Token-Auth: xai-grok-cli" \
@@ -2501,7 +2498,7 @@ The agent persists all session updates automatically. Clients can reconnect and 
 | Variable                         | Description                                                                                              |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `XAI_API_KEY`         | API key from [console.x.ai](https://console.x.ai). Used for custom endpoint auth and API key login      |
-| `GROK_CLI_CHAT_PROXY_BASE_URL`  | Override the cli-chat-proxy URL (default: `https://cli-chat-proxy.grok.com/v1`)                          |
+| `GROK_CLI_CHAT_PROXY_BASE_URL`  | Override the cli-chat-proxy URL (Workshop default: an unreachable `api.workshop.invalid` placeholder)  |
 | `GROK_MODELS_BASE_URL`          | Custom base URL for inference. Model list auto-fetched from `{base_url}/models` (see [Custom Models Endpoint](#custom-models-endpoint)) |
 | `GROK_MODELS_LIST_URL`          | Override the model list URL if it differs from `{GROK_MODELS_BASE_URL}/models`                                              |
 | `GROK_AUTH_PROVIDER_COMMAND`     | External auth binary (alternative to config file). See [External Auth Provider](#external-auth-provider) |
