@@ -84,12 +84,13 @@ jobs:
         run: cargo test -p workshop-gates -- --nocapture
       - name: Overlay unit tests
         run: cargo test -p workshop-auth
-      - name: Upstream auth tests touched by the gate patches
+      - name: Upstream unit tests touched by the gate patches
         run: |
-          cargo test -p xai-grok-login --lib config::
-          cargo test -p xai-grok-shell --lib agent::auth_method::
-          cargo test -p xai-grok-update --lib reinstall_hint
-          cargo test -p xai-dirs
+          cargo test -p xai-grok-login --lib -- config:: manager::tests::auth_scope flow::tests::weblogin_cred flow::tests::oidc_cred flow::tests::external_cred flow::tests::run_auth_flow_falls_through
+          cargo test -p xai-grok-shell --lib -- agent::auth_method:: cached_token_fallthrough
+          cargo test -p xai-grok-update --lib
+          cargo test -p xai-dirs -p xai-grok-env
+          cargo test -p xai-grok-pager --lib -- app::dispatch::tests::auth::
       - name: Build the workshop binary
         run: cargo build -p xai-grok-pager-bin --bin workshop
       - name: Binary string scan against reviewed baseline

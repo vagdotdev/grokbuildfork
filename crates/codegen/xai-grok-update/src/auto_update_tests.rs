@@ -917,13 +917,15 @@ async fn test_cleanup_old_downloads_mixed_stable_and_alpha() {
 // ──────────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_reinstall_hint_npm_mentions_npm_command() {
+fn test_reinstall_hint_npm_is_unsupported() {
+    // Workshop is not on npm: the hint says so and points at the installer instead.
     let hint = reinstall_hint("npm", "stable");
-    assert!(hint.contains("npm i -g"), "should suggest npm i -g: {hint}");
     assert!(
-        hint.contains(crate::version::NPM_PACKAGE),
-        "should name the Workshop package: {hint}"
+        hint.contains("not supported"),
+        "npm must be reported as unsupported: {hint}"
     );
+    assert!(hint.contains("install.sh"), "should point at the installer: {hint}");
+    assert!(!hint.contains("npm i -g"), "must not suggest an npm install: {hint}");
     assert!(!hint.contains("@xai-official"), "must not name the xAI package: {hint}");
 }
 
@@ -958,17 +960,24 @@ fn test_reinstall_hint_never_points_at_xai_installers() {
         ("gh-release", "alpha"),
     ] {
         let hint = reinstall_hint(installer, channel);
-        for forbidden in ["x.ai/cli", "install.sh", "install.ps1", "@xai-official", "xai-org"] {
+        for forbidden in ["x.ai/cli", "install.ps1", "@xai-official", "xai-org", "GROK_CHANNEL"] {
             assert!(
                 !hint.contains(forbidden),
                 "{installer}/{channel:?}: hint must not contain {forbidden}: {hint}"
             );
         }
-        assert!(
-            !hint.contains("GROK_CHANNEL"),
-            "{installer}/{channel:?}: no shell one-liner may interpolate a channel: {hint}"
-        );
+        if installer == "internal" && channel == "alpha" {
+            assert!(
+                hint.contains("WORKSHOP_CHANNEL='alpha'"),
+                "alpha installs set WORKSHOP_CHANNEL: {hint}"
+            );
+        }
     }
+    let stable = reinstall_hint("internal", "stable");
+    assert!(
+        stable.contains(&format!("{}/install.sh", crate::version::CHANNEL_BASE_URL)),
+        "stable hint runs the Workshop installer from the channel base: {stable}"
+    );
 }
 
 #[test]
@@ -1594,7 +1603,7 @@ fn test_user_facing_constants_are_stable() {
     );
     assert_eq!(
         MSG_RUN_UPDATE_MANUAL,
-        "Run `grok update` to get the latest version."
+        "Run `workshop update` to get the latest version."
     );
 }
 
@@ -1611,6 +1620,7 @@ struct InstallerEnvGuard {
 impl InstallerEnvGuard {
     fn isolate() -> Self {
         const VARS: &[&str] = &[
+            "WORKSHOP_INSTALLER",
             "GROK_INSTALLER",
             "GROK_MANAGED_BY_NPM",
             "GROK_MANAGED_BY_INTERNAL",
@@ -1649,17 +1659,18 @@ fn test_env_installer_no_vars_returns_none() {
 
 #[test]
 #[serial_test::serial]
-fn test_env_installer_explicit_npm() {
+fn test_env_installer_explicit_npm_is_unsupported() {
+    // Workshop has no npm channel: an explicit npm request is ignored (falls to config/default).
     let _g = InstallerEnvGuard::isolate();
-    unsafe { std::env::set_var("GROK_INSTALLER", "npm") };
-    assert_eq!(env_installer(), Some("npm"));
+    unsafe { std::env::set_var("WORKSHOP_INSTALLER", "npm") };
+    assert_eq!(env_installer(), None);
 }
 
 #[test]
 #[serial_test::serial]
 fn test_env_installer_explicit_internal() {
     let _g = InstallerEnvGuard::isolate();
-    unsafe { std::env::set_var("GROK_INSTALLER", "internal") };
+    unsafe { std::env::set_var("WORKSHOP_INSTALLER", "internal") };
     assert_eq!(env_installer(), Some("internal"));
 }
 
@@ -1667,7 +1678,7 @@ fn test_env_installer_explicit_internal() {
 #[serial_test::serial]
 fn test_env_installer_explicit_gh_release() {
     let _g = InstallerEnvGuard::isolate();
-    unsafe { std::env::set_var("GROK_INSTALLER", "gh-release") };
+    unsafe { std::env::set_var("WORKSHOP_INSTALLER", "gh-release") };
     assert_eq!(env_installer(), Some("gh-release"));
 }
 
@@ -1676,7 +1687,7 @@ fn test_env_installer_explicit_gh_release() {
 fn test_env_installer_explicit_gh_alias() {
     // `gh` is shorthand for `gh-release`.
     let _g = InstallerEnvGuard::isolate();
-    unsafe { std::env::set_var("GROK_INSTALLER", "gh") };
+    unsafe { std::env::set_var("WORKSHOP_INSTALLER", "gh") };
     assert_eq!(env_installer(), Some("gh-release"));
 }
 
@@ -1684,10 +1695,10 @@ fn test_env_installer_explicit_gh_alias() {
 #[serial_test::serial]
 fn test_env_installer_explicit_uppercase_normalized() {
     let _g = InstallerEnvGuard::isolate();
-    unsafe { std::env::set_var("GROK_INSTALLER", "NPM") };
-    assert_eq!(env_installer(), Some("npm"));
+    unsafe { std::env::set_var("WORKSHOP_INSTALLER", "INTERNAL") };
+    assert_eq!(env_installer(), Some("internal"));
 
-    unsafe { std::env::set_var("GROK_INSTALLER", "Gh-Release") };
+    unsafe { std::env::set_var("WORKSHOP_INSTALLER", "Gh-Release") };
     assert_eq!(env_installer(), Some("gh-release"));
 }
 
@@ -1718,19 +1729,20 @@ fn test_env_installer_explicit_empty_returns_none() {
 
 #[test]
 #[serial_test::serial]
-fn test_env_installer_managed_by_npm() {
+fn test_env_installer_managed_by_npm_is_ignored() {
+    // Workshop: the npm trampoline markers no longer classify an install.
     let _g = InstallerEnvGuard::isolate();
     unsafe { std::env::set_var("GROK_MANAGED_BY_NPM", "1") };
-    assert_eq!(env_installer(), Some("npm"));
+    assert_eq!(env_installer(), None);
 }
 
 #[test]
 #[serial_test::serial]
-fn test_env_installer_managed_by_npm_any_value() {
-    // The check is `is_some`, so any value (including empty) wins
+fn test_env_installer_legacy_grok_installer_is_ignored() {
+    // Only WORKSHOP_INSTALLER is honoured; the upstream variable name is not.
     let _g = InstallerEnvGuard::isolate();
-    unsafe { std::env::set_var("GROK_MANAGED_BY_NPM", "") };
-    assert_eq!(env_installer(), Some("npm"));
+    unsafe { std::env::set_var("GROK_INSTALLER", "gh-release") };
+    assert_eq!(env_installer(), None);
 }
 
 #[test]
@@ -1743,9 +1755,8 @@ fn test_env_installer_managed_by_internal() {
 
 #[test]
 #[serial_test::serial]
-fn test_env_installer_npm_config_user_agent_implies_npm() {
-    // npm sets npm_config_user_agent in the env of any process it spawns.
-    // The trampoline relies on this fallback when MANAGED_BY_NPM was lost.
+fn test_env_installer_npm_config_user_agent_is_ignored() {
+    // A workshop launched from an npm script must not be reclassified as an npm install.
     let _g = InstallerEnvGuard::isolate();
     unsafe {
         std::env::set_var(
@@ -1753,15 +1764,15 @@ fn test_env_installer_npm_config_user_agent_implies_npm() {
             "npm/10.2.0 node/v20.11.0 darwin arm64 workspaces/false",
         )
     };
-    assert_eq!(env_installer(), Some("npm"));
+    assert_eq!(env_installer(), None);
 }
 #[test]
 #[serial_test::serial]
 fn test_env_installer_explicit_internal_wins_over_npm_managed() {
-    // GROK_INSTALLER=internal must override an inherited MANAGED_BY_NPM.
+    // WORKSHOP_INSTALLER=internal wins regardless of inherited npm markers.
     let _g = InstallerEnvGuard::isolate();
     unsafe {
-        std::env::set_var("GROK_INSTALLER", "internal");
+        std::env::set_var("WORKSHOP_INSTALLER", "internal");
         std::env::set_var("GROK_MANAGED_BY_NPM", "1");
     }
     assert_eq!(env_installer(), Some("internal"));
