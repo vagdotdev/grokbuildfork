@@ -233,10 +233,13 @@ jobs:
           rustup target add ${{ matrix.target }}
           rustc --version && cargo --version
 
+      # cache-on-failure: a failure *after* the compile (packaging, upload) must not throw the
+      # compiled dependencies away — the v0.1.1 macOS arm64 leg lost 27 minutes that way.
       - uses: Swatinem/rust-cache@v2
         if: steps.present.outputs.skip != 'true'
         with:
           key: release-${{ matrix.platform }}
+          cache-on-failure: true
 
       - name: Build workshop
         if: steps.present.outputs.skip != 'true'
@@ -260,6 +263,7 @@ jobs:
         with:
           workspaces: voice/engine
           key: voice-engine-${{ matrix.platform }}
+          cache-on-failure: true
       - name: Build voice-engine
         if: steps.present.outputs.skip != 'true'
         shell: bash
