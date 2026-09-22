@@ -90,14 +90,28 @@ jobs:
             exit 1
           fi
       - name: Create the draft release that collects the assets
+        # The draft records the commit it is being built from. A re-triggered run of the same
+        # tag reuses the assets already on the draft (the build jobs skip platforms that are
+        # present) as long as the commit is unchanged; a moved tag purges them first.
         run: |
           tag='${{ steps.info.outputs.tag }}'
+          notes='Build in progress: the release workflow is uploading assets to this draft and publishes it once the install smoke tests pass.
+
+          Build commit: ${{ github.sha }}'
           if gh release view "$tag" --repo "$WORKSHOP_RELEASE_REPO" >/dev/null 2>&1; then
-            echo "release $tag already exists on $WORKSHOP_RELEASE_REPO; reusing it"
+            draft=$(gh release view "$tag" --repo "$WORKSHOP_RELEASE_REPO" --json isDraft -q .isDraft)
+            if [ "$draft" = true ] \
+              && ! gh release view "$tag" --repo "$WORKSHOP_RELEASE_REPO" --json body -q .body | grep -q 'Build commit: ${{ github.sha }}'; then
+              echo "draft $tag was built from another commit; dropping its assets"
+              gh release view "$tag" --repo "$WORKSHOP_RELEASE_REPO" --json assets -q '.assets[].name' \
+                | while read -r asset; do gh release delete-asset "$tag" "$asset" --repo "$WORKSHOP_RELEASE_REPO" --yes; done
+              gh release edit "$tag" --repo "$WORKSHOP_RELEASE_REPO" --notes "$notes"
+            else
+              echo "release $tag already exists on $WORKSHOP_RELEASE_REPO; reusing it"
+            fi
             exit 0
           fi
-          args=(--draft --title 'Workshop ${{ steps.info.outputs.version }}'
-            --notes 'Build in progress: the release workflow is uploading assets to this draft and publishes it once the install smoke tests pass.')
+          args=(--draft --title 'Workshop ${{ steps.info.outputs.version }}' --notes "$notes")
           if [ '${{ steps.info.outputs.prerelease }}' = true ]; then
             args+=(--prerelease)
           fi
@@ -169,22 +183,42 @@ jobs:
       # not enabled: it wires remote-settings behaviour Workshop does not ship.
       CARGO_PROFILE_RELEASE_DIST_STRIP: symbols
     steps:
+      # A re-triggered run (a matrix leg lost its runner, say) only rebuilds what is missing:
+      # `meta` has already purged the draft if the commit moved, so assets present here were
+      # built from this very commit.
+      - name: Reuse this platform's assets if a previous run of this tag already built them
+        id: present
+        shell: bash
+        run: |
+          have=$(gh release view '${{ needs.meta.outputs.tag }}' --repo "$WORKSHOP_RELEASE_REPO" --json assets -q '.assets[].name')
+          skip=false
+          if grep -qx 'workshop-${{ needs.meta.outputs.version }}-${{ matrix.platform }}.tar.gz' <<<"$have" \
+            && grep -qx 'voice-engine-${{ needs.meta.outputs.version }}-${{ matrix.platform }}.tar.gz' <<<"$have"; then
+            skip=true
+            echo "::notice::${{ matrix.platform }} assets are already on the draft; skipping the build"
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
+        if: steps.present.outputs.skip != 'true'
 
       - name: Install protoc (same version as bin/protoc's DotSlash pin)
+        if: steps.present.outputs.skip != 'true'
         uses: arduino/setup-protoc@v3
         with:
           version: "29.3"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Point the build at protoc
+        if: steps.present.outputs.skip != 'true'
         shell: bash
         run: echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
 
       - name: Install NASM (aws-lc-sys on Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.present.outputs.skip != 'true'
         uses: ilammy/setup-nasm@v1
 
       - name: Install Rust toolchain from rust-toolchain.toml
+        if: steps.present.outputs.skip != 'true'
         shell: bash
         run: |
           rustup toolchain install
@@ -192,14 +226,17 @@ jobs:
           rustc --version && cargo --version
 
       - uses: Swatinem/rust-cache@v2
+        if: steps.present.outputs.skip != 'true'
         with:
           key: release-${{ matrix.platform }}
 
       - name: Build workshop
+        if: steps.present.outputs.skip != 'true'
         shell: bash
         run: cargo build --locked --profile release-dist -p xai-grok-pager-bin --target ${{ matrix.target }}
 
       - name: Package
+        if: steps.present.outputs.skip != 'true'
         shell: bash
         run: |
           scripts/release/package.sh \
@@ -211,16 +248,20 @@ jobs:
       # The dictation helper: its own workspace (voice/engine) so whisper.cpp never enters the TUI
       # build. Metal is compiled in on Apple Silicon via the crate's target-specific dependency.
       - uses: Swatinem/rust-cache@v2
+        if: steps.present.outputs.skip != 'true'
         with:
           workspaces: voice/engine
           key: voice-engine-${{ matrix.platform }}
       - name: Build voice-engine
+        if: steps.present.outputs.skip != 'true'
         shell: bash
         run: cargo build --release --manifest-path voice/engine/Cargo.toml --target ${{ matrix.target }}
       - name: voice-engine --version
+        if: steps.present.outputs.skip != 'true'
         shell: bash
         run: voice/engine/target/${{ matrix.target }}/release/voice-engine${{ runner.os == 'Windows' && '.exe' || '' }} --version
       - name: Package voice-engine
+        if: steps.present.outputs.skip != 'true'
         shell: bash
         run: |
           scripts/release/package-engine.sh \
@@ -230,6 +271,7 @@ jobs:
             --out dist
 
       - name: Per-asset checksums
+        if: steps.present.outputs.skip != 'true'
         shell: bash
         run: |
           . scripts/release/lib.sh
@@ -238,6 +280,7 @@ jobs:
           done
           cat dist/*.sha256
       - name: Upload to the draft release
+        if: steps.present.outputs.skip != 'true'
         shell: bash
         run: gh release upload '${{ needs.meta.outputs.tag }}' dist/* --repo "$WORKSHOP_RELEASE_REPO" --clobber
 
@@ -251,13 +294,26 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Reuse the mirror if a previous run of this tag already uploaded it
+        id: present
+        run: |
+          have=$(gh release view '${{ needs.meta.outputs.tag }}' --repo "$WORKSHOP_RELEASE_REPO" --json assets -q '.assets[].name')
+          skip=true
+          for f in MODEL.lock.json $(jq -r '.models[].file' voice/MODEL.lock.json); do
+            grep -qx "$f" <<<"$have" || skip=false
+          done
+          [ "$skip" = true ] && echo "::notice::voice model mirror is already on the draft; skipping"
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
+        if: steps.present.outputs.skip != 'true'
         with:
           path: ~/.cache/workshop-voice-models
           key: voice-models-${{ hashFiles('voice/MODEL.lock.json') }}
       - name: Fetch and verify every pinned tier
+        if: steps.present.outputs.skip != 'true'
         run: scripts/release/fetch-voice-models.sh --dist dist --cache ~/.cache/workshop-voice-models
       - name: Upload to the draft release
+        if: steps.present.outputs.skip != 'true'
         run: gh release upload '${{ needs.meta.outputs.tag }}' dist/* --repo "$WORKSHOP_RELEASE_REPO" --clobber
 
   assemble:
