@@ -790,12 +790,24 @@ fn run_pending_suspends(
             input_rx,
             || {
                 if let Some((program, args)) = argv.split_first() {
-                    eprintln!("\nWorkshop: running `{}` — sign in, then this returns to Workshop.\n", argv.join(" "));
-                    exit_ok = std::process::Command::new(program)
-                        .args(args)
-                        .status()
-                        .map(|s| s.success())
-                        .unwrap_or(false);
+                    // The TUI parks fd 2 on /dev/null (xai_tty_utils::redirect_native_stderr) and
+                    // draws through a dup of the real terminal. An inherited stderr would swallow a
+                    // vendor CLI that prints its sign-in instructions there (`codex login` prints
+                    // its auth URL on stderr), so hand the child the terminal explicitly.
+                    let banner = format!(
+                        "\nWorkshop: running `{}` — sign in, then this returns to Workshop.\n",
+                        argv.join(" ")
+                    );
+                    xai_grok_shell::util::with_locked_stderr(|stderr| {
+                        use std::io::Write as _;
+                        let _ = stderr.write_all(banner.as_bytes());
+                    });
+                    let mut child = std::process::Command::new(program);
+                    child.args(args);
+                    if let Ok(tty) = xai_tty_utils::dup_tui_stderr() {
+                        child.stderr(std::process::Stdio::from(tty));
+                    }
+                    exit_ok = child.status().map(|s| s.success()).unwrap_or(false);
                 }
             },
         ) {
