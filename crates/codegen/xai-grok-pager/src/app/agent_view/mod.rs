@@ -740,13 +740,6 @@ pub struct AgentView {
     pub(crate) session_binding_epoch: u32,
     pub scrollback: ScrollbackState,
     pub prompt: PromptWidget,
-    /// Workshop: composer label for an Engine/Adapter connection (`Big Pickle · OpenCode`,
-    /// `Claude · {model}`); `None` for Shell (Direct/Local), which shows the shell model name.
-    pub(crate) workshop_model_label: Option<String>,
-    /// Workshop: a streaming Engine/Adapter turn is in flight for this agent. Mirrors the app-level
-    /// flag so the per-agent input layer treats Ctrl+C as a cancellable activity (there is no ACP
-    /// turn to detect). Cleared when the turn ends.
-    pub(crate) workshop_turn_active: bool,
     /// Sticky: once the user types in the prompt, hide the tip for the session.
     pub tip_typing_dismissed: bool,
     pub todo: TodoPane,
@@ -1382,12 +1375,6 @@ pub struct AgentView {
     pub(crate) cancel_trigger_hint: Option<crate::app::actions::CancelTrigger>,
     pub(crate) rewind_state: Option<crate::views::rewind::RewindState>,
     pub(crate) rewind_points: Option<Vec<crate::views::rewind::RewindPointInfo>>,
-    /// In-place edit of a previous user prompt. See `inline_edit.rs`.
-    pub(crate) inline_edit: Option<crate::app::inline_edit::InlineEditState>,
-    /// Edited text awaiting its rewind; `dispatch_rewind_success` resubmits it.
-    /// Set only when the rewind flow emits `Effect::RewindExecute` while the inline editor is open (see `stash_inline_resubmit_if_editing`).
-    /// inline editor is open (see `stash_inline_resubmit_if_editing`).
-    pub(crate) pending_inline_resubmit: Option<String>,
     /// `/jump` picker overlay (pure client-side turn navigation).
     pub(crate) jump_state: Option<crate::views::jump::JumpState>,
     /// Timeline sidebar rail geometry for the current frame (`None` means

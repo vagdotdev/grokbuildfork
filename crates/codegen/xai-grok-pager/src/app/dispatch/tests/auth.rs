@@ -394,7 +394,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
         "PromptResponse must stash the compact-held prompt for AuthComplete"
     );
 
-    start_login_flow(&mut app);
+    dispatch(Action::Login, &mut app);
     let seq = authenticating_seq(&app);
     let effects = dispatch(
         Action::TaskComplete(TaskResult::AuthComplete {
@@ -554,230 +554,34 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
     );
 }
 
-/// Empty `auth_methods` (Workshop cold start, or a `preferred_method` pin that is unavailable) must not invent
-/// `grok.com` or start an OIDC flow the agent did not advertise: Login opens the connection picker instead.
+/// Empty `auth_methods` (the preferred_method pin is unavailable) must not invent `grok.com` or start an OIDC flow the agent did not advertise.
 #[test]
-fn login_with_empty_auth_methods_opens_picker_and_fails_closed() {
+fn login_with_empty_auth_methods_fails_closed() {
     let mut app = test_app_with_agent();
     app.auth_methods.clear();
     app.login_method_id = None;
 
     let effects = dispatch(Action::Login, &mut app);
 
-    // Opening the picker loads its rows/rails asynchronously (`WorkshopLoadPicker`); that is a data
-    // probe, never an auth flow. The invariant is that Login alone starts no `Authenticate`.
     assert!(
-        !effects
-            .iter()
-            .any(|e| matches!(e, Effect::Authenticate { .. })),
-        "must not start Authenticate without an advertised method, got {effects:?}"
-    );
-    assert!(
-        effects
-            .iter()
-            .all(|e| matches!(e, Effect::WorkshopLoadPicker)),
-        "Login only loads the picker, got {effects:?}"
-    );
-    assert!(
-        app.connection_picker.is_some(),
-        "Login must open the connection picker"
+        effects.is_empty(),
+        "must not start Authenticate without an advertised method"
     );
     assert_eq!(
         app.active_view,
-        ActiveView::Welcome,
-        "the picker renders on the welcome view"
-    );
-    assert_eq!(
-        app.auth_return_view,
-        Some(ActiveView::Agent(AgentId(0))),
-        "closing the picker returns to the session"
+        ActiveView::Agent(AgentId(0)),
+        "must stay on the session view"
     );
     assert!(
-        !matches!(app.auth_state, AuthState::Authenticating { .. }),
-        "no login flow may start from Login alone, got {:?}",
+        matches!(
+            &app.auth_state,
+            AuthState::Pending { error: Some(msg) }
+                if msg.contains("preferred_method=api_key")
+        ),
+        "must surface pin-unavailable error, got {:?}",
         app.auth_state
     );
     assert!(app.login_method_id.is_none());
-
-    // Esc closes the picker and returns to the session; still nothing was sent.
-    let effects = dispatch(
-        Action::ConnectionPicker(workshop_auth::PickerInput::Back),
-        &mut app,
-    );
-    assert!(effects.is_empty());
-    assert!(app.connection_picker.is_none());
-    assert_eq!(app.active_view, ActiveView::Agent(AgentId(0)));
-}
-
-/// Enter on a non-xAI card (Local, OpenAI, …) opens setup details and never emits `Authenticate`.
-#[test]
-fn picker_non_xai_cards_never_authenticate() {
-    use workshop_auth::{PickerInput, XAI_ROW_ID};
-    let mut app = test_app();
-    dispatch(Action::Login, &mut app);
-    let n = app.connection_picker.as_ref().unwrap().rows.len();
-    for i in 0..n {
-        let id = app.connection_picker.as_ref().unwrap().rows[i].id();
-        if id == XAI_ROW_ID {
-            continue;
-        }
-        app.connection_picker.as_mut().unwrap().models_selected = i;
-        app.connection_picker.as_mut().unwrap().detail_open = false;
-        let effects = dispatch(Action::ConnectionPicker(PickerInput::Enter), &mut app);
-        assert!(
-            !effects
-                .iter()
-                .any(|e| matches!(e, Effect::Authenticate { .. })),
-            "{id}: Enter must not authenticate"
-        );
-        assert!(
-            !matches!(app.auth_state, AuthState::Authenticating { .. }),
-            "{id}: no flow started"
-        );
-        if app.connection_picker.is_none() {
-            // "Add a connection later" closes the picker; reopen for the next card.
-            dispatch(Action::Login, &mut app);
-        }
-    }
-}
-
-/// The optional xAI card is the only path to the inherited flow, and it needs two explicit Enters.
-#[test]
-fn picker_xai_card_requires_two_enters_and_sets_opt_in() {
-    let mut app = test_app();
-    let effects = start_login_flow(&mut app);
-    assert!(
-        matches!(app.auth_state, AuthState::Authenticating { .. }),
-        "second Enter on the xAI card starts the flow"
-    );
-    let auth = effects
-        .iter()
-        .find(|e| matches!(e, Effect::Authenticate { .. }))
-        .expect("Authenticate effect");
-    if let Effect::Authenticate {
-        xai_opt_in,
-        method_id,
-        force_interactive,
-        ..
-    } = auth
-    {
-        assert!(*xai_opt_in, "xAI card must carry the explicit opt-in");
-        assert!(*force_interactive);
-        assert_eq!(method_id.0.as_ref(), "grok.com");
-    }
-    assert!(app.connection_picker.is_none(), "picker closes when the flow starts");
-}
-
-/// Picker on the Subscriptions tab with every rail signed out (Connect shown), Claude selected.
-fn picker_with_signed_out_rails(app: &mut AppView) {
-    use workshop_auth::{PickerInput, PickerSnapshot};
-    use workshop_detect::{Pill, Rail, RailState};
-    dispatch(Action::Login, app);
-    let picker = app.connection_picker.as_mut().unwrap();
-    picker.apply_snapshot(PickerSnapshot {
-        rows: picker.rows.clone(),
-        rails: Rail::ALL
-            .iter()
-            .map(|r| RailState {
-                pill: Pill::SignIn,
-                installed: true,
-                show_connect: true,
-                ..RailState::detecting(*r)
-            })
-            .collect(),
-        default_selection: None,
-        secret_backend: None,
-    });
-    dispatch(Action::ConnectionPicker(PickerInput::SwitchTab), app);
-    assert_eq!(
-        app.connection_picker.as_ref().unwrap().tab,
-        workshop_auth::PickerTab::Subscriptions
-    );
-}
-
-/// The state Connect's Enter leaves behind (`PickerOutcome::RailConnect`): the rail detail is open
-/// and the vendor login is queued for the event loop. Set directly so the test never probes this
-/// machine's PATH for a real CLI (`rail_login_argv` does).
-fn queue_rail_connect(app: &mut AppView) -> workshop_detect::Rail {
-    let picker = app.connection_picker.as_mut().unwrap();
-    picker.detail_open = true;
-    let rail = picker.selected_rail().unwrap().rail;
-    app.pending_workshop_login = Some((rail, vec!["claude".into(), "auth".into(), "login".into()]));
-    rail
-}
-
-/// After the vendor login returns, ↑/↓ move between rails again: Connect's Enter opened the rail
-/// detail, and the login completion hands focus back to the rail list (no Tab away and back).
-#[test]
-fn picker_rail_login_done_restores_rail_navigation() {
-    use workshop_auth::PickerInput;
-    use workshop_detect::process::InteractiveExit;
-    let mut app = test_app();
-    picker_with_signed_out_rails(&mut app);
-    let rail = queue_rail_connect(&mut app);
-    // Before the fix: Down on an open rail detail without models is a no-op.
-    dispatch(Action::ConnectionPicker(PickerInput::Down), &mut app);
-    assert_eq!(app.connection_picker.as_ref().unwrap().rail_selected, 0);
-    app.pending_workshop_login.take();
-
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone {
-            rail,
-            exit: InteractiveExit::Success,
-        }),
-        &mut app,
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::WorkshopLoadPicker)),
-        "a finished login re-probes the rails, got {effects:?}"
-    );
-    let picker = app.connection_picker.as_ref().unwrap();
-    assert!(!picker.detail_open, "focus is back on the rail list");
-    assert_eq!(picker.rail_selected, 0);
-    dispatch(Action::ConnectionPicker(PickerInput::Down), &mut app);
-    assert_eq!(
-        app.connection_picker.as_ref().unwrap().rail_selected,
-        1,
-        "Down moves to the next rail right after the login returns"
-    );
-}
-
-/// Ctrl+C in the terminal ends the vendor login only: the picker reports the cancellation, keeps
-/// the rails as they were (no re-probe) and is navigable again.
-#[test]
-fn picker_rail_login_interrupted_reports_cancel_without_reprobe() {
-    use workshop_auth::PickerInput;
-    use workshop_detect::process::InteractiveExit;
-    let mut app = test_app();
-    picker_with_signed_out_rails(&mut app);
-    let rail = queue_rail_connect(&mut app);
-    app.pending_workshop_login.take();
-
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone {
-            rail,
-            exit: InteractiveExit::Interrupted,
-        }),
-        &mut app,
-    );
-    assert!(
-        effects.is_empty(),
-        "a cancelled login is not re-probed, got {effects:?}"
-    );
-    let picker = app.connection_picker.as_ref().unwrap();
-    assert!(
-        picker
-            .status
-            .as_deref()
-            .is_some_and(|s| s.contains("sign-in cancelled")),
-        "status: {:?}",
-        picker.status
-    );
-    assert!(!picker.loading && !picker.detail_open);
-    dispatch(Action::ConnectionPicker(PickerInput::Down), &mut app);
-    assert_eq!(app.connection_picker.as_ref().unwrap().rail_selected, 1);
 }
 
 /// Puts the app in `Authenticating` with a live task's abort handle installed, as the event loop would.
@@ -787,7 +591,7 @@ fn install_live_auth_task(
     app: &mut AppView,
     rt: &tokio::runtime::Runtime,
 ) -> (tokio::task::JoinHandle<()>, u64) {
-    start_login_flow(app);
+    dispatch(Action::Login, app);
     let task = rt.spawn(std::future::pending::<()>());
     match &mut app.auth_state {
         AuthState::Authenticating {
@@ -817,7 +621,7 @@ fn login_while_authenticating_aborts_prior_task() {
     let mut app = test_app_with_agent();
     let (prior_task, first_seq) = install_live_auth_task(&mut app, &rt);
 
-    let effects = start_login_flow(&mut app);
+    let effects = dispatch(Action::Login, &mut app);
 
     rt.block_on(async {
         assert!(
@@ -847,12 +651,12 @@ fn login_while_authenticating_aborts_prior_task() {
 #[test]
 fn stale_auth_complete_after_relogin_is_ignored() {
     let mut app = test_app_with_agent();
-    start_login_flow(&mut app);
+    dispatch(Action::Login, &mut app);
     let first_seq = match &app.auth_state {
         AuthState::Authenticating { request_seq, .. } => *request_seq,
         other => panic!("expected Authenticating after Login, got {other:?}"),
     };
-    start_login_flow(&mut app); // re-login bumps to seq2
+    dispatch(Action::Login, &mut app); // re-login bumps to seq2
 
     dispatch(
         Action::TaskComplete(TaskResult::AuthComplete {
@@ -918,7 +722,7 @@ fn cancel_login_aborts_prior_task() {
 #[test]
 fn cancel_login_restores_view() {
     let mut app = test_app_with_agent();
-    start_login_flow(&mut app);
+    dispatch(Action::Login, &mut app);
     assert_eq!(app.active_view, ActiveView::Welcome);
     let prior_seq = match &app.auth_state {
         AuthState::Authenticating { request_seq, .. } => *request_seq,

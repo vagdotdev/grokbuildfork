@@ -95,27 +95,6 @@ pub struct DiagnosticFacts {
     /// Passive mic enumeration when voice capture is available.
     /// `None` omits the Voice section (no-audio builds, or TUI when voice mode is off).
     pub voice: Option<VoiceFacts>,
-    /// Workshop overlay: the local speech-to-text engine and its model (`None` when voice is off).
-    pub voice_engine: Option<VoiceEngineFacts>,
-}
-
-/// Workshop overlay: `/doctor` facts for the local voice engine. Paths and statuses only.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VoiceEngineFacts {
-    /// `local` (default) or `xai` (opt-in).
-    pub provider: String,
-    /// Resolved `voice-engine` path, or `None` when it is not installed.
-    pub engine_path: Option<String>,
-    pub engine_version: Option<String>,
-    pub engine_error: Option<String>,
-    /// Selected model tier and where the selection came from.
-    pub model_tier: String,
-    pub model_tier_source: String,
-    pub model_path: String,
-    /// `ok`, `missing`, `wrong size (…)`, `checksum mismatch (…)`.
-    pub model_status: String,
-    pub model_ok: bool,
-    pub last_error: Option<String>,
 }
 
 /// Result of a passive input-device lookup (does not open a capture stream).
@@ -143,7 +122,7 @@ pub struct TmuxFacts {
 pub enum TmuxColorPassthrough {
     /// The client advertises `RGB`, so truecolor SGR reaches the terminal.
     Forwarded,
-    /// tmux reduces 24-bit color to the client terminfo's palette, which is what makes themes look washed out even when Workshop emits truecolor.
+    /// tmux reduces 24-bit color to the client terminfo's palette, which is what makes themes look washed out even when Grok emits truecolor.
     Reduced,
     /// No usable evidence: tmux predates `terminal-features` (3.2), no client is attached, or the query failed. Never treated as a problem.
     Unknown,

@@ -9,15 +9,8 @@
 
 use std::path::PathBuf;
 
-/// Changelog base. Workshop (gate:no-xai, Gate 3): derived from the neutral asset-server default
-/// (loopback until Workshop publishes changelogs), never the xAI CDN. Operators may repoint it via
-/// `GROK_PRODUCTION_ASSET_SERVER_URL`.
-fn changelog_base() -> String {
-    format!(
-        "{}/changelogs",
-        xai_grok_env::GrokBuildEnvironment::Production.asset_server_url()
-    )
-}
+/// CDN base for all changelogs (proxies to GCS, cache-friendly).
+const CHANGELOG_BASE: &str = "https://x.ai/cli/changelogs";
 const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// A single structured changelog entry from the published JSON changelog. Shape must match the output of `render_external_json` in `changelog.sh`: `{category, description, breaking_change}`
@@ -68,8 +61,7 @@ impl ChangelogManager {
     /// Resolve cache paths from the live process environment (not the `grok_home()` OnceLock).
     /// A seeded `$GROK_HOME` set on the pager process is always honoured even if some earlier init path cached a different home.
     fn from_env_home() -> Self {
-        let home = std::env::var_os(xai_dirs::WORKSHOP_HOME_ENV)
-            .or_else(|| std::env::var_os(xai_dirs::LEGACY_HOME_ENV))
+        let home = std::env::var_os("GROK_HOME")
             .map(std::path::PathBuf::from)
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(crate::util::grok_home::grok_home);
@@ -84,7 +76,7 @@ impl ChangelogManager {
     /// JSON is cached only after a successful parse; the markdown cache is write-through since it's consumed as raw text.
     pub fn fetch(&self) -> Changelog {
         // Always re-resolve from env so a caller holding an older manager (or a stale OnceLock) still reads the live harness home
-        Self::from_env_home().fetch_with(changelog_offline(), &changelog_base())
+        Self::from_env_home().fetch_with(changelog_offline(), CHANGELOG_BASE)
     }
 
     /// Fetch using this manager's already-resolved cache paths, an explicit offline flag, and an explicit CDN base. Split out of [`fetch`] so unit tests can drive it against a temp home without touching process-global env.
@@ -238,7 +230,7 @@ mod tests {
         .unwrap();
 
         // Offline path: read only the seeded disk cache, no network.
-        let changelog = manager_for(&home).fetch_with(true, &changelog_base());
+        let changelog = manager_for(&home).fetch_with(true, CHANGELOG_BASE);
         assert_eq!(
             changelog.markdown.as_deref(),
             Some("# seeded offline md\n"),

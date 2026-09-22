@@ -614,79 +614,6 @@ pub(super) fn dispatch_send_prompt_inner(
     dispatch_send_prompt_submission(app, text, None, consume_input, literal, is_follow_up)
 }
 
-/// gate:overlay-isolation — a prompt leaves the ACP path only for a live Engine/Adapter connection
-/// and only for real prompt text. `Shell` (Direct/Local), literal sends, slash commands, and empty
-/// input always stay on the byte-identical upstream ACP path. Pure so a gate test can pin it.
-pub(super) fn routes_off_acp_path(
-    conn: &crate::app::workshop::WorkshopConnection,
-    literal: bool,
-    text: &str,
-) -> bool {
-    !conn.is_shell() && !literal && !text.trim().is_empty() && !text.trim().starts_with('/')
-}
-
-/// Route one prompt to the OpenCode engine (`Engine`) or a vendor CLI adapter (`Adapter`): echo the
-/// user bubble, mark the turn active, clear the composer, and spawn the streaming task whose events
-/// the event loop's Workshop `select!` arm renders. Never touches the ACP path.
-fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<Effect> {
-    use crate::app::workshop::{self, WorkshopConnection, WorkshopTurnKind, WorkshopTurnSpec};
-
-    if app.workshop_turn_active {
-        app.show_toast("A model turn is already running (Esc to cancel).");
-        return vec![];
-    }
-    let Some(tx) = app.workshop_turn_tx.clone() else {
-        // No interactive loop channel (headless / tests): nothing to stream into.
-        return vec![];
-    };
-    let Some(agent) = app.agents.get(&id) else {
-        return vec![];
-    };
-    let cwd = agent.session.cwd.clone();
-    let always_approve = agent.session.is_yolo();
-
-    let kind = match &app.workshop_connection {
-        WorkshopConnection::Shell => return vec![],
-        WorkshopConnection::Engine { model } => WorkshopTurnKind::Engine {
-            engine: app.workshop_engine.clone(),
-            session: app
-                .workshop_engine_session
-                .clone()
-                .or_else(|| workshop::load_resume_id("opencode", &cwd)),
-            model_ref: model.model_ref.clone(),
-        },
-        WorkshopConnection::Adapter { rail, model } => WorkshopTurnKind::Adapter {
-            adapter_id: workshop::rail_adapter_id(*rail),
-            resume: workshop::load_resume_id(rail.vendor().id(), &cwd),
-            model: Some(model.model.clone()),
-        },
-    };
-    let spec = WorkshopTurnSpec {
-        kind,
-        cwd,
-        text: text.clone(),
-        always_approve,
-    };
-
-    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
-    app.workshop_turn_cancel = Some(cancel_tx);
-    app.workshop_turn_active = true;
-    app.workshop_turn_agent = Some(id);
-    app.workshop_turn_stream_entry = None;
-
-    if let Some(agent) = app.agents.get_mut(&id) {
-        agent.record_prompt_in_history(text.trim());
-        agent
-            .scrollback
-            .push_block(RenderBlock::user_prompt(text.as_str()));
-        agent.prompt.set_text("");
-        agent.workshop_turn_active = true;
-    }
-
-    tokio::spawn(workshop::run_workshop_turn(spec, tx, cancel_rx));
-    vec![]
-}
-
 pub(super) fn dispatch_send_prompt_submission(
     app: &mut AppView,
     text: String,
@@ -762,16 +689,6 @@ pub(super) fn dispatch_send_prompt_submission(
         text
     };
 
-    // Workshop: an `Engine` (OpenCode free tier) or `Adapter` (Claude/Codex/Cursor CLI) connection
-    // does not use the shell's ACP session — route the turn through workshop-adapters and stream it
-    // into the scrollback. Pure slash commands already returned above; only real prompt text
-    // reaches here. Direct/Local (`Shell`) connections fall through to the ACP path unchanged.
-    if routes_off_acp_path(&app.workshop_connection, literal, &text) {
-        let mut effects = prelude;
-        effects.extend(dispatch_workshop_turn(app, id, text));
-        return effects;
-    }
-
     // Capture app-level fields before the mut-borrow on `agent`.
     let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
     let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
@@ -781,6 +698,7 @@ pub(super) fn dispatch_send_prompt_submission(
     let auto_mode_gate_from_app = app.auto_mode_gate;
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
     let voice_stt_language_from_app = app.voice_config.language.clone();
+    let subagent_model_inheritance_from_app = app.subagent_model_inheritance;
     let login_method_id_from_app = app.login_method_id.as_ref().map(|id| id.0.to_string());
     let leader_mode = app.leader_mode;
     let screen_mode_is_minimal = app.screen_mode.is_minimal();
@@ -921,6 +839,7 @@ pub(super) fn dispatch_send_prompt_submission(
                     auto_mode_gate: auto_mode_gate_from_app,
                     ask_user_question_timeout_enabled: ask_user_question_timeout_enabled_from_app,
                     voice_stt_language: voice_stt_language_from_app,
+                    subagent_model_inheritance: subagent_model_inheritance_from_app,
                 },
             };
 

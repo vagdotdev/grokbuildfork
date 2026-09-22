@@ -44,7 +44,7 @@ use super::session::picker_routing::PickerRequest;
 use super::settings::ui::apply_setting_rollback;
 use super::status::{
     handle_coding_data_sharing_failed, handle_coding_data_sharing_updated,
-    handle_context_info_complete, handle_session_usage_result, scrub_error_for_toast,
+    handle_context_info_complete, handle_session_usage_result, toast_persist_failure,
     usage_modal_state_mut,
 };
 use super::transcript::{
@@ -999,68 +999,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
-        TaskResult::WorkshopPickerLoaded(snap) => {
-            if let Some(picker) = app.connection_picker.as_mut() {
-                let default_key = snap
-                    .default_selection
-                    .as_ref()
-                    .and_then(|d| d.catalog_key());
-                picker.apply_snapshot(snap);
-                picker.status = None;
-                // Cursor lands on the plan's first-run default (never xAI, never Zen).
-                if let Some(key) = default_key
-                    && let Some(idx) = picker.rows.iter().position(|r| r.id() == key)
-                {
-                    picker.models_selected = idx;
-                }
-            }
-            vec![]
-        }
-        TaskResult::WorkshopConnectDone {
-            provider_id,
-            result,
-        } => {
-            if let Some(picker) = app.connection_picker.as_mut() {
-                match result {
-                    Ok(backend) => {
-                        picker.set_status(format!(
-                            "{provider_id} connected (key saved to {backend}). Refreshing…"
-                        ));
-                        picker.loading = true;
-                        return vec![Effect::WorkshopLoadPicker];
-                    }
-                    Err(e) => picker.set_status(format!("{provider_id}: {e}")),
-                }
-            }
-            vec![]
-        }
-        TaskResult::WorkshopLoginTerminalDone { rail, exit } => {
-            use workshop_detect::process::InteractiveExit;
-            if let Some(picker) = app.connection_picker.as_mut() {
-                // Focus returns to the rail list: the detail panel that Connect's Enter opened
-                // would otherwise hold ↑/↓ until the tab is switched away and back.
-                picker.detail_open = false;
-                if exit == InteractiveExit::Interrupted {
-                    picker.set_status(format!(
-                        "{} sign-in cancelled (Ctrl+C); nothing changed.",
-                        rail.display_name()
-                    ));
-                    return vec![];
-                }
-                picker.set_status(format!(
-                    "{} login {}; re-probing…",
-                    rail.display_name(),
-                    if exit == InteractiveExit::Success {
-                        "finished"
-                    } else {
-                        "exited with an error"
-                    }
-                ));
-                picker.loading = true;
-                return vec![Effect::WorkshopLoadPicker];
-            }
-            vec![]
-        }
         TaskResult::ChangelogFetched { markdown, entries } => {
             app.changelog_markdown = markdown;
             app.changelog_bullets =
@@ -1234,11 +1172,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             } = &app.auth_state
                 && *current_seq == request_seq
             {
-                // Workshop: an activation started from the open connection picker failed; say so
-                // in the picker instead of leaving "Connecting…" on screen.
-                if let Some(picker) = app.connection_picker.as_mut() {
-                    picker.set_status(format!("Could not connect: {error}"));
-                }
                 app.auth_state = AuthState::Pending { error: Some(error) };
                 app.auth_code_input.reset();
             }
@@ -2339,8 +2272,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => {
             let rollback_effects = apply_setting_rollback(app, key, &rollback_value);
             tracing::warn!(target: "settings", ?key, ?rollback_value, %error, "setting persist failed; rolled back");
-            let scrubbed = scrub_error_for_toast(&error);
-            app.show_toast(&format!("\u{2717} Could not save {key}: {scrubbed}"));
+            toast_persist_failure(app, key, &error);
             rollback_effects
         }
         TaskResult::SettingPersistFailedBestEffort { key, error } => {
@@ -2349,9 +2281,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 ?key, %error,
                 "setting persist failed (best-effort); in-memory state stays at optimistic value",
             );
-            let scrubbed = scrub_error_for_toast(&error);
-            app.show_toast(&format!("\u{2717} Could not save {key}: {scrubbed}"));
+            toast_persist_failure(app, key, &error);
             vec![]
+        }
+        TaskResult::FeatureOverridePersisted { feature, result } => {
+            settings::handle_feature_override_persisted(app, feature, result)
         }
     }
 }

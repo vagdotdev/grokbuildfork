@@ -6,7 +6,7 @@ pub struct LoginCommand;
 impl SlashCommand for LoginCommand {
     slash_meta! {
         name: "login",
-        description: "Open the connection picker (Workshop never opens a browser by default)",
+        description: "Log in or re-authenticate with your account",
         usage: "/login",
     }
 

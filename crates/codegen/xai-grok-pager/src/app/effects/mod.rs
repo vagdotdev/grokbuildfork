@@ -214,7 +214,7 @@ pub(crate) fn execute(
             let abort_handle = tasks
                 .spawn(async move {
                     send_logout(&tx).await;
-                    send_authenticate(&tx, request_seq, method_id, use_oauth, false, false)
+                    send_authenticate(&tx, request_seq, method_id, use_oauth, false)
                         .await
                 });
             meta.auth_abort_handle = Some((request_seq, abort_handle));
@@ -2312,12 +2312,27 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::PersistFeatureOverride { feature, saved } => {
+            tasks
+                .spawn(async move {
+                    let result = xai_grok_shell::util::config::set_feature_override(
+                            feature,
+                            saved,
+                        )
+                        .await
+                        .map(|()| saved)
+                        .map_err(|e| e.to_string());
+                    TaskResult::FeatureOverridePersisted {
+                        feature,
+                        result,
+                    }
+                });
+        }
         Effect::Authenticate {
             request_seq,
             method_id,
             use_oauth,
             force_interactive,
-            xai_opt_in,
         } => {
             let tx = acp_tx.clone();
             let abort_handle = tasks
@@ -2328,80 +2343,10 @@ pub(crate) fn execute(
                             method_id,
                             use_oauth,
                             force_interactive,
-                            xai_opt_in,
                         )
                         .await
                 });
             meta.auth_abort_handle = Some((request_seq, abort_handle));
-        }
-        Effect::WorkshopLoadPicker => {
-            tasks
-                .spawn(async move {
-                    let snap = crate::app::workshop::load_picker_snapshot().await;
-                    TaskResult::WorkshopPickerLoaded(snap)
-                });
-        }
-        Effect::WorkshopActivateModel {
-            request_seq,
-            model_id,
-            session,
-        } => {
-            let tx = acp_tx.clone();
-            let abort_handle = tasks
-                .spawn(async move {
-                    // 1. Re-read config.toml into the shell's model list (the same path the config
-                    //    hot-reload watcher uses).
-                    let reload = acp::ExtRequest::new(
-                        "x.ai/internal/reload_models",
-                        serde_json::value::to_raw_value(&serde_json::json!({}))
-                            .expect("serialize reload params")
-                            .into(),
-                    );
-                    if let Err(e) = acp_send(reload, &tx).await {
-                        return TaskResult::AuthFailed {
-                            request_seq,
-                            error: format!("model reload failed: {e}"),
-                        };
-                    }
-                    // 2. The new entry carries its own credential (or the anonymous sentinel), so the
-                    //    non-interactive method is now accepted.
-                    let auth = send_authenticate(
-                        &tx,
-                        request_seq,
-                        acp::AuthMethodId::new(
-                            xai_grok_shell::agent::auth_method::XAI_API_KEY_METHOD_ID,
-                        ),
-                        false,
-                        false,
-                        false,
-                    )
-                    .await;
-                    if let TaskResult::AuthFailed { .. } = &auth {
-                        return auth;
-                    }
-                    // 3. Switch the session the picker was opened from, if any.
-                    if let Some((_, session_id)) = session {
-                        let req = acp::SetSessionModelRequest::new(
-                            session_id,
-                            acp::ModelId::new(model_id.clone()),
-                        );
-                        if let Err(e) = acp_send(req, &tx).await {
-                            tracing::warn!(error = %e, model_id, "workshop: session model switch failed after activation");
-                        }
-                    }
-                    auth
-                });
-            meta.auth_abort_handle = Some((request_seq, abort_handle));
-        }
-        Effect::WorkshopOpenRouterSignIn => {
-            tasks
-                .spawn(async move {
-                    let result = crate::app::workshop::openrouter_sign_in().await;
-                    TaskResult::WorkshopConnectDone {
-                        provider_id: "openrouter".into(),
-                        result,
-                    }
-                });
         }
         Effect::PollAuthUrl { request_seq } => {
             let tx = acp_tx.clone();

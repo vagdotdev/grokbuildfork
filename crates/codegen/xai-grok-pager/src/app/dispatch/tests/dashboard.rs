@@ -1048,7 +1048,7 @@ fn auth_complete_retries_stashed_prompt_from_dashboard() {
             }],
         });
     app.active_view = ActiveView::AgentDashboard;
-    start_login_flow(&mut app);
+    dispatch(Action::Login, &mut app);
     let seq = authenticating_seq(&app);
     let effects = dispatch(
         Action::TaskComplete(TaskResult::AuthComplete {

@@ -516,9 +516,8 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
 /// Slash commands unavailable on the free and X Basic subscription tiers.
 /// To restrict another command for these tiers, add its canonical name (no leading `/`) here.
 /// Matching covers aliases automatically via [`crate::slash::registry::CommandRegistry::set_restricted_commands`].
-/// Workshop overlay: `voice` is not listed. Dictation runs on the local engine with no account or
-/// tier; only the opt-in xAI voice provider is tier-gated (see [`AppView::is_voice_tier_restricted`]).
-pub(crate) const TIER_RESTRICTED_COMMANDS: &[&str] = &["usage", "imagine", "imagine-video"];
+pub(crate) const TIER_RESTRICTED_COMMANDS: &[&str] =
+    &["usage", "imagine", "imagine-video", "voice"];
 /// Whether a subscription-tier display name is a tier with restricted commands: the free tier and X Basic.
 /// Free covers no subscription (`None`) or an explicit "Free"; X Basic covers CCP display name "X Basic" with JWT claim fallback "x_basic".
 /// The pager's *cosmetic* slash-command gate treats an absent tier (`None`) as restricted (it recovers live on the next settings update).
@@ -747,9 +746,6 @@ pub struct AppView {
     /// When true the event loop ensures the pager renders raw control codes (`less -R`) so the colors show instead of literal escapes.
     /// Plain-text transcripts (`/export` markdown) leave this false.
     pub pending_pager_ansi: bool,
-    /// Workshop: a vendor CLI login (`claude auth login`, …) to run attached to the user's terminal
-    /// through the same suspend/resume path as the external editor; consumed by the event loop.
-    pub pending_workshop_login: Option<(workshop_detect::Rail, Vec<String>)>,
     /// Minimal mode only: the Ctrl+T **force-show** pin for the todo panel.
     /// Minimal-mode-only per-session state, consolidated into a single field so the central `AppView` isn't peppered with loose minimal flags.
     /// Default-empty and inert outside `--minimal`; the `xai-grok-pager-minimal` crate reads/mutates it through the `crate::minimal_api` accessors.
@@ -1013,29 +1009,6 @@ pub struct AppView {
     pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
     /// Whether deferred welcome-screen login should force OAuth.
     pub auth_use_oauth: bool,
-    /// Workshop connection picker, open when `Some`. It is the only default auth surface: Login,
-    /// welcome `l`, `/login`, `/auth`, `/models` and first run all open it. Rendered on the welcome
-    /// view; keys are routed to it while open.
-    pub connection_picker: Option<workshop_auth::PickerState>,
-    /// Workshop: which runtime prompts are routed through (shell loop, OpenCode engine, or a
-    /// vendor CLI adapter). Set by the picker; `Shell` is the default.
-    pub workshop_connection: crate::app::workshop::WorkshopConnection,
-    /// Workshop: the running OpenCode engine (`opencode serve`), started lazily on the first
-    /// Engine-connection turn and reused across turns. `None` until then. Adapter (CLI) turns keep
-    /// no long-lived handle — each turn spawns the vendor CLI fresh with a persisted resume id.
-    pub workshop_engine: Option<std::sync::Arc<workshop_adapters::opencode_engine::OpenCodeEngine>>,
-    pub workshop_engine_session: Option<String>,
-    /// True while an Engine/Adapter turn streams; a second submit is rejected and Esc/Ctrl-C cancels.
-    pub workshop_turn_active: bool,
-    /// Sender the event loop installs once so submit handlers can stream a turn's events back into
-    /// the loop's Workshop `select!` arm. `None` outside the interactive loop (headless, tests).
-    pub workshop_turn_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::app::workshop::WorkshopTurnMsg>>,
-    /// Cancel signal for the in-flight turn (Esc / Ctrl-C → abort/kill).
-    pub workshop_turn_cancel: Option<tokio::sync::watch::Sender<bool>>,
-    /// The streaming assistant block for the current turn, appended to as deltas arrive.
-    pub workshop_turn_stream_entry: Option<crate::scrollback::EntryId>,
-    /// Agent whose scrollback the current turn renders into.
-    pub workshop_turn_agent: Option<crate::app::agent::AgentId>,
     /// Delivery state from the last clipboard copy during auth.
     pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     /// Generation of the current auth copy feedback and its clear timer.
@@ -1067,6 +1040,8 @@ pub struct AppView {
     /// Persisted `[toolset.ask_user_question].timeout_enabled` mirror, seeded from the effective TOML merge like `show_tips`.
     /// `None` means unset in TOML (default `true`); toggles write the user layer.
     pub ask_user_question_timeout_enabled: Option<bool>,
+    /// `[features].subagent_model_inheritance` as the settings modal shows it: the saved user key plus the tiers seeded at startup.
+    pub subagent_model_inheritance: crate::settings::FeatureOverrideState,
     /// Whether ZDR users are allowed to use the product.
     /// Server-controlled via RemoteSettings (remote settings). Default `false` (blocked) during beta.
     pub zdr_access_enabled: bool,
@@ -1456,7 +1431,6 @@ impl AppView {
             pending_effects: Vec::new(),
             pending_editor: None,
             pending_pager_path: None,
-            pending_workshop_login: None,
             pending_pager_ansi: false,
             minimal_state: crate::minimal_api::MinimalState::default(),
             welcome_menu_index: None,
@@ -1571,15 +1545,6 @@ impl AppView {
             auth_url_poll_handle: None,
             deferred_startup: Default::default(),
             auth_use_oauth: false,
-            connection_picker: None,
-            workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
-            workshop_engine: None,
-            workshop_engine_session: None,
-            workshop_turn_active: false,
-            workshop_turn_tx: None,
-            workshop_turn_cancel: None,
-            workshop_turn_stream_entry: None,
-            workshop_turn_agent: None,
             auth_clipboard_delivery: None,
             auth_clipboard_feedback_generation: 0,
             team_id: None,
@@ -1595,6 +1560,9 @@ impl AppView {
             show_tips: None,
             auto_update: None,
             ask_user_question_timeout_enabled: None,
+            subagent_model_inheritance: crate::settings::FeatureOverrideState::new(
+                xai_grok_shell::agent::config::Feature::SubagentModelInheritance,
+            ),
             zdr_access_enabled: false,
             usage_billing_redirect_url: None,
             access_gate_shown_logged: false,
@@ -1746,15 +1714,11 @@ impl AppView {
     pub(super) fn consumer_account(&self) -> bool {
         !self.backend_billed && !self.is_api_key_auth && !self.has_external_auth_provider
     }
-    /// Whether voice is withheld for the current subscription tier (free / X Basic personal accounts).
-    /// Workshop overlay: only for the opt-in xAI voice provider, whose server zero-limits those tiers;
-    /// the default local engine has no tier and is never gated.
+    /// Whether voice mode is withheld for the current subscription tier (free / X Basic personal accounts).
+    /// Derived from the computed [`Self::tier_restricted_commands`] deny list so it stays in lockstep with the slash-command gate.
     /// Used to gate the Ctrl+Space / F8 voice keybinding, which bypasses the slash registry entirely (see [`crate::app::dispatch::voice`]).
     pub fn is_voice_tier_restricted(&self) -> bool {
-        self.voice_config.provider == xai_grok_voice::VoiceProvider::Xai
-            && self.team_name.is_none()
-            && self.consumer_account()
-            && is_restricted_tier(self.subscription_tier.as_deref())
+        self.tier_restricted_commands.iter().any(|c| c == "voice")
     }
     /// Draw-time expiry can flip the live-announcement predicate between pushes.
     /// Resync the slash gate only when it diverges from the stored flags (checked per frame, fan-out runs only on change).
@@ -2474,11 +2438,6 @@ impl AppView {
                     arrived_at,
                     cwd: &self.cwd,
                     mid_session_login: self.auth_return_view.is_some(),
-                    connection_picker_open: self.connection_picker.is_some(),
-                    connection_picker_key_entry: self
-                        .connection_picker
-                        .as_ref()
-                        .is_some_and(|p| p.key_entry.is_some()),
                     auth_code_input: &mut self.auth_code_input,
                     prompt: &mut self.welcome_prompt,
                     prompt_focused: &mut self.welcome_prompt_focused,
@@ -3136,10 +3095,6 @@ struct WelcomeInputCtx<'a> {
     /// `true` when the welcome screen is showing only to host a login flow that was started from inside a session.
     /// Esc / `q` then cancel the login and return to the session rather than quitting the app.
     mid_session_login: bool,
-    /// Workshop connection picker is open: it owns every key until it closes.
-    connection_picker_open: bool,
-    /// The picker's paste-key prompt is open: printable keys are text, not shortcuts.
-    connection_picker_key_entry: bool,
     auth_code_input: &'a mut LineEditor,
     prompt: &'a mut PromptWidget,
     prompt_focused: &'a mut bool,
@@ -3223,63 +3178,6 @@ struct WelcomeInputCtx<'a> {
 }
 /// Welcome view input: overlays first, then composer, then the menu.
 fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
-    // Workshop: the connection picker owns the keyboard while open. It never starts a login on its
-    // own; `Enter` outcomes are decided by `workshop_auth::PickerState` in the dispatcher.
-    if ctx.connection_picker_open {
-        use workshop_auth::PickerInput;
-        return match ev {
-            Event::Paste(text) => {
-                InputOutcome::Action(Action::ConnectionPicker(PickerInput::Paste(text.clone())))
-            }
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                if key!('c', CONTROL).matches(key) || key!('d', CONTROL).matches(key) {
-                    return if ctx.mid_session_login {
-                        InputOutcome::Action(Action::ConnectionPicker(PickerInput::Back))
-                    } else {
-                        InputOutcome::Action(Action::Quit)
-                    };
-                }
-                if crate::input::key::is_paste_key(key) {
-                    return match crate::clipboard::system_clipboard_get() {
-                        Some(text) => InputOutcome::Action(Action::ConnectionPicker(
-                            PickerInput::Paste(text),
-                        )),
-                        None => InputOutcome::Unchanged,
-                    };
-                }
-                // While a key-entry prompt is open every printable key is text.
-                if ctx.connection_picker_key_entry {
-                    let input = match key.code {
-                        KeyCode::Enter => PickerInput::Enter,
-                        KeyCode::Esc => PickerInput::Back,
-                        KeyCode::Backspace => PickerInput::Backspace,
-                        KeyCode::Char(c)
-                            if !key
-                                .modifiers
-                                .intersects(crossterm::event::KeyModifiers::CONTROL) =>
-                        {
-                            PickerInput::Char(c)
-                        }
-                        _ => return InputOutcome::Unchanged,
-                    };
-                    return InputOutcome::Action(Action::ConnectionPicker(input));
-                }
-                let input = match key.code {
-                    KeyCode::Up | KeyCode::Char('k') => PickerInput::Up,
-                    KeyCode::Down | KeyCode::Char('j') => PickerInput::Down,
-                    KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
-                        PickerInput::SwitchTab
-                    }
-                    KeyCode::Enter => PickerInput::Enter,
-                    KeyCode::Esc | KeyCode::Char('q') => PickerInput::Back,
-                    KeyCode::Char('r') => PickerInput::Refresh,
-                    _ => return InputOutcome::Unchanged,
-                };
-                InputOutcome::Action(Action::ConnectionPicker(input))
-            }
-            _ => InputOutcome::Unchanged,
-        };
-    }
     if let Some(modal) = ctx.import_claude_modal.as_mut() {
         use crate::views::import_claude_modal::ImportClaudeModalOutcome;
         let outcome_to_input = |o: ImportClaudeModalOutcome| match o {
@@ -3805,6 +3703,11 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
             }
             if ctx.registry.matches_id(ActionId::OpenSessions, key) {
                 return InputOutcome::Action(Action::FetchSessionList);
+            }
+            if ctx.registry.matches_id(ActionId::CommandPalette, key)
+                && !crate::input::key::is_text_input_key(key)
+            {
+                return InputOutcome::ActionThenForward(Action::LeaveHome);
             }
             if ctx.has_pending_update && key!('u', CONTROL).matches(key) {
                 return InputOutcome::Action(Action::QuitForUpdate);
@@ -4602,10 +4505,7 @@ impl AppView {
                                         &self.hidden_announcement_ids,
                                     )
                                 })
-                                .or(self.announcement.as_ref())
-                                .filter(|a| {
-                                    workshop_brand::hero_shows_announcement(a.severity.as_deref())
-                                });
+                                .or(self.announcement.as_ref());
                             let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                 prompt_focus: if self.welcome_prompt_focused {
                                     WelcomePromptFocus::Focused
@@ -4618,7 +4518,6 @@ impl AppView {
                                 consent_state: &self.consent_state,
                                 consent_hover_link: self.welcome_consent_hover_link,
                                 login_label: self.login_label.as_deref(),
-                                connection_picker: self.connection_picker.as_ref(),
                                 auth_code_input: self.auth_code_input.text(),
                                 auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                 clipboard_delivery: self.auth_clipboard_delivery,
@@ -4791,11 +4690,13 @@ impl AppView {
                                 panel.render(full_area, f.buffer_mut());
                             }
                             let has_cloud_modal = false;
-                            let cursor = if has_cloud_modal || self.tutorial.is_some() {
-                                None
-                            } else {
-                                result.cursor_pos
-                            };
+                            let has_remote_modal = false;
+                            let cursor =
+                                if has_cloud_modal || has_remote_modal || self.tutorial.is_some() {
+                                    None
+                                } else {
+                                    result.cursor_pos
+                                };
                             let on_url = self.welcome_auth_url_rect.as_ref().is_some_and(|r| {
                                 matches!(self.auth_state, AuthState::Authenticating { .. })
                                     && self.last_mouse_pos.is_some_and(|(mx, my)| {
@@ -4943,17 +4844,20 @@ impl AppView {
                                 }
                                 let (cursor_pos, post_flush) = result;
                                 let has_cloud = false;
+                                let has_remote_modal = false;
                                 if has_cloud
+                                    || has_remote_modal
                                     || self.import_claude_modal.is_some()
                                     || self.tutorial.is_some()
                                 {
                                     link_spans.clear();
                                 }
-                                let cursor = if has_cloud || self.tutorial.is_some() {
-                                    None
-                                } else {
-                                    cursor_pos
-                                };
+                                let cursor =
+                                    if has_cloud || has_remote_modal || self.tutorial.is_some() {
+                                        None
+                                    } else {
+                                        cursor_pos
+                                    };
                                 return (cursor, Self::merge_escapes(notif_escapes, post_flush));
                             }
                         }
@@ -5236,6 +5140,11 @@ impl AppView {
             || matches!(self.active_view, ActiveView::AgentDashboard
                 if self.dashboard_session_picker.is_some())
             || cloud_modal_open
+            || self.remote_modal_open()
+    }
+    /// The `/remote` modal, behind its backend feature like the field itself.
+    fn remote_modal_open(&self) -> bool {
+        false
     }
     /// Store the resolved per-tip gates and propagate the prompt-relevant tips (undo and plan nudge) to every agent's prompt.
     /// Reused by startup and the settings live-apply path so a runtime toggle reaches existing agents.

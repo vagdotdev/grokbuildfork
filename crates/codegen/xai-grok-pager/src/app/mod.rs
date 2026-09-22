@@ -13,8 +13,6 @@ pub mod actions;
 pub mod agent;
 pub mod agent_view;
 pub mod app_view;
-/// Workshop overlay: connection picker loading and activation.
-pub mod workshop;
 pub mod bundle;
 pub(crate) mod cancel_latency;
 pub mod cli;
@@ -29,6 +27,9 @@ pub mod edit_highlight_worker;
 /// Off-thread Mermaid diagram render worker (out of process) + per-session cache.
 pub mod mermaid_worker;
 pub(crate) mod prompt_ack;
+pub(crate) fn is_daemon_session_row(_source: &str) -> bool {
+    false
+}
 pub use xai_prompt_queue as prompt_queue;
 mod acp_handler;
 mod connect_timeout;
@@ -56,7 +57,6 @@ mod event_loop_stall;
 mod exit_timeout;
 pub(crate) mod external_editor;
 mod foreign_sessions;
-mod inline_edit;
 #[cfg(all(test, unix))]
 mod leader_cluster;
 mod modals;
@@ -896,7 +896,7 @@ pub async fn run(
         xai_grok_shell::util::config::default_interactive_permission_mode(),
     );
     let mut connect_flags = crate::acp::ConnectFlags {
-        subagents: !args.no_subagents,
+        no_subagents: args.no_subagents,
         memory_enabled_override: args.memory_enabled_override(),
         memory_override_flag: args.memory_override_flag(),
         disable_web_search: args.disable_web_search,
@@ -2247,9 +2247,9 @@ mod tests {
         assert!(!args.no_alt_screen);
     }
     #[test]
-    fn cli_command_name_is_workshop() {
+    fn cli_command_name_is_grok() {
         use clap::CommandFactory;
-        assert_eq!(PagerArgs::command().get_name(), "workshop");
+        assert_eq!(PagerArgs::command().get_name(), "grok");
     }
     #[test]
     fn cli_help_output_header() {
@@ -2259,9 +2259,9 @@ mod tests {
         assert_eq!(
             first_5,
             vec![
-                "Workshop: a coding-agent runtime that connects to local models, API keys, or subscription CLIs",
+                "Grok Build TUI",
                 "",
-                "Usage: workshop [OPTIONS] [PROMPT] [COMMAND]",
+                "Usage: grok [OPTIONS] [PROMPT] [COMMAND]",
                 "",
                 "Arguments:",
             ]

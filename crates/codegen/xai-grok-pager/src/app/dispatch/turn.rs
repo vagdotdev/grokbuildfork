@@ -55,14 +55,6 @@ pub(super) fn apply_cancel_subagents_preference_global(app: &mut AppView, stop: 
 }
 
 pub(super) fn dispatch_cancel_turn(app: &mut AppView) -> Vec<Effect> {
-    // Workshop: cancel an in-flight Engine/Adapter turn (Esc / Ctrl-C → abort the OpenCode turn or
-    // SIGINT the vendor CLI). Handled before the ACP path, which owns `Shell` connections only.
-    if app.workshop_turn_active {
-        if let Some(cancel) = &app.workshop_turn_cancel {
-            let _ = cancel.send(true);
-        }
-        return vec![];
-    }
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };

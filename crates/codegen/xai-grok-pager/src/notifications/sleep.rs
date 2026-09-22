@@ -96,7 +96,7 @@ impl SleepInhibitor {
         let mut cmd = std::process::Command::new("systemd-inhibit");
         cmd.args([
             "--what=idle",
-            "--who=workshop",
+            "--who=grok",
             "--why=agent turn in progress",
             "sleep",
             "infinity",

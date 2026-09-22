@@ -458,6 +458,11 @@ pub enum Action {
     SetRememberToolApprovals(bool),
     /// Toggle the ask_user_question timeout. SHELL-owned; persisted to `[toolset.ask_user_question].timeout_enabled`. Applies to new sessions.
     SetAskUserQuestionTimeoutEnabled(bool),
+    /// Save `[features].subagent_model_inheritance` as an explicit override. SHELL-owned; agents latch it when built, so it applies on restart.
+    SetSubagentModelInheritance(bool),
+    /// Delete the saved `[features].subagent_model_inheritance` key so the remote setting or the default applies again.
+    /// The reset path uses this instead of writing the compiled default.
+    ClearSubagentModelInheritance,
     /// SHELL-owned `keep_text_selection` (`flash` | `hold`); cache and persist.
     SetKeepTextSelection(crate::appearance::TextSelection),
     /// Set the mouse-wheel scroll speed multiplier (1-100).
@@ -618,12 +623,7 @@ pub enum Action {
     /// Log out and immediately start a new login flow.
     SwitchAccount,
     /// User pressed login on the welcome screen.
-    /// Workshop: opens the connection picker; never starts an OAuth flow by itself.
     Login,
-    /// Workshop: open the connection picker on a specific tab (`/auth`, `/models`).
-    OpenConnectionPicker(workshop_auth::PickerTab),
-    /// Workshop: a key press routed to the open connection picker.
-    ConnectionPicker(workshop_auth::PickerInput),
     /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
     /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
     CancelLogin,
@@ -948,8 +948,6 @@ pub enum Action {
     RewindCancelOffer,
     RewindDismiss,
     RewindDismissError,
-    /// Submit an inline edit: conversation-only rewind to that prompt, then resubmit the edited text (state lives on `AgentView::inline_edit`).
-    InlineEditSubmit,
     /// Open the `/jump` turn picker.
     JumpShowPicker,
     /// Jump to a turn by its prompt's stable id and close the picker.
@@ -1676,6 +1674,12 @@ pub enum Effect {
         value: crate::settings::SettingValue,
         rollback_value: crate::settings::SettingValue,
     },
+    /// Write the user `[features]` key of `feature`, or delete it for `saved == None`; completes as
+    /// [`TaskResult::FeatureOverridePersisted`]. A row issues one of these at a time so the disk follows toggle order.
+    PersistFeatureOverride {
+        feature: xai_grok_shell::agent::config::Feature,
+        saved: Option<bool>,
+    },
     /// Toggle mouse reporting off and on to unwedge xterm.js's button tracker
     /// (see `AgentView::reset_wedged_mouse_reporting`). An effect so it rides the escape
     /// writer; `process_effects` re-checks capture so a toggle-off in the same batch wins.
@@ -1777,23 +1781,9 @@ pub enum Effect {
         method_id: acp::AuthMethodId,
         use_oauth: bool,
         force_interactive: bool,
-        /// Workshop: the user explicitly selected the labeled optional xAI card. Only then may the
-        /// shell attach the xAI OAuth2 provider for this login (`workshop_xai_opt_in` meta).
-        xai_opt_in: bool,
     },
     /// Poll for auth URL from the agent (ext request).
     PollAuthUrl { request_seq: u64 },
-    /// Workshop: load the connection picker's rows and rails (local probe, catalogs, CLI detection).
-    WorkshopLoadPicker,
-    /// Workshop: a `[model.<key>]` was written; ask the shell to reload its model list, authenticate
-    /// with the non-interactive method, and switch the active session (if any) to `model_id`.
-    WorkshopActivateModel {
-        request_seq: u64,
-        model_id: String,
-        session: Option<(AgentId, acp::SessionId)>,
-    },
-    /// Workshop: OpenRouter PKCE sign-in (browser + loopback callback), then save the key.
-    WorkshopOpenRouterSignIn,
     /// Submit a manually-pasted auth code (ext request).
     SubmitAuthCode { request_seq: u64, code: String },
     /// Fetch MCP server list from the shell (x.ai/mcp/list).
@@ -2097,8 +2087,8 @@ pub enum Effect {
     },
     /// Clear the auth copy feedback after a delay if its generation is still current.
     ScheduleClearAuthCopyFeedback { generation: u64 },
-    /// Register the current session in the active-sessions crash-recovery
-    /// registry (`~/.grok/active_sessions.json`).
+    /// Register the current session in the active-session registry
+    /// (`~/.grok/active_sessions.json`).
     RegisterActiveSession {
         session_id: acp::SessionId,
         cwd: String,
@@ -2678,19 +2668,6 @@ pub enum TaskResult {
         /// Forwarded from `Effect::SwitchModel.prev_model_id` for rollback on `IncompatibleAgent`.
         prev_model_id: Option<acp::ModelId>,
     },
-    /// Workshop: picker rows/rails loaded.
-    WorkshopPickerLoaded(workshop_auth::PickerSnapshot),
-    /// Workshop: a connect flow finished (`Ok(secret backend)` or an error message).
-    WorkshopConnectDone {
-        provider_id: String,
-        result: Result<&'static str, String>,
-    },
-    /// Workshop: the terminal login command exited; the rails must be re-probed unless the user
-    /// cancelled it (Ctrl+C), which leaves them as they were.
-    WorkshopLoginTerminalDone {
-        rail: workshop_detect::Rail,
-        exit: workshop_detect::process::InteractiveExit,
-    },
     /// Changelog fetched from CDN (both formats).
     ChangelogFetched {
         markdown: Option<String>,
@@ -3237,6 +3214,11 @@ pub enum TaskResult {
     SettingPersistFailedBestEffort {
         key: crate::settings::SettingKey,
         error: String,
+    },
+    /// One [`Effect::PersistFeatureOverride`] write finished; `Ok` carries what it left on disk.
+    FeatureOverridePersisted {
+        feature: xai_grok_shell::agent::config::Feature,
+        result: Result<Option<bool>, String>,
     },
     /// Off-thread clipboard attachment probe finished (see [`Effect::ProbeClipboardAttachment`]); dispatch attaches the chip.
     ClipboardAttachmentProbed {

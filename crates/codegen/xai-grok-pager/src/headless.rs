@@ -80,7 +80,7 @@ pub struct HeadlessOptions {
     pub deny_rules: Vec<String>,
     pub max_turns: Option<u32>,
     pub permission_mode_flag: Option<String>,
-    /// Effort token (`--reasoning-effort` / `--effort`); resolved like `/effort` after models load.
+    /// Effort token (`--reasoning-effort` / `--effort`); a menu id or canonical level after models load.
     pub reasoning_effort: Option<String>,
     /// Wait for background tasks to report `task_completed` before exiting (default true).
     pub wait_for_background: bool,
@@ -407,17 +407,17 @@ fn auto_respond_to_permissions(
     }
     None
 }
-/// "No connection configured" error message, tailored to the session type.
-/// Workshop: headless / ACP runs without a configured connection fail closed here; nothing opens a browser.
+/// "Not signed in" error message, tailored to the session type.
 fn auth_required_message(interactive: bool) -> String {
     if interactive {
-        "No connection configured. Run `workshop login` to see the connection picker \
-         (Local model, API key, subscription CLI, optional xAI), then retry."
+        "Not signed in. Run `grok login` to authenticate \
+         (or `grok login --device-code` if no browser is available)."
             .to_string()
     } else {
-        "No connection configured. Run `workshop login` for the connection picker, then add a \
-         Local model or an API key to $WORKSHOP_HOME/config.toml (see the picker's snippet) \
-         and retry. Workshop never opens a browser or contacts xAI by default."
+        "Not signed in. To authenticate without a browser, run:\n  \
+         grok login --device-code\n\n\
+         Alternatively, set the XAI_API_KEY environment variable \
+         or run `grok login` on a machine with a browser."
             .to_string()
     }
 }
@@ -705,9 +705,17 @@ async fn apply_headless_model_and_effort(
             .resolve_by_name_or_id(name)
             .unwrap_or_else(|| acp::ModelId::new(name))
     } else {
-        models.current.clone().ok_or_else(|| {
-            anyhow::anyhow!("--effort/--reasoning-effort: no active model to apply effort to")
-        })?
+        match models.current.clone() {
+            Some(id) => id,
+            None if effort_token
+                .is_some_and(|token| parse_canonical_effort_token(token).is_some()) =>
+            {
+                return Ok(());
+            }
+            None => {
+                anyhow::bail!("--effort/--reasoning-effort: no active model to apply effort to");
+            }
+        }
     };
     let effort = match effort_token {
         None => None,
@@ -720,7 +728,7 @@ async fn apply_headless_model_and_effort(
             }
             None
         }
-        Some(token) => match models.resolve_effort_for_model(&model_id, token) {
+        Some(token) => match models.resolve_cli_effort_for_model(&model_id, token) {
             Ok(effort) => Some(effort),
             Err(EffortTokenError::Unsupported) => {
                 tracing::warn!(
@@ -1110,7 +1118,7 @@ pub async fn run_single_turn(
         match target {
             Some(model_id) => {
                 matches!(
-                    session_models.resolve_effort_for_model(&model_id, token),
+                    session_models.resolve_cli_effort_for_model(&model_id, token),
                     Err(EffortTokenError::UnknownToken { .. } | EffortTokenError::NoActiveModel)
                 )
             }

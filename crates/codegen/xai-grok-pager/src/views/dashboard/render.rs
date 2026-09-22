@@ -2187,26 +2187,12 @@ fn paint_dispatch_config_badge(
 /// Shared by the dispatch box and the peek panel that replaces it, so a capture started in either box shows the same indicator.
 pub(super) fn paint_record_badge(buf: &mut Buffer, area: Rect, theme: &Theme, listening: bool) {
     if listening && area.width >= 12 {
-        // Workshop overlay: the engine's progress line replaces "rec" while the model downloads/loads
-        let (label, fg) = match crate::voice::banner_status() {
-            Some(status) => (
-                format!(
-                    " \u{25CF} {} ",
-                    crate::render::line_utils::truncate_str(
-                        &status,
-                        (area.width as usize).saturating_sub(8)
-                    )
-                ),
-                theme.accent_running,
-            ),
-            None => (" \u{25CF} rec ".to_owned(), theme.accent_error),
-        };
         buf.set_string(
             area.x + 2,
             area.y,
-            &label,
+            " \u{25CF} rec ",
             Style::default()
-                .fg(fg)
+                .fg(theme.accent_error)
                 .bg(theme.bg_base)
                 .add_modifier(Modifier::BOLD),
         );

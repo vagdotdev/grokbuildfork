@@ -129,7 +129,6 @@ fn healthy_report() -> DiagnosticReport {
                 fix: None,
             },
             voice: None,
-            voice_engine: None,
         },
         findings: Vec::new(),
         probe_notes: Vec::new(),
@@ -248,15 +247,7 @@ fn fake_standalone_facts_compose_through_shared_view() {
     );
     let report = collect_report_with(snapshot);
 
-    // Count only terminal-domain findings: `collect_report_with` also runs a live input-device
-    // probe (`apply_voice_probe`), which on a headless host / CI runner with no microphone adds an
-    // incidental `voice/no-input-device` finding. This test is about terminal/clipboard composition.
-    let terminal_issues = report
-        .findings
-        .iter()
-        .filter(|f| f.id.domain == "terminal")
-        .count();
-    assert_eq!(terminal_issues, 1);
+    assert_eq!(report.issue_count(), 1);
     assert!(
         report
             .findings
@@ -356,7 +347,7 @@ fn human_wayland_error_includes_detail_once() {
     assert_eq!(
         human::format(&report),
         concat!(
-            "Workshop Doctor\n",
+            "Grok Doctor\n",
             "\n",
             "Environment\n",
             "  · terminal                     Ghostty\n",
@@ -465,7 +456,7 @@ fn human_healthy_fixture_is_exact() {
     assert_eq!(
         human::format(&healthy_report()),
         concat!(
-            "Workshop Doctor\n",
+            "Grok Doctor\n",
             "\n",
             "Environment\n",
             "  · terminal                     Ghostty\n",
@@ -492,7 +483,7 @@ fn human_mixed_fixture_is_exact() {
     assert_eq!(
         human::format(&mixed_report()),
         concat!(
-            "Workshop Doctor\n",
+            "Grok Doctor\n",
             "\n",
             "Environment\n",
             "  · terminal                     Ghostty\n",
@@ -514,11 +505,11 @@ fn human_mixed_fixture_is_exact() {
             "\n",
             "Findings\n",
             "  ! terminal.tmux-clipboard      OSC 52 clipboard passthrough is disabled\n",
-            "    → Automatic setup: `workshop doctor fix tmux-clipboard`\n",
+            "    → Automatic setup: `grok doctor fix tmux-clipboard`\n",
             "    → Add `set -g set-clipboard on` to ~/.tmux.conf\n",
             "      Reload tmux after editing.\n",
             "  i terminal.ssh-wrap            Use local SSH wrapping\n",
-            "    → Automatic setup: `workshop doctor fix ssh-wrap`\n",
+            "    → Automatic setup: `grok doctor fix ssh-wrap`\n",
             "    → One-off: `grok wrap ssh <host>`\n",
             "\n",
             "Checks not completed\n",
@@ -529,7 +520,7 @@ fn human_mixed_fixture_is_exact() {
             "  ? tmux.control-mode            error: server unavailable\n",
             "\n",
             "Needs a running session\n",
-            "  Some checks only run in Workshop. Start Workshop and run /doctor.\n",
+            "  Some checks only run in Grok. Start Grok and run /doctor.\n",
             "\n",
             "1 issue, 1 recommendation\n",
         )
@@ -553,7 +544,7 @@ fn fix_preview_contains_exact_change_and_caveats() {
     assert!(preview.contains("File: "));
     assert!(
         preview.contains(
-            "# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='grok wrap ssh'"
+            "# >>> grok doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='grok wrap ssh'"
         )
     );
     assert!(preview.contains("To use once without changing config: `grok wrap ssh <host>`"));
@@ -652,7 +643,7 @@ fn human_incomplete_fixture_is_exact_without_duplicate_probe_rows() {
     assert_eq!(
         human::format(&report),
         concat!(
-            "Workshop Doctor\n",
+            "Grok Doctor\n",
             "\n",
             "Environment\n",
             "  · terminal                     Ghostty\n",
@@ -670,7 +661,7 @@ fn human_incomplete_fixture_is_exact_without_duplicate_probe_rows() {
             "  · status                       confirmed\n",
             "\n",
             "Needs a running session\n",
-            "  Some checks only run in Workshop. Start Workshop and run /doctor.\n",
+            "  Some checks only run in Grok. Start Grok and run /doctor.\n",
             "\n",
             "0 issues, 0 recommendations\n",
         )
@@ -779,7 +770,7 @@ fn json_contract_is_structural_stable_ordered_and_ansi_free() {
                     },
                     "automaticRemediation": {
                         "fixId": "terminal.tmux-clipboard",
-                        "command": "workshop doctor fix terminal.tmux-clipboard"
+                        "command": "grok doctor fix terminal.tmux-clipboard"
                     },
                     "note": "Reload tmux after editing."
                 },
@@ -790,7 +781,7 @@ fn json_contract_is_structural_stable_ordered_and_ansi_free() {
                     "remediation": {"fix": "grok wrap ssh <host>", "configPath": null},
                     "automaticRemediation": {
                         "fixId": "terminal.ssh-wrap",
-                        "command": "workshop doctor fix terminal.ssh-wrap"
+                        "command": "grok doctor fix terminal.ssh-wrap"
                     },
                     "note": null
                 }
@@ -818,7 +809,7 @@ fn json_contract_is_structural_stable_ordered_and_ansi_free() {
     assert!(issue < recommendation);
     assert!(version < extended && extended < unsupported && unsupported < unavailable);
     assert!(!text.contains("\u{1b}"));
-    assert!(!text.contains("Workshop Doctor"));
+    assert!(!text.contains("Grok Doctor"));
 }
 
 #[test]

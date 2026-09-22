@@ -1155,7 +1155,6 @@ impl AgentView {
         if layout.timeline_width > 0 {
             self.sync_pending_user_input_marks();
             self.scrollback.set_cwd(Some(self.session.cwd.clone()));
-            let _ = self.sync_inline_edit_layout(layout.scrollback_content.width);
             self.scrollback.prepare_layout(
                 layout.scrollback_content.width,
                 layout.scrollback_content.height,
@@ -1354,11 +1353,12 @@ impl AgentView {
             );
         }
         let dashboard_available = in_dashboard_overlay
-            || self
-                .prompt
-                .slash_controller
-                .registry()
-                .dashboard_dispatchable();
+            || (self.child_link().is_none()
+                && self
+                    .prompt
+                    .slash_controller
+                    .registry()
+                    .dashboard_dispatchable());
         if dashboard_available {
             status.push(
                 "dashboard",
@@ -1506,18 +1506,15 @@ impl AgentView {
         }
         self.hit_upgrade_cta
             .set_unless_dropdown(upgrade_cta_rect, dropdown_open);
-        let mut inline_edit_cursor: Option<(u16, u16)> = None;
         let sticky_gap_row: Option<u16>;
         {
             self.sync_pending_user_input_marks();
             self.scrollback.set_cwd(Some(self.session.cwd.clone()));
-            let inline_edit_dim_from =
-                self.sync_inline_edit_layout(layout.scrollback_content.width);
             self.scrollback.prepare_layout(
                 layout.scrollback_content.width,
                 layout.scrollback_content.height,
             );
-            let rewind_dim_from = self.rewind_dim_from_entry().or(inline_edit_dim_from);
+            let rewind_dim_from = self.rewind_dim_from_entry();
             let sb_focused = self.active_pane == ActivePane::Scrollback && !overlay_focused;
             let search_highlight = if search_active {
                 self.scrollback_search
@@ -1547,12 +1544,6 @@ impl AgentView {
                 sb_rendered.selection_boundaries,
             );
             self.reclamp_drag_head_post_render(false);
-            if self.inline_edit.is_some() {
-                let cursor = self.render_inline_edit(buf, layout.scrollback_content);
-                if self.rewind_state.is_none() {
-                    inline_edit_cursor = cursor;
-                }
-            }
             if search_reserved_rows > 0
                 && let Some(search) = self.scrollback_search.as_ref()
             {
@@ -2252,26 +2243,18 @@ impl AgentView {
                 dot,
                 Style::default().fg(dot_color).bg(bg),
             );
+            buf.set_string(
+                content_x + 2,
+                rec_area.y,
+                "Recording",
+                Style::default().fg(theme.accent_error).bg(bg),
+            );
             let stop_str = "[stop]";
             let stop_w = unicode_width::UnicodeWidthStr::width(stop_str) as u16;
             let stop_x = rec_area.x
                 + rec_area
                     .width
                     .saturating_sub(layout_cfg.block_pad_right + stop_w);
-            // Workshop overlay: while the local engine downloads or loads its model the row carries
-            // that one progress line (voice-spec §5 rule 6); otherwise the plain "Recording".
-            let label_avail = stop_x.saturating_sub(content_x + 3) as usize;
-            let (label, label_style) = match crate::voice::banner_status() {
-                Some(status) if label_avail > 0 => (
-                    crate::render::line_utils::truncate_str(&status, label_avail),
-                    Style::default().fg(theme.accent_running).bg(bg),
-                ),
-                _ => (
-                    "Recording".to_owned(),
-                    Style::default().fg(theme.accent_error).bg(bg),
-                ),
-            };
-            buf.set_string(content_x + 2, rec_area.y, &label, label_style);
             let stop_fg = if self.hit_voice_stop_button.hovered {
                 theme.accent_error
             } else {
@@ -2346,13 +2329,9 @@ impl AgentView {
         let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
         let usage_warning = usage_warning_text.as_deref();
         let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
-        let model_label = match &self.workshop_model_label {
-            // Workshop Engine/Adapter connection: name the runtime, not a shell model.
-            Some(label) => label.clone(),
-            None => match self.session.models.reasoning_effort {
-                Some(eff) => format!("{model_id} ({eff})"),
-                None => model_id,
-            },
+        let model_label = match self.session.models.reasoning_effort {
+            Some(eff) => format!("{model_id} ({eff})"),
+            None => model_id,
         };
         let info = match &self.prompt_mode {
             PromptMode::Normal => PromptInfo {
@@ -4362,12 +4341,7 @@ impl AgentView {
                 }
             }
         }
-        let cursor = if self.inline_edit.is_some() {
-            inline_edit_cursor
-        } else {
-            prompt_cursor_pos
-        };
-        (cursor, prompt_post_flush)
+        (prompt_cursor_pos, prompt_post_flush)
     }
 }
 /// Draw one ▼/▲ scroll-indicator arrow centered on row `y`, or clear its hit area when hidden (`y: None`).
