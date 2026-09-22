@@ -1,5 +1,5 @@
 diff --git a/crates/codegen/xai-grok-pager-minimal/Cargo.toml b/crates/codegen/xai-grok-pager-minimal/Cargo.toml
-index 5481722b..5a895e2d 100644
+index be8931639fbabb3e7a4fe93625738b8a543b80e9..e7fd258fc96bf42ac5382ed04b667ea0eb9032d8 100644
 --- a/crates/codegen/xai-grok-pager-minimal/Cargo.toml
 +++ b/crates/codegen/xai-grok-pager-minimal/Cargo.toml
 @@ -20,6 +20,8 @@ ignored = ["xai-ratatui-inline"]
@@ -12,7 +12,7 @@ index 5481722b..5a895e2d 100644
  # Rendering primitives (must match the pager's versions).
  ratatui = { workspace = true, features = ["crossterm", "unstable-widget-ref"] }
 diff --git a/crates/codegen/xai-grok-pager-minimal/src/welcome.rs b/crates/codegen/xai-grok-pager-minimal/src/welcome.rs
-index 34aa8f96..bdb1620d 100644
+index 34aa8f96836ca78dfb1dfb90702087c887fb94e4..bdb1620d9703a89dd1b5dcbd04c6311cb5368ade 100644
 --- a/crates/codegen/xai-grok-pager-minimal/src/welcome.rs
 +++ b/crates/codegen/xai-grok-pager-minimal/src/welcome.rs
 @@ -61,7 +61,7 @@ pub fn maybe_commit_welcome(app: &mut AppView, terminal: &mut PagerTerminal) {
@@ -25,7 +25,7 @@ index 34aa8f96..bdb1620d 100644
                  .fg(theme.accent_user)
                  .add_modifier(Modifier::BOLD),
 diff --git a/crates/codegen/xai-grok-pager/assets/logo/logo05.txt b/crates/codegen/xai-grok-pager/assets/logo/logo05.txt
-index 45701a31..0f74f0c0 100644
+index 45701a3180d79910fffcf6b0428be26ee1688eb7..0f74f0c0132c014b2a00f7668867eafe7ee5dccd 100644
 --- a/crates/codegen/xai-grok-pager/assets/logo/logo05.txt
 +++ b/crates/codegen/xai-grok-pager/assets/logo/logo05.txt
 @@ -1,5 +1,5 @@
@@ -40,7 +40,7 @@ index 45701a31..0f74f0c0 100644
 +⠀⢻⣷⡏⠀⠀⢹⣾⡟⠀
 +⠀⠀⠻⠃⠀⠀⠘⠟⠀⠀
 diff --git a/crates/codegen/xai-grok-pager/assets/logo/logo07.txt b/crates/codegen/xai-grok-pager/assets/logo/logo07.txt
-index ef39cca6..59d08343 100644
+index ef39cca6621674909389ff7e792d2e2ad61959a8..59d0834378283ff3656da1521430eb8dc5f4578a 100644
 --- a/crates/codegen/xai-grok-pager/assets/logo/logo07.txt
 +++ b/crates/codegen/xai-grok-pager/assets/logo/logo07.txt
 @@ -1,7 +1,7 @@
@@ -59,7 +59,7 @@ index ef39cca6..59d08343 100644
 +⠀⠀⢻⣷⡿⠁⠀⠀⠈⢿⣾⡟⠀⠀
 +⠀⠀⠀⠻⠃⠀⠀⠀⠀⠘⠟⠀⠀⠀
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
-index ab27a76d..639a3543 100644
+index ab27a76de0c344b4d7091373e905f37650a8a014..639a3543601d0fc88c14519bd465783c613ed8a7 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
 @@ -1,6 +1,6 @@
@@ -149,10 +149,10 @@ index ab27a76d..639a3543 100644
  If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
  
 diff --git a/crates/codegen/xai-grok-pager/src/views/memory_modal.rs b/crates/codegen/xai-grok-pager/src/views/memory_modal.rs
-index 0d0a7b30..3ebda853 100644
+index ef7c763c9bc2d403ec2cc8fa198e230b975b7d9a..809ccf866bbf133c55facce6af2dda4e21b99541 100644
 --- a/crates/codegen/xai-grok-pager/src/views/memory_modal.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/memory_modal.rs
-@@ -54,7 +54,7 @@ fn empty_state_markdown(capture_enabled: bool, dream_enabled: bool) -> String {
+@@ -67,7 +67,7 @@ fn empty_state_markdown(capture_enabled: bool, dream_enabled: bool) -> String {
          text.push_str("- `/dream` organizes saved notes into topics.\n");
      }
      text.push_str(
@@ -161,17 +161,17 @@ index 0d0a7b30..3ebda853 100644
           don't have to repeat yourself. Notes live in **workspace** memory for this repository and \
           **global** memory shared across all your projects; each has a generated `MEMORY.md` index \
           that fills in as notes are saved.\n",
-@@ -92,7 +92,7 @@ No memory storage is set up for this session, so there is nothing to browse or t
+@@ -118,7 +118,7 @@ No memory storage is set up for this session, so there is nothing to browse or t
              "\
- **Memory is off for this session.** `/memory status` shows the details.
+ **Memory is off for this session.** Press **s** for details.
  
--This session reports a reason this version of Grok Build doesn't recognize; run `/memory on` \
-+This session reports a reason this version of Workshop doesn't recognize; run `/memory on` \
- from the prompt to try turning it back on."
+-This session reports a reason this version of Grok Build doesn't recognize; press **t** to try \
++This session reports a reason this version of Workshop doesn't recognize; press **t** to try \
+ turning it back on."
          }
      }
 diff --git a/crates/codegen/xai-grok-pager/src/views/tutorial.rs b/crates/codegen/xai-grok-pager/src/views/tutorial.rs
-index 24e4defb..cd48b497 100644
+index 24e4defbe4c0c5a74c6144f79059887f393e6d52..cd48b4975e149bf7820991fdfb11947488c2a681 100644
 --- a/crates/codegen/xai-grok-pager/src/views/tutorial.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/tutorial.rs
 @@ -296,7 +296,7 @@ fn handle_list_input(ev: &Event, st: &mut TutorialState) -> TutorialOutcome {
@@ -193,7 +193,7 @@ index 24e4defb..cd48b497 100644
          shortcuts: &shortcuts,
          sizing: ModalSizing {
 diff --git a/crates/codegen/xai-grok-pager/src/views/welcome/hero_box.rs b/crates/codegen/xai-grok-pager/src/views/welcome/hero_box.rs
-index f725ec93..56c99e82 100644
+index f725ec9359241f02295bab5d6e49cd35e249c623..56c99e82b9d45e47d45f3338ea980219278c33c7 100644
 --- a/crates/codegen/xai-grok-pager/src/views/welcome/hero_box.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/welcome/hero_box.rs
 @@ -26,8 +26,6 @@ const LOGO_H_PAD: u16 = 3;
@@ -384,7 +384,7 @@ index f725ec93..56c99e82 100644
      fn wrap_short_text_single_line() {
          let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
 diff --git a/crates/codegen/xai-grok-pager/src/views/welcome/logo.rs b/crates/codegen/xai-grok-pager/src/views/welcome/logo.rs
-index 0ffb88d8..7178a53a 100644
+index 0ffb88d89f00522347ad1d30308704faece5154d..7178a53ab685252a25fc8b8a17f1df42a37450a0 100644
 --- a/crates/codegen/xai-grok-pager/src/views/welcome/logo.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/welcome/logo.rs
 @@ -9,18 +9,19 @@ use ratatui::widgets::{Paragraph, Widget};
@@ -817,7 +817,7 @@ index 0ffb88d8..7178a53a 100644
 +    }
  }
 diff --git a/crates/codegen/xai-grok-shell/README.md b/crates/codegen/xai-grok-shell/README.md
-index a22de198..4831ae62 100644
+index 286e5ea9a773afacf8906a9154be2bc66fc358b0..ec7436c3d7fbf49121036cead64d7f65495a3ff2 100644
 --- a/crates/codegen/xai-grok-shell/README.md
 +++ b/crates/codegen/xai-grok-shell/README.md
 @@ -7,11 +7,11 @@ Use it interactively as a TUI, or integrate it into your own apps via headless m
@@ -858,7 +858,7 @@ index a22de198..4831ae62 100644
    -H "Content-Type: application/json" \
    -H "Authorization: Bearer $(jq -r '."https://accounts.x.ai/sign-in".key' ~/.grok/auth.json)" \
    -H "X-XAI-Token-Auth: xai-grok-cli" \
-@@ -2501,7 +2498,7 @@ The agent persists all session updates automatically. Clients can reconnect and
+@@ -2517,7 +2514,7 @@ The agent persists all session updates automatically. Clients can reconnect and
  | Variable                         | Description                                                                                              |
  | -------------------------------- | -------------------------------------------------------------------------------------------------------- |
  | `XAI_API_KEY`         | API key from [console.x.ai](https://console.x.ai). Used for custom endpoint auth and API key login      |

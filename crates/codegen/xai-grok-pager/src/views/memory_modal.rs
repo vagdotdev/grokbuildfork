@@ -67,7 +67,7 @@ fn empty_state_markdown(capture_enabled: bool, dream_enabled: bool) -> String {
         text.push_str("- `/dream` organizes saved notes into topics.\n");
     }
     text.push_str(
-        "\nGrok Build remembers conventions, decisions, and project facts across sessions so you \
+        "\nWorkshop remembers conventions, decisions, and project facts across sessions so you \
          don't have to repeat yourself. Notes live in **workspace** memory for this repository and \
          **global** memory shared across all your projects; each has a generated `MEMORY.md` index \
          that fills in as notes are saved.\n",
@@ -118,7 +118,7 @@ No memory storage is set up for this session, so there is nothing to browse or t
             "\
 **Memory is off for this session.** Press **s** for details.
 
-This session reports a reason this version of Grok Build doesn't recognize; press **t** to try \
+This session reports a reason this version of Workshop doesn't recognize; press **t** to try \
 turning it back on."
         }
     }
