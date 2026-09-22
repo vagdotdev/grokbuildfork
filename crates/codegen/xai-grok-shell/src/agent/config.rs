@@ -45,7 +45,8 @@ pub const DEFAULT_AGENT_TYPE: &str = "grok-build-plan";
 pub(crate) fn default_agent_type() -> String {
     DEFAULT_AGENT_TYPE.to_owned()
 }
-pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = "https://cli-chat-proxy.grok.com/v1";
+/// Workshop: single source of truth is `xai-grok-env` (loopback placeholder; gate:no-xai, Gate 3).
+pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = xai_grok_env::PROD_CLI_CHAT_PROXY_BASE_URL;
 pub const XAI_API_BASE_URL_DEFAULT: &str = "https://api.x.ai/v1";
 const NO_INLINE_CITATIONS_RESPONSE_INCLUDE: &str = "no_inline_citations";
 /// One or more environment variable names that may hold a model API key.
@@ -4628,13 +4629,35 @@ pub(crate) fn first_own_credential(
         .map(str::to_owned)
         .or_else(|| env_key.and_then(EnvKeys::resolve_value))
 }
+/// Workshop: sentinel `api_key` for connections that need no credential (local servers, keyless
+/// pools such as Kilo `:free`). It makes the model count as bringing its own credential — so the
+/// non-interactive `xai.api_key` method is advertised and accepted and no session token is ever
+/// attached — while [`resolve_credentials`] sends **no** `Authorization` header and never falls
+/// through to `XAI_API_KEY` or a session for such a model.
+pub const WORKSHOP_ANONYMOUS_API_KEY: &str = "workshop-anonymous";
+
+/// `true` when `key` is the Workshop anonymous sentinel.
+pub fn is_workshop_anonymous_key(key: &str) -> bool {
+    key.trim() == WORKSHOP_ANONYMOUS_API_KEY
+}
+
 /// Priority: model api_key/env_key > cached auth-provider token > session token > XAI_API_KEY.
+/// A Workshop anonymous model resolves to no key at all (see [`WORKSHOP_ANONYMOUS_API_KEY`]).
 pub(crate) fn resolve_credentials(
     model: &ModelEntry,
     session_key: Option<&str>,
 ) -> ResolvedCredentials {
     let info = model.info();
-    let (api_key, base_url, auth_type) = if let Some(key) = model.own_credential() {
+    let (api_key, base_url, auth_type) = if model
+        .own_credential()
+        .is_some_and(|k| is_workshop_anonymous_key(&k))
+    {
+        (
+            None,
+            info.base_url.clone(),
+            xai_chat_state::AuthType::ApiKey,
+        )
+    } else if let Some(key) = model.own_credential() {
         (
             Some(key),
             info.base_url.clone(),
