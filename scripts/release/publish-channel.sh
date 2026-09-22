@@ -46,10 +46,12 @@ is_semver "$version" || die "--version must be semver"
 is_channel "$channel" || die "--channel must be stable or alpha"
 is_repo_slug "$repo" || die "--repo must be OWNER/NAME"
 [[ -f "$dist/SHA256SUMS" ]] || die "$dist/SHA256SUMS not found"
+dist=$(cd "$dist" && pwd) # manifest.sh runs after `cd "$work"`; a relative --dist would resolve inside the clone
 need_cmd git
 need_cmd jq
 install_sh=${install_sh:-$here/../install.sh}
 [[ -f "$install_sh" ]] || die "install.sh not found: $install_sh"
+install_sh=$(cd "$(dirname "$install_sh")" && pwd)/$(basename "$install_sh")
 remote=${remote:-https://github.com/$repo.git}
 
 git_auth=()
