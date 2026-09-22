@@ -5,6 +5,8 @@ async-openai = { git = "https://github.com/our-forks/async-openai.git", rev = "9
 
 [workspace]
 resolver = "2"
+# Workshop overlay: the voice-engine helper is its own workspace so whisper.cpp never enters this build graph.
+exclude = ["voice/engine"]
 members = [
     "crates/build/xai-proto-build",
     "crates/codegen/ptyctl",
@@ -102,11 +104,19 @@ members = [
     "crates/common/xai-tool-runtime",
     "crates/common/xai-tool-types",
     "crates/common/xai-tracing",
+    "crates/workshop-adapters",
+    "crates/workshop-brand",
+    "crates/workshop-detect",
+    "crates/workshop-providers",
+    "crates/workshop-voice",
     "prod/mc/cli-chat-proxy-types",
     "third_party/dagre_rust",
     "third_party/graphlib_rust",
     "third_party/mermaid-to-svg",
     "third_party/ordered_hashmap",
+    # Workshop overlay crates (docs/workshop/adr/0001-overlay-sync.md).
+    "crates/workshop-auth",
+    "crates/workshop-gates",
 ]
 
 [workspace.package]
@@ -321,6 +331,10 @@ xai-compaction-transcript = { path = "crates/codegen/xai-compaction-transcript" 
 xai-computer-hub-core = { path = "crates/common/xai-computer-hub-core" }
 xai-computer-hub-sdk = { path = "crates/common/xai-computer-hub-sdk" }
 xai-dirs = { path = "crates/codegen/xai-dirs" }
+workshop-auth = { path = "crates/workshop-auth" }
+workshop-adapters = { path = "crates/workshop-adapters" }
+workshop-detect = { path = "crates/workshop-detect" }
+workshop-providers = { path = "crates/workshop-providers" }
 xai-fuzzy-file-search = { path = "crates/codegen/xai-fuzzy-file-search" }
 xai-gix-status = { path = "crates/codegen/xai-gix-status" }
 xai-grok-active-sessions = { path = "crates/codegen/xai-grok-active-sessions" }
