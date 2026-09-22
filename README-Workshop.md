@@ -37,7 +37,7 @@ target/debug/workshop login                          # the /model + /auth lists 
 target/debug/workshop login --xai                    # optional xAI account login only (opens auth.x.ai)
 ```
 
-Home is `~/.workshop` (`$WORKSHOP_HOME`; `GROK_HOME` is accepted as a warned alias for now).
+Home is `~/.workshop` (`$WORKSHOP_HOME`). `GROK_HOME` and `~/.grok` are never read, so a machine that also runs Grok Build keeps its settings, hooks, sessions and memory separate.
 Telemetry is off and no Mixpanel token or events URL is baked in. Background auto-update is off
 until a Workshop release channel and signature verification exist (`WORKSHOP_ENABLE_AUTOUPDATE=1`
 opts in); `workshop update` reads the channel manifest from the release repository baked at build

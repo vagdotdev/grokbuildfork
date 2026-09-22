@@ -123,7 +123,7 @@ mod tests {
     fn test_event() -> NotificationEvent {
         NotificationEvent {
             kind: NotificationEventKind::TurnComplete,
-            title: "Grok".into(),
+            title: "Workshop".into(),
             body: "test body payload".into(),
             session_id: Some("test-session-123".into()),
         }

@@ -530,7 +530,7 @@ fn clipboard_delivery_findings_own_remediation_while_fix_fact_stays_compatible()
             },
             crate::clipboard::ClipboardDelivery::Unverified,
             crate::diagnostics::CLIPBOARD_DELIVERY_UNVERIFIED_ID,
-            "grok wrap <ssh command> or /minimal",
+            "workshop wrap <ssh command> or /minimal",
         ),
         (
             TerminalContext {

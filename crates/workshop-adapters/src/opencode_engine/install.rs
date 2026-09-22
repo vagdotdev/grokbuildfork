@@ -83,7 +83,7 @@ pub enum InstallError {
     MissingTools,
     #[error("no HOME available to place the install")]
     NoHome,
-    #[error("installer failed (exit {exit_code:?}): {stderr}")]
+    #[error("installer failed{}: {stderr}", match exit_code { Some(c) => format!(" (exit {c})"), None => String::new() })]
     InstallerFailed {
         exit_code: Option<i32>,
         stderr: String,
@@ -153,8 +153,10 @@ pub async fn install_opencode(opts: &InstallOptions) -> Result<InstalledCli, Ins
             stderr: format!("refusing to pass unusual version string `{version}` to the installer"),
         });
     }
+    // `pipefail`: a curl failure (offline, DNS, proxy) must fail the pipeline instead of feeding
+    // bash an empty script that "succeeds" without installing anything.
     let script = format!(
-        "curl -fsSL {OFFICIAL_INSTALLER_URL} | bash -s -- --version {version} --no-modify-path"
+        "set -o pipefail; curl -fsSL {OFFICIAL_INSTALLER_URL} | bash -s -- --version {version} --no-modify-path"
     );
     tracing::info!(%version, home = %home.display(), "running official opencode installer");
     let output = run_probe(&bash, &["-c", &script], &env, Some(&home), opts.timeout)
@@ -191,6 +193,25 @@ pub async fn install_opencode(opts: &InstallOptions) -> Result<InstalledCli, Ins
             reason: "installer reported an existing install but none is on PATH".to_string(),
         })?;
     }
+    if !path.is_file() {
+        let tail: String = crate::probe::strip_ansi(&format!("{}\n{}", output.stdout, output.stderr))
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .last()
+            .unwrap_or("no output")
+            .chars()
+            .take(400)
+            .collect();
+        return Err(InstallError::InstallerFailed {
+            exit_code: output.exit_code,
+            stderr: format!("finished without writing `{}`: {tail}", path.display()),
+        });
+    }
+    // macOS: a binary carrying `com.apple.quarantine` is refused by Gatekeeper when a
+    // non-Terminal parent spawns it (SIGKILL, no stderr). `curl | bash` + `unzip` normally leaves
+    // no attribute, but some configurations do; strip it before the first spawn the way
+    // scripts/install.sh strips it for `workshop` itself. Idempotent, no-op off macOS.
+    super::state::clear_quarantine(&path);
     let cli = verify_binary(
         &OpenCodeAdapter,
         &path,
@@ -212,12 +233,12 @@ pub async fn install_opencode(opts: &InstallOptions) -> Result<InstalledCli, Ins
     Ok(cli)
 }
 
-/// Detect `opencode`, optionally installing it when absent. Also searches the
-/// Workshop tools tree so a previous auto-install is found first.
-pub async fn ensure_opencode(
+/// Detect `opencode` without installing: PATH, the vendor's known dirs, and the Workshop tools
+/// tree (a previous auto-install is found first). `install` only names the target dir to search.
+pub async fn detect_opencode(
     detect_opts: &DetectOptions,
     install: Option<&InstallOptions>,
-) -> Result<InstalledCli, InstallError> {
+) -> Detection {
     let mut opts = detect_opts.clone();
     let mut known = opts
         .known_dirs
@@ -231,8 +252,16 @@ pub async fn ensure_opencode(
         known.insert(0, bin);
     }
     opts.known_dirs = Some(known);
+    detect(&OpenCodeAdapter, &opts).await
+}
 
-    match detect(&OpenCodeAdapter, &opts).await {
+/// Detect `opencode`, optionally installing it when absent. Also searches the
+/// Workshop tools tree so a previous auto-install is found first.
+pub async fn ensure_opencode(
+    detect_opts: &DetectOptions,
+    install: Option<&InstallOptions>,
+) -> Result<InstalledCli, InstallError> {
+    match detect_opencode(detect_opts, install).await {
         Detection::Installed(cli) => Ok(cli),
         Detection::Unverified { path, reason } => Err(InstallError::Impostor { path, reason }),
         Detection::NotInstalled => match install {

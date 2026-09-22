@@ -1,7 +1,7 @@
 //! Each command lives in its own submodule. This module re-exports command structs and provides `builtin_commands()` for registry construction.
 pub mod always_approve;
 pub mod announcements;
-/// Workshop overlay: `/auth`, `/models`.
+/// Workshop overlay: `/auth` (`/models` is an alias of `/model`).
 pub mod auth;
 pub mod auto;
 pub mod btw;
@@ -153,7 +153,6 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(doctor::DoctorCommand),
         Arc::new(import_claude::ImportClaudeCommand),
         Arc::new(auth::AuthCommand),
-        Arc::new(auth::ModelsCommand),
         Arc::new(login::LoginCommand),
         Arc::new(logout::LogoutCommand),
         Arc::new(home::HomeCommand),

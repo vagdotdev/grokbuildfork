@@ -174,6 +174,36 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
         }
     }
 
+    if let Some(engine) = &facts.engine {
+        out.push_str("\nOpenCode engine\n");
+        fact(&mut out, "connection", &engine.connection);
+        match (&engine.binary, &engine.version) {
+            (Some(path), Some(version)) => fact(&mut out, "binary", &format!("{path} ({version})")),
+            (Some(path), None) => {
+                fact(&mut out, "binary", &format!("{path} ({})", engine.binary_status))
+            }
+            (None, _) => fact(&mut out, "binary", &engine.binary_status),
+        }
+        if let Some(flag) = &engine.quarantined {
+            fact(
+                &mut out,
+                "quarantine",
+                &format!("{flag} — macOS Gatekeeper blocks this binary; Workshop clears it on the next start"),
+            );
+        }
+        match (&engine.last_phase, engine.last_start_unix) {
+            (Some(phase), Some(at)) => {
+                fact(&mut out, "last start", &format!("reached `{phase}` ({})", unix_to_utc(at)))
+            }
+            (Some(phase), None) => fact(&mut out, "last start", &format!("reached `{phase}`")),
+            _ => fact(&mut out, "last start", "never"),
+        }
+        if let Some(err) = &engine.last_error {
+            fact(&mut out, "last error", err);
+        }
+        fact(&mut out, "log", &engine.log_path);
+    }
+
     if !report.findings.is_empty() {
         out.push_str("\nFindings\n");
         for finding in &report.findings {
@@ -278,6 +308,13 @@ fn format_newline(newline: &NewlineFact) -> String {
         }
     };
     format!("Alt+Enter ({detail})")
+}
+
+/// `2026-09-22 22:10 UTC` for an engine-state timestamp; the raw seconds when out of range.
+fn unix_to_utc(secs: u64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0)
+        .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| format!("{secs}s"))
 }
 
 fn plural<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {

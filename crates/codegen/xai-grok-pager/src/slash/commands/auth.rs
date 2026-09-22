@@ -1,4 +1,4 @@
-//! Workshop overlay: `/auth` opens the Subscriptions view, `/models` the Models view.
+//! Workshop overlay: `/auth` opens the Subscriptions view (`/models` is an alias of `/model`).
 //!
 //! Neither command starts a login. The picker overlay is the only default auth surface; the
 //! optional xAI card inside it is the single path to the inherited xAI OIDC flow.
@@ -18,22 +18,6 @@ impl SlashCommand for AuthCommand {
     fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
         CommandResult::Action(Action::OpenConnectionPicker(
             workshop_auth::PickerTab::Subscriptions,
-        ))
-    }
-}
-
-pub struct ModelsCommand;
-
-impl SlashCommand for ModelsCommand {
-    slash_meta! {
-        name: "models",
-        description: "Pick the active model (same list as bare /model)",
-        usage: "/models",
-    }
-
-    fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
-        CommandResult::Action(Action::OpenConnectionPicker(
-            workshop_auth::PickerTab::Models,
         ))
     }
 }

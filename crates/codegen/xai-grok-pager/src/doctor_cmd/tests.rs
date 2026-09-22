@@ -130,6 +130,7 @@ fn healthy_report() -> DiagnosticReport {
             },
             voice: None,
             voice_engine: None,
+            engine: None,
         },
         findings: Vec::new(),
         probe_notes: Vec::new(),
@@ -182,7 +183,7 @@ fn mixed_report() -> DiagnosticReport {
             disposition: FindingDisposition::Recommendation,
             message: "Use local SSH wrapping".to_owned(),
             remediation: Some(ManualRemediation {
-                fix: "grok wrap ssh <host>".to_owned(),
+                fix: "workshop wrap ssh <host>".to_owned(),
                 config_path: None,
             }),
             automatic_remediation: Some(crate::diagnostics::ssh_wrap_automatic_remediation()),
@@ -501,7 +502,7 @@ fn human_mixed_fixture_is_exact() {
             "  · byobu                        tmux\n",
             "  · ssh                          yes\n",
             "  · color                        256\n",
-            "  · themes                       3/6: groknight, grokday, terminal\n",
+            "  · themes                       3/6: night, day, terminal\n",
             "  · keyboard                     cmd=dropped, opt=native (OS rescue active)\n",
             "  · newline                      Alt+Enter (Cursor: xterm.js cannot distinguish Shift+Enter)\n",
             "\n",
@@ -519,7 +520,7 @@ fn human_mixed_fixture_is_exact() {
             "      Reload tmux after editing.\n",
             "  i terminal.ssh-wrap            Use local SSH wrapping\n",
             "    → Automatic setup: `workshop doctor fix ssh-wrap`\n",
-            "    → One-off: `grok wrap ssh <host>`\n",
+            "    → One-off: `workshop wrap ssh <host>`\n",
             "\n",
             "Checks not completed\n",
             "  ? tmux.version                 unavailable\n",
@@ -553,10 +554,10 @@ fn fix_preview_contains_exact_change_and_caveats() {
     assert!(preview.contains("File: "));
     assert!(
         preview.contains(
-            "# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='grok wrap ssh'"
+            "# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='workshop wrap ssh'"
         )
     );
-    assert!(preview.contains("To use once without changing config: `grok wrap ssh <host>`"));
+    assert!(preview.contains("To use once without changing config: `workshop wrap ssh <host>`"));
     assert!(preview.contains("Use `command ssh ...` to bypass the alias."));
     assert!(preview.contains("ssh -f"));
     assert!(preview.contains("ControlPersist"));
@@ -748,7 +749,7 @@ fn json_contract_is_structural_stable_ordered_and_ansi_free() {
                 "ssh": true,
                 "color": {
                     "level": {"status": "available", "value": "256"},
-                    "availableThemes": ["groknight", "grokday", "terminal"],
+                    "availableThemes": ["night", "day", "terminal"],
                     "totalThemes": 6
                 },
                 "keyboard": {"cmd": "dropped", "opt": "native", "os": "macos"},
@@ -787,7 +788,7 @@ fn json_contract_is_structural_stable_ordered_and_ansi_free() {
                     "id": "terminal.ssh-wrap",
                     "disposition": "recommendation",
                     "message": "Use local SSH wrapping",
-                    "remediation": {"fix": "grok wrap ssh <host>", "configPath": null},
+                    "remediation": {"fix": "workshop wrap ssh <host>", "configPath": null},
                     "automaticRemediation": {
                         "fixId": "terminal.ssh-wrap",
                         "command": "workshop doctor fix terminal.ssh-wrap"
@@ -1029,7 +1030,7 @@ fn clipboard_issue_count_preserves_legacy_reports_without_double_counting_named_
 fn new_named_findings_extend_json_without_schema_changes() {
     let mut report = healthy_report();
     report.facts.clipboard.delivery = ClipboardDelivery::Unverified;
-    report.facts.clipboard.fix = Some("grok wrap <ssh command> or /minimal".to_owned());
+    report.facts.clipboard.fix = Some("workshop wrap <ssh command> or /minimal".to_owned());
     report.findings.push(DiagnosticFinding {
         id: crate::diagnostics::CLIPBOARD_DELIVERY_UNVERIFIED_ID,
         disposition: FindingDisposition::Issue,
@@ -1055,7 +1056,7 @@ fn new_named_findings_extend_json_without_schema_changes() {
     assert_eq!(
         json.pointer("/facts/clipboard/fix")
             .and_then(serde_json::Value::as_str),
-        Some("grok wrap <ssh command> or /minimal")
+        Some("workshop wrap <ssh command> or /minimal")
     );
     assert_eq!(
         json.pointer("/findings/0/id")

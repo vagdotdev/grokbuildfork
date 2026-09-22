@@ -1,4 +1,4 @@
-//! Streaming output filter for `grok wrap`: OSC 52 clipboard interception, host-image request handling, and DEC-mode observation.
+//! Streaming output filter for `workshop wrap`: OSC 52 clipboard interception, host-image request handling, and DEC-mode observation.
 //!
 //! `Osc52Filter` sits between the wrap PTY reader and stdout (see `crate::pty_wrap`).
 //! It consumes OSC 52 clipboard sequences (plain and tmux DCS passthrough) and the private host-image request OSC ([`crate::wrap_clipboard_image`]).

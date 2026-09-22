@@ -270,8 +270,8 @@ mod tests {
             let items = cmd.suggest_args(&ctx, "").expect("should return items");
             let groknight = items
                 .iter()
-                .find(|i| i.insert_text == "groknight")
-                .expect("groknight should be in list");
+                .find(|i| i.insert_text == "night")
+                .expect("night should be in list");
             assert!(
                 groknight.description.contains("(active)"),
                 "explicit theme should show (active), got: {}",

@@ -34,13 +34,13 @@ const THEME_CHOICES: &[EnumChoice] = &[
         description: "Follow system dark/light appearance.",
     },
     EnumChoice {
-        canonical: "groknight",
-        display: "Grok Night",
+        canonical: "night",
+        display: "Night",
         description: "Neutral dark with magenta accent.",
     },
     EnumChoice {
-        canonical: "grokday",
-        display: "Grok Day",
+        canonical: "day",
+        display: "Day",
         description: "Light theme for bright environments.",
     },
     EnumChoice {
@@ -258,12 +258,12 @@ const SCREEN_MODE_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "fullscreen",
         display: "Fullscreen",
-        description: "Open plain grok in the standard fullscreen TUI. Default when unset.",
+        description: "Open plain workshop in the standard fullscreen TUI. Default when unset.",
     },
     EnumChoice {
         canonical: "minimal",
         display: "Minimal",
-        description: "Open plain grok in scrollback-native (minimal) mode.",
+        description: "Open plain workshop in scrollback-native (minimal) mode.",
     },
 ];
 
@@ -422,13 +422,13 @@ const VOICE_STT_LANGUAGE_CHOICES: &[EnumChoice] = &[
 /// There is no dark/light filtering: the user can pair any theme with any system-appearance bucket.
 const CONCRETE_THEME_CHOICES: &[EnumChoice] = &[
     EnumChoice {
-        canonical: "groknight",
-        display: "Grok Night",
+        canonical: "night",
+        display: "Night",
         description: "Neutral dark with magenta accent.",
     },
     EnumChoice {
-        canonical: "grokday",
-        display: "Grok Day",
+        canonical: "day",
+        display: "Day",
         description: "Light theme for bright environments.",
     },
     EnumChoice {
@@ -701,8 +701,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "light",
             ],
             kind: SettingKind::Enum {
-                // `Option<String>`: `None` resolves to "groknight"
-                default: "groknight",
+                // `Option<String>`: `None` resolves to "night"
+                default: "night",
                 choices: THEME_CHOICES,
                 supports_preview: true,
             },
@@ -717,8 +717,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
             description: "Theme to use when the system is in dark mode (only with theme=auto).",
             keywords: &["auto", "dark", "theme", "system", "appearance", "night"],
             kind: SettingKind::Enum {
-                // `Option<String>`: `None` falls back to "groknight"
-                default: "groknight",
+                // `Option<String>`: `None` falls back to "night"
+                default: "night",
                 choices: CONCRETE_THEME_CHOICES,
                 supports_preview: true,
             },
@@ -733,8 +733,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
             description: "Theme to use when the system is in light mode (only with theme=auto).",
             keywords: &["auto", "light", "theme", "system", "appearance", "day"],
             kind: SettingKind::Enum {
-                // `Option<String>`: `None` falls back to "grokday"
-                default: "grokday",
+                // `Option<String>`: `None` falls back to "day"
+                default: "day",
                 choices: CONCRETE_THEME_CHOICES,
                 supports_preview: true,
             },
@@ -1542,7 +1542,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Advanced,
             owner: SettingOwner::Shell,
             label: "SSH wrap",
-            description: "Show a `/doctor` tip when an SSH session is not using `grok wrap`.",
+            description: "Show a `/doctor` tip when an SSH session is not using `workshop wrap`.",
             keywords: &[
                 "ssh",
                 "wrap",

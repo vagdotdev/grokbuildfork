@@ -1257,9 +1257,9 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
     }
     let _ = writeln!(w, "Resume this session with:");
     if info.minimal {
-        let _ = writeln!(w, "  grok --minimal --resume {}", info.session_id);
+        let _ = writeln!(w, "  workshop --minimal --resume {}", info.session_id);
     } else {
-        let _ = writeln!(w, "  grok --resume {}", info.session_id);
+        let _ = writeln!(w, "  workshop --resume {}", info.session_id);
     }
 }
 /// Screen-mode relaunch failure fallback (same quit tail as plain resume).
@@ -2307,7 +2307,7 @@ mod tests {
         print_exit_resume_hint(&bare_exit_info("sess-abc", false), 80, &mut buf);
         assert_eq!(
             String::from_utf8(buf).unwrap(),
-            "\nResume this session with:\n  grok --resume sess-abc\n"
+            "\nResume this session with:\n  workshop --resume sess-abc\n"
         );
     }
     #[test]
@@ -2316,7 +2316,7 @@ mod tests {
         print_exit_resume_hint(&bare_exit_info("sess-abc", true), 80, &mut buf);
         assert_eq!(
             String::from_utf8(buf).unwrap(),
-            "\nResume this session with:\n  grok --minimal --resume sess-abc\n"
+            "\nResume this session with:\n  workshop --minimal --resume sess-abc\n"
         );
     }
     #[test]
@@ -2341,7 +2341,7 @@ mod tests {
                 "  Pinned the seed; 200 consecutive green runs.\n",
                 "\n",
                 "Resume this session with:\n",
-                "  grok --resume sess-abc\n",
+                "  workshop --resume sess-abc\n",
             )
         );
     }
@@ -2362,7 +2362,7 @@ mod tests {
         assert!(out.contains(&format!("\n{}…\n", "t".repeat(19))));
         assert!(out.contains(&format!("\n> {}…\n", "p".repeat(17))));
         assert!(out.contains(&format!("\n  {}…\n", "r".repeat(17))));
-        assert!(out.contains("  grok --resume sess-abc\n"));
+        assert!(out.contains("  workshop --resume sess-abc\n"));
     }
     #[test]
     fn print_relaunch_failure_hint_writes_expected_lines() {

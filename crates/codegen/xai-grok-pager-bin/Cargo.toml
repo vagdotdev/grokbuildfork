@@ -55,6 +55,9 @@ xai-tty-utils = { workspace = true }
 # `collect_crashed()` for the startup crash notice.
 xai-grok-active-sessions = { workspace = true }
 xai-grok-config = { workspace = true }
+# Workshop overlay: `isolate_from_grok_build_env` (home + compat env cells) in main.
+xai-dirs = { workspace = true }
+xai-grok-tools = { workspace = true }
 xai-grok-sandbox = { path = "../xai-grok-sandbox", default-features = false }
 xai-grok-extra-ca = { workspace = true }
 

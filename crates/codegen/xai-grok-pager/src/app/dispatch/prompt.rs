@@ -82,6 +82,7 @@ pub(super) fn collect_live_doctor_report_for_terminal(
     if crate::app::voice_mode_enabled() {
         crate::diagnostics::apply_voice_probe(&mut report, true);
     }
+    crate::diagnostics::apply_engine_probe(&mut report);
     Some(report)
 }
 
@@ -632,7 +633,7 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
     use crate::app::workshop::{self, WorkshopConnection, WorkshopTurnKind, WorkshopTurnSpec};
 
     if app.workshop_turn_active {
-        app.show_toast("A model turn is already running (Esc to cancel).");
+        app.show_toast("Still working on your last message — Ctrl+C cancels it, /model switches model.");
         return vec![];
     }
     let Some(tx) = app.workshop_turn_tx.clone() else {
@@ -648,7 +649,7 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
     let kind = match &app.workshop_connection {
         WorkshopConnection::Shell => return vec![],
         WorkshopConnection::Engine { model } => WorkshopTurnKind::Engine {
-            engine: app.workshop_engine.clone(),
+            slot: app.workshop_engine_slot.clone(),
             session: app
                 .workshop_engine_session
                 .clone()

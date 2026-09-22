@@ -34,8 +34,10 @@ pub enum GrokHomeSource {
 pub const WORKSHOP_HOME_DIR_NAME: &str = ".workshop";
 /// Workshop overlay: the primary home override variable.
 pub const WORKSHOP_HOME_ENV: &str = "WORKSHOP_HOME";
-/// Upstream home override variable, accepted as a compatibility alias (with a warning) for at most
-/// two pre-GA releases so existing `GROK_HOME` deployments keep working during migration.
+/// Upstream home override variable. The `workshop` binary strips it from its own environment
+/// before anything resolves a path (`xai-grok-pager-bin/src/main.rs`, gate:config-isolation), so
+/// the product never reads a Grok Build home through it; the alias below exists only so the
+/// upstream test suites, which isolate themselves with `GROK_HOME=<tempdir>`, keep working.
 pub const LEGACY_HOME_ENV: &str = "GROK_HOME";
 
 /// The user's home directory via [`std::env::home_dir`]: `HOME` on Unix, `USERPROFILE` on Windows.

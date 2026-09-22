@@ -628,7 +628,7 @@ mod tests {
 
     #[test]
     fn resume_without_value_then_flag_is_not_eaten() {
-        // `grok --resume --no-leader` (resume most-recent; next token is a flag).
+        // `workshop --resume --no-leader` (resume most-recent; next token is a flag).
         let out = build_screen_mode_relaunch_args(
             args(&["grok", "--resume", "--no-leader"]),
             "sid",
@@ -741,11 +741,11 @@ mod tests {
         // The explicit flag keeps the resume in the right mode if the env is dropped
         assert_eq!(
             screen_mode_relaunch_resume_hint("abc-sid", false),
-            "GROK_SCREEN_MODE=fullscreen grok --fullscreen --resume abc-sid"
+            "GROK_SCREEN_MODE=fullscreen workshop --fullscreen --resume abc-sid"
         );
         assert_eq!(
             screen_mode_relaunch_resume_hint("abc-sid", true),
-            "GROK_SCREEN_MODE=minimal grok --minimal --resume abc-sid"
+            "GROK_SCREEN_MODE=minimal workshop --minimal --resume abc-sid"
         );
     }
 
