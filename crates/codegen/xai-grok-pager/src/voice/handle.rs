@@ -177,11 +177,18 @@ pub(crate) fn commit_interim_into_prompt(app: &mut AppView) -> Option<VoiceInter
 /// Apply a voice event to app state. Returns whether the frame should redraw.
 pub fn handle_voice_event(app: &mut AppView, event: VoiceEvent) -> bool {
     match event {
+        // Workshop overlay: engine progress ("Downloading voice model… 42%") for the banner only
+        VoiceEvent::Status { text } => {
+            super::set_banner_status(&text);
+            true
+        }
         VoiceEvent::InterimTranscript { text } => {
+            super::set_banner_status("");
             // No-op unless recording, so a late interim after a stop can't repopulate the overlay
             app.voice_set_interim(text)
         }
         VoiceEvent::UtteranceFinal { text } => {
+            super::set_banner_status("");
             app.voice_clear_interim();
             // The mic stays open across pauses; the user stops it explicitly, then presses Enter to send
             // The bound target survives a stop (`Stopping`), so a trailing final after an explicit stop still lands
@@ -191,6 +198,7 @@ pub fn handle_voice_event(app: &mut AppView, event: VoiceEvent) -> bool {
             true
         }
         VoiceEvent::Error { message, hint } => {
+            super::set_banner_status("");
             let target = app.voice_recording_target();
             app.voice_reset();
             app.show_toast(&format!("Voice: {message}"));

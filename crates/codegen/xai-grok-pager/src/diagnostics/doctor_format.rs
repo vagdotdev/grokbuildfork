@@ -123,8 +123,10 @@ pub fn format_doctor(report: &DiagnosticReport) -> String {
     };
     out.push_str(&format!("  status       {status}\n"));
 
-    if let Some(voice) = &facts.voice {
+    if facts.voice.is_some() || facts.voice_engine.is_some() {
         out.push_str("\nVoice\n");
+    }
+    if let Some(voice) = &facts.voice {
         match voice {
             VoiceFacts::Device { name, detail } => {
                 out.push_str(&format!("  microphone   {name} ({detail})\n"));
@@ -132,6 +134,27 @@ pub fn format_doctor(report: &DiagnosticReport) -> String {
             VoiceFacts::Missing { .. } => {
                 out.push_str("  microphone   none detected\n");
             }
+        }
+    }
+    if let Some(engine) = &facts.voice_engine {
+        out.push_str(&format!("  provider     {}\n", engine.provider));
+        match (&engine.engine_path, &engine.engine_version) {
+            (Some(path), Some(version)) => {
+                out.push_str(&format!("  engine       {path} ({version})\n"));
+            }
+            (Some(path), None) => out.push_str(&format!(
+                "  engine       {path} (not runnable: {})\n",
+                engine.engine_error.as_deref().unwrap_or("unknown error")
+            )),
+            (None, _) => out.push_str("  engine       not installed\n"),
+        }
+        out.push_str(&format!(
+            "  model        {} ({}, {})\n",
+            engine.model_path, engine.model_tier, engine.model_tier_source
+        ));
+        out.push_str(&format!("  checksum     {}\n", engine.model_status));
+        if let Some(err) = &engine.last_error {
+            out.push_str(&format!("  last error   {err}\n"));
         }
     }
 
