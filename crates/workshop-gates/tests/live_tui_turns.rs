@@ -25,9 +25,7 @@ const FILE_CONTENT: &str = "hello from workshop";
 fn evidence_dir(journey: &str) -> PathBuf {
     let dir = std::env::var_os("WORKSHOP_PTY_EVIDENCE_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/pty-evidence")
-        })
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/pty-evidence"))
         .join(format!("live-{journey}"));
     std::fs::create_dir_all(&dir).expect("create evidence dir");
     dir
@@ -50,8 +48,7 @@ fn wait_for(h: &mut PtyHarness, text: &str, secs: u64) {
 /// Press Down until the `›`-marked (selected) row contains `needle`.
 fn move_selection_to(h: &mut PtyHarness, needle: &str) {
     for _ in 0..60 {
-        if h
-            .screen_contents()
+        if h.screen_contents()
             .lines()
             .any(|l| l.contains('\u{203a}') && l.contains(needle))
         {
@@ -75,7 +72,12 @@ struct Journey {
 
 /// Spawn the TUI on a fresh HOME in a fresh git repo, under strace when available. `extra_path`
 /// is prepended to `PATH` (rails proof: a `bin/` of fake vendor CLIs).
-fn spawn(journey: &str, bin: &Path, extra_env: &[(&str, &str)], extra_path: Option<&Path>) -> Journey {
+fn spawn(
+    journey: &str,
+    bin: &Path,
+    extra_env: &[(&str, &str)],
+    extra_path: Option<&Path>,
+) -> Journey {
     let home = tempfile::tempdir().expect("tempdir");
     let cwd = tempfile::tempdir().expect("tempdir");
     std::process::Command::new("git")
@@ -151,9 +153,8 @@ fn pick_model_row(j: &mut Journey, row: &str, ready_text: &str) {
     j.h.inject_keys(b"\r").unwrap();
     // The picker closes once the shell has the model (Direct API: config.toml written + models
     // reloaded; engine: `opencode serve` up + catalog fetched).
-    if let Err(e) = j
-        .h
-        .wait_for_text_absent("connect a model", Duration::from_secs(120))
+    if let Err(e) =
+        j.h.wait_for_text_absent("connect a model", Duration::from_secs(120))
     {
         panic!(
             "picker never closed after selecting {row:?}: {e}\nscreen:\n{}",
@@ -185,7 +186,11 @@ fn run_write_turn(j: &mut Journey, secs: u64) -> String {
         j.h.update(Duration::from_millis(500));
         tick += 1;
         if tick % 10 == 0 {
-            snapshot(&j.h, &j.dir, &format!("04-turn-{:03}s", started.elapsed().as_secs()));
+            snapshot(
+                &j.h,
+                &j.dir,
+                &format!("04-turn-{:03}s", started.elapsed().as_secs()),
+            );
         }
         if let Ok(text) = std::fs::read_to_string(&target)
             && text.contains(FILE_CONTENT)
@@ -219,20 +224,29 @@ fn run_cancel_turn(j: &mut Journey) {
     while started.elapsed() < Duration::from_secs(60) {
         j.h.update(Duration::from_millis(300));
         let screen = j.h.screen_contents();
-        if screen.contains("history") || screen.contains("editor") || screen.contains("Esc to interrupt")
+        if screen.contains("history")
+            || screen.contains("editor")
+            || screen.contains("Esc to interrupt")
         {
             streaming = true;
             break;
         }
     }
-    assert!(streaming, "turn never started streaming:\n{}", j.h.screen_contents());
+    assert!(
+        streaming,
+        "turn never started streaming:\n{}",
+        j.h.screen_contents()
+    );
     snapshot(&j.h, &j.dir, "06-cancel-midstream");
     // Ctrl+C twice (the two-step cancel gesture on an empty prompt with a running turn).
     j.h.inject_keys(b"\x03").unwrap();
     j.h.update(Duration::from_millis(300));
     j.h.inject_keys(b"\x03").unwrap();
     if let Err(e) = j.h.wait_for_text("cancelled", Duration::from_secs(30)) {
-        panic!("turn was not cancelled: {e}\nscreen:\n{}", j.h.screen_contents());
+        panic!(
+            "turn was not cancelled: {e}\nscreen:\n{}",
+            j.h.screen_contents()
+        );
     }
     j.h.update(Duration::from_millis(500));
     snapshot(&j.h, &j.dir, "07-cancelled");
@@ -263,7 +277,10 @@ fn assert_no_forbidden_egress(dir: &Path) -> String {
     let log = dir.join("strace.log");
     let Ok(text) = std::fs::read_to_string(&log) else {
         // No strace on PATH: the network gate is covered by scripts/no-egress-smoke.sh instead.
-        eprintln!("no strace.log ({}); skipping egress assertion", log.display());
+        eprintln!(
+            "no strace.log ({}); skipping egress assertion",
+            log.display()
+        );
         return String::new();
     };
     let forbidden = ["x.ai", "grok.com", "mixpanel", "googleapis", "sentry"];
@@ -352,7 +369,10 @@ fn opencode_big_pickle_turn_with_tool_call() {
     run_cancel_turn(&mut j);
     // 3. A follow-up turn on the same session recalls the earlier write (resume/memory intact).
     let recalled = run_memory_turn(&mut j, 120);
-    assert!(recalled.contains(FILE_CONTENT), "memory turn recalled: {recalled:?}");
+    assert!(
+        recalled.contains(FILE_CONTENT),
+        "memory turn recalled: {recalled:?}"
+    );
     assert_no_forbidden_egress(&j.dir);
     finish(
         j,
@@ -442,7 +462,8 @@ fn sh_quote(s: &str) -> String {
 fn install_fake(bin_dir: &Path, state_dir: &Path, v: &FakeVendor, logged_in: bool) {
     let state = state_dir.join(v.binary);
     std::fs::create_dir_all(&state).expect("fake state dir");
-    std::fs::copy(fixtures_dir().join(v.fixture), state.join("fixture.jsonl")).expect("copy fixture");
+    std::fs::copy(fixtures_dir().join(v.fixture), state.join("fixture.jsonl"))
+        .expect("copy fixture");
     if logged_in {
         std::fs::write(state.join("logged_in"), "1").unwrap();
     }
@@ -505,7 +526,11 @@ fn install_fakes(logged_in: bool) -> Fakes {
     for v in [&FAKE_CLAUDE, &FAKE_CODEX, &FAKE_CURSOR] {
         install_fake(&bin, &state, v, logged_in);
     }
-    Fakes { _dir: dir, bin, state }
+    Fakes {
+        _dir: dir,
+        bin,
+        state,
+    }
 }
 
 /// Open the picker's Subscriptions tab and wait for the three rails.
@@ -536,11 +561,13 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
     j.h.inject_keys(b"\r").unwrap();
     // The anonymous session activates (async); the picker closes and an agent composer appears,
     // labeled for the adapter connection (`Claude · …`).
-    if let Err(e) = j
-        .h
-        .wait_for_text_absent("connect a model", Duration::from_secs(120))
+    if let Err(e) =
+        j.h.wait_for_text_absent("connect a model", Duration::from_secs(120))
     {
-        panic!("picker never closed after selecting a Claude model: {e}\n{}", j.h.screen_contents());
+        panic!(
+            "picker never closed after selecting a Claude model: {e}\n{}",
+            j.h.screen_contents()
+        );
     }
     wait_for(&mut j.h, "Claude \u{00b7}", 30);
     snapshot(&j.h, &j.dir, "03-connected-claude");
@@ -563,7 +590,10 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
     j.h.update(Duration::from_millis(300));
     j.h.inject_keys(b"\x03").unwrap();
     if let Err(e) = j.h.wait_for_text("Turn cancelled", Duration::from_secs(20)) {
-        panic!("adapter turn was not cancelled: {e}\n{}", j.h.screen_contents());
+        panic!(
+            "adapter turn was not cancelled: {e}\n{}",
+            j.h.screen_contents()
+        );
     }
     assert!(
         j.h.is_running().unwrap_or(false),
