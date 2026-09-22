@@ -14,7 +14,7 @@
 # Comments, changelog, LICENSE and the optional xAI provider are allowlisted by construction.
 set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO_ROOT"
+cd "$REPO_ROOT" || exit 2
 fail=0
 violation() { printf 'VIOLATION: %s\n' "$*" >&2; fail=1; }
 ok() { printf 'ok: %s\n' "$*"; }
