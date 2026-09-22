@@ -785,9 +785,13 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
     let announcements = app.active_announcements.clone();
     let restricted = app.tier_restricted_commands.clone();
     let plugins_visible = !app.appearance.disable_plugins;
+    // Workshop: a new/revealed agent shows the active connection's composer label (`Big Pickle ·
+    // OpenCode`, `Claude · {model}`); `None` for Direct/Local (Shell) → the shell model name shows.
+    let workshop_label = app.workshop_connection.composer_label();
     let Some(agent) = app.agents.get_mut(&agent_id) else {
         return;
     };
+    agent.workshop_model_label = workshop_label;
     agent.prompt.set_compact(compact);
     agent.prompt.adopt_slash_mru(slash_mru);
     agent.prompt.adopt_command_tags(command_tags);

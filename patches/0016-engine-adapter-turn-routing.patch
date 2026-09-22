@@ -1,8 +1,8 @@
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
-index 6aeb988a..5faa1b48 100644
+index f968c8383af60f06bdf18956d215e03a69f22471..271493fee59ad3e4c1bc7ac5bcd308f9317eb17d 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
-@@ -739,6 +739,13 @@ pub struct AgentView {
+@@ -740,6 +740,13 @@ pub struct AgentView {
      pub(crate) session_binding_epoch: u32,
      pub scrollback: ScrollbackState,
      pub prompt: PromptWidget,
@@ -17,10 +17,10 @@ index 6aeb988a..5faa1b48 100644
      pub tip_typing_dismissed: bool,
      pub todo: TodoPane,
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
-index 78db8552..23ec102e 100644
+index ae3b381c96a799f218bb11fd00b2af86c0fc0fe5..64b8ac8d546002374cafa838370c3491781b0ac2 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
-@@ -133,6 +133,8 @@ impl AgentView {
+@@ -135,6 +135,8 @@ impl AgentView {
              session_binding_epoch: 0,
              scrollback,
              prompt,
@@ -29,7 +29,7 @@ index 78db8552..23ec102e 100644
              tip_typing_dismissed: false,
              todo: TodoPane::new(),
              tasks: TasksPane::new(),
-@@ -860,6 +862,7 @@ impl AgentView {
+@@ -874,6 +876,7 @@ impl AgentView {
          self.session.state.is_turn_running()
              || self.session.state.is_compact_running()
              || (self.wake_turn_active() && !self.wake_turn_cancelling())
@@ -38,7 +38,7 @@ index 78db8552..23ec102e 100644
      /// Whether a local or wake cancel is still in flight.
      pub(crate) fn any_cancel_pending(&self) -> bool {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-index 3006f1f0..aa1edca2 100644
+index a4d7773304014b2349533be5c94364941764e70c..dfb087a93a8660557dd60424629953c27beb1707 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 @@ -614,6 +614,79 @@ pub(super) fn dispatch_send_prompt_inner(
@@ -139,10 +139,10 @@ index 3006f1f0..aa1edca2 100644
      let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
      let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
-index e792108a..ef3c6be4 100644
+index a80f3faf663258996282b179c06a81cdcca99339..662108e64381fd8e70e106d6534d84dbc29c6c40 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
-@@ -736,9 +736,13 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
+@@ -785,9 +785,13 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
      let announcements = app.active_announcements.clone();
      let restricted = app.tier_restricted_commands.clone();
      let plugins_visible = !app.appearance.disable_plugins;
@@ -157,12 +157,12 @@ index e792108a..ef3c6be4 100644
      agent.prompt.adopt_slash_mru(slash_mru);
      agent.prompt.adopt_command_tags(command_tags);
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs
-index e9666d35..17db253d 100644
+index f2985d30497ca4688284d6898004a48cf4ba182c..b9ce17d2b79fa91f274b1ba8c115a64c96984d0b 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs
-@@ -5947,3 +5947,35 @@ mod prompt_stash_dispatch_tests {
-         assert!(agent.prompt_stash.is_some());
-     }
+@@ -6708,3 +6708,35 @@ fn send_now_from_dashboard_view_still_flushes_image_notice() {
+     );
+     assert!(toast_text(&app, AgentId(0)).is_none());
  }
 +
 +// gate:overlay-isolation — the Workshop adapter/engine routing must not perturb the ACP path for
@@ -197,10 +197,10 @@ index e9666d35..17db253d 100644
 +    assert!(app.workshop_turn_stream_entry.is_none());
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs
-index 5de539de..77fee083 100644
+index 40625217eb642667a8cb31d5cde5adea48e33303..e04fb559ff0ca7e9d35ef501d6b75f8cc0ab318a 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs
-@@ -53,6 +53,14 @@ pub(super) fn apply_cancel_subagents_preference_global(app: &mut AppView, stop:
+@@ -55,6 +55,14 @@ pub(super) fn apply_cancel_subagents_preference_global(app: &mut AppView, stop:
  }
  
  pub(super) fn dispatch_cancel_turn(app: &mut AppView) -> Vec<Effect> {
