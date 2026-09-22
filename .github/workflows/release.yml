@@ -178,10 +178,18 @@ jobs:
       # comparisons). Both names so the tree works before and after the branding patch.
       GROK_VERSION: ${{ needs.meta.outputs.version }}
       WORKSHOP_VERSION: ${{ needs.meta.outputs.version }}
-      # Hardened `release-dist` profile from Cargo.toml (thin LTO, codegen-units=1),
-      # stripped for distribution. The `release-dist` *cargo feature* is deliberately
-      # not enabled: it wires remote-settings behaviour Workshop does not ship.
+      # `release-dist` profile from Cargo.toml, stripped for distribution. Upstream tunes that
+      # profile for its own build fleet (thin LTO, codegen-units=1, line-table debuginfo); on
+      # hosted runners (16 GB, and 7 GB on macos-15 arm64) the single codegen unit with debuginfo
+      # starves the machine mid-build (v0.1.0: "The hosted runner lost communication with the
+      # server" after 1h33m, runner shutdown on arm64). Override the memory-hungry knobs: no LTO,
+      # 16 codegen units, no debuginfo (it would be stripped anyway).
+      # The `release-dist` *cargo feature* is deliberately not enabled: it wires
+      # remote-settings behaviour Workshop does not ship.
       CARGO_PROFILE_RELEASE_DIST_STRIP: symbols
+      CARGO_PROFILE_RELEASE_DIST_LTO: "off"
+      CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS: "16"
+      CARGO_PROFILE_RELEASE_DIST_DEBUG: "0"
     steps:
       # A re-triggered run (a matrix leg lost its runner, say) only rebuilds what is missing:
       # `meta` has already purged the draft if the commit moved, so assets present here were
