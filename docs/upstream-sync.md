@@ -216,3 +216,8 @@ landed. They assume:
   are created on first use.
 - Schedule: daily 06:23 UTC, plus `workflow_dispatch` with `upstream_ref`,
   `force`, `skip_verify`.
+- On-demand without `actions: write` (App installation tokens cannot dispatch):
+  push a `sync/**` tag — `git tag sync/$(date +%Y%m%d-%H%M) && git push origin --tags`
+  — which runs like `workflow_dispatch` with `upstream_ref=main`, `force=true`
+  against the default branch (never the tag); delete the tag afterwards
+  (`git push origin :refs/tags/sync/<stamp>`).

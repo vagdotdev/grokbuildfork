@@ -3,11 +3,18 @@
 # builds pager-bin + overlay crates, runs the no-xAI / no-theft gates and opens
 # a sync PR. It never merges: a failed gate patch, build or gate suite opens a
 # red draft PR for a human. Policy and local usage: docs/upstream-sync.md.
+#
+# Triggers: daily schedule; workflow_dispatch; or pushing a `sync/**` tag, which
+# needs only `contents: write` (App installation tokens cannot dispatch) and
+# behaves like workflow_dispatch with upstream_ref=main, force=true. The tag is
+# only a trigger: the run checks out the default branch, never the tag.
 name: sync-upstream
 
 on:
   schedule:
     - cron: "23 6 * * *"
+  push:
+    tags: ["sync/**"]
   workflow_dispatch:
     inputs:
       upstream_ref:
@@ -38,6 +45,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: "0"
+  # Strip debug symbols: verify.sh builds the check graph plus the gate/adapter
+  # test binaries into one target/, which fills the hosted runner's disk with
+  # debuginfo on (pairs with the "Free disk space" step, same as ci.yml no-xai).
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
   PROTOC_VERSION: "29.3"
   # sha256 of protoc-29.3-linux-x86_64.zip, same digest bin/protoc (dotslash) pins.
   PROTOC_SHA256: 3e866620c5be27664f3d2fa2d656b5f3e09b5152b42f1bedbf427b333e90021a
@@ -48,8 +60,37 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
+      - name: Resolve effective inputs
+        # One place derives what the run does. A `sync/**` tag push is the
+        # dispatch-less trigger: main, forced, full verify. Everything below
+        # reads these outputs, never inputs.* directly.
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_UPSTREAM_REF: ${{ inputs.upstream_ref }}
+          INPUT_FORCE: ${{ inputs.force }}
+          INPUT_SKIP_VERIFY: ${{ inputs.skip_verify }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = push ]; then
+            upstream_ref=main force=true skip_verify=false
+          else
+            upstream_ref="${INPUT_UPSTREAM_REF:-main}" force="${INPUT_FORCE:-false}" skip_verify="${INPUT_SKIP_VERIFY:-false}"
+          fi
+          {
+            echo "upstream_ref=$upstream_ref"
+            echo "force=$force"
+            echo "skip_verify=$skip_verify"
+            echo "base_branch=${DEFAULT_BRANCH:-main}"
+          } >> "$GITHUB_OUTPUT"
+          echo "event=$EVENT_NAME ref=$GITHUB_REF upstream_ref=$upstream_ref force=$force skip_verify=$skip_verify base_branch=${DEFAULT_BRANCH:-main}"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # A `sync/**` tag only triggers the run; the sync branch and PR are cut
+          # from the default branch. Schedule/dispatch keep their own ref.
+          ref: ${{ github.event_name == 'push' && steps.plan.outputs.base_branch || github.ref }}
           # Full history: the import commit gets the upstream commit as second
           # parent and `git apply --3way` needs the pre-image blobs.
           fetch-depth: 0
@@ -59,6 +100,16 @@ jobs:
         run: |
           git config user.name "workshop-sync[bot]"
           git config user.email "workshop-sync@users.noreply.github.com"
+
+      - name: Free disk space
+        # Same reclaim as ci.yml `no-xai`: the hosted runner's ~14 GB root fills
+        # up with the check + test target/; drop the preinstalled SDKs we never use.
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android \
+            /usr/local/graalvm /usr/local/share/powershell /usr/local/share/chromium \
+            /opt/hostedtoolcache/CodeQL /usr/lib/jvm "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune --all --force || true
+          df -h /
 
       - name: Install protoc ${{ env.PROTOC_VERSION }}
         run: |
@@ -81,18 +132,19 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: sync-upstream
-          # Only the scheduled/default-branch runs refresh the cache.
-          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          # Only default-branch runs refresh the cache: schedule/dispatch on the
+          # default branch, or a `sync/**` tag (which checks out that branch).
+          save-if: ${{ github.event_name == 'push' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
       - name: Fetch upstream, replace tree, replay patches, verify, open PR
         id: sync
         env:
           GH_TOKEN: ${{ secrets.SYNC_PR_TOKEN || github.token }}
           SYNC_REPORT_DIR: ${{ runner.temp }}/workshop-sync-report
-          INPUT_UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
-          INPUT_FORCE: ${{ inputs.force || 'false' }}
-          INPUT_SKIP_VERIFY: ${{ inputs.skip_verify || 'false' }}
-          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          INPUT_UPSTREAM_REF: ${{ steps.plan.outputs.upstream_ref }}
+          INPUT_FORCE: ${{ steps.plan.outputs.force }}
+          INPUT_SKIP_VERIFY: ${{ steps.plan.outputs.skip_verify }}
+          BASE_BRANCH: ${{ steps.plan.outputs.base_branch }}
         run: |
           set -euo pipefail
           args=(--pr create --base "$BASE_BRANCH" --ref "$INPUT_UPSTREAM_REF")
