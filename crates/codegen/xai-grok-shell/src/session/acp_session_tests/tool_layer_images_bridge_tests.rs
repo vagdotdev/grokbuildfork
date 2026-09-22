@@ -1,6 +1,9 @@
 //! Wiring tests for MCP tool-layer images through `handle_bridge_tool_success`.
 use super::support::*;
 use super::*;
+// Workshop: the public 1.0.32 snapshot ships this test without the trait import, so the whole
+// `xai-grok-shell` lib test target failed to compile. Kept as a `product` patch until upstream fixes it.
+use base64::Engine as _;
 use xai_grok_sampling_types::{ContentPart, ConversationItem};
 use xai_grok_tools::types::output::{MCPOutput, ToolOutput, ToolRunResult};
 use xai_grok_tools::util::base64_images::{ExtractedImage, IMAGE_CONTENT_PLACEHOLDER};
