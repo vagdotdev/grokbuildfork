@@ -104,8 +104,23 @@ jobs:
     name: no-xai gates (required)
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      # Strip debug symbols from the many dev/test builds so the shared `target/` stays small
+      # enough for the hosted runner's disk (pairs with the reclaim step below).
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
+      - name: Free disk space
+        # This job builds the whole workspace several times (gates, overlay + upstream tests, the
+        # pager lib suite, the binary) with a shared `target/`; the hosted runner's ~14 GB root fills
+        # up (`No space left on device`). Reclaim the preinstalled SDKs we never use (~25 GB).
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android \
+            /usr/local/graalvm /usr/local/share/powershell /usr/local/share/chromium \
+            /opt/hostedtoolcache/CodeQL /usr/lib/jvm "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune --all --force || true
+          df -h /
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.92.0
