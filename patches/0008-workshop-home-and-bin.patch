@@ -129,10 +129,10 @@ index e04d7b12..877b1334 100644
  }
  
 diff --git a/crates/codegen/xai-grok-pager-bin/Cargo.toml b/crates/codegen/xai-grok-pager-bin/Cargo.toml
-index 4e1b6883..f90ce5c9 100644
+index d66f3936..e64ffb1a 100644
 --- a/crates/codegen/xai-grok-pager-bin/Cargo.toml
 +++ b/crates/codegen/xai-grok-pager-bin/Cargo.toml
-@@ -4,20 +4,23 @@ version = "1.0.32"
+@@ -4,20 +4,23 @@ version = "1.0.38"
  edition.workspace = true
  license = "Apache-2.0"
  authors = ["xAI"]

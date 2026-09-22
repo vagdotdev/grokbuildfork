@@ -75,7 +75,7 @@ index 7511a050..480640e2 100644
          assert!(!is_xai_api_url("https://api.anthropic.com/v1"));
          assert!(!is_xai_api_url("https://generativelanguage.googleapis.com"));
 diff --git a/crates/codegen/xai-grok-shell/src/agent/config_tests.rs b/crates/codegen/xai-grok-shell/src/agent/config_tests.rs
-index 756a9691..aba0a9b0 100644
+index 6c1e17a6..bb66da26 100644
 --- a/crates/codegen/xai-grok-shell/src/agent/config_tests.rs
 +++ b/crates/codegen/xai-grok-shell/src/agent/config_tests.rs
 @@ -3201,7 +3201,7 @@ fn e2e_default_model_with_session_routes_to_proxy() {

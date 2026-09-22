@@ -1,12 +1,9 @@
-# Workshop overlay: the exact upstream Grok Build snapshot this tree is built on.
-# Read and rewritten by scripts/sync/* (docs/upstream-sync.md); flat TOML, string values only.
-#
-# git_sha is the public snapshot commit on xai-org/grok-build ("Synced from monorepo"). The fork
-# commit aca883c7 ("Sync with upstream Grok Build") has the identical tree, so the overlay's
-# patches/ diff against git_sha directly.
-# source_rev is xAI's internal monorepo pointer (upstream SOURCE_REV); informational, do not fetch.
+# Upstream snapshot the upstream-owned tree mirrors. Managed by
+# scripts/sync/update-lockfile.sh; edit by running the sync, not by hand.
+# source_rev is xAI's internal monorepo pointer (upstream SOURCE_REV); it is
+# informational only and is never fetched.
 source = "https://github.com/xai-org/grok-build"
-git_sha = "482711333c7195dc16a272777f86086d615e2afb"
-source_rev = "be7ce6e8cffe46d20bef9834b211616082ee866b"
-version = "1.0.32"
-fetched_at = "2026-09-21"
+git_sha = "4247f661689354b831191f11eeeac8424993fe3d"
+source_rev = "9bb727ccdff0a793ee73bcde4e2e09cbef6b5387"
+version = "1.0.38"
+fetched_at = "2026-09-22"

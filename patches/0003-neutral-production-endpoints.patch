@@ -78,7 +78,7 @@ index 8c1e9633..f5fec182 100644
              changelog.markdown.as_deref(),
              Some("# seeded offline md\n"),
 diff --git a/crates/codegen/xai-grok-shell/src/agent/config.rs b/crates/codegen/xai-grok-shell/src/agent/config.rs
-index cadd3501..1658d8ba 100644
+index b3b09925..db52f8ad 100644
 --- a/crates/codegen/xai-grok-shell/src/agent/config.rs
 +++ b/crates/codegen/xai-grok-shell/src/agent/config.rs
 @@ -45,7 +45,8 @@ pub const DEFAULT_AGENT_TYPE: &str = "grok-build-plan";
@@ -91,7 +91,7 @@ index cadd3501..1658d8ba 100644
  pub const XAI_API_BASE_URL_DEFAULT: &str = "https://api.x.ai/v1";
  const NO_INLINE_CITATIONS_RESPONSE_INCLUDE: &str = "no_inline_citations";
  /// One or more environment variable names that may hold a model API key.
-@@ -4620,13 +4621,35 @@ pub(crate) fn first_own_credential(
+@@ -4628,13 +4629,35 @@ pub(crate) fn first_own_credential(
          .map(str::to_owned)
          .or_else(|| env_key.and_then(EnvKeys::resolve_value))
  }
@@ -129,10 +129,10 @@ index cadd3501..1658d8ba 100644
              Some(key),
              info.base_url.clone(),
 diff --git a/crates/codegen/xai-grok-workspace/src/handle.rs b/crates/codegen/xai-grok-workspace/src/handle.rs
-index 60ade535..7575ea4d 100644
+index 593bfeb6..aa7845dd 100644
 --- a/crates/codegen/xai-grok-workspace/src/handle.rs
 +++ b/crates/codegen/xai-grok-workspace/src/handle.rs
-@@ -4289,8 +4289,9 @@ pub(crate) async fn build_local_workspace(
+@@ -4370,8 +4370,9 @@ pub(crate) async fn build_local_workspace(
              workspace_home.display()
          ))
      })?;

@@ -123,7 +123,7 @@ index 4607a00d..fa2bb8a2 100644
          let writer = Arc::new(
              AuthManager::new(dir.path(), cfg.clone()).with_proxy_base_url("http://127.0.0.1:1"),
 diff --git a/crates/codegen/xai-grok-login/src/manager_tests.rs b/crates/codegen/xai-grok-login/src/manager_tests.rs
-index 236358bb..e785913e 100644
+index 2b9423b0..d4aca8a5 100644
 --- a/crates/codegen/xai-grok-login/src/manager_tests.rs
 +++ b/crates/codegen/xai-grok-login/src/manager_tests.rs
 @@ -155,7 +155,13 @@ fn has_usable_token_covers_memory_and_disk() {
