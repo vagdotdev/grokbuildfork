@@ -120,6 +120,15 @@ jobs:
             /opt/hostedtoolcache/CodeQL /usr/lib/jvm "$AGENT_TOOLSDIRECTORY" || true
           sudo docker image prune --all --force || true
           df -h /
+      - name: Enable unprivileged user namespaces
+        # Ubuntu 24.04 runners restrict unprivileged user namespaces via AppArmor, so the
+        # network-namespaced gates (`unshare -rn` in no-egress-smoke.sh / no-theft-fs-audit.sh) fail
+        # with `write failed /proc/self/uid_map: Operation not permitted`. Re-enable them (root via
+        # passwordless sudo). Both toggles are best-effort so the step is a no-op on older images.
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          unshare -rn true && echo "unshare -rn works" || echo "WARNING: unshare -rn still restricted"
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.92.0
@@ -173,6 +182,8 @@ jobs:
         run: cargo test -p workshop-gates --test live_tui_turns rails_ -- --nocapture --include-ignored
       - name: Upload evidence
         if: always()
+        # Evidence upload is diagnostic; an org artifact-storage quota must not fail the required gate.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: no-xai-evidence
