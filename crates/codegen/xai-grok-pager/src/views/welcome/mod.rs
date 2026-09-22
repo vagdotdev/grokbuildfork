@@ -544,13 +544,10 @@ pub(super) fn render_version_badge(
         ));
         spans.push(sep.clone());
     }
-    if show_api_key && is_api_key_auth {
-        spans.push(Span::styled(
-            "Logged in with API key",
-            Style::default().fg(theme.gray),
-        ));
-        spans.push(sep);
-    }
+    // Workshop: the non-interactive method also carries the anonymous sentinel of every keyless
+    // connection (OpenCode engine, Kilo pool), so "Logged in with API key" would be wrong on a
+    // first-run home; the composer names the active connection instead.
+    let _ = (show_api_key, is_api_key_auth, sep);
 
     let channel = xai_grok_update::channel_label();
     match &mode {
