@@ -4,10 +4,20 @@
 #   scripts/no-xai-scan.sh                           sources, plus the built binary when target/{debug,release}/workshop exists
 #   scripts/no-xai-scan.sh --sources                 scan default-path sources (fast; runs on every PR)
 #   scripts/no-xai-scan.sh --binary target/debug/workshop
-#                                                    count forbidden strings in the built binary and compare
-#                                                    against scripts/no-xai-binary-baseline.txt (regression = fail)
-#   scripts/no-xai-scan.sh --binary BIN --write-baseline
-#                                                    rewrite the baseline after a reviewed, justified change
+#                                                    every distinct string in the binary that names a forbidden
+#                                                    host must be one of the reviewed contexts listed in
+#                                                    scripts/no-xai-binary-baseline.txt (anything else = fail);
+#                                                    the must-be-zero needles may not appear at all
+#   scripts/no-xai-scan.sh --binary BIN --show       also print every matching string and which context
+#                                                    covers it (for reviewing a baseline change)
+#
+# The binary check is independent of codegen units, LTO and section layout: `strings` output is
+# de-duplicated (`sort -u`) and matched against *contexts* (substrings of the reviewed literals),
+# not counted. Raw counts drift with every profile — the same literal is emitted once per codegen
+# unit that inlines it, and adjacent non-NUL-terminated Rust literals fuse into one `strings`
+# line with whatever neighbour the linker chose — so a count baseline written from a debug build
+# fails a release build for no semantic reason. A regression here means a *new* string that
+# names an xAI/Mixpanel host: add a context to the baseline only after reviewing where it comes from.
 #
 # The source scan is deliberately narrow: it checks the compile-time defaults that first run hits
 # (docs/workshop-production-plan.md section 1, gates 1-4) plus the token-theft markers (gate:no-theft).
@@ -146,39 +156,62 @@ NEEDLES=(auth.x.ai accounts.x.ai cli-chat-proxy.grok.com x.ai/cli @xai-official 
 # in the milestone B string patch, so any reappearance is a regression, not a baseline drift).
 ZERO_NEEDLES=(@xai-official grok-build-public-artifacts xai-org-shared/grok-build x.ai/cli cli-chat-proxy.grok.com)
 
+# Printable ASCII runs of >= 6 bytes from the whole file. GNU binutils on Linux; Xcode CLT ships
+# `strings` on macOS (llvm-strings underneath) with the same -a/-n flags; a plain Python fallback
+# keeps the gate alive on a runner without either.
+binary_strings() {
+  if command -v strings >/dev/null 2>&1; then strings -a -n 6 "$1"
+  elif command -v llvm-strings >/dev/null 2>&1; then llvm-strings -a -n 6 "$1"
+  else
+    python3 - "$1" <<'PY'
+import re, sys
+with open(sys.argv[1], 'rb') as f:
+    for m in re.finditer(rb'[\x20-\x7e]{6,}', f.read()):
+        sys.stdout.write(m.group().decode('ascii') + '\n')
+PY
+  fi
+}
+
 scan_binary() {
-  local bin="$1" write="${2:-}"
+  local bin="$1" show="${2:-}"
   [ -f "$bin" ] || { violation "binary not found: $bin"; return; }
+  [ -f "$BASELINE" ] || { violation "no $BASELINE (reviewed contexts); see the header of this script"; return; }
   local tmp; tmp="$(mktemp)"
-  strings -a -n 6 "$bin" > "$tmp"
-  local report=""
+  binary_strings "$bin" | LC_ALL=C sort -u > "$tmp"
+  local n bn line frag rest covered distinct unreviewed zero
   for n in "${NEEDLES[@]}"; do
-    local c; c="$(grep -F -c -- "$n" "$tmp" || true)"
-    report+="$n $c"$'\n'
-    printf 'binary: %-32s %s\n' "$n" "$c"
+    zero=0; for bn in "${ZERO_NEEDLES[@]}"; do [ "$bn" = "$n" ] && zero=1; done
+    # Reviewed contexts for this needle: `needle<TAB>context` lines of the baseline.
+    local contexts=() seen=""
+    while IFS=$'\t' read -r bn frag; do
+      [ "$bn" = "$n" ] && [ -n "$frag" ] && contexts+=("$frag")
+    done < <(grep -v '^[[:space:]]*#' "$BASELINE")
+    distinct=0 unreviewed=0
+    while IFS= read -r line; do
+      distinct=$((distinct + 1))
+      # Delete every reviewed context; a needle that survives is an unreviewed string.
+      rest="$line" covered=""
+      for frag in ${contexts[@]+"${contexts[@]}"}; do
+        if [[ "$rest" == *"$frag"* ]]; then
+          rest="${rest//"$frag"/}"; covered+="${covered:+ | }$frag"; seen+=$'\n'"$frag"
+        fi
+      done
+      if [ "$zero" = 1 ] || [[ "$rest" == *"$n"* ]]; then
+        unreviewed=$((unreviewed + 1))
+        violation "binary: string names '$n'$([ "$zero" = 1 ] && echo ' (must be absent)' || echo " and no reviewed context in $BASELINE covers it"):"
+        printf '    %s\n' "${line:0:240}" >&2
+      elif [ "$show" = "--show" ]; then
+        printf '    [%s] %s\n' "$covered" "${line:0:200}"
+      fi
+    done < <(grep -F -- "$n" "$tmp" || true)
+    printf 'binary: %-30s distinct strings %-3s unreviewed %s\n' "$n" "$distinct" "$unreviewed"
+    # Ratchet down: a reviewed context that no longer occurs should leave the baseline.
+    for frag in ${contexts[@]+"${contexts[@]}"}; do
+      case "$seen" in *$'\n'"$frag"*) ;; *) echo "note: reviewed context for '$n' no longer in the binary; drop it from $BASELINE: $frag" >&2 ;; esac
+    done
   done
   rm -f "$tmp"
-  if [ "$write" = "--write-baseline" ]; then
-    printf '%s' "$report" > "$BASELINE"; ok "wrote $BASELINE"; return
-  fi
-  for n in "${ZERO_NEEDLES[@]}"; do
-    local c; c="$(printf '%s' "$report" | awk -v n="$n" '$1==n{print $2}')"
-    [ "$c" = "0" ] || violation "binary contains '$n' ($c occurrences); must be 0"
-  done
-  if [ -f "$BASELINE" ]; then
-    while read -r n base; do
-      [ -z "$n" ] && continue
-      local c; c="$(printf '%s' "$report" | awk -v n="$n" '$1==n{print $2}')"
-      if [ "${c:-0}" -gt "$base" ]; then
-        violation "binary: '$n' count $c exceeds reviewed baseline $base (regression)"
-      elif [ "${c:-0}" -lt "$base" ]; then
-        echo "note: '$n' dropped to $c (baseline $base); run --write-baseline to ratchet down" >&2
-      fi
-    done < "$BASELINE"
-    ok "binary counts within $BASELINE"
-  else
-    violation "no $BASELINE; run with --write-baseline after review"
-  fi
+  [ "$fail" = 0 ] && ok "binary: every forbidden-host string is a reviewed context in $BASELINE; must-be-zero needles absent"
 }
 
 case "${1:-}" in
@@ -191,6 +224,8 @@ case "${1:-}" in
       if [ -f "$bin" ]; then scan_binary "$bin"; break; fi
     done
     ;;
-  *) sed -n '2,13p' "$0"; exit 64 ;;
+  *) sed -n '2,12p' "$0"; exit 64 ;;
 esac
-[ "$fail" = 0 ] && { echo "no-xai-scan: PASS"; exit 0; } || { echo "no-xai-scan: FAIL" >&2; exit 1; }
+if [ "$fail" = 0 ]; then echo "no-xai-scan: PASS"; exit 0; fi
+echo "no-xai-scan: FAIL" >&2
+exit 1

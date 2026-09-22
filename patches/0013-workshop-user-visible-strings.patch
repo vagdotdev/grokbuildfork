@@ -1,5 +1,5 @@
 diff --git a/crates/codegen/xai-grok-pager-minimal/Cargo.toml b/crates/codegen/xai-grok-pager-minimal/Cargo.toml
-index 5481722b..5a895e2d 100644
+index be893163..e7fd258f 100644
 --- a/crates/codegen/xai-grok-pager-minimal/Cargo.toml
 +++ b/crates/codegen/xai-grok-pager-minimal/Cargo.toml
 @@ -20,6 +20,8 @@ ignored = ["xai-ratatui-inline"]
@@ -149,10 +149,10 @@ index ab27a76d..639a3543 100644
  If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
  
 diff --git a/crates/codegen/xai-grok-pager/src/views/memory_modal.rs b/crates/codegen/xai-grok-pager/src/views/memory_modal.rs
-index 0d0a7b30..3ebda853 100644
+index ef7c763c..3ccb81f8 100644
 --- a/crates/codegen/xai-grok-pager/src/views/memory_modal.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/memory_modal.rs
-@@ -54,7 +54,7 @@ fn empty_state_markdown(capture_enabled: bool, dream_enabled: bool) -> String {
+@@ -67,7 +67,7 @@ fn empty_state_markdown(capture_enabled: bool, dream_enabled: bool) -> String {
          text.push_str("- `/dream` organizes saved notes into topics.\n");
      }
      text.push_str(
@@ -161,13 +161,22 @@ index 0d0a7b30..3ebda853 100644
           don't have to repeat yourself. Notes live in **workspace** memory for this repository and \
           **global** memory shared across all your projects; each has a generated `MEMORY.md` index \
           that fills in as notes are saved.\n",
-@@ -92,7 +92,7 @@ No memory storage is set up for this session, so there is nothing to browse or t
-             "\
- **Memory is off for this session.** `/memory status` shows the details.
+@@ -98,7 +98,7 @@ there (or remove the line) to keep memory on. Anything already remembered is kep
+ **Memory is off for this process.** Start a new session without `--no-memory` or \
+ `GROK_MEMORY=0` to use it.
  
--This session reports a reason this version of Grok Build doesn't recognize; run `/memory on` \
-+This session reports a reason this version of Workshop doesn't recognize; run `/memory on` \
- from the prompt to try turning it back on."
+-Memory was turned off when Grok Build started, so it can't be turned on here. Anything already \
++Memory was turned off when Workshop started, so it can't be turned on here. Anything already \
+ remembered is kept on disk."
+         }
+         Some(MemoryDisabledReason::RolloutRestricted) => {
+@@ -118,7 +118,7 @@ No memory storage is set up for this session, so there is nothing to browse or t
+             "\
+ **Memory is off for this session.** Press **s** for details.
+ 
+-This session reports a reason this version of Grok Build doesn't recognize; press **t** to try \
++This session reports a reason this version of Workshop doesn't recognize; press **t** to try \
+ turning it back on."
          }
      }
 diff --git a/crates/codegen/xai-grok-pager/src/views/tutorial.rs b/crates/codegen/xai-grok-pager/src/views/tutorial.rs
@@ -817,7 +826,7 @@ index 0ffb88d8..7178a53a 100644
 +    }
  }
 diff --git a/crates/codegen/xai-grok-shell/README.md b/crates/codegen/xai-grok-shell/README.md
-index a22de198..4831ae62 100644
+index 286e5ea9..ec7436c3 100644
 --- a/crates/codegen/xai-grok-shell/README.md
 +++ b/crates/codegen/xai-grok-shell/README.md
 @@ -7,11 +7,11 @@ Use it interactively as a TUI, or integrate it into your own apps via headless m
@@ -858,7 +867,7 @@ index a22de198..4831ae62 100644
    -H "Content-Type: application/json" \
    -H "Authorization: Bearer $(jq -r '."https://accounts.x.ai/sign-in".key' ~/.grok/auth.json)" \
    -H "X-XAI-Token-Auth: xai-grok-cli" \
-@@ -2501,7 +2498,7 @@ The agent persists all session updates automatically. Clients can reconnect and
+@@ -2517,7 +2514,7 @@ The agent persists all session updates automatically. Clients can reconnect and
  | Variable                         | Description                                                                                              |
  | -------------------------------- | -------------------------------------------------------------------------------------------------------- |
  | `XAI_API_KEY`         | API key from [console.x.ai](https://console.x.ai). Used for custom endpoint auth and API key login      |

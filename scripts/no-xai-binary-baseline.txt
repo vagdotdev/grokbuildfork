@@ -1,8 +1,48 @@
-auth.x.ai 11
-accounts.x.ai 6
-cli-chat-proxy.grok.com 0
-x.ai/cli 0
-@xai-official 0
-grok-build-public-artifacts 0
-xai-org-shared/grok-build 0
-api.mixpanel.com 1
+# Reviewed contexts for scripts/no-xai-scan.sh --binary
+#
+# Every distinct `strings -a -n 6 | sort -u` line of the workshop binary that contains one of the
+# forbidden hosts must contain at least one context listed here for that host; any other such
+# string fails the gate (a new string naming an xAI/Mixpanel host is a new surface to review).
+# The must-be-zero needles (`x.ai/cli`, `cli-chat-proxy.grok.com`, `@xai-official`,
+# `grok-build-public-artifacts`, `xai-org-shared/grok-build`) have no entries: they may not appear.
+#
+# Why contexts and not counts: the previous baseline (`auth.x.ai 11 / accounts.x.ai 6 /
+# api.mixpanel.com 1`) counted raw `strings` lines of the CI debug build. Those numbers are an
+# artefact of the build profile — a literal is emitted once per codegen unit that inlines it, and
+# adjacent Rust literals (not NUL-terminated) fuse into one `strings` line with whatever
+# neighbour the linker placed next to them — so the identical source failed the ratchet as a
+# `release-dist` build (16 codegen units) although every hit was one of the strings below.
+# Contexts are substrings of the reviewed literals; they match the same way in any profile.
+#
+# Reviewed 2026-09-22 against the CI debug build (CARGO_PROFILE_DEV_DEBUG=0) and the release
+# workflow's `release-dist` build (LTO=off, CODEGEN_UNITS=16, DEBUG=0, STRIP=symbols) of
+# upstream 1.0.38 + overlay. None of these strings is on a default path: first run, Login and the
+# picker never contact these hosts (no-egress smoke, gates 1-4). Format: needle<TAB>context.
+# Lines starting with `#` are comments. Justification for each entry follows it as a comment.
+auth.x.ai	Uses xAI accounts and auth.x.ai. Not required.
+#   ^ connection picker, optional xAI row copy (crates/workshop-auth; last row, never preselected)
+auth.x.ai	`workshop login --xai` (opens auth.x.ai). Not required.
+#   ^ `workshop login` help / embedded docs: the explicit opt-in flag
+auth.x.ai	optional xAI account login selected; this opens auth.x.ai.
+#   ^ CLI notice printed only after `--xai` was passed (pager-bin)
+auth.x.ai	Selecting this opens your browser at auth.x.ai
+#   ^ picker confirmation detail for the optional xAI row (crates/workshop-auth/src/lib.rs)
+auth.x.ai	Press Enter again to continue to auth.x.ai
+#   ^ picker confirmation prompt for the same row (crates/workshop-auth/src/lib.rs)
+auth.x.ai	sign in with an xAI account (opens auth.x.ai). Never the default
+#   ^ `workshop --xai` flag help (crates/codegen/xai-grok-pager/src/app/cli.rs)
+auth.x.ai	https://auth.x.ai
+#   ^ xai-grok-login OIDC issuer constant + its 'open this URL' message; reached only through the optional row (gate1: not in GrokComConfig::default())
+auth.x.ai	SpaceXAI OAuth at `auth.x.ai`
+#   ^ upstream user guide docs/user-guide/02-authentication.md (`grok login --oauth` reference), embedded as text; not a code path
+accounts.x.ai	https://accounts.x.ai/sign-in
+#   ^ xai-grok-login sign-in URL constant + the auth-flow log line + the upstream docs' jq example; same optional row
+accounts.x.ai	instead of `accounts.x.ai`
+#   ^ upstream xai-grok-shell README (bring-your-own IdP paragraph), embedded as documentation text
+accounts.x.ai	https://accounts.x.ai
+#   ^ PROD_ACCOUNTS_APP_ORIGINS in xai-grok-login/src/config.rs (allowed callback origins of the optional flow). Listed last: as a bare
+#     host prefix it also covers any other URL on that host, so a new accounts.x.ai *path* shows up only in --show output.
+api.mixpanel.com	https://api.mixpanel.com/track
+#   ^ upstream telemetry client's endpoint constants; the client is built without a token (ADR 0004) so nothing is ever sent — proven by the no-egress smoke
+api.mixpanel.com	https://api.mixpanel.com/engage
+#   ^ same Mixpanel client, engage endpoint

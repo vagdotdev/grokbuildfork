@@ -1,5 +1,5 @@
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
-index 2572590a..9188c171 100644
+index d9583697..f42ee669 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
 @@ -2252,18 +2252,26 @@ impl AgentView {
@@ -517,7 +517,7 @@ index 2dfa5642..2880a733 100644
      ];
      for (shell, content) in cases {
 diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs b/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
-index 6bef1daa..266eba40 100644
+index 2bf69489..5a0bbacc 100644
 --- a/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
 @@ -40,15 +40,22 @@ pub use model::{
@@ -681,7 +681,7 @@ index 6bef1daa..266eba40 100644
              .to_string(),
      );
      Some(warning)
-@@ -2501,7 +2539,7 @@ mod tests {
+@@ -2431,7 +2469,7 @@ mod tests {
          assert!(finding.automatic_remediation.is_none());
          assert!(finding.note.as_deref().is_some_and(|note| {
              note.contains("install a supported audio recorder")
@@ -690,7 +690,7 @@ index 6bef1daa..266eba40 100644
                  && note.contains("can't detect denied macOS microphone access")
          }));
      }
-@@ -2983,7 +3021,7 @@ mod tests {
+@@ -2911,7 +2949,7 @@ mod tests {
          );
      }
  
@@ -1126,10 +1126,10 @@ index 252cee35..ee39ea77 100644
  
  #[test]
 diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
-index 084ceed3..27499245 100644
+index eca1c956..2f602534 100644
 --- a/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
-@@ -2297,12 +2297,26 @@ fn paint_dispatch_config_badge(
+@@ -2187,12 +2187,26 @@ fn paint_dispatch_config_badge(
  /// Shared by the dispatch box and the peek panel that replaces it, so a capture started in either box shows the same indicator.
  pub(super) fn paint_record_badge(buf: &mut Buffer, area: Rect, theme: &Theme, listening: bool) {
      if listening && area.width >= 12 {
@@ -1617,12 +1617,12 @@ index 1f795284..68735fa5 100644
      Error {
          /// Short description for a one-line toast.
 diff --git a/crates/codegen/xai-grok-voice/src/lib.rs b/crates/codegen/xai-grok-voice/src/lib.rs
-index f12eba02..481ea527 100644
+index 4f3c4c31..4dfaca5d 100644
 --- a/crates/codegen/xai-grok-voice/src/lib.rs
 +++ b/crates/codegen/xai-grok-voice/src/lib.rs
 @@ -20,6 +20,7 @@ pub mod stt;
  
- pub use auth::{SharedVoiceAuth, StaticVoiceAuth, VoiceAuthProvider};
+ pub use auth::{SharedVoiceAuth, StaticVoiceAuth, VoiceAuthError, VoiceAuthProvider};
  pub use config::VoiceConfig;
 +pub use config::VoiceProvider;
  pub use error::VoiceError;

@@ -1,5 +1,5 @@
 diff --git a/crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs b/crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs
-index 63c41fc0..d216cf2b 100644
+index 712f6826..8aaddf4d 100644
 --- a/crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs
 +++ b/crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs
 @@ -1,6 +1,9 @@
