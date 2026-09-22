@@ -19,11 +19,16 @@ fn byok_from_models(
     preferred: Option<&str>,
     current: &str,
 ) -> Option<String> {
+    // Workshop anonymous connections carry a sentinel, never a usable static key.
+    let real = |m: &ModelEntry| {
+        m.own_credential()
+            .filter(|k| !crate::agent::config::is_workshop_anonymous_key(k))
+    };
     preferred
         .and_then(|id| models.get(id))
-        .and_then(|m| m.own_credential())
-        .or_else(|| models.get(current).and_then(|m| m.own_credential()))
-        .or_else(|| models.values().find_map(|m| m.own_credential()))
+        .and_then(real)
+        .or_else(|| models.get(current).and_then(real))
+        .or_else(|| models.values().find_map(real))
 }
 struct MissingSessionCtx {
     has_session_key: bool,
@@ -1455,12 +1460,24 @@ impl MvpAgent {
         &self,
     ) -> Option<acp::AuthMethodId> {
         let preferred = self.cfg.borrow().grok_com_config.preferred_method;
+        let has_session_login_provider = self
+            .cfg
+            .borrow()
+            .grok_com_config
+            .has_session_login_provider()
+            || self
+                .cfg
+                .borrow()
+                .grok_com_config
+                .auth_provider_command
+                .is_some();
         let id = auth_method::method_id_after_cached_token_unavailable(
             auth_method::should_advertise_xai_api_key_with_env_ok(
                 self.cfg.borrow().grok_com_config.api_key_auth_disabled(),
                 self.models_manager.models().values(),
                 self.auth_manager.first_party_env_api_key_ok(),
             ),
+            has_session_login_provider,
             preferred,
         )?;
         Some(acp::AuthMethodId::new(id))
