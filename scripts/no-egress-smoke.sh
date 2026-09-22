@@ -57,24 +57,48 @@ grep -Eq "auth\.x\.ai|accounts\.x\.ai" "$OUT/cli-login/stderr.log" && { echo "VI
 observed headless -- "${COMMON[@]}" "$BIN" -p "say hi" || fail=1
 if grep -q "^exit=0" "$OUT/headless/exit.txt"; then echo "VIOLATION: headless prompt without a connection exited 0" >&2; fail=1; fi
 
-# TUI first run: wait for the picker, press l (already open → no-op), Tab to Subscriptions, back, Esc, quit.
+# TUI first run: the composer comes up with the OpenCode default active (no picker); `/model` opens
+# the Models overlay, `/auth` the Subscriptions overlay (rails + API-key providers + optional xAI
+# card), Tab switches, Esc closes, quit. The whole run makes no network request.
 observed tui-first-run -- "${COMMON[@]}" python3 "$HERE/no-egress/pty_drive.py" --bin "$BIN" --out "$OUT/tui-first-run/raw.log" --cwd "$CWD_DIR" \
-  --script "wait:7000,key:l,wait:1500,key:Tab,wait:800,key:Down,wait:500,key:Tab,wait:800,key:Enter,wait:800,key:Esc,wait:500,key:Esc,wait:800,key:l,wait:1500,key:C-c,wait:800,key:C-c,wait:500" || fail=1
+  --script "wait:7000,text:/model,wait:500,key:Enter,wait:2500,key:Esc,wait:800,text:/auth,wait:500,key:Enter,wait:2500,key:Tab,wait:800,key:Tab,wait:800,key:Esc,wait:800,key:C-c,wait:800,key:C-c,wait:500" || fail=1
 python3 - "$OUT/tui-first-run/raw.log" <<'PY' || fail=1
 import re,sys
 raw=open(sys.argv[1],'rb').read().decode('utf-8','replace')
+titles=re.findall(r'\x1b\][02];([^\x07\x1b]*)',raw)
 txt=re.sub(r'\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b[=>]','',raw)
 # ratatui positions the cursor between cells, so compare with all whitespace removed.
 flat=''.join(txt.split())
 ok=True
-for needle in ["connect a model","Models","Subscriptions","xAI (optional)","Claude","Codex","Cursor","[Sign in]"]:
+for needle in ["OpenCode · Big Pickle","/model to switch","/auth to connect subscriptions",
+               "Tab: Subscriptions","Kilo","Tab: Models","Claude","Codex","Cursor","[Sign in]","xAI (optional)"]:
     if ''.join(needle.split()) not in flat:
         print("VIOLATION: TUI first run did not show %r" % needle); ok=False
-for bad in ["Login with grok.com","auth.x.ai/.well-known","Login with Grok","accounts.x.ai"]:
+for bad in ["Login with grok.com","auth.x.ai/.well-known","Login with Grok","accounts.x.ai",
+            "connect a model","Connection classes"]:
     if ''.join(bad.split()) in flat:
         print("VIOLATION: TUI showed %r" % bad); ok=False
+if not any("Workshop" in t for t in titles) or any("grok" in t.lower() for t in titles):
+    print("VIOLATION: terminal title must be Workshop, never grok: %r" % titles); ok=False
 print("tui screen check:", "ok" if ok else "FAILED")
 sys.exit(0 if ok else 1)
 PY
+# Type-and-go must not reach the network before the first message: every host the run asked the
+# proxy for must be loopback (the neutral 127.0.0.1:1 sentinel of patch 0003 is the only one).
+python3 - "$OUT/tui-first-run/proxy.log" <<'PY' || fail=1
+import re,sys
+bad=[]
+for line in open(sys.argv[1]):
+    parts=line.split()
+    if len(parts)<3 or parts[1]=="ERROR": continue
+    host=re.sub(r':\d+$','',parts[2].split(' (')[0]).strip('[]')
+    if host not in ("127.0.0.1","localhost","::1"): bad.append(line.strip())
+if bad:
+    print("VIOLATION: TUI first run contacted a non-loopback host before the first message:"); print("\n".join(bad)); sys.exit(1)
+print("tui egress check: ok (loopback only)")
+PY
+if [ -d "$HOME_DIR/.workshop/tools" ]; then
+  echo "VIOLATION: TUI first run installed opencode before the first message" >&2; fail=1
+fi
 
 if [ "$fail" = 0 ]; then echo "no-egress-smoke: PASS (evidence in $OUT)"; else echo "no-egress-smoke: FAIL (evidence in $OUT)" >&2; exit 1; fi

@@ -609,6 +609,190 @@ fn login_with_empty_auth_methods_opens_picker_and_fails_closed() {
     assert_eq!(app.active_view, ActiveView::Agent(AgentId(0)));
 }
 
+/// First run (cold start, nothing connected): no picker, the OpenCode engine's default model is
+/// the active connection, and the only effect is the in-process activation (model reload +
+/// anonymous auth) — never `Authenticate`, never a data probe. `AuthComplete` then hands the user
+/// the focused home composer.
+#[test]
+fn first_run_lands_in_the_composer_with_the_engine_default_and_no_picker() {
+    let mut app = test_app();
+    app.auth_methods.clear();
+    app.login_method_id = None;
+    app.auth_state = AuthState::Pending { error: None };
+    app.welcome_prompt_focused = false;
+
+    let effects = dispatch(Action::WorkshopFirstRun, &mut app);
+
+    assert!(app.connection_picker.is_none(), "first run shows no picker");
+    let crate::app::workshop::WorkshopConnection::Engine { model } = &app.workshop_connection
+    else {
+        panic!(
+            "expected the engine connection, got {:?}",
+            app.workshop_connection
+        );
+    };
+    assert!(model.is_default, "the engine's own default model is active");
+    assert_eq!(
+        app.workshop_connection.composer_label().as_deref(),
+        Some("OpenCode · Big Pickle")
+    );
+    assert_eq!(effects.len(), 1, "exactly the activation, got {effects:?}");
+    assert!(
+        matches!(
+            effects.first(),
+            Some(Effect::WorkshopActivateModel { session: None, .. })
+        ),
+        "first run activates the placeholder session in-process, got {effects:?}"
+    );
+    let AuthState::Authenticating { request_seq, .. } = app.auth_state else {
+        panic!("activation in flight, got {:?}", app.auth_state);
+    };
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::AuthComplete {
+            request_seq,
+            meta: None,
+        }),
+        &mut app,
+    );
+    assert!(matches!(app.auth_state, AuthState::Done));
+    assert!(
+        app.welcome_prompt_focused,
+        "the composer is ready to type into"
+    );
+    assert!(app.connection_picker.is_none());
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::Authenticate { .. })),
+        "no login flow ever starts on a first run, got {effects:?}"
+    );
+}
+
+/// `/model` opens the Models view, `/auth` (and `/login`) the Subscriptions view; while open the
+/// other command just switches the view. The active engine row is preselected.
+#[test]
+fn model_and_auth_open_their_views_and_switch_while_open() {
+    use workshop_auth::{PickerTab, RowKind};
+    let mut app = test_app();
+    app.workshop_connection = crate::app::workshop::first_run_connection();
+    let effects = dispatch(Action::OpenConnectionPicker(PickerTab::Models), &mut app);
+    assert!(
+        effects
+            .iter()
+            .all(|e| matches!(e, Effect::WorkshopLoadPicker))
+            && effects.len() == 1
+    );
+    let picker = app.connection_picker.as_ref().expect("picker open");
+    assert_eq!(picker.tab, PickerTab::Models);
+    assert!(
+        picker.selected_row().is_some_and(
+            |r| matches!(&r.kind, RowKind::Engine(m) if m.is_default) && picker.is_active(r)
+        ),
+        "the active engine model is the highlighted row"
+    );
+    assert!(dispatch(Action::Login, &mut app).is_empty());
+    assert_eq!(
+        app.connection_picker.as_ref().unwrap().tab,
+        PickerTab::Subscriptions
+    );
+    dispatch(Action::OpenConnectionPicker(PickerTab::Models), &mut app);
+    assert_eq!(
+        app.connection_picker.as_ref().unwrap().tab,
+        PickerTab::Models
+    );
+}
+
+/// The OpenCode engine could not start for a turn: one system line, the Kilo keyless pool becomes
+/// the (shell) connection, the session is switched to it, and the prompt goes out again once the
+/// activation completes.
+#[test]
+fn engine_unavailable_falls_back_to_kilo_and_resends_the_prompt() {
+    use crate::scrollback::block::RenderBlock;
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.active_view = ActiveView::Agent(id);
+    app.workshop_connection = crate::app::workshop::first_run_connection();
+    let entry = app
+        .agents
+        .get_mut(&id)
+        .unwrap()
+        .scrollback
+        .push_block(RenderBlock::user_prompt("hello"));
+    app.workshop_turn_prompt_entry = Some(entry);
+    app.workshop_turn_agent = Some(id);
+
+    let effects = dispatch(
+        Action::WorkshopEngineUnavailable {
+            agent_id: id,
+            reason: "installer failed: offline".into(),
+            text: "hello".into(),
+        },
+        &mut app,
+    );
+
+    assert!(
+        app.workshop_connection.is_shell(),
+        "Kilo is a Direct API (shell) connection"
+    );
+    let notice = last_system_text(&app, id);
+    assert!(
+        notice.starts_with("OpenCode unavailable (installer failed: offline)")
+            && notice.contains("Kilo"),
+        "one-line notice: {notice:?}"
+    );
+    assert!(
+        test_agent(&app, id).scrollback.index_of_id(entry).is_none(),
+        "the engine attempt's bubble is dropped; the resend paints it once"
+    );
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::WorkshopActivateModel { session: Some((sid, _)), model_id, .. }]
+                if *sid == id && model_id.starts_with("kilo")
+        ),
+        "switches the open session to the Kilo model, got {effects:?}"
+    );
+    assert_eq!(
+        app.workshop_resend.as_ref().map(|(_, t)| t.as_str()),
+        Some("hello")
+    );
+    let AuthState::Authenticating { request_seq, .. } = app.auth_state else {
+        panic!("activation in flight, got {:?}", app.auth_state);
+    };
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::AuthComplete {
+            request_seq,
+            meta: None,
+        }),
+        &mut app,
+    );
+    assert!(app.workshop_resend.is_none(), "the resend was consumed");
+    assert_eq!(app.active_view, ActiveView::Agent(id));
+    let agent = test_agent(&app, id);
+    assert!(
+        agent.session.pending_prompts.is_empty() && !agent.session.state.is_idle(),
+        "the prompt was drained into a new turn"
+    );
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::SendPromptBlocks { .. } | Effect::SendPrompt { .. }
+        )),
+        "the prompt goes out on the shell path, got {effects:?}"
+    );
+    let bubbles = (0..agent.scrollback.len())
+        .filter(|i| {
+            matches!(
+                agent.scrollback.get(*i).map(|e| &e.block),
+                Some(RenderBlock::UserPrompt(_))
+            )
+        })
+        .count();
+    assert_eq!(bubbles, 1, "the prompt shows exactly once");
+}
+
 /// Enter on a non-xAI card (Local, OpenAI, …) opens setup details and never emits `Authenticate`.
 #[test]
 fn picker_non_xai_cards_never_authenticate() {
@@ -668,14 +852,17 @@ fn picker_xai_card_requires_two_enters_and_sets_opt_in() {
     assert!(app.connection_picker.is_none(), "picker closes when the flow starts");
 }
 
-/// Picker on the Subscriptions tab with every rail signed out (Connect shown), Claude selected.
+/// Picker on the Subscriptions view (`/auth`) with every rail signed out (Connect shown), Claude
+/// selected.
 fn picker_with_signed_out_rails(app: &mut AppView) {
-    use workshop_auth::{PickerInput, PickerSnapshot};
+    use workshop_auth::PickerSnapshot;
     use workshop_detect::{Pill, Rail, RailState};
     dispatch(Action::Login, app);
     let picker = app.connection_picker.as_mut().unwrap();
+    let mut rows = picker.rows.clone();
+    rows.extend(picker.auth_rows.clone());
     picker.apply_snapshot(PickerSnapshot {
-        rows: picker.rows.clone(),
+        rows,
         rails: Rail::ALL
             .iter()
             .map(|r| RailState {
@@ -688,11 +875,11 @@ fn picker_with_signed_out_rails(app: &mut AppView) {
         default_selection: None,
         secret_backend: None,
     });
-    dispatch(Action::ConnectionPicker(PickerInput::SwitchTab), app);
     assert_eq!(
         app.connection_picker.as_ref().unwrap().tab,
         workshop_auth::PickerTab::Subscriptions
     );
+    assert_eq!(app.connection_picker.as_ref().unwrap().rail_selected, 0);
 }
 
 /// The state Connect's Enter leaves behind (`PickerOutcome::RailConnect`): the rail detail is open

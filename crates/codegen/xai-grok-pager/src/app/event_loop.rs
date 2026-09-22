@@ -1332,13 +1332,24 @@ pub(crate) async fn run(
             "auto-triggering login at startup"
         );
     }
+    // Workshop: Engine/Adapter connections are not shell models; restore the one this home last
+    // activated so a restart lands on the same runtime (`OpenCode · Big Pickle`, `Claude · …`).
+    app.workshop_connection = crate::app::workshop::load_active_connection();
     let mut post_render_effects = if needs_interactive_login {
         // Workshop: an empty method list is the default cold start (no session-login provider,
-        // no key, no cached session). It opens the connection picker, never a browser.
+        // no key, no cached session). Nothing connected yet → first run: land in the composer with
+        // the OpenCode engine's default free model active, no picker, no network. Otherwise (a
+        // configured model whose credential is unavailable) open the picker, never a browser.
         if connection.auth_methods.is_empty() {
             app.auth_state = super::app_view::AuthState::Pending { error: None };
+            if crate::app::workshop::is_first_run() {
+                dispatch::dispatch(Action::WorkshopFirstRun, &mut app)
+            } else {
+                dispatch::dispatch(Action::Login, &mut app)
+            }
+        } else {
+            dispatch::dispatch(Action::Login, &mut app)
         }
-        dispatch::dispatch(Action::Login, &mut app)
     } else {
         vec![]
     };
@@ -2959,7 +2970,11 @@ pub(crate) async fn run(
             // Serviced only when nothing else is pending, so it never starves ACP, input, or timers.
             // Placed before the ACP-independent voice arm; the ACP path is untouched by all of this.
             Some(msg) = workshop_turn_rx.recv() => {
-                if handle_workshop_turn_msg(&mut app, msg) {
+                let (redraw, effects) = handle_workshop_turn_msg(&mut app, msg);
+                if process_effects(effects, &mut tasks, &mut app, &progress_tx) {
+                    return Ok(finish_run_with_stall_flush(&mut app, &mut stall_rollup));
+                }
+                if redraw {
                     schedule_tick(&mut animation_tick_at, &app, tick_interval);
                     let now = Instant::now();
                     if presenter.request_throttled(now, min_draw_interval) {
@@ -4020,17 +4035,32 @@ pub(crate) fn dispatch_then_forward(
 }
 /// Spawn effects into the task set. Returns `true` if the app should quit.
 /// Render one streamed Workshop turn message (OpenCode engine / vendor CLI adapter) into the active
-/// agent's scrollback. Returns whether a redraw is warranted. Mirrors the ACP renderer's block
-/// vocabulary (`agent_message_streaming` + `push_chunk_to_agent`, `tool_call`, `system`) but is
-/// entirely separate from the ACP path, which only runs for `Shell` (Direct/Local) connections.
-fn handle_workshop_turn_msg(app: &mut AppView, msg: crate::app::workshop::WorkshopTurnMsg) -> bool {
+/// agent's scrollback. Returns whether a redraw is warranted plus any effects to run (the Kilo
+/// fallback activation). Mirrors the ACP renderer's block vocabulary (`agent_message_streaming` +
+/// `push_chunk_to_agent`, `tool_call`, `system`) but is entirely separate from the ACP path, which
+/// only runs for `Shell` (Direct/Local) connections.
+fn handle_workshop_turn_msg(
+    app: &mut AppView,
+    msg: crate::app::workshop::WorkshopTurnMsg,
+) -> (bool, Vec<super::actions::Effect>) {
     use crate::app::workshop::WorkshopTurnMsg as M;
     use crate::scrollback::block::RenderBlock;
 
     let Some(agent_id) = app.workshop_turn_agent else {
-        return false;
+        return (false, vec![]);
     };
-    match msg {
+    if let M::EngineUnavailable { reason, text } = msg {
+        let effects = dispatch::dispatch(
+            Action::WorkshopEngineUnavailable {
+                agent_id,
+                reason,
+                text,
+            },
+            app,
+        );
+        return (true, effects);
+    }
+    let redraw = match msg {
         M::EngineReady { engine, session } => {
             // Cache the engine + session so the next turn reuses this `opencode serve`, and persist
             // the id per workspace for resume across a restart.
@@ -4121,9 +4151,13 @@ fn handle_workshop_turn_msg(app: &mut AppView, msg: crate::app::workshop::Worksh
             app.workshop_turn_active = false;
             app.workshop_turn_cancel = None;
             app.workshop_turn_agent = None;
+            app.workshop_turn_prompt_entry = None;
             true
         }
-    }
+        // Handled above (needs the dispatcher).
+        M::EngineUnavailable { .. } => false,
+    };
+    (redraw, vec![])
 }
 
 fn process_effects(

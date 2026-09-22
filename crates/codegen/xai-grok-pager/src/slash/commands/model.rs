@@ -1,5 +1,8 @@
 //! `/model` (alias `/m`): switch the model and optionally its reasoning effort.
 //! Chained autocomplete: after picking a reasoning-supported model, the trailing space re-opens the dropdown into a `low|medium|high|xhigh` sub-menu.
+//!
+//! Workshop: bare `/model` opens the Models overlay (`views::connection_picker`) — the OpenCode
+//! free models, the Kilo pool, local servers and connected providers — instead of erroring.
 
 use agent_client_protocol as acp;
 use xai_grok_shell::sampling::types::{ReasoningEffortOption, supports_reasoning_effort_meta};
@@ -19,9 +22,9 @@ impl SlashCommand for ModelCommand {
         name: "model",
         aliases: ["m"],
         description: "Switch the active model",
-        usage: "/model <name> [effort]",
+        usage: "/model [<name> [effort]]",
         takes_args: true,
-        args_required: true,
+        args_required: false,
         session_scoped: true,
         // The dashboard offers `/model` to pick the model for the next spawned agent (intercepted in `dispatch_dashboard_dispatch_slash`).
         offered_when_session_less: true,
@@ -54,7 +57,9 @@ impl SlashCommand for ModelCommand {
     fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
         let trimmed = args.trim();
         if trimmed.is_empty() {
-            return CommandResult::Error("Usage: /model <name> [effort]".into());
+            return CommandResult::Action(Action::OpenConnectionPicker(
+                workshop_auth::PickerTab::Models,
+            ));
         }
 
         // Prefer an exact full-string catalog match first. Model display names often contain spaces ("Grok 4.5").
@@ -507,6 +512,19 @@ mod tests {
             }
             other => panic!("expected Action::SetDefaultModel(<id>), got {other:?}"),
         }
+    }
+
+    /// Workshop: bare `/model` opens the Models overlay instead of a usage error.
+    #[test]
+    fn run_bare_model_opens_the_models_overlay() {
+        let state = ModelState::default();
+        let mut ctx = dummy_exec_ctx(&state);
+        assert!(matches!(
+            ModelCommand.run(&mut ctx, "  "),
+            CommandResult::Action(Action::OpenConnectionPicker(
+                workshop_auth::PickerTab::Models
+            ))
+        ));
     }
 
     /// Case-insensitive matching against the catalog: `/model grok 4.5` resolves to the same `ModelId` as `/model Grok 4.5`.

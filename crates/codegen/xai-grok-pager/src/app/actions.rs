@@ -618,12 +618,23 @@ pub enum Action {
     /// Log out and immediately start a new login flow.
     SwitchAccount,
     /// User pressed login on the welcome screen.
-    /// Workshop: opens the connection picker; never starts an OAuth flow by itself.
+    /// Workshop: opens the connection picker (Subscriptions); never starts an OAuth flow by itself.
     Login,
-    /// Workshop: open the connection picker on a specific tab (`/auth`, `/models`).
+    /// Workshop: open the connection picker overlay on a view (`/model` → Models, `/auth` →
+    /// Subscriptions).
     OpenConnectionPicker(workshop_auth::PickerTab),
     /// Workshop: a key press routed to the open connection picker.
     ConnectionPicker(workshop_auth::PickerInput),
+    /// Workshop: first run (nothing connected) — activate the OpenCode engine's default free model
+    /// and land in the composer. No picker, no network.
+    WorkshopFirstRun,
+    /// Workshop: the OpenCode engine could not start for a turn; fall back to the Kilo keyless pool
+    /// with a one-line notice and resend `text`.
+    WorkshopEngineUnavailable {
+        agent_id: AgentId,
+        reason: String,
+        text: String,
+    },
     /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
     /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
     CancelLogin,

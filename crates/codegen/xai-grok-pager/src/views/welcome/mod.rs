@@ -1486,9 +1486,10 @@ fn render_welcome_authenticating(
                 );
                 push_auth_copy_block(&mut lines, theme, clipboard_delivery);
             } else {
+                // Workshop: also the frame or two while a picked connection activates in-process.
                 lines.push(
                     Line::from(Span::styled(
-                        "Waiting for auth URL...",
+                        "Connecting…",
                         Style::default().fg(theme.gray),
                     ))
                     .alignment(Alignment::Center),

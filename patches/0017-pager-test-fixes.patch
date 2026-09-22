@@ -42,3 +42,23 @@ index 5a5de0d0..5c5c4e98 100644
 +        "symlinked default home must keep the friendly label, got {label:?}"
      );
  }
+diff --git a/crates/codegen/xai-grok-pager/src/slash/mod.rs b/crates/codegen/xai-grok-pager/src/slash/mod.rs
+index 32d1a5fa..f59e193a 100644
+--- a/crates/codegen/xai-grok-pager/src/slash/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/slash/mod.rs
+@@ -1701,9 +1701,12 @@ mod tests {
+     #[test]
+     fn required_arg_command_blocks_without_args() {
+         let reg = test_registry();
+-        // /model has takes_args=true, args_required=true.
+-        assert!(!is_command_complete("/model", &reg));
+-        assert!(!is_command_complete("/model ", &reg));
++        // /rename has takes_args=true, args_required=true.
++        assert!(!is_command_complete("/rename", &reg));
++        assert!(!is_command_complete("/rename ", &reg));
++        assert!(is_command_complete("/rename my session", &reg));
++        // Workshop: bare /model opens the Models overlay, so it is complete without args.
++        assert!(is_command_complete("/model", &reg));
+         assert!(is_command_complete("/model grok-4", &reg));
+     }
+ 

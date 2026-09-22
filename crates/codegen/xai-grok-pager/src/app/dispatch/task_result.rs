@@ -1001,18 +1001,9 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::WorkshopPickerLoaded(snap) => {
             if let Some(picker) = app.connection_picker.as_mut() {
-                let default_key = snap
-                    .default_selection
-                    .as_ref()
-                    .and_then(|d| d.catalog_key());
+                // The cursor lands on the active connection's row (never xAI, never Zen).
                 picker.apply_snapshot(snap);
                 picker.status = None;
-                // Cursor lands on the plan's first-run default (never xAI, never Zen).
-                if let Some(key) = default_key
-                    && let Some(idx) = picker.rows.iter().position(|r| r.id() == key)
-                {
-                    picker.models_selected = idx;
-                }
             }
             vec![]
         }

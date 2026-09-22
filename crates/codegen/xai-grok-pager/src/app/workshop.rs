@@ -26,11 +26,12 @@ use workshop_providers::{
 };
 
 /// Which runtime a prompt is routed through.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkshopConnection {
-    /// The shell's own agent loop (Direct API / Local `[model.<key>]`), the default.
+    /// The shell's own agent loop (Direct API / Local `[model.<key>]`).
     Shell,
-    /// A free model behind the OpenCode engine (`opencode serve`).
+    /// A free model behind the OpenCode engine (`opencode serve`); the first-run default.
     Engine { model: EngineModel },
     /// A vendor CLI adapter on a Ready subscription rail.
     Adapter {
@@ -40,22 +41,90 @@ pub enum WorkshopConnection {
 }
 
 impl WorkshopConnection {
-    /// Composer label: `Claude · {model}` for rails, `OpenCode · {model}` for the engine.
+    /// Composer label: `OpenCode · {model}` for the engine, `Claude · {model}` for rails.
     pub fn composer_label(&self) -> Option<String> {
         match self {
             Self::Shell => None,
-            Self::Engine { model } => Some(format!("{} · OpenCode", model.name)),
+            Self::Engine { model } => Some(format!(
+                "{} · {}",
+                workshop_auth::ENGINE_DISPLAY_NAME,
+                model.name
+            )),
             Self::Adapter { rail, model } => Some(workshop_detect::composer_label(*rail, model)),
         }
     }
     pub fn is_shell(&self) -> bool {
         matches!(self, Self::Shell)
     }
+    /// Picker row id of the active connection (Engine rows only; rails are not Models rows and a
+    /// Shell connection is the shell's own default model).
+    pub fn active_row_id(&self) -> Option<String> {
+        match self {
+            Self::Engine { model } => Some(model.row_id()),
+            Self::Shell | Self::Adapter { .. } => None,
+        }
+    }
 }
 
 /// `$WORKSHOP_HOME` (created if missing).
 pub fn workshop_home() -> PathBuf {
     xai_dirs::grok_home()
+}
+
+fn active_connection_path() -> PathBuf {
+    workshop_home().join("active-connection.json")
+}
+
+/// The connection this home last activated. Engine/Adapter selections are not shell models, so
+/// they live here rather than in config.toml; `Shell` (or no file) means the shell's default model.
+pub fn load_active_connection() -> WorkshopConnection {
+    std::fs::read_to_string(active_connection_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(WorkshopConnection::Shell)
+}
+
+pub fn save_active_connection(conn: &WorkshopConnection) {
+    let path = active_connection_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_vec_pretty(conn) {
+        let _ = workshop_providers::atomic_write_private(&path, &json);
+    }
+}
+
+/// True until something has been connected: no `[model.*]` entry in `$WORKSHOP_HOME/config.toml`.
+/// A first run lands in the composer with [`first_run_connection`] active and never shows a picker.
+pub fn is_first_run() -> bool {
+    let Ok(text) = std::fs::read_to_string(workshop_auth::config_path()) else {
+        return true;
+    };
+    let Ok(doc) = text.parse::<toml::Table>() else {
+        return true;
+    };
+    !doc.get("model")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|models| !models.is_empty())
+}
+
+/// The first-run connection: the OpenCode engine's own default free model (from its cached live
+/// catalog when this home has seen one, else the pinned seed — Big Pickle today).
+pub fn first_run_connection() -> WorkshopConnection {
+    WorkshopConnection::Engine {
+        model: EngineModel::first_run_default(&cached_engine_models()),
+    }
+}
+
+/// The keyless Direct API row Workshop falls back to when the OpenCode engine cannot start
+/// (offline, installer failed): the Kilo community pool.
+pub fn kilo_fallback_model() -> Option<workshop_providers::CatalogModel> {
+    Catalog::builtin()
+        .get(&format!(
+            "kilo:{}",
+            workshop_providers::KILO_DEFAULT_CHAIN[0]
+        ))
+        .cloned()
 }
 
 /// The credential broker over the OS keyring with the owner-only file fallback under the home.
@@ -278,11 +347,25 @@ pub enum WorkshopTurnMsg {
     /// not blocking-interactive).
     Permission { summary: String, decision: &'static str },
     Error(String),
+    /// The OpenCode engine could not be started for this turn (offline, installer failed, no
+    /// verified `opencode`). `text` is the prompt that never ran; the UI falls back to the Kilo
+    /// keyless pool and resends it. Followed by `Done`.
+    EngineUnavailable {
+        reason: String,
+        text: String,
+    },
     /// The turn ended; `session_id` is persisted per workspace for resume.
     Done {
         session_id: Option<String>,
         cancelled: bool,
     },
+}
+
+/// Why a turn could not start.
+enum TurnStartError {
+    /// `opencode` could not be detected, installed, or started.
+    EngineUnavailable(String),
+    Other(String),
 }
 
 /// Which backend a submitted prompt should run on.
@@ -389,7 +472,7 @@ async fn build_stream(
     spec: &WorkshopTurnSpec,
     tx: &mpsc::UnboundedSender<WorkshopTurnMsg>,
     permission: PermissionPolicy,
-) -> Result<TurnStream, String> {
+) -> Result<TurnStream, TurnStartError> {
     match &spec.kind {
         WorkshopTurnKind::Engine {
             engine,
@@ -398,14 +481,18 @@ async fn build_stream(
         } => {
             let engine = match engine {
                 Some(e) => e.clone(),
-                None => Arc::new(start_engine(&spec.cwd, tx.clone(), spec.always_approve).await?),
+                None => Arc::new(
+                    start_engine(&spec.cwd, tx.clone(), spec.always_approve)
+                        .await
+                        .map_err(TurnStartError::EngineUnavailable)?,
+                ),
             };
             let session = match session {
                 Some(s) if engine.session_exists(s).await.unwrap_or(false) => s.clone(),
                 _ => engine
                     .create_session(Some("Workshop"))
                     .await
-                    .map_err(|e| e.to_string())?,
+                    .map_err(|e| TurnStartError::Other(e.to_string()))?,
             };
             let _ = tx.send(WorkshopTurnMsg::EngineReady {
                 engine: engine.clone(),
@@ -417,7 +504,7 @@ async fn build_stream(
             let turn = engine
                 .prompt(&session, req)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| TurnStartError::Other(e.to_string()))?;
             Ok(TurnStream::Engine(turn))
         }
         WorkshopTurnKind::Adapter {
@@ -429,10 +516,16 @@ async fn build_stream(
             let cli = match detect(&*adapter, &DetectOptions::default()).await {
                 Detection::Installed(cli) => cli,
                 Detection::Unverified { reason, .. } => {
-                    return Err(format!("{} could not be verified: {reason}", adapter.id()));
+                    return Err(TurnStartError::Other(format!(
+                        "{} could not be verified: {reason}",
+                        adapter.id()
+                    )));
                 }
                 Detection::NotInstalled => {
-                    return Err(format!("{} is not installed", adapter.id()));
+                    return Err(TurnStartError::Other(format!(
+                        "{} is not installed",
+                        adapter.id()
+                    )));
                 }
             };
             let mut req = RunRequest::new(spec.text.clone(), &spec.cwd);
@@ -441,7 +534,7 @@ async fn build_stream(
             req.permission = permission;
             let handle = spawn(&*adapter, &cli, req, &SupervisorOptions::default())
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| TurnStartError::Other(e.to_string()))?;
             Ok(TurnStream::Adapter(handle))
         }
     }
@@ -463,7 +556,13 @@ pub async fn run_workshop_turn(
     let mut stream = match build_stream(&spec, &tx, permission).await {
         Ok(s) => s,
         Err(error) => {
-            let _ = tx.send(WorkshopTurnMsg::Error(error));
+            let _ = tx.send(match error {
+                TurnStartError::EngineUnavailable(reason) => WorkshopTurnMsg::EngineUnavailable {
+                    reason,
+                    text: spec.text.clone(),
+                },
+                TurnStartError::Other(message) => WorkshopTurnMsg::Error(message),
+            });
             let _ = tx.send(WorkshopTurnMsg::Done {
                 session_id: None,
                 cancelled: false,

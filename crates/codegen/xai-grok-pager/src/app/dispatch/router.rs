@@ -2,6 +2,7 @@
 use super::auth::{
     dispatch_cancel_login, dispatch_connection_picker, dispatch_login, dispatch_logout,
     dispatch_open_connection_picker, dispatch_submit_auth_code, dispatch_switch_account,
+    dispatch_workshop_engine_unavailable, dispatch_workshop_first_run,
 };
 use super::billing::dispatch_open_supergrok_url;
 use super::ctx::{
@@ -1244,6 +1245,12 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::Login => dispatch_login(app),
         Action::OpenConnectionPicker(tab) => dispatch_open_connection_picker(app, tab),
         Action::ConnectionPicker(input) => dispatch_connection_picker(app, input),
+        Action::WorkshopFirstRun => dispatch_workshop_first_run(app),
+        Action::WorkshopEngineUnavailable {
+            agent_id,
+            reason,
+            text,
+        } => dispatch_workshop_engine_unavailable(app, agent_id, reason, text),
         Action::CancelLogin => dispatch_cancel_login(app),
         Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
         Action::CopyAuthUrl => {
