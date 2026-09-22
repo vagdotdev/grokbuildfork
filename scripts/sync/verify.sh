@@ -44,6 +44,9 @@ run_step() { # KEY LABEL CMD...
   if "$@" > "$logf" 2>&1; then
     report_set "VERIFY_$key" pass
     log "$label: pass"
+    # Keep the evidence in the job log too: the report artifact can be lost to
+    # an artifact-storage quota. cargo test summaries, scan verdicts, build end.
+    grep -E '^test result:|^ok: |^VIOLATION|^ *Running |^ *Finished ' "$logf" | tail -n 40 | sed 's/^/    /' >&2 || true
   else
     report_set "VERIFY_$key" fail
     log "$label: FAIL (see $logf)"
