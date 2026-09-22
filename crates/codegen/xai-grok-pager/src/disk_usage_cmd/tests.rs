@@ -1008,22 +1008,14 @@ fn symlinked_default_home_keeps_home_label() {
     let real_grok = tmp.path().join("grok-on-disk");
     std::fs::create_dir_all(&fake_home).unwrap();
     std::fs::create_dir_all(&real_grok).unwrap();
-    // Use the current default-home dir name (`.workshop` after the home rename) so the resolved
-    // path matches `default_grok_home()` and takes the friendly `~/…` branch.
-    let home_dir_name = xai_grok_config::default_grok_home()
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .expect("default home has a final component");
-    std::os::unix::fs::symlink(&real_grok, fake_home.join(&home_dir_name)).unwrap();
+    std::os::unix::fs::symlink(&real_grok, fake_home.join(".grok")).unwrap();
     let _home = crate::test_util::EnvVarGuard::set("HOME", &fake_home);
 
-    let resolved = dunce::canonicalize(&fake_home).unwrap().join(&home_dir_name);
+    let resolved = dunce::canonicalize(&fake_home).unwrap().join(".grok");
     let canonical = dunce::canonicalize(&resolved).unwrap();
     assert_ne!(canonical, resolved, "the symlink must actually resolve");
-    // The point: a symlinked *default* home keeps the friendly `~/…` prefix, never `$GROK_HOME`.
-    let label = crate::util::display_grok_home_prefix_for(&canonical);
-    assert!(
-        label.starts_with("~/") && label != "$GROK_HOME",
-        "symlinked default home must keep the friendly label, got {label:?}"
+    assert_eq!(
+        crate::util::display_grok_home_prefix_for(&canonical),
+        "~/.grok"
     );
 }

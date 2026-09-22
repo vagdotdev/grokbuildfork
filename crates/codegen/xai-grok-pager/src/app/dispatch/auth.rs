@@ -10,11 +10,6 @@ use crate::app::agent_view::AgentView;
 use crate::app::app_view::{ActiveView, AppView, AuthMode, AuthState};
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::SessionEvent;
-use agent_client_protocol as acp;
-
-// ---------------------------------------------------------------------------
-// Auth dispatch
-// ---------------------------------------------------------------------------
 
 /// `/logout`: ask the shell to clear auth, then return to the login screen.
 pub(super) fn dispatch_logout(_app: &mut AppView) -> Vec<Effect> {
@@ -208,206 +203,24 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
     }
 }
 
-/// Login. Triggered by pressing 'l' on the welcome screen, by `/login`, `/auth`, `/models`, and at first run.
-///
-/// Workshop: this opens the **connection picker** and never sends an `AuthenticateRequest` by itself
-/// (gate:no-xai, Gate 2). The inherited interactive session login runs only from the picker's labeled
-/// optional xAI card (`dispatch_connection_picker` → `start_optional_xai_login`).
-/// Only the welcome view renders the picker, so a mid-session invocation stashes the caller's view in
-/// `auth_return_view` and switches to `Welcome`, exactly like the inherited auth UI did.
+/// Start an interactive login flow. Triggered by pressing 'l' on the welcome screen or by the `/login` slash command.
+/// Only the welcome view renders the auth UI (the external auth provider's sign-in URL and status).
+/// A mid-session invocation therefore stashes the caller's view in `auth_return_view` and switches to `Welcome` so the flow is visible.
 pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
-    dispatch_open_connection_picker(app, workshop_auth::PickerTab::Models)
-}
+    ensure_login_method(app);
+    let Some(method_id) = app.login_method_id.clone() else {
+        app.auth_state = AuthState::Pending {
+            error: Some(no_login_method_error(app)),
+        };
+        return vec![];
+    };
 
-/// Open the connection picker on `tab` (Workshop). Idempotent while already open.
-pub(super) fn dispatch_open_connection_picker(
-    app: &mut AppView,
-    tab: workshop_auth::PickerTab,
-) -> Vec<Effect> {
+    // Show the auth UI when triggered from inside a session
+    // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
     if !matches!(app.active_view, ActiveView::Welcome) {
         app.auth_return_view = Some(app.active_view);
         show_welcome(app);
     }
-    // A login attempt in flight (e.g. the optional xAI flow) is abandoned when the picker reopens.
-    if matches!(app.auth_state, AuthState::Authenticating { .. }) {
-        abort_prior_auth(app);
-        app.auth_state = AuthState::Pending { error: None };
-    }
-    match app.connection_picker.as_mut() {
-        Some(picker) => {
-            picker.tab = tab;
-            vec![]
-        }
-        None => {
-            app.connection_picker = Some(workshop_auth::PickerState::new().with_tab(tab));
-            // Rows and rails load asynchronously: loopback local-server probe, catalogs, and the
-            // official CLI detection (child processes on the blocking pool). No auth files.
-            vec![Effect::WorkshopLoadPicker]
-        }
-    }
-}
-
-/// Close the picker and return to the view it was opened from.
-fn close_connection_picker(app: &mut AppView) {
-    app.connection_picker = None;
-    if let Some(return_view) = app.auth_return_view.take() {
-        restore_auth_return_view(app, return_view);
-    }
-}
-
-/// Route a key press to the open connection picker (Workshop).
-pub(super) fn dispatch_connection_picker(
-    app: &mut AppView,
-    input: workshop_auth::PickerInput,
-) -> Vec<Effect> {
-    use workshop_auth::PickerOutcome;
-    let Some(picker) = app.connection_picker.as_mut() else {
-        return vec![];
-    };
-    match picker.handle(input) {
-        PickerOutcome::Changed => vec![],
-        PickerOutcome::Refresh => {
-            picker.loading = true;
-            picker.set_status("Refreshing…");
-            vec![Effect::WorkshopLoadPicker]
-        }
-        PickerOutcome::Close => {
-            // Before any connection is configured the welcome screen stays on the (auth-pending)
-            // home, never on a browser.
-            close_connection_picker(app);
-            vec![]
-        }
-        PickerOutcome::StartOptionalXaiLogin => {
-            app.connection_picker = None;
-            start_optional_xai_login(app)
-        }
-        PickerOutcome::SelectCatalog(model) => {
-            match crate::app::workshop::activate_catalog_model(&model) {
-                Ok(plan) => {
-                    crate::app::workshop::export_env(&plan.env);
-                    picker.set_status(format!(
-                        "Connecting {} ({})…",
-                        plan.display_name, plan.base_url
-                    ));
-                    app.workshop_connection = crate::app::workshop::WorkshopConnection::Shell;
-                    start_workshop_activation(app, plan.key)
-                }
-                Err(e) => {
-                    picker.set_status(format!("Could not activate: {e}"));
-                    vec![]
-                }
-            }
-        }
-        PickerOutcome::ConnectProvider(provider_id) => {
-            if provider_id == "openrouter" {
-                picker.set_status(
-                    "Opening OpenRouter sign-in in your browser (loopback callback)…",
-                );
-                vec![Effect::WorkshopOpenRouterSignIn]
-            } else {
-                let label = crate::app::workshop::key_prompt_label(&provider_id);
-                picker.begin_key_entry(&provider_id, &label);
-                vec![]
-            }
-        }
-        PickerOutcome::SaveKey { provider_id, key } => {
-            match crate::app::workshop::save_provider_key(&provider_id, &key) {
-                Ok(backend) => {
-                    picker.set_status(format!("Saved {provider_id} key to {backend}. Refreshing…"));
-                    picker.loading = true;
-                    vec![Effect::WorkshopLoadPicker]
-                }
-                Err(e) => {
-                    picker.set_status(format!("Could not save key: {e}"));
-                    vec![]
-                }
-            }
-        }
-        PickerOutcome::SelectEngine(model) => {
-            app.workshop_connection = crate::app::workshop::WorkshopConnection::Engine { model };
-            // Engine/Adapter turns bypass the shell model, but the shell still needs an auth method
-            // to open an ACP session (the agent view that renders the streamed turn). Establish the
-            // same keyless/anonymous session Direct/Local uses; the placeholder model is never hit.
-            finish_workshop_adapter_selection(app)
-        }
-        PickerOutcome::RailConnect(rail) => {
-            let argv = crate::app::workshop::rail_login_argv(rail);
-            picker.set_status(format!(
-                "Running `{}` in your terminal; Workshop re-probes when it exits.",
-                argv.join(" ")
-            ));
-            // The event loop suspends the TUI and runs the vendor login attached to the terminal.
-            app.pending_workshop_login = Some((rail, argv));
-            vec![]
-        }
-        PickerOutcome::SelectRailModel(rail, model) => {
-            app.workshop_connection =
-                crate::app::workshop::WorkshopConnection::Adapter { rail, model };
-            finish_workshop_adapter_selection(app)
-        }
-    }
-}
-
-/// An Engine/Adapter connection routes turns through workshop-adapters, not the shell model — but
-/// the shell still needs a model + auth method to open the ACP session that backs the agent view.
-/// Write a keyless placeholder model and reuse the same anonymous activation Direct/Local uses, so
-/// the session is created and the streamed turn has a visible home; `dispatch_workshop_turn` then
-/// intercepts prompts before they reach the placeholder. The composer label is stamped from
-/// `workshop_connection` at session creation (`configure_agent_composer`) and here.
-fn finish_workshop_adapter_selection(app: &mut AppView) -> Vec<Effect> {
-    match crate::app::workshop::activate_placeholder_session() {
-        Ok(key) => start_workshop_activation(app, key),
-        Err(e) => {
-            if let Some(picker) = app.connection_picker.as_mut() {
-                picker.set_status(format!("Could not connect: {e}"));
-            }
-            vec![]
-        }
-    }
-}
-
-/// After config.toml gained `[model.<key>]`: reload the shell's model list, authenticate with the
-/// non-interactive `xai.api_key` method (the anonymous sentinel or a real key counts), and switch
-/// the active session. Completion arrives as `AuthComplete` / `AuthFailed` for `request_seq`.
-fn start_workshop_activation(app: &mut AppView, model_id: String) -> Vec<Effect> {
-    // Stamp the composer label from the active connection: `None` for Direct/Local (Shell) → the
-    // shell model name shows; `Big Pickle · OpenCode` / `Claude · {model}` for Engine/Adapter.
-    let label = app.workshop_connection.composer_label();
-    for agent in app.agents.values_mut() {
-        agent.workshop_model_label = label.clone();
-    }
-    abort_prior_auth(app);
-    let request_seq = app.next_auth_request_seq;
-    app.next_auth_request_seq += 1;
-    app.auth_state = AuthState::Authenticating {
-        request_seq,
-        handle: None,
-        auth_url: None,
-        mode: AuthMode::Pending,
-    };
-    let session = match app.auth_return_view {
-        Some(ActiveView::Agent(id)) => app
-            .agents
-            .get(&id)
-            .and_then(|a| a.session.session_id.clone())
-            .map(|sid| (id, sid)),
-        _ => None,
-    };
-    vec![Effect::WorkshopActivateModel {
-        request_seq,
-        model_id,
-        session,
-    }]
-}
-
-/// The only path to the inherited xAI OIDC flow: the user selected the labeled optional xAI card
-/// (and confirmed). Sends `grok.com` with `workshop_xai_opt_in`, which the shell requires before it
-/// attaches the xAI OAuth2 provider when none is configured.
-fn start_optional_xai_login(app: &mut AppView) -> Vec<Effect> {
-    let method_id = app.login_method_id.clone().unwrap_or_else(|| {
-        acp::AuthMethodId::new(xai_grok_shell::agent::auth_method::GROK_COM_METHOD_ID)
-    });
-    app.login_label = Some("xAI (optional)".to_owned());
 
     abort_prior_auth(app);
 
@@ -427,7 +240,6 @@ fn start_optional_xai_login(app: &mut AppView) -> Vec<Effect> {
             method_id,
             use_oauth: app.auth_use_oauth,
             force_interactive: true,
-            xai_opt_in: true,
         },
         Effect::PollAuthUrl { request_seq },
     ]
@@ -451,8 +263,6 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
     app.auth_state = AuthState::Done;
     app.auth_show_raw_url = false;
     app.auth_code_input.reset();
-    // Workshop: a picker opened mid-session closes with the login it hosted.
-    app.connection_picker = None;
     restore_auth_return_view(app, return_view);
     // This runs on all agents because the login may have been started from the dashboard
     // Clearing the stash alone is not enough
@@ -504,18 +314,6 @@ pub(super) fn handle_auth_complete(
         app.welcome_prompt_focused = !app.is_access_blocked();
         app.auth_code_input.reset();
 
-        // Workshop: a connection activation started from the picker has now reloaded the model and
-        // authenticated (Direct/Local) or established the anonymous session (Engine/Adapter); close
-        // the picker and hand the user back to the home prompt. The composer label is stamped at
-        // session creation from `workshop_connection` (see `configure_agent_composer`).
-        if app.connection_picker.take().is_some() {
-            let label = app
-                .workshop_connection
-                .composer_label()
-                .unwrap_or_else(|| "model".to_owned());
-            app.show_toast(&format!("Connected: {label}"));
-        }
-
         // Mid-session re-auth (`/login` or a 401 prompt): restore the view the user was on instead of running the startup load-session flow
         // The session state lives in `app.agents`, independent of `active_view`, so it is preserved across the auth detour
         if let Some(return_view) = app.auth_return_view.take() {
@@ -538,7 +336,7 @@ pub(super) fn handle_auth_complete(
                         "Re-authenticated. Retrying\u{2026}".to_string(),
                     ));
                     agent.session.enqueue_in_flight_prompt_front(prompt);
-                    let drain = maybe_drain_queue(agent);
+                    let drain = maybe_drain_queue(agent, &mut app.pending_image_notices);
                     retry_effects.extend(drain.effects);
                     page_flips.push((agent.session.id, drain.page_flip_entry));
                 }

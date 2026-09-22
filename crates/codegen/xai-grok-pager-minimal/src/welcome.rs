@@ -61,7 +61,7 @@ pub fn maybe_commit_welcome(app: &mut AppView, terminal: &mut PagerTerminal) {
     let mut info: Vec<Line<'static>> = Vec::new();
     info.push(Line::from(vec![
         Span::styled(
-            workshop_brand::title(),
+            "Grok Build",
             Style::default()
                 .fg(theme.accent_user)
                 .add_modifier(Modifier::BOLD),

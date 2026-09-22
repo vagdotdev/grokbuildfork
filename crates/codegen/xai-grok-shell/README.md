@@ -7,11 +7,11 @@ Use it interactively as a TUI, or integrate it into your own apps via headless m
 ## Quick Start
 
 ```bash
-# Build (Workshop has no public install channel yet)
-cargo build --release -p xai-grok-pager-bin
+# Install
+curl -fsSL https://x.ai/cli/install.sh | bash
 
 # Interactive TUI
-workshop
+grok
 
 # Headless (for scripts/automation)
 grok -p "Explain this codebase"
@@ -58,8 +58,11 @@ grok agent stdio
 ## Installation
 
 ```bash
-# Workshop ships no install script or update channel yet: build the `workshop` binary from source.
-cargo build --release -p xai-grok-pager-bin
+# Install latest stable
+curl -fsSL https://x.ai/cli/install.sh | bash
+
+# Install a specific version
+curl -fsSL https://x.ai/cli/install.sh | bash -s 0.1.42
 ```
 
 Verify installation:
@@ -391,7 +394,7 @@ auth_provider = "litellm"
 If you've authenticated with `grok login`, you can use the stored credentials to call the CLI chat proxy directly via curl. The proxy requires specific headers that mirror what the grok CLI sends internally:
 
 ```bash
-curl -s -N -X POST "$GROK_CLI_CHAT_PROXY_BASE_URL/chat/completions" \
+curl -s -N -X POST "https://cli-chat-proxy.grok.com/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(jq -r '."https://accounts.x.ai/sign-in".key' ~/.grok/auth.json)" \
   -H "X-XAI-Token-Auth: xai-grok-cli" \
@@ -1790,15 +1793,31 @@ never removes or replaces another layer's block. Each hook's `/hooks-list` name 
 prefixed with the layer it came from (for example `managed:` or
 `requirements/user:`).
 
-Hooks from the **root-owned** layers (a system-dir `requirements.toml` such as
-`/etc/grok/requirements.toml`, or `/etc/grok/managed_config.toml`) are enforced:
-they cannot be disabled from the hooks modal, the enable/disable APIs, or the
-`disabled-hooks` file, and a byte-identical copy in a lower layer cannot take
-over their provenance. Enforcement relies on OS file ownership — deploy these
-files root-owned (or via MDM); there is no signature verification. Hooks in
-`$GROK_HOME` layers (`requirements.toml`, `managed_config.toml`, `config.toml`)
+Hooks from two kinds of layer are enforced: they cannot be disabled from the
+hooks modal, the enable/disable APIs, or the `disabled-hooks` file, and a
+byte-identical copy in a lower layer cannot take over their provenance.
+
+- The **root-owned** system layers (`/etc/grok/requirements.toml`,
+  `/etc/grok/managed_config.toml`). Enforcement relies on OS file ownership, so
+  deploy these files root-owned (or via MDM).
+- The **signed** `$GROK_HOME/requirements.toml` the deployment sync writes.
+  Its hooks are enforced while the file's bytes match the server-signed
+  envelope (`requirements/signed:` names); an edited copy, or one whose
+  signature file is missing or unreadable, is the user's own file again
+  (`requirements/user:` names, disableable); an unreadable `requirements.toml`
+  contributes no hooks. Pair the policy with `fail_closed = true`, which
+  refuses the session on an edited copy or a missing signature (an unreadable
+  file is a read error, not tampering, and still starts).
+
+Hooks in the other `$GROK_HOME` layers (`managed_config.toml`, `config.toml`)
 remain convenience distribution, not an enforcement boundary: the user owns
 that directory and can edit or repoint it.
+
+`allow_managed_hooks_only = true` (also `allowManagedHooksOnly`) in any policy
+layer is a tighten-only pin that skips every hook that is not managed policy:
+user, project, plugin, agent-frontmatter, and vendor-compat hooks are left out of
+dispatch and show `[disabled]` in the modal, and enabling them is refused.
+ACP client-registered hooks are unaffected. A non-boolean value engages the pin.
 
 ---
 
@@ -2498,7 +2517,7 @@ The agent persists all session updates automatically. Clients can reconnect and 
 | Variable                         | Description                                                                                              |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `XAI_API_KEY`         | API key from [console.x.ai](https://console.x.ai). Used for custom endpoint auth and API key login      |
-| `GROK_CLI_CHAT_PROXY_BASE_URL`  | Override the cli-chat-proxy URL (Workshop default: an unreachable `api.workshop.invalid` placeholder)  |
+| `GROK_CLI_CHAT_PROXY_BASE_URL`  | Override the cli-chat-proxy URL (default: `https://cli-chat-proxy.grok.com/v1`)                          |
 | `GROK_MODELS_BASE_URL`          | Custom base URL for inference. Model list auto-fetched from `{base_url}/models` (see [Custom Models Endpoint](#custom-models-endpoint)) |
 | `GROK_MODELS_LIST_URL`          | Override the model list URL if it differs from `{GROK_MODELS_BASE_URL}/models`                                              |
 | `GROK_AUTH_PROVIDER_COMMAND`     | External auth binary (alternative to config file). See [External Auth Provider](#external-auth-provider) |

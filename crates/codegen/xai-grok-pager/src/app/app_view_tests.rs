@@ -169,15 +169,6 @@ pub(crate) fn test_app() -> AppView {
         auth_url_poll_handle: None,
         deferred_startup: Default::default(),
         auth_use_oauth: false,
-        connection_picker: None,
-        workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
-        workshop_engine: None,
-        workshop_engine_session: None,
-        workshop_turn_active: false,
-        workshop_turn_tx: None,
-        workshop_turn_cancel: None,
-        workshop_turn_stream_entry: None,
-        workshop_turn_agent: None,
         auth_clipboard_delivery: None,
         auth_clipboard_feedback_generation: 0,
         team_id: None,
@@ -188,7 +179,7 @@ pub(crate) fn test_app() -> AppView {
         privacy_notice_rollout: false,
         privacy_banner_reshow_days: None,
         privacy_banner_acked: None,
-        privacy_banner_opt_in_inflight: false,
+        coding_data_pending_write: None,
         coding_data_write_seq: 0,
         show_tips: None,
         auto_update: None,
@@ -241,6 +232,8 @@ pub(crate) fn test_app() -> AppView {
         #[cfg(feature = "local-workspace")]
         welcome_on_workspace_mode: false,
         welcome_toast: None,
+        dispatch_depth: 0,
+        pending_image_notices: Vec::new(),
         welcome_on_privacy_banner: false,
         welcome_on_upgrade_cta: false,
         welcome_changelog_cta_rect: None,
@@ -285,7 +278,6 @@ pub(crate) fn test_app() -> AppView {
         pending_effects: Vec::new(),
         pending_editor: None,
         pending_pager_path: None,
-        pending_workshop_login: None,
         pending_pager_ansi: false,
         minimal_state: crate::minimal_api::MinimalState::default(),
         reconnect_pending: false,
@@ -624,7 +616,6 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
     );
 }
 #[test]
-#[ignore = "upstream time-dependent flake (history daemon delivery races the poll deadline); see PR #13"]
 fn needs_animation_gates_prompt_history_tick_delivery() {
     let mut app = test_app_with_agent();
     let id = super::super::agent::AgentId(0);
@@ -1761,6 +1752,39 @@ fn needs_animation_gates_extensions_modal_loading_spinner() {
     );
 }
 #[test]
+fn needs_animation_gates_memory_modal_copy_message() {
+    use crate::views::memory_modal::MemoryModalState;
+    use crate::views::modal::ActiveModal;
+    let mut app = test_app_with_agent();
+    let id = super::super::agent::AgentId(0);
+    let agent = app.agents.get_mut(&id).unwrap();
+    agent.active_modal = Some(ActiveModal::MemoryBrowser {
+        state: Box::new(MemoryModalState::new(Vec::new())),
+    });
+    assert!(
+        !app.needs_animation(),
+        "an idle memory modal must not request ticks"
+    );
+    let Some(ActiveModal::MemoryBrowser { state }) =
+        app.agents.get_mut(&id).unwrap().active_modal.as_mut()
+    else {
+        panic!("memory modal open");
+    };
+    state.report_copy(&crate::clipboard::CopyDelivery::File {
+        path: std::path::PathBuf::from("/tmp/last-copy.txt"),
+    });
+    assert!(
+        app.needs_animation(),
+        "copy message countdown must keep ticks alive"
+    );
+    let cleared = (0..=120).any(|_| app.tick());
+    assert!(cleared, "tick must expire the copy message");
+    assert!(
+        !app.needs_animation(),
+        "expired copy message must stop requesting ticks"
+    );
+}
+#[test]
 fn needs_animation_gates_pending_acp_command_sync() {
     let mut app = test_app_with_agent();
     let id = super::super::agent::AgentId(0);
@@ -2244,20 +2268,16 @@ fn is_restricted_tier_classification() {
     assert!(!is_restricted_tier(Some("X Premium+")));
     assert!(!is_restricted_tier(Some("SomeFutureTier")));
 }
-/// Workshop overlay: the local engine has no tier, so `/voice` is never in the deny list.
 #[test]
-fn voice_not_in_tier_restricted_commands() {
-    assert!(!TIER_RESTRICTED_COMMANDS.contains(&"voice"));
+fn voice_included_in_tier_restricted_commands() {
+    assert!(TIER_RESTRICTED_COMMANDS.contains(&"voice"));
 }
 #[test]
-fn is_voice_tier_restricted_only_for_the_xai_provider() {
+fn is_voice_tier_restricted_tracks_tier() {
     let mut app = test_app();
     app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
-    assert!(!app.is_voice_tier_restricted(), "local provider: no tier gate");
-    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
-    assert!(app.is_voice_tier_restricted(), "xAI provider on a free tier is gated");
+    assert!(app.is_voice_tier_restricted());
     let mut app = test_app();
-    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
     let meta = xai_grok_login::AuthMeta {
         subscription_tier: Some("SuperGrok".into()),
         ..Default::default()

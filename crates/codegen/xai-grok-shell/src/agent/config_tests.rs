@@ -3201,7 +3201,7 @@ fn e2e_default_model_with_session_routes_to_proxy() {
     let sampling = resolve_sampling(model, Some("session-token-123"));
     assert_eq!(sampling.api_key.as_deref(), Some("session-token-123"));
     assert_eq!(
-        sampling.base_url, CLI_CHAT_PROXY_BASE_URL_DEFAULT,
+        sampling.base_url, "https://cli-chat-proxy.grok.com/v1",
         "session auth should route to cli-chat-proxy, not api.x.ai"
     );
 }
@@ -3227,7 +3227,7 @@ fn e2e_user_config_overrides_prefetched_model() {
     let mut prefetched = IndexMap::new();
     prefetched.insert(
         dm.to_string(),
-        test_model_entry(dm, CLI_CHAT_PROXY_BASE_URL_DEFAULT, None, None, None),
+        test_model_entry(dm, "https://cli-chat-proxy.grok.com/v1", None, None, None),
     );
     let (_, models) = resolve_models_from_toml(
         &format!(
@@ -3341,7 +3341,7 @@ fn e2e_duplicate_model_field_both_entries_survive() {
     assert_eq!(sampling.base_url, "https://inference.example.com/v1");
     let sampling = resolve_sampling(default, Some("session-key"));
     assert_eq!(sampling.api_key.as_deref(), Some("session-key"));
-    assert_eq!(sampling.base_url, CLI_CHAT_PROXY_BASE_URL_DEFAULT,);
+    assert_eq!(sampling.base_url, "https://cli-chat-proxy.grok.com/v1",);
 }
 #[test]
 fn e2e_enterprise_custom_endpoint_skips_xai_defaults() {
@@ -3385,7 +3385,7 @@ fn e2e_acp_model_info_no_dedup_on_model_field() {
         "default-grok".to_string(),
         test_model_entry(
             crate::models::default_model(),
-            CLI_CHAT_PROXY_BASE_URL_DEFAULT,
+            "https://cli-chat-proxy.grok.com/v1",
             None,
             None,
             Some("https://api.x.ai/v1"),
@@ -3863,6 +3863,8 @@ enable_all_project_mcp_servers = false
 enableAllProjectMcpServers = false
 plugin_auto_update = false
 pluginAutoUpdate = false
+allow_managed_hooks_only = true
+allowManagedHooksOnly = true
 
 [[allowed_mcp_servers]]
 server_url = "https://mcp.example.com/*"

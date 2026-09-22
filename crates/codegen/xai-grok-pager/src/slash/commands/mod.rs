@@ -1,8 +1,6 @@
 //! Each command lives in its own submodule. This module re-exports command structs and provides `builtin_commands()` for registry construction.
 pub mod always_approve;
 pub mod announcements;
-/// Workshop overlay: `/auth`, `/models`.
-pub mod auth;
 pub mod auto;
 pub mod btw;
 pub mod cd;
@@ -37,6 +35,8 @@ pub mod login;
 pub mod logout;
 pub mod loop_cmd;
 pub mod mcps;
+pub mod memory;
+pub mod memory_ops;
 pub mod model;
 pub mod multiline;
 pub mod new;
@@ -97,6 +97,9 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(plan::PlanCommand),
         Arc::new(view_plan::ViewPlanCommand),
         Arc::new(remember::RememberCommand),
+        Arc::new(memory::MemoryCommand),
+        Arc::new(memory_ops::FlushCommand),
+        Arc::new(memory_ops::DreamCommand),
         Arc::new(recap::RecapCommand),
         Arc::new(rewind::RewindCommand),
         Arc::new(jump::JumpCommand),
@@ -147,8 +150,6 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(privacy::PrivacyCommand),
         Arc::new(doctor::DoctorCommand),
         Arc::new(import_claude::ImportClaudeCommand),
-        Arc::new(auth::AuthCommand),
-        Arc::new(auth::ModelsCommand),
         Arc::new(login::LoginCommand),
         Arc::new(logout::LogoutCommand),
         Arc::new(home::HomeCommand),

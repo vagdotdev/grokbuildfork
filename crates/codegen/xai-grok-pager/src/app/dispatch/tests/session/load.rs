@@ -918,7 +918,7 @@ fn session_restored_sticky_chat_sets_conversation_entry() {
 #[test]
 fn auth_complete_restores_view_after_mid_session_login() {
     let mut app = test_app_with_agent();
-    start_login_flow(&mut app);
+    dispatch(Action::Login, &mut app);
     let seq = authenticating_seq(&app);
     assert_eq!(app.active_view, ActiveView::Welcome);
     dispatch(
@@ -1466,6 +1466,7 @@ fn duplicate_load_unbind_invalidates_old_minimal_btw_response() {
     dispatch(
         Action::TaskComplete(TaskResult::BtwResponse {
             image_notice: None,
+            skipped_image_numbers: Vec::new(),
             agent_id: old_owner,
             result: Ok("old answer".into()),
             minimal_request_id: Some(request_id),

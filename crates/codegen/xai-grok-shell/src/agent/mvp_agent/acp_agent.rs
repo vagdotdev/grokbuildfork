@@ -41,7 +41,11 @@ impl MvpAgent {
         let model = match self.resolve_model_id(&args.model_id) {
             Ok(model) => model,
             Err(_) => {
-                self.models_manager.wait_for_first_catalog().await;
+                self.models_manager
+                    .wait_for_first_catalog(
+                        crate::util::config::resolve_remote_fetch_enabled(),
+                    )
+                    .await;
                 self.resolve_model_id(&args.model_id)?
             }
         };
@@ -381,7 +385,6 @@ impl acp::Agent for MvpAgent {
             has_auth_provider,
             has_enterprise_oidc,
             enterprise_oidc_issuer,
-            has_oauth2_provider,
         ) = {
             let cfg = self.cfg.borrow();
             let issuer = cfg.grok_com_config.oidc.as_ref().map(|o| o.issuer.clone());
@@ -390,7 +393,6 @@ impl acp::Agent for MvpAgent {
                 cfg.grok_com_config.auth_provider_command.is_some(),
                 cfg.grok_com_config.oidc.is_some(),
                 issuer,
-                cfg.grok_com_config.oauth2.is_some(),
             )
         };
         if has_enterprise_oidc {
@@ -408,15 +410,11 @@ impl acp::Agent for MvpAgent {
                 None,
                 Some(serde_json::json!({ "issuer": issuer })),
             );
-        } else if has_oauth2_provider || has_auth_provider {
+        } else {
             tracing::info!(
                 label = ?login_label,
                 has_auth_provider,
                 "auth: advertising grok.com auth method",
-            );
-        } else {
-            tracing::info!(
-                "auth: no session-login provider configured; not advertising an interactive login method (Workshop connection picker)",
             );
         }
         let preferred_method = preferred_method_early;
@@ -440,7 +438,6 @@ impl acp::Agent for MvpAgent {
                 enterprise_oidc_issuer: enterprise_oidc_issuer.as_deref(),
                 login_label: login_label.as_deref(),
                 has_auth_provider_command: has_auth_provider,
-                has_oauth2_provider,
                 preferred_method,
             })
         };
@@ -795,30 +792,8 @@ impl acp::Agent for MvpAgent {
                 Ok(self.auth_response_with_meta())
             }
             auth_method::GROK_COM_METHOD_ID | auth_method::OIDC_METHOD_ID => {
-                let mut grok_ctx_owned = self.auth_manager.grok_com_config().clone();
+                let grok_ctx = self.auth_manager.grok_com_config();
                 let auth_meta = AuthRequestMeta::from_json(arguments.meta.as_ref());
-                // Workshop (gate:no-xai): with no session-login provider configured, an interactive
-                // session login runs only when the user explicitly selected the labeled optional
-                // xAI card. Every other path fails closed here instead of opening a browser.
-                if !grok_ctx_owned.has_session_login_provider()
-                    && grok_ctx_owned.auth_provider_command.is_none()
-                {
-                    if auth_meta.workshop_xai_opt_in {
-                        tracing::info!("auth: optional xAI card selected; attaching xAI OAuth2 provider for this login");
-                        grok_ctx_owned = grok_ctx_owned.with_xai_first_party_oauth2();
-                    } else {
-                        emit_login_span(
-                            false,
-                            arguments.method_id.0.as_ref(),
-                            None,
-                            Some("no_session_login_provider"),
-                        );
-                        return Err(acp::Error::auth_required().data(
-                            auth_method::NO_SESSION_LOGIN_PROVIDER,
-                        ));
-                    }
-                }
-                let grok_ctx = &grok_ctx_owned;
                 tracing::info!(
                     method = arguments.method_id.0.as_ref(),
                     headless = auth_meta.headless,
@@ -1184,6 +1159,7 @@ impl acp::Agent for MvpAgent {
             });
         let model = model_rx
             .await
+            .map(|current| current.id)
             .unwrap_or_else(|_| self.sampling_config.borrow().model.clone());
         let mut parsed_prompt_tx: Option<oneshot::Sender<ParsedPromptInfo>> = None;
         let verbatim = arguments
@@ -2040,8 +2016,11 @@ impl acp::Agent for MvpAgent {
             }
             "x.ai/session/repair" => crate::extensions::repair::handle(self, &args).await,
             "x.ai/session/usage" => crate::extensions::usage::handle(self, &args).await,
-            "x.ai/memory/flush"
-            | "x.ai/memory/rewrite"
+            crate::extensions::memory::MEMORY_FLUSH_METHOD
+            | crate::extensions::memory::MEMORY_DREAM_METHOD
+            | crate::extensions::memory::MEMORY_REWRITE_METHOD
+            | crate::extensions::memory::MEMORY_LIST_METHOD
+            | crate::extensions::memory::MEMORY_TOGGLE_METHOD
             | crate::extensions::memory::MEMORY_FORGET_METHOD => {
                 crate::extensions::memory::handle(self, &args).await
             }

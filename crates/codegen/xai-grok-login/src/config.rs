@@ -191,28 +191,10 @@ impl GrokComConfig {
         } else if let Some(ref oauth2) = self.oauth2 {
             oauth2.auth_scope()
         } else {
-            // Workshop: no OAuth2 provider is configured by default. Interactive session login
-            // is unavailable until the user adds one (optional xAI card, `GROK_OAUTH2_*`, or
-            // enterprise OIDC), so the scope only names that state.
-            WORKSHOP_NO_PROVIDER_AUTH_SCOPE.to_owned()
+            unreachable!("oauth2 config is always present (xAI default or env override)")
         }
-    }
-    /// `true` when an interactive session-login provider (enterprise OIDC or OAuth2) is configured.
-    /// Workshop's default is `false`: the connection picker, not a browser, opens on Login.
-    pub fn has_session_login_provider(&self) -> bool {
-        self.oidc.is_some() || self.oauth2.is_some()
-    }
-    /// Return a copy with the optional xAI first-party OAuth2 provider attached.
-    /// Only the labeled "xAI (optional)" connection card calls this, after the user selects it.
-    pub fn with_xai_first_party_oauth2(mut self) -> Self {
-        if self.oidc.is_none() && self.oauth2.is_none() {
-            self.oauth2 = Some(OAuth2ProviderConfig::xai_first_party());
-        }
-        self
     }
 }
-/// auth.json scope key when no session-login provider is configured (Workshop default).
-pub const WORKSHOP_NO_PROVIDER_AUTH_SCOPE: &str = "workshop::no-session-provider";
 impl OAuth2ProviderConfig {
     pub fn is_team_principal(&self) -> bool {
         self.principal_type.as_deref() == Some(TEAM_PRINCIPAL_TYPE)
@@ -255,31 +237,23 @@ impl OAuth2ProviderConfig {
     pub fn auth_scope(&self) -> String {
         self.base_auth_scope()
     }
-    /// The xAI first-party OAuth2 provider (`auth.x.ai`, or the local accounts-app under
-    /// `GROK_LOCAL_AUTH=1`). Workshop never constructs this by default; see
-    /// [`GrokComConfig::with_xai_first_party_oauth2`].
-    pub fn xai_first_party() -> Self {
-        Self {
-            issuer: xai_oauth2_issuer().to_owned(),
-            client_id: obfstr::obfstr!("b1a00492-073a-47ea-816f-4c329264a828").to_owned(),
-            scopes: default_oauth2_scopes(),
-            principal_type: None,
-            principal_id: None,
-            referrer: Some(DEFAULT_OAUTH2_REFERRER.to_owned()),
-        }
-    }
 }
 impl Default for GrokComConfig {
-    /// Workshop default: no session-login provider. `oauth2` is populated only from an explicit
-    /// `GROK_OAUTH2_ISSUER` / `GROK_OAUTH2_CLIENT_ID` pair; the xAI provider is never the fallback
-    /// (gate:no-xai, Gate 1). The optional xAI card attaches it via
-    /// [`GrokComConfig::with_xai_first_party_oauth2`] after the user selects that card.
     fn default() -> Self {
         let oidc = OidcAuthConfig::from_env();
         let oauth2 = if oidc.is_some() {
             None
         } else {
-            OAuth2ProviderConfig::from_env()
+            Some(
+                OAuth2ProviderConfig::from_env().unwrap_or_else(|| OAuth2ProviderConfig {
+                    issuer: xai_oauth2_issuer().to_owned(),
+                    client_id: obfstr::obfstr!("b1a00492-073a-47ea-816f-4c329264a828").to_owned(),
+                    scopes: default_oauth2_scopes(),
+                    principal_type: None,
+                    principal_id: None,
+                    referrer: Some(DEFAULT_OAUTH2_REFERRER.to_owned()),
+                }),
+            )
         };
         Self {
             grok_ws_origin: std::env::var("GROK_WS_ORIGIN")

@@ -963,10 +963,10 @@ fn startup_hints_from_meta_prefers_session_request_over_init() {
 }
 #[test]
 fn startup_hints_from_meta_session_object_wins_whole_not_merged() {
-    let session = serde_json::json!({ "startupHints": { "skipGitStatus": true } });
+    let session = serde_json::json!({ "startupHints": { "isSubagent": true } });
     let init = serde_json::json!({ "startupHints": { "nonInteractive": true } });
     let hints = startup_hints_from_meta(session.as_object(), init.as_object());
-    assert!(hints.skip_git_status);
+    assert!(hints.is_subagent);
     assert!(!hints.non_interactive);
 }
 #[test]
@@ -3832,43 +3832,36 @@ async fn cached_token_fallthrough_respects_kill_switch() {
     let _lockdown = EnvGuard::unset("GROK_DISABLE_API_KEY_AUTH");
     let _key = EnvGuard::set(XAI_API_KEY_ENV_VAR, "test-deployment-key");
     let agent = build_agent_with_api_key_auth_disabled();
-    // Workshop (gate:no-xai): the test agent has no session-login provider configured, so the
-    // fallthrough must fail closed rather than fall to interactive grok.com. Either way the
-    // kill switch keeps `xai.api_key` out of the fallthrough.
-    let _ = GROK_COM_METHOD_ID;
     assert_eq!(
         agent
             .cached_token_fallthrough_method_id()
             .as_ref()
             .map(|id| id.0.as_ref()),
-        None,
-        "disable_api_key_auth must keep xai.api_key out of the cached_token fallthrough; \
-         with no session-login provider configured the fallthrough fails closed",
+        Some(GROK_COM_METHOD_ID),
+        "disable_api_key_auth must keep the cached_token fallthrough on \
+         interactive grok.com so XAI_API_KEY can't bypass forced IdP login",
     );
 }
-/// No advertiseable credentials at all (no env key, no kill switch) and no session-login provider:
-/// Workshop fails closed (gate:no-xai). The pager shows the connection picker; nothing here may
-/// resolve to interactive `grok.com`.
+/// No advertiseable credentials at all (no env key, no kill switch): the user genuinely needs to log in.
+/// The fallthrough is interactive `grok.com`.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
-async fn cached_token_fallthrough_fails_closed_without_credentials_or_provider() {
-    use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
+async fn cached_token_fallthrough_falls_to_grok_com_without_credentials() {
+    use crate::agent::auth_method::{
+        GROK_COM_METHOD_ID, LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR,
+    };
     use xai_grok_test_support::EnvGuard;
     let _lockdown = EnvGuard::unset("GROK_DISABLE_API_KEY_AUTH");
     let _new = EnvGuard::unset(XAI_API_KEY_ENV_VAR);
     let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
     let agent = build_minimal_agent_for_tests();
-    assert!(
-        !agent.cfg.borrow().grok_com_config.has_session_login_provider(),
-        "precondition: Workshop default has no session-login provider",
-    );
     assert_eq!(
         agent
             .cached_token_fallthrough_method_id()
             .as_ref()
             .map(|id| id.0.as_ref()),
-        None,
-        "no API-key creds, no provider -> fail closed (connection picker), never grok.com",
+        Some(GROK_COM_METHOD_ID),
+        "no API-key creds and no kill switch -> interactive grok.com login",
     );
 }
 /// Verifies the 4-state matrix of `(disable_zdr_incompatible_tools, zdr_video_output_s3)`: | ZDR flag | S3 config | Result | |----------|-----------|---------------------------------------------| | false | None | Enabled, no S3 (normal non-ZDR mode) | | true | None | Disabled (ZDR with no escape hatch) | | false | Some | Enabled, S3 **not** threaded (non-ZDR) | | true | Some | Enabled, S3 threaded (ZDR with upload path) |
@@ -5050,6 +5043,36 @@ fn new_session_registers_root_identity() {
     });
 }
 #[test]
+fn new_session_records_setup_phases_for_bisection() {
+    xai_grok_telemetry::unified_log::redirect_to_temp_for_tests();
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let mark = xai_grok_telemetry::unified_log::snapshot_log()
+            .unwrap_or_default()
+            .len();
+        let sid = new_root_session(&agent, cwd.path()).await;
+        agent.remove_session(&sid);
+        let log = xai_grok_telemetry::unified_log::snapshot_log().unwrap_or_default();
+        let appended = String::from_utf8_lossy(log.get(mark.min(log.len())..).unwrap_or(&[]));
+        for phase in [
+            "resolve_workspace",
+            "plugin_registry",
+            "mcp_merge",
+            "persistence_init",
+            "spawn_session_actor",
+            "git_discovery",
+        ] {
+            let needle = format!("\"phase\":\"{phase}\"");
+            assert!(
+                appended.contains(needle.as_str()),
+                "session/new must record {phase} in unified.jsonl; got:\n{appended}"
+            );
+        }
+        assert!(appended.contains("\"msg\":\"session created\""));
+    });
+}
+#[test]
 fn cold_load_stamps_identity_exactly_once() {
     run_local_for_bridge_test(|| async {
         let agent = build_minimal_agent_for_tests();
@@ -5927,7 +5950,10 @@ fn prompt_routes_only_non_send_now_through_human_delivery_handle() {
                             let _ = responds_to.send(Default::default());
                         }
                         SessionCommand::GetCurrentModel { responds_to } => {
-                            let _ = responds_to.send("test-model".to_owned());
+                            let _ = responds_to.send(crate::session::CurrentModel {
+                                id: "test-model".to_owned(),
+                                reasoning_effort: None,
+                            });
                         }
                         SessionCommand::Prompt {
                             prompt_blocks,

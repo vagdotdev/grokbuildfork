@@ -10,6 +10,7 @@ use super::session_load_barrier::{
     AcpDrainArm, SessionLoadAcpTick, SessionLoadBarrier, session_load_agent_id,
 };
 use super::{PagerArgs, PagerTerminal, acp_handler, dispatch, effects};
+use crate::app::reader_thread::ReaderThread;
 use crate::appearance::ConfigWatcher;
 use crate::client_identity::{PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 use crate::render::draw::{EscapeWriter, WriterDrain, WriterEvent};
@@ -42,7 +43,7 @@ pub(crate) struct TimedInputEvent {
     pub(super) arrived_at: std::time::Instant,
 }
 impl TimedInputEvent {
-    fn now(event: Event) -> Self {
+    pub(super) fn now(event: Event) -> Self {
         Self {
             event,
             arrived_at: std::time::Instant::now(),
@@ -764,60 +765,18 @@ fn run_pending_suspends(
     presenter: &mut Presenter,
     suspend_retry_after: &mut Option<Instant>,
     suspend_wait_reports: &mut SuspendWaitReports,
-) -> anyhow::Result<Vec<super::actions::Effect>> {
-    let mut follow_up: Vec<super::actions::Effect> = Vec::new();
+) -> anyhow::Result<()> {
     let editor_pending = app.pending_editor.is_some();
     let pager_pending = app.pending_pager_path.is_some();
-    let login_pending = app.pending_workshop_login.is_some();
     suspend_wait_reports.reset_missing(editor_pending, pager_pending);
     if !suspend_retry_ready(*suspend_retry_after, Instant::now()) {
-        return Ok(follow_up);
+        return Ok(());
     }
-    if !editor_pending && !pager_pending && !login_pending {
+    if !editor_pending && !pager_pending {
         *suspend_retry_after = None;
-        return Ok(follow_up);
+        return Ok(());
     }
     *suspend_retry_after = None;
-    // Workshop: the vendor CLI's own login owns the terminal for its duration; Workshop never
-    // captures or parses its output, and re-probes the rail when it exits.
-    if let Some((rail, argv)) = app.pending_workshop_login.take() {
-        let mut exit_ok = false;
-        let moved_cursor = match suspend_for_child(
-            app.screen_mode,
-            terminal,
-            input_paused,
-            reader_parked,
-            input_rx,
-            || {
-                if let Some((program, args)) = argv.split_first() {
-                    eprintln!("\nWorkshop: running `{}` — sign in, then this returns to Workshop.\n", argv.join(" "));
-                    exit_ok = std::process::Command::new(program)
-                        .args(args)
-                        .status()
-                        .map(|s| s.success())
-                        .unwrap_or(false);
-                }
-            },
-        ) {
-            Ok(moved_cursor) => moved_cursor,
-            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
-                requeue_after_suspend_timeout(&mut app.pending_workshop_login, (rail, argv));
-                let _ = defer_suspend_retry(
-                    suspend_retry_after,
-                    &mut suspend_wait_reports.editor_reported,
-                    Instant::now(),
-                );
-                return Ok(follow_up);
-            }
-            Err(error) => return Err(error.into()),
-        };
-        restore_after_child(terminal, app.screen_mode, moved_cursor);
-        follow_up.extend(dispatch::dispatch(
-            Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone { rail, exit_ok }),
-            app,
-        ));
-        presenter.request_presentation(app, terminal, true);
-    }
     if let Some(request) = app.pending_editor.take() {
         let retry_request = request.clone();
         match crate::app::external_editor::prepare(app, request) {
@@ -859,7 +818,7 @@ fn run_pending_suspends(
                             report_suspend_wait(app, EDITOR_SUSPEND_WAIT);
                             presenter.request_presentation(app, terminal, false);
                         }
-                        return Ok(follow_up);
+                        return Ok(());
                     }
                     Err(error) => return Err(error.into()),
                 };
@@ -933,7 +892,7 @@ fn run_pending_suspends(
                     report_suspend_wait(app, TRANSCRIPT_SUSPEND_WAIT);
                     presenter.request_presentation(app, terminal, false);
                 }
-                return Ok(follow_up);
+                return Ok(());
             }
             Err(error) => return Err(error.into()),
         };
@@ -942,7 +901,7 @@ fn run_pending_suspends(
         presenter.request_presentation(app, terminal, true);
         suspend_wait_reports.pager_reported = false;
     }
-    Ok(follow_up)
+    Ok(())
 }
 /// Consume a pending in-process switch between `/minimal` and `/fullscreen`.
 /// Returns `true` when the caller must quit (exec fallback armed on `app.relaunch`).
@@ -1084,6 +1043,7 @@ pub(crate) async fn run(
         tokio::sync::oneshot::Receiver<Option<xai_grok_update::auto_update::UpdateAvailable>>,
     >,
     mut writer_event_rx: tokio::sync::mpsc::UnboundedReceiver<WriterEvent>,
+    reader_thread: &mut ReaderThread,
 ) -> anyhow::Result<RunResult> {
     crate::unified_log::init(connection.tx.clone());
     crate::unified_log::info("pager started", None, None);
@@ -1312,12 +1272,16 @@ pub(crate) async fn run(
         );
     }
     let mut post_render_effects = if needs_interactive_login {
-        // Workshop: an empty method list is the default cold start (no session-login provider,
-        // no key, no cached session). It opens the connection picker, never a browser.
         if connection.auth_methods.is_empty() {
-            app.auth_state = super::app_view::AuthState::Pending { error: None };
+            app.auth_state = super::app_view::AuthState::Pending {
+                error: Some(
+                    xai_grok_shell::agent::auth_method::PREFERRED_API_KEY_UNAVAILABLE.to_string(),
+                ),
+            };
+            vec![]
+        } else {
+            dispatch::dispatch(Action::Login, &mut app)
         }
-        dispatch::dispatch(Action::Login, &mut app)
     } else {
         vec![]
     };
@@ -1656,52 +1620,9 @@ pub(crate) async fn run(
         );
     }
     let live_input_started_at = std::time::Instant::now();
-    let reader_input_tx = input_tx;
     let input_paused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let reader_paused = input_paused.clone();
     let reader_parked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let reader_parked_thread = reader_parked.clone();
-    std::thread::spawn(move || {
-        use std::sync::atomic::Ordering;
-        const POLL_TIMEOUT: Duration = Duration::from_millis(20);
-        let mut consecutive_event_errors: u32 = 0;
-        loop {
-            if reader_input_tx.is_closed() {
-                break;
-            }
-            if reader_paused.load(Ordering::Acquire) {
-                reader_parked_thread.store(true, Ordering::Release);
-                std::thread::sleep(POLL_TIMEOUT);
-                continue;
-            }
-            reader_parked_thread.store(false, Ordering::Release);
-            let event = match crossterm::event::poll(POLL_TIMEOUT) {
-                Ok(true) => crossterm::event::read(),
-                Ok(false) => continue,
-                Err(e) => Err(e),
-            };
-            match event {
-                Ok(ev) => {
-                    consecutive_event_errors = 0;
-                    let timed = TimedInputEvent::now(ev);
-                    if reader_input_tx.send(timed).is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    consecutive_event_errors += 1;
-                    if consecutive_event_errors >= 50 {
-                        tracing::error!(
-                            "crossterm read returned {consecutive_event_errors} \
-                             consecutive errors, exiting reader: {e}"
-                        );
-                        break;
-                    }
-                    tracing::warn!("crossterm read error (skipping): {e}");
-                }
-            }
-        }
-    });
+    *reader_thread = ReaderThread::spawn(input_tx, input_paused.clone(), reader_parked.clone());
     let mut acp_rx = connection.rx;
     let connection_cancel = connection.cancel;
     let mut leader_status_rx = connection.leader_status_rx;
@@ -1711,12 +1632,6 @@ pub(crate) async fn run(
     let (progress_tx, mut progress_rx) =
         tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
     let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
-    // Workshop: a persistent channel for streaming Engine/Adapter turns. Submit handlers clone the
-    // sender (stored on `app`) into a detached turn task; the `select!` arm below renders its events.
-    // The sender lives as long as the loop, so the receiver never closes and the arm idles cleanly.
-    let (workshop_turn_tx, mut workshop_turn_rx) =
-        tokio::sync::mpsc::unbounded_channel::<crate::app::workshop::WorkshopTurnMsg>();
-    app.workshop_turn_tx = Some(workshop_turn_tx);
     let voice_auth_factory = connection.auth_manager.clone();
     let mut tick_interval = tick_interval;
     let mut animation_tick_at: Option<Instant> = None;
@@ -1977,7 +1892,7 @@ pub(crate) async fn run(
         if process_effects(workspace_effects, &mut tasks, &mut app, &progress_tx) {
             break;
         }
-        match run_pending_suspends(
+        if let Err(e) = run_pending_suspends(
             &mut app,
             terminal,
             &input_paused,
@@ -1987,16 +1902,9 @@ pub(crate) async fn run(
             &mut suspend_retry_after,
             &mut suspend_wait_reports,
         ) {
-            Ok(follow_up) => {
-                if process_effects(follow_up, &mut tasks, &mut app, &progress_tx) {
-                    break;
-                }
-            }
-            Err(e) => {
-                app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
-                flush_pending_stall(&mut stall_rollup);
-                return Err(e);
-            }
+            app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
+            flush_pending_stall(&mut stall_rollup);
+            return Err(e);
         }
         if run_pending_mode_switch(
             &mut app,
@@ -2515,13 +2423,18 @@ pub(crate) async fn run(
                 // Lost-response recovery (see `dispatch::reconcile_overdue_turn_ends`)
                 // Finish any turn whose `prompt_complete` broadcast outlived the grace window without its `session/prompt` RPC response arriving
                 let reconciled = dispatch::reconcile_overdue_turn_ends(&mut app);
+                // The reconcile drains queues outside any dispatched action; its image notices show now.
+                let notice_shown = app.flush_image_notices_if_root();
                 if let Some(effs) = reconciled {
                     if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
                         break;
                     }
                     presenter.request(false);
-                } else if app.tick() {
-                    presenter.request(false);
+                } else {
+                    let ticked = app.tick();
+                    if ticked || notice_shown {
+                        presenter.request(false);
+                    }
                 }
                 // Keep ticking as long as there are running animations or pending actions waiting to expire
                 schedule_tick(&mut animation_tick_at, &app, tick_interval);
@@ -2972,19 +2885,6 @@ pub(crate) async fn run(
                 presenter.request(false);
             }
 
-            // Workshop: stream one Engine/Adapter turn's events into the active agent's scrollback.
-            // Serviced only when nothing else is pending, so it never starves ACP, input, or timers.
-            // Placed before the ACP-independent voice arm; the ACP path is untouched by all of this.
-            Some(msg) = workshop_turn_rx.recv() => {
-                if handle_workshop_turn_msg(&mut app, msg) {
-                    schedule_tick(&mut animation_tick_at, &app, tick_interval);
-                    let now = Instant::now();
-                    if presenter.request_throttled(now, min_draw_interval) {
-                        app.update_notifications();
-                    }
-                }
-            }
-
             // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
             // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
             // Voice is only serviced when nothing else is pending
@@ -3243,9 +3143,7 @@ struct RoutedInputEvent {
     is_startup_replay: bool,
 }
 fn tty_suspend_armed(app: &AppView) -> bool {
-    app.pending_editor.is_some()
-        || app.pending_pager_path.is_some()
-        || app.pending_workshop_login.is_some()
+    app.pending_editor.is_some() || app.pending_pager_path.is_some()
 }
 fn normalize_input_event(
     timed: TimedInputEvent,
@@ -3941,12 +3839,21 @@ pub(crate) fn retarget_suppress_code_restore(app: &mut AppView, from: &str, to: 
         app.suppress_code_restore_once = Some(to.into());
     }
 }
+fn session_create_or_load(effs: &[super::actions::Effect]) -> bool {
+    effs.iter().any(|e| {
+        matches!(
+            e,
+            Effect::CreateSession { .. }
+                | Effect::CreateWorktreeSession { .. }
+                | Effect::LoadSession { .. }
+        )
+    })
+}
 /// Shared [`SessionFlags`] builder (interactive loop and leader-cluster).
 /// Permission seeds come from the global mirrors (`default_yolo`, `current_ui.permission_mode`).
 /// Create meta therefore sees the post-mode values without effect-shape sniffing.
 pub(crate) fn session_flags_for_effects(
     app: &mut AppView,
-    #[cfg_attr(not(feature = "local-workspace"), allow(unused_variables))]
     effs: &[super::actions::Effect],
 ) -> effects::SessionFlags {
     effects::SessionFlags {
@@ -3955,6 +3862,8 @@ pub(crate) fn session_flags_for_effects(
         ask_user: app.ask_user,
         restore_code: take_load_restore_code(app, effs),
         agent_override: app.agent_override.clone(),
+        defer_builtin_agent_profile: session_create_or_load(effs)
+            && crate::views::agents_modal::config_agent_is_explicit(),
         yolo_mode: app.default_yolo,
         auto_mode: super::dispatch::effective_auto(
             app.default_yolo,
@@ -4025,113 +3934,6 @@ pub(crate) fn dispatch_then_forward(
     effects
 }
 /// Spawn effects into the task set. Returns `true` if the app should quit.
-/// Render one streamed Workshop turn message (OpenCode engine / vendor CLI adapter) into the active
-/// agent's scrollback. Returns whether a redraw is warranted. Mirrors the ACP renderer's block
-/// vocabulary (`agent_message_streaming` + `push_chunk_to_agent`, `tool_call`, `system`) but is
-/// entirely separate from the ACP path, which only runs for `Shell` (Direct/Local) connections.
-fn handle_workshop_turn_msg(app: &mut AppView, msg: crate::app::workshop::WorkshopTurnMsg) -> bool {
-    use crate::app::workshop::WorkshopTurnMsg as M;
-    use crate::scrollback::block::RenderBlock;
-
-    let Some(agent_id) = app.workshop_turn_agent else {
-        return false;
-    };
-    match msg {
-        M::EngineReady { engine, session } => {
-            // Cache the engine + session so the next turn reuses this `opencode serve`, and persist
-            // the id per workspace for resume across a restart.
-            if let Some(agent) = app.agents.get(&agent_id) {
-                let cwd = agent.session.cwd.clone();
-                crate::app::workshop::save_resume_id("opencode", &cwd, &session);
-            }
-            app.workshop_engine = Some(engine);
-            app.workshop_engine_session = Some(session);
-            false
-        }
-        M::Delta(text) => {
-            let entry = app.workshop_turn_stream_entry;
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                match entry {
-                    Some(id) => {
-                        agent.scrollback.push_chunk_to_agent(id, &text);
-                    }
-                    None => {
-                        let id = agent
-                            .scrollback
-                            .push_block(RenderBlock::agent_message_streaming());
-                        agent.scrollback.push_chunk_to_agent(id, &text);
-                        app.workshop_turn_stream_entry = Some(id);
-                    }
-                }
-            }
-            true
-        }
-        M::Tool { name, summary } => {
-            // A tool call ends the current assistant paragraph; the next delta starts a fresh block.
-            if let Some(id) = app.workshop_turn_stream_entry.take()
-                && let Some(agent) = app.agents.get_mut(&agent_id)
-            {
-                agent.scrollback.finish_running(id);
-            }
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent
-                    .scrollback
-                    .push_block(RenderBlock::tool_call(name, summary, true));
-            }
-            true
-        }
-        M::ToolResult { .. } => false,
-        M::Permission { summary, decision } => {
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent
-                    .scrollback
-                    .push_block(RenderBlock::system(format!("Permission: {summary} — {decision}")));
-            }
-            true
-        }
-        M::Error(message) => {
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent.scrollback.push_block(RenderBlock::system(message));
-            }
-            true
-        }
-        M::Done {
-            session_id,
-            cancelled,
-        } => {
-            if let Some(id) = app.workshop_turn_stream_entry.take()
-                && let Some(agent) = app.agents.get_mut(&agent_id)
-            {
-                agent.scrollback.finish_running(id);
-            }
-            if let Some(session) = &session_id
-                && let Some(agent) = app.agents.get(&agent_id)
-            {
-                let cwd = agent.session.cwd.clone();
-                let backend = match &app.workshop_connection {
-                    crate::app::workshop::WorkshopConnection::Adapter { rail, .. } => {
-                        rail.vendor().id()
-                    }
-                    _ => "opencode",
-                };
-                crate::app::workshop::save_resume_id(backend, &cwd, session);
-            }
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent.workshop_turn_active = false;
-                if cancelled {
-                    agent
-                        .scrollback
-                        .push_block(RenderBlock::system("Turn cancelled."));
-                }
-            }
-            app.workshop_turn_active = false;
-            app.workshop_turn_cancel = None;
-            app.workshop_turn_agent = None;
-            true
-        }
-    }
-}
-
 fn process_effects(
     effs: Vec<super::actions::Effect>,
     tasks: &mut JoinSet<TaskResult>,
@@ -4139,7 +3941,8 @@ fn process_effects(
     progress_tx: &tokio::sync::mpsc::UnboundedSender<effects::RestoreProgressMsg>,
 ) -> bool {
     let flags = session_flags_for_effects(app, &effs);
-    for eff in effs {
+    let mut effs = effs.into_iter().peekable();
+    while let Some(eff) = effs.next() {
         if matches!(eff, super::actions::Effect::ResetMouseReporting) {
             if crate::app::MOUSE_CAPTURE_ENABLED.load(std::sync::atomic::Ordering::Acquire) {
                 app.escape_writer
@@ -4149,6 +3952,10 @@ fn process_effects(
             }
             continue;
         }
+        let Some(eff) = effects::take_coalesced_interjects(eff, &mut effs, tasks, &app.acp_tx)
+        else {
+            continue;
+        };
         let (quit, meta) = effects::execute(eff, tasks, &app.acp_tx, &app.cwd, &flags, progress_tx);
         if let Some((seq, abort_handle)) = meta.auth_abort_handle
             && let super::app_view::AuthState::Authenticating {
@@ -4504,6 +4311,7 @@ mod tests {
             model_id: None,
             permission_mode_override: None,
             preferred_session_id: None,
+            minted_session_id: None,
             chat_kind: false,
         };
         assert!(welcome_oneshot_applies_to_effects(std::slice::from_ref(
@@ -4766,6 +4574,7 @@ mod tests {
             model_id: None,
             permission_mode_override: None,
             preferred_session_id: None,
+            minted_session_id: None,
             chat_kind: false,
         };
         assert_eq!(

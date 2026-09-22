@@ -268,15 +268,15 @@ fn all_tmux_finding_metadata_uses_stable_automatic_fix_ids_without_schema_change
         [
             (
                 crate::diagnostics::TMUX_CLIPBOARD_ID,
-                "workshop doctor fix terminal.tmux-clipboard",
+                "grok doctor fix terminal.tmux-clipboard",
             ),
             (
                 crate::diagnostics::DCS_PASSTHROUGH_ID,
-                "workshop doctor fix terminal.dcs-passthrough",
+                "grok doctor fix terminal.dcs-passthrough",
             ),
             (
                 crate::diagnostics::TMUX_EXTENDED_KEYS_ID,
-                "workshop doctor fix terminal.tmux-extended-keys",
+                "grok doctor fix terminal.tmux-extended-keys",
             ),
         ]
     );

@@ -285,17 +285,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "apple-native-keyring-store"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b350bfd03649e07aa05c0a81b3e15934374e585c98204a57e20b9d49f49bb9a"
-dependencies = [
- "keyring-core",
- "log",
- "security-framework",
-]
-
-[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -824,7 +813,7 @@ dependencies = [
  "bytes",
  "fastrand",
  "hex",
- "hmac 0.12.1",
+ "hmac",
  "http 0.2.12",
  "http 1.4.0",
  "http-body 0.4.6",
@@ -917,7 +906,7 @@ dependencies = [
  "bytes",
  "form_urlencoded",
  "hex",
- "hmac 0.12.1",
+ "hmac",
  "http 0.2.12",
  "http 1.4.0",
  "percent-encoding",
@@ -1875,12 +1864,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cmov"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
-
-[[package]]
 name = "cmpv2"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2447,15 +2430,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2931af7e13dc045d8e9d26afccc6fa115d64e115c9c84b1166288b46f6782c2"
 
 [[package]]
-name = "ctutils"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
-dependencies = [
- "cmov",
-]
-
-[[package]]
 name = "cursor-icon"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2816,7 +2790,6 @@ dependencies = [
  "block-buffer 0.12.0",
  "const-oid 0.10.2",
  "crypto-common 0.2.1",
- "ctutils",
 ]
 
 [[package]]
@@ -3039,7 +3012,7 @@ dependencies = [
  "ff",
  "generic-array",
  "group",
- "hkdf 0.12.4",
+ "hkdf",
  "pem-rfc7468",
  "pkcs8",
  "rand_core 0.6.4",
@@ -3264,17 +3237,6 @@ name = "fancy-regex"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e24cb5a94bcae1e5408b0effca5cd7172ea3c5755049c5f3af4cd283a165298"
-dependencies = [
- "bit-set 0.8.0",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
-name = "fancy-regex"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "998b056554fbe42e03ae0e152895cd1a7e1002aec800fdc6635d20270260c46f"
 dependencies = [
  "bit-set 0.8.0",
  "regex-automata",
@@ -3780,7 +3742,7 @@ dependencies = [
  "base64 0.22.1",
  "gcloud-metadata",
  "hex",
- "hmac 0.12.1",
+ "hmac",
  "home",
  "jsonwebtoken",
  "path-clean",
@@ -5030,16 +4992,7 @@ version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
 dependencies = [
- "hmac 0.12.1",
-]
-
-[[package]]
-name = "hkdf"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4aaa26c720c68b866f2c96ef5c1264b3e6f473fe5d4ce61cd44bbe913e553018"
-dependencies = [
- "hmac 0.13.0",
+ "hmac",
 ]
 
 [[package]]
@@ -5049,15 +5002,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
 dependencies = [
  "digest 0.10.7",
-]
-
-[[package]]
-name = "hmac"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
-dependencies = [
- "digest 0.11.2",
 ]
 
 [[package]]
@@ -5085,12 +5029,6 @@ dependencies = [
  "libc",
  "windows-link 0.1.3",
 ]
-
-[[package]]
-name = "hound"
-version = "3.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
 
 [[package]]
 name = "htmd"
@@ -5879,7 +5817,7 @@ dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
  "getrandom 0.2.16",
- "hmac 0.12.1",
+ "hmac",
  "js-sys",
  "p256",
  "p384",
@@ -5920,27 +5858,6 @@ checksum = "8fe90c1150662e858c7d5f945089b7517b0a80d8bf7ba4b1b5ffc984e7230a5b"
 dependencies = [
  "hashbrown 0.16.1",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "keyring"
-version = "4.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2270074a3d26bcac93c1dc5d2845eb4c089e8d761ccf6e0ea266a16004640627"
-dependencies = [
- "apple-native-keyring-store",
- "keyring-core",
- "windows-native-keyring-store",
- "zbus-secret-service-keyring-store",
-]
-
-[[package]]
-name = "keyring-core"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb1e621458ca9c51aa110bd0339d4751a056b9576bf1253aee1aa560dda0fc9d"
-dependencies = [
- "log",
 ]
 
 [[package]]
@@ -7303,6 +7220,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "onig"
+version = "6.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9f0430136375a315630bfaf61d6bca71a048258b312be75f26f910fb4333e44"
+dependencies = [
+ "bitflags 2.13.0",
+ "libc",
+ "once_cell",
+ "onig_sys",
+]
+
+[[package]]
+name = "onig_sys"
+version = "69.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e68317604e77e53b85896388e1a803c1d21b74c899ec9e5e1112db90735edd7"
+dependencies = [
+ "cc",
+ "pkg-config",
+]
+
+[[package]]
 name = "oorandom"
 version = "11.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7568,7 +7507,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
 dependencies = [
  "digest 0.10.7",
- "hmac 0.12.1",
+ "hmac",
 ]
 
 [[package]]
@@ -9022,7 +8961,7 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dd2a808d456c4a54e300a23e9f5a67e122c3024119acbfd73e3bf664491cb2"
 dependencies = [
- "hmac 0.12.1",
+ "hmac",
  "subtle",
 ]
 
@@ -9505,29 +9444,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "secret-service"
-version = "5.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5107b24b91445dd2aa449a258a1807b63240942157292354dc5bfdbeb8bc6db8"
-dependencies = [
- "aes 0.9.3",
- "cbc",
- "futures-util",
- "getrandom 0.4.1",
- "hkdf 0.13.0",
- "hybrid-array",
- "num",
- "once_cell",
- "serde",
- "sha2 0.11.0",
- "zbus",
-]
-
-[[package]]
 name = "security-framework"
-version = "3.7.0"
+version = "3.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d"
+checksum = "b3297343eaf830f66ede390ea39da1d462b6b0c1b000f420d0a83f898bbbe6ef"
 dependencies = [
  "bitflags 2.13.0",
  "core-foundation",
@@ -9538,9 +9458,9 @@ dependencies = [
 
 [[package]]
 name = "security-framework-sys"
-version = "2.17.0"
+version = "2.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3"
+checksum = "cc1f0cbffaac4852523ce30d8bd3c5cdc873501d96ff467ca09b6767bb8cd5c0"
 dependencies = [
  "core-foundation-sys",
  "libc",
@@ -10658,10 +10578,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "656b45c05d95a5704399aeef6bd0ddec7b2b3531b7c9e900abbf7c4d2190c925"
 dependencies = [
  "bincode",
- "fancy-regex 0.16.2",
  "flate2",
  "fnv",
  "once_cell",
+ "onig",
  "plist",
  "regex-syntax",
  "serde",
@@ -12721,19 +12641,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
 
 [[package]]
-name = "windows-native-keyring-store"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "063426e76fdec7438d56bb777f67e318a84a25c707b07e575cb8b78e10c028f8"
-dependencies = [
- "byteorder",
- "keyring-core",
- "regex",
- "windows-sys 0.61.2",
- "zeroize",
-]
-
-[[package]]
 name = "windows-numerics"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13283,134 +13190,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "workshop-adapters"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "http 1.4.0",
- "http-body-util",
- "hyper",
- "hyper-util",
- "nix 0.30.1",
- "rand 0.9.5",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tracing",
- "xai-tty-utils",
-]
-
-[[package]]
-name = "workshop-auth"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "toml",
- "workshop-detect",
- "workshop-providers",
- "xai-dirs",
- "xai-grok-sampler",
- "xai-grok-sampling-types",
-]
-
-[[package]]
-name = "workshop-brand"
-version = "0.1.0"
-
-[[package]]
-name = "workshop-detect"
-version = "0.1.0"
-dependencies = [
- "dunce",
- "libc",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "wait-timeout",
- "walkdir",
-]
-
-[[package]]
-name = "workshop-gates"
-version = "0.1.0"
-dependencies = [
- "agent-client-protocol",
- "serde_json",
- "serial_test",
- "tempfile",
- "walkdir",
- "workshop-adapters",
- "workshop-auth",
- "workshop-detect",
- "workshop-providers",
- "xai-dirs",
- "xai-grok-env",
- "xai-grok-login",
- "xai-grok-models",
- "xai-grok-pager-pty-harness",
- "xai-grok-shell",
- "xai-grok-shell-base",
- "xai-grok-telemetry",
- "xai-grok-update",
-]
-
-[[package]]
-name = "workshop-providers"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "fs2",
- "futures-util",
- "indexmap",
- "keyring",
- "rand 0.9.5",
- "reqwest 0.12.24",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "url",
- "uuid",
- "wiremock",
- "xai-dirs",
- "xai-grok-extra-ca",
- "xai-grok-sampler",
- "xai-grok-sampling-types",
-]
-
-[[package]]
-name = "workshop-voice"
-version = "0.1.0"
-dependencies = [
- "fs2",
- "hound",
- "reqwest 0.12.24",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "xai-dirs",
- "xai-grok-extra-ca",
- "xai-grok-pager-pty-harness",
- "xai-tty-utils",
-]
-
-[[package]]
 name = "write-fonts"
 version = "0.43.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13829,6 +13608,7 @@ dependencies = [
  "xai-grok-config",
  "xai-grok-hooks",
  "xai-grok-sampling-types",
+ "xai-grok-telemetry",
  "xai-grok-tools",
  "xai-token-estimation",
  "xai-tool-types",
@@ -14096,11 +13876,13 @@ dependencies = [
  "chrono",
  "filetime",
  "fs2",
+ "indexmap",
  "jsonwebtoken",
  "libc",
  "loom",
  "obfstr",
  "parking_lot",
+ "pretty_assertions",
  "prost",
  "rand 0.9.5",
  "reqwest 0.12.24",
@@ -14124,6 +13906,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "webbrowser",
+ "wiremock",
  "xai-file-utils",
  "xai-grok-auth",
  "xai-grok-config",
@@ -14307,7 +14090,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-pager"
-version = "1.0.32"
+version = "1.0.38"
 dependencies = [
  "agent-client-protocol",
  "ansi-to-tui",
@@ -14351,6 +14134,7 @@ dependencies = [
  "tar",
  "tempfile",
  "textwrap",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -14364,14 +14148,8 @@ dependencies = [
  "urlencoding",
  "uuid",
  "walkdir",
- "webbrowser",
  "windows-sys 0.59.0",
- "workshop-adapters",
- "workshop-auth",
- "workshop-brand",
- "workshop-detect",
- "workshop-providers",
- "workshop-voice",
+ "wiremock",
  "xai-acp-lib",
  "xai-chat-state",
  "xai-crash-handler",
@@ -14417,7 +14195,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-pager-bin"
-version = "1.0.32"
+version = "1.0.38"
 dependencies = [
  "anyhow",
  "clap",
@@ -14435,7 +14213,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "workshop-auth",
  "xai-acp-lib",
  "xai-crash-handler",
  "xai-grok-active-sessions",
@@ -14474,8 +14251,8 @@ dependencies = [
  "serial_test",
  "similar",
  "tracing",
+ "unicode-width 0.2.0",
  "uuid",
- "workshop-brand",
  "xai-grok-pager",
  "xai-grok-pager-diff",
  "xai-grok-shell",
@@ -14753,7 +14530,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-shell"
-version = "1.0.32"
+version = "1.0.38"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -14783,7 +14560,7 @@ dependencies = [
  "git2",
  "glob",
  "globset",
- "hmac 0.12.1",
+ "hmac",
  "ignore",
  "image",
  "indexmap",
@@ -15208,7 +14985,6 @@ dependencies = [
  "serde_json",
  "serial_test",
  "sha2 0.10.9",
- "tar",
  "tempfile",
  "thiserror 2.0.18",
  "time",
@@ -15230,7 +15006,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-version"
-version = "1.0.32"
+version = "1.0.38"
 dependencies = [
  "semver",
 ]
@@ -15242,7 +15018,6 @@ dependencies = [
  "anyhow",
  "cpal",
  "futures-util",
- "hound",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -15252,7 +15027,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
- "workshop-voice",
  "xai-dirs",
  "xai-grok-extra-ca",
  "xai-tty-utils",
@@ -15771,17 +15545,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zbus-secret-service-keyring-store"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74801d001b9e7729adb4f1825b67b398185fed424749aa3d8bacf70417137d9a"
-dependencies = [
- "keyring-core",
- "secret-service",
- "zbus",
-]
-
-[[package]]
 name = "zbus_macros"
 version = "5.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15915,7 +15678,7 @@ dependencies = [
  "deflate64",
  "flate2",
  "getrandom 0.3.4",
- "hmac 0.12.1",
+ "hmac",
  "indexmap",
  "lzma-rs",
  "memchr",

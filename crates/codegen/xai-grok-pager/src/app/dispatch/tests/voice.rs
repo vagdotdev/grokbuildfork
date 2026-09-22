@@ -364,8 +364,8 @@ fn voice_ctrl_space_release_leaves_toggle_recording_running() {
     );
 }
 
-/// A free-tier user of the opt-in xAI voice provider hitting the voice keybinding gets the SuperGrok upsell
-/// instead of a doomed voice session. The keybinding bypasses the slash registry, so this dispatcher is the enforcement point.
+/// A free-tier user hitting the voice keybinding gets the SuperGrok upsell instead of a doomed voice session.
+/// The keybinding bypasses the slash registry, so this dispatcher is the enforcement point.
 #[test]
 fn voice_keybinding_on_restricted_tier_opens_upsell() {
     if !xai_grok_voice::AUDIO_SUPPORTED {
@@ -373,8 +373,7 @@ fn voice_keybinding_on_restricted_tier_opens_upsell() {
     }
     let mut app = test_app_with_agent();
     app.voice_mode_enabled = true;
-    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
-    // A personal login without a subscription tier is free tier, so xAI voice is restricted
+    // A personal login without a subscription tier is free tier, so voice is restricted
     app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
     assert!(app.is_voice_tier_restricted());
 
@@ -390,28 +389,6 @@ fn voice_keybinding_on_restricted_tier_opens_upsell() {
     );
 }
 
-/// Workshop overlay: the default local engine has no tier; a free-tier login is not gated.
-#[test]
-fn voice_keybinding_local_provider_never_gated() {
-    if !xai_grok_voice::AUDIO_SUPPORTED {
-        return;
-    }
-    let mut app = test_app_with_agent();
-    let (tx, _rx) = tokio::sync::mpsc::channel(8);
-    app.voice_cmd_tx = Some(tx);
-    app.voice_mode_enabled = true;
-    app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
-    assert!(!app.is_voice_tier_restricted());
-
-    dispatch(Action::EnableVoiceMode, &mut app);
-
-    assert!(
-        app.agents.get(&AgentId(0)).unwrap().question_view.is_none(),
-        "no upsell for the local engine"
-    );
-    assert!(app.voice_listening(), "local voice starts on a free-tier login");
-}
-
 /// A paid-tier user's voice keybinding is not intercepted by the tier gate.
 #[test]
 fn voice_keybinding_on_paid_tier_not_gated() {
@@ -420,7 +397,6 @@ fn voice_keybinding_on_paid_tier_not_gated() {
     }
     let mut app = test_app_with_agent();
     app.voice_mode_enabled = true;
-    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
     let meta = xai_grok_login::AuthMeta {
         subscription_tier: Some("SuperGrok".into()),
         ..Default::default()

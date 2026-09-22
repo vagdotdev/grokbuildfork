@@ -5,6 +5,7 @@ mod cta_e2e;
 mod dashboard;
 mod jump;
 mod mid_text_btw;
+mod mid_text_goal;
 mod modes;
 mod notes;
 mod permissions;
@@ -69,8 +70,8 @@ use crate::app::actions::{
 use crate::app::agent::{AgentId, AgentSession, AgentState};
 use crate::app::agent_view::{ActivePane, AgentView, PromptMode};
 use crate::app::app_view::{
-    ActiveView, AppView, AuthMode, AuthState, TrustState, VoiceState, VoiceTarget,
-    WelcomeAnnouncementState,
+    ActiveView, AppView, AuthMode, AuthState, PendingCodingDataWrite, TrustState, VoiceState,
+    VoiceTarget, WelcomeAnnouncementState,
 };
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::{SessionEvent, ToolCallBlock};
@@ -180,15 +181,6 @@ fn test_app() -> AppView {
         auth_url_poll_handle: None,
         deferred_startup: Default::default(),
         auth_use_oauth: false,
-        connection_picker: None,
-        workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
-        workshop_engine: None,
-        workshop_engine_session: None,
-        workshop_turn_active: false,
-        workshop_turn_tx: None,
-        workshop_turn_cancel: None,
-        workshop_turn_stream_entry: None,
-        workshop_turn_agent: None,
         auth_clipboard_delivery: None,
         auth_clipboard_feedback_generation: 0,
         team_id: None,
@@ -199,7 +191,7 @@ fn test_app() -> AppView {
         privacy_notice_rollout: false,
         privacy_banner_reshow_days: None,
         privacy_banner_acked: None,
-        privacy_banner_opt_in_inflight: false,
+        coding_data_pending_write: None,
         coding_data_write_seq: 0,
         show_tips: None,
         auto_update: None,
@@ -253,6 +245,8 @@ fn test_app() -> AppView {
         #[cfg(feature = "local-workspace")]
         welcome_on_workspace_mode: false,
         welcome_toast: None,
+        dispatch_depth: 0,
+        pending_image_notices: Vec::new(),
         welcome_on_privacy_banner: false,
         welcome_on_upgrade_cta: false,
         auth_show_raw_url: false,
@@ -295,7 +289,6 @@ fn test_app() -> AppView {
         pending_effects: Vec::new(),
         pending_editor: None,
         pending_pager_path: None,
-        pending_workshop_login: None,
         pending_pager_ansi: false,
         minimal_state: crate::minimal_api::MinimalState::default(),
         reconnect_pending: false,
@@ -591,23 +584,6 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
     std::fs::create_dir_all(&sess_dir).expect("plant session dir");
     std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
     sess_dir
-}
-/// Workshop: `Action::Login` opens the connection picker and never sends `Authenticate` by itself.
-/// The inherited interactive flow these tests exercise starts only from the picker's labeled optional
-/// xAI card (two explicit Enters), so drive the picker there.
-pub(super) fn start_login_flow(app: &mut AppView) -> Vec<Effect> {
-    use workshop_auth::PickerInput;
-    dispatch(Action::Login, app);
-    let rows = app
-        .connection_picker
-        .as_ref()
-        .map(|p| p.rows.len())
-        .expect("Login must open the connection picker");
-    for _ in 0..rows {
-        dispatch(Action::ConnectionPicker(PickerInput::Down), app);
-    }
-    dispatch(Action::ConnectionPicker(PickerInput::Enter), app); // shows the labeled copy (arms)
-    dispatch(Action::ConnectionPicker(PickerInput::Enter), app) // starts the flow
 }
 /// Extract the in-flight auth request sequence, panicking if the auth state is not `Authenticating`.
 fn authenticating_seq(app: &AppView) -> u64 {
