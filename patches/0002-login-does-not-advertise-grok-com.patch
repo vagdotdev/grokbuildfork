@@ -231,10 +231,10 @@ index b04eeddf..828d1218 100644
      /// xai.api_key, when present, still leads.
      #[test]
 diff --git a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs
-index 72ae07f1..a32fff16 100644
+index 49f99da9..a8792739 100644
 --- a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs
 +++ b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs
-@@ -381,6 +381,7 @@ impl acp::Agent for MvpAgent {
+@@ -385,6 +385,7 @@ impl acp::Agent for MvpAgent {
              has_auth_provider,
              has_enterprise_oidc,
              enterprise_oidc_issuer,
@@ -242,7 +242,7 @@ index 72ae07f1..a32fff16 100644
          ) = {
              let cfg = self.cfg.borrow();
              let issuer = cfg.grok_com_config.oidc.as_ref().map(|o| o.issuer.clone());
-@@ -389,6 +390,7 @@ impl acp::Agent for MvpAgent {
+@@ -393,6 +394,7 @@ impl acp::Agent for MvpAgent {
                  cfg.grok_com_config.auth_provider_command.is_some(),
                  cfg.grok_com_config.oidc.is_some(),
                  issuer,
@@ -250,7 +250,7 @@ index 72ae07f1..a32fff16 100644
              )
          };
          if has_enterprise_oidc {
-@@ -406,12 +408,16 @@ impl acp::Agent for MvpAgent {
+@@ -410,12 +412,16 @@ impl acp::Agent for MvpAgent {
                  None,
                  Some(serde_json::json!({ "issuer": issuer })),
              );
@@ -268,7 +268,7 @@ index 72ae07f1..a32fff16 100644
          }
          let preferred_method = preferred_method_early;
          let has_external_api_key = match preferred_method {
-@@ -434,6 +440,7 @@ impl acp::Agent for MvpAgent {
+@@ -438,6 +444,7 @@ impl acp::Agent for MvpAgent {
                  enterprise_oidc_issuer: enterprise_oidc_issuer.as_deref(),
                  login_label: login_label.as_deref(),
                  has_auth_provider_command: has_auth_provider,
@@ -276,7 +276,7 @@ index 72ae07f1..a32fff16 100644
                  preferred_method,
              })
          };
-@@ -788,8 +795,30 @@ impl acp::Agent for MvpAgent {
+@@ -792,8 +799,30 @@ impl acp::Agent for MvpAgent {
                  Ok(self.auth_response_with_meta())
              }
              auth_method::GROK_COM_METHOD_ID | auth_method::OIDC_METHOD_ID => {
@@ -309,7 +309,7 @@ index 72ae07f1..a32fff16 100644
                      method = arguments.method_id.0.as_ref(),
                      headless = auth_meta.headless,
 diff --git a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs
-index 772a6e0a..bad0ca6e 100644
+index ffa26399..c1a35500 100644
 --- a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs
 +++ b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs
 @@ -19,11 +19,16 @@ fn byok_from_models(
@@ -332,7 +332,7 @@ index 772a6e0a..bad0ca6e 100644
  }
  struct MissingSessionCtx {
      has_session_key: bool,
-@@ -1452,12 +1457,24 @@ impl MvpAgent {
+@@ -1455,12 +1460,24 @@ impl MvpAgent {
          &self,
      ) -> Option<acp::AuthMethodId> {
          let preferred = self.cfg.borrow().grok_com_config.preferred_method;
@@ -358,10 +358,10 @@ index 772a6e0a..bad0ca6e 100644
          )?;
          Some(acp::AuthMethodId::new(id))
 diff --git a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/mod.rs b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/mod.rs
-index add1dfc4..cae59caf 100644
+index 207a58c4..ee2094df 100644
 --- a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/mod.rs
 +++ b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/mod.rs
-@@ -1059,6 +1059,10 @@ struct AuthRequestMeta {
+@@ -1062,6 +1062,10 @@ struct AuthRequestMeta {
      /// Scopes `x.ai/auth/cancel` so a delayed cancel cannot tear down a successor login.
      #[serde(default)]
      request_seq: Option<u64>,
@@ -373,7 +373,7 @@ index add1dfc4..cae59caf 100644
  impl AuthRequestMeta {
      /// `--oauth` forces loopback; otherwise default (loopback).
 diff --git a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs
-index c39b38da..647b7e47 100644
+index 5d2f3967..9abb6973 100644
 --- a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs
 +++ b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs
 @@ -3832,36 +3832,43 @@ async fn cached_token_fallthrough_respects_kill_switch() {

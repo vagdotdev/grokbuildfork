@@ -1,5 +1,5 @@
 diff --git a/crates/codegen/xai-grok-pager/Cargo.toml b/crates/codegen/xai-grok-pager/Cargo.toml
-index c08075752940a3f7102657c3101627f66e678540..930881d41b4adcb089112f6715b9af580c555750 100644
+index c0807575..930881d4 100644
 --- a/crates/codegen/xai-grok-pager/Cargo.toml
 +++ b/crates/codegen/xai-grok-pager/Cargo.toml
 @@ -23,6 +23,9 @@ xai-grok-gboom = { path = "../xai-grok-gboom" }
@@ -31,7 +31,7 @@ index c08075752940a3f7102657c3101627f66e678540..930881d41b4adcb089112f6715b9af58
  # agent sends. A leaf crate rather than the agent's, so the client reads it
  # from upstream of the crate that fills it in.
 diff --git a/crates/codegen/xai-grok-pager/src/acp/mod.rs b/crates/codegen/xai-grok-pager/src/acp/mod.rs
-index d63bea5985bd790eeeb3b7fed82c5c0931dedfcc..5663ad5795789416b02dcfbcc2fe02efef474a5e 100644
+index d63bea59..5663ad57 100644
 --- a/crates/codegen/xai-grok-pager/src/acp/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/acp/mod.rs
 @@ -881,6 +881,7 @@ mod tests {
@@ -43,7 +43,7 @@ index d63bea5985bd790eeeb3b7fed82c5c0931dedfcc..5663ad5795789416b02dcfbcc2fe02ef
          });
          let (needs, label, method_id, mode) = startup_auth_metadata(&built.methods);
 diff --git a/crates/codegen/xai-grok-pager/src/app/actions.rs b/crates/codegen/xai-grok-pager/src/app/actions.rs
-index f16022895b121d7ad9cbc9b2ed12a08bdcd81cea..090ab81ca939133c1c066a7a024604450cc39ffb 100644
+index f1602289..090ab81c 100644
 --- a/crates/codegen/xai-grok-pager/src/app/actions.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/actions.rs
 @@ -618,7 +618,12 @@ pub enum Action {
@@ -103,7 +103,7 @@ index f16022895b121d7ad9cbc9b2ed12a08bdcd81cea..090ab81ca939133c1c066a7a02460445
      ChangelogFetched {
          markdown: Option<String>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553c6c6d4cb850c53783fe1ccffb3527d94..385db0641e1d0cf9ba7e44647047d5e2de58b8bd 100644
+index fc9a4553..385db064 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -309,7 +309,7 @@ index fc9a4553c6c6d4cb850c53783fe1ccffb3527d94..385db0641e1d0cf9ba7e44647047d5e2
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-index 483296d4697c71d3bb2be8022bd49bc3c5a4f512..8922dd649bab10a56ede5d6670a752a983bf556e 100644
+index 483296d4..8922dd64 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 @@ -169,6 +169,15 @@ pub(crate) fn test_app() -> AppView {
@@ -370,7 +370,7 @@ index 483296d4697c71d3bb2be8022bd49bc3c5a4f512..8922dd649bab10a56ede5d6670a752a9
          subscription_tier: Some("SuperGrok".into()),
          ..Default::default()
 diff --git a/crates/codegen/xai-grok-pager/src/app/cli.rs b/crates/codegen/xai-grok-pager/src/app/cli.rs
-index 87f63aef9443ec272ef9a37dfd774b6114d08d8f..3dcc57a5b3be9625dec8cb92ce3c6dcfe26b6e54 100644
+index 87f63aef..3dcc57a5 100644
 --- a/crates/codegen/xai-grok-pager/src/app/cli.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/cli.rs
 @@ -20,12 +20,15 @@ pub enum Command {
@@ -415,7 +415,7 @@ index 87f63aef9443ec272ef9a37dfd774b6114d08d8f..3dcc57a5b3be9625dec8cb92ce3c6dcf
          Self::parse_from(std::iter::once(bin_name).chain(std::env::args().skip(1)))
      }
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
-index 769d63a9f1ec79754baf9bdf18f1758dbcdb1aa8..0464805a272a0c9b3a54d5e350071ebb5b89f6b2 100644
+index 769d63a9..0464805a 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 @@ -10,6 +10,7 @@ use crate::app::agent_view::AgentView;
@@ -682,7 +682,7 @@ index 769d63a9f1ec79754baf9bdf18f1758dbcdb1aa8..0464805a272a0c9b3a54d5e350071ebb
          // The session state lives in `app.agents`, independent of `active_view`, so it is preserved across the auth detour
          if let Some(return_view) = app.auth_return_view.take() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
-index 89c36b27dfd70832c5a7121ee857cae77c358d90..efad77bb5ed1ffd6af17f8e27fb90e3b560de529 100644
+index 89c36b27..efad77bb 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
 @@ -1,7 +1,7 @@
@@ -705,7 +705,7 @@ index 89c36b27dfd70832c5a7121ee857cae77c358d90..efad77bb5ed1ffd6af17f8e27fb90e3b
          Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
          Action::CopyAuthUrl => {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
-index b00317f2d8ad4ac2bac15d45bafcbf722f2e3edc..ab1ed2f2201858823a9661e15d977d076038e9e6 100644
+index b00317f2..ab1ed2f2 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 @@ -999,6 +999,53 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
@@ -775,7 +775,7 @@ index b00317f2d8ad4ac2bac15d45bafcbf722f2e3edc..ab1ed2f2201858823a9661e15d977d07
                  app.auth_code_input.reset();
              }
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
-index 0cbf3632214d26314802e13a08bc6db3df0b466f..c5d03f6a3f66aa4b69598582caf8d3fc224674fc 100644
+index 0cbf3632..c5d03f6a 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 @@ -394,7 +394,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
@@ -961,7 +961,7 @@ index 0cbf3632214d26314802e13a08bc6db3df0b466f..c5d03f6a3f66aa4b69598582caf8d3fc
      let prior_seq = match &app.auth_state {
          AuthState::Authenticating { request_seq, .. } => *request_seq,
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs
-index 2049a2d9a37039cd978a264aec89710e2178c337..3ec2aebf8c35338f14af11bbd59ce23267117cc6 100644
+index 2049a2d9..3ec2aebf 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs
 @@ -1048,7 +1048,7 @@ fn auth_complete_retries_stashed_prompt_from_dashboard() {
@@ -974,7 +974,7 @@ index 2049a2d9a37039cd978a264aec89710e2178c337..3ec2aebf8c35338f14af11bbd59ce232
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-index bf64193d8f09867c08b2ca1707eea3cbd8740859..39ac005234542259e76afbc09fbd740894415fd7 100644
+index bf64193d..39ac0052 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 @@ -181,6 +181,15 @@ fn test_app() -> AppView {
@@ -1026,7 +1026,7 @@ index bf64193d8f09867c08b2ca1707eea3cbd8740859..39ac005234542259e76afbc09fbd7408
  fn authenticating_seq(app: &AppView) -> u64 {
      match app.auth_state {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
-index 347259b31a7509f1c6006f61e24b5a53d7574d48..bdf454ac6d2683bb8416aa2d1beba0d80ab8c07a 100644
+index 347259b3..bdf454ac 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
 @@ -2032,8 +2032,9 @@ fn gated_worktree_with_none_companions_preserves_stashed_label_and_ref() {
@@ -1085,7 +1085,7 @@ index 347259b31a7509f1c6006f61e24b5a53d7574d48..bdf454ac6d2683bb8416aa2d1beba0d8
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/load.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/load.rs
-index 659adb497d6600073e30cee59604d4a5c26377c7..0193b123b16710be12c5e962ae7c80e19e58cd42 100644
+index 659adb49..0193b123 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/load.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/load.rs
 @@ -918,7 +918,7 @@ fn session_restored_sticky_chat_sets_conversation_entry() {
@@ -1098,7 +1098,7 @@ index 659adb497d6600073e30cee59604d4a5c26377c7..0193b123b16710be12c5e962ae7c80e1
      assert_eq!(app.active_view, ActiveView::Welcome);
      dispatch(
 diff --git a/crates/codegen/xai-grok-pager/src/app/effects/helpers.rs b/crates/codegen/xai-grok-pager/src/app/effects/helpers.rs
-index ac5de69dd11e41faf7a34dbbdff4cd86781e02fa..bb7f29945ef77cf725e0c41b79d24efb8a0887b8 100644
+index ac5de69d..bb7f2994 100644
 --- a/crates/codegen/xai-grok-pager/src/app/effects/helpers.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/effects/helpers.rs
 @@ -899,6 +899,7 @@ pub(super) async fn send_authenticate(
@@ -1122,7 +1122,7 @@ index ac5de69dd11e41faf7a34dbbdff4cd86781e02fa..bb7f29945ef77cf725e0c41b79d24efb
      match acp_send(req, tx).await {
          Ok(resp) => {
 diff --git a/crates/codegen/xai-grok-pager/src/app/effects/mod.rs b/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
-index 1c5076975ad02c72139a9318f50ba1c92d471ad5..233aca186458d3e230cac7a67854dc6ccac5c017 100644
+index 1c507697..233aca18 100644
 --- a/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
 @@ -214,7 +214,7 @@ pub(crate) fn execute(
@@ -1225,7 +1225,7 @@ index 1c5076975ad02c72139a9318f50ba1c92d471ad5..233aca186458d3e230cac7a67854dc6c
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c14790b5e84f18b8826bd0cc0b03ce094..1dafea0a3bc14d0273e0f91adb181cdea92d9a5c 100644
+index eda61b3c..1dafea0a 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,60 @@ fn run_pending_suspends(
@@ -1529,7 +1529,7 @@ index eda61b3c14790b5e84f18b8826bd0cc0b03ce094..1dafea0a3bc14d0273e0f91adb181cde
      effs: Vec<super::actions::Effect>,
      tasks: &mut JoinSet<TaskResult>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/mod.rs b/crates/codegen/xai-grok-pager/src/app/mod.rs
-index 60fe34f9bc9cb583b5b97df70da7603332cdb030..e2e6481c88863bc4c01179f06f98522a8caca341 100644
+index 60fe34f9..e2e6481c 100644
 --- a/crates/codegen/xai-grok-pager/src/app/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/mod.rs
 @@ -13,6 +13,8 @@ pub mod actions;
@@ -1567,7 +1567,7 @@ index 60fe34f9bc9cb583b5b97df70da7603332cdb030..e2e6481c88863bc4c01179f06f98522a
              ]
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..b074b9a48b95854b3962f78330890bd0ab124dab
+index 00000000..b074b9a4
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 @@ -0,0 +1,542 @@
@@ -2114,7 +2114,7 @@ index 0000000000000000000000000000000000000000..b074b9a48b95854b3962f78330890bd0
 +    argv
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/headless.rs b/crates/codegen/xai-grok-pager/src/headless.rs
-index 0fa73e17da8411ff68b743b15e022f240f82c062..9f0a99deb72021748504a896af7dc391e02422c0 100644
+index 0fa73e17..9f0a99de 100644
 --- a/crates/codegen/xai-grok-pager/src/headless.rs
 +++ b/crates/codegen/xai-grok-pager/src/headless.rs
 @@ -407,17 +407,17 @@ fn auto_respond_to_permissions(
@@ -2144,7 +2144,7 @@ index 0fa73e17da8411ff68b743b15e022f240f82c062..9f0a99deb72021748504a896af7dc391
  }
 diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/auth.rs b/crates/codegen/xai-grok-pager/src/slash/commands/auth.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..1ca01271ce35bedbf70c6d9d86dfad5f39bfe473
+index 00000000..1ca01271
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/slash/commands/auth.rs
 @@ -0,0 +1,39 @@
@@ -2188,7 +2188,7 @@ index 0000000000000000000000000000000000000000..1ca01271ce35bedbf70c6d9d86dfad5f
 +    }
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/login.rs b/crates/codegen/xai-grok-pager/src/slash/commands/login.rs
-index 87a4bd86a57b9bdb5902493ac64403a9b669c18a..c5edb9ce08ca70f3abc24a81934d1983e83c2f0c 100644
+index 87a4bd86..c5edb9ce 100644
 --- a/crates/codegen/xai-grok-pager/src/slash/commands/login.rs
 +++ b/crates/codegen/xai-grok-pager/src/slash/commands/login.rs
 @@ -6,7 +6,7 @@ pub struct LoginCommand;
@@ -2201,7 +2201,7 @@ index 87a4bd86a57b9bdb5902493ac64403a9b669c18a..c5edb9ce08ca70f3abc24a81934d1983
      }
  
 diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs b/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs
-index 05d93b081e2bceaaa225c9977243c29835d362a5..09a7cad2b469ca6267e60c489d30c6697262b1fb 100644
+index 05d93b08..09a7cad2 100644
 --- a/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs
 @@ -1,6 +1,8 @@
@@ -2224,7 +2224,7 @@ index 05d93b081e2bceaaa225c9977243c29835d362a5..09a7cad2b469ca6267e60c489d30c669
          Arc::new(home::HomeCommand),
 diff --git a/crates/codegen/xai-grok-pager/src/views/connection_picker.rs b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..6b0a2c09ee5ccf4133091b8d9f21d1ab14b993e8
+index 00000000..6b0a2c09
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
 @@ -0,0 +1,298 @@
@@ -2527,7 +2527,7 @@ index 0000000000000000000000000000000000000000..6b0a2c09ee5ccf4133091b8d9f21d1ab
 +        .render(inner, buf);
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/views/mod.rs b/crates/codegen/xai-grok-pager/src/views/mod.rs
-index dcbe4033d13ba40d12ba72a33503d5a23f140d0a..66b7ae6a87ad1ea6610030e7643cded8a9fca71e 100644
+index dcbe4033..66b7ae6a 100644
 --- a/crates/codegen/xai-grok-pager/src/views/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/mod.rs
 @@ -5,6 +5,8 @@ pub mod announcements;
@@ -2540,7 +2540,7 @@ index dcbe4033d13ba40d12ba72a33503d5a23f140d0a..66b7ae6a87ad1ea6610030e7643cded8
  pub mod credit_bar;
  pub mod dashboard;
 diff --git a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
-index b828a78072e79bcbe0d66e10a28cee1093a9ac5b..5f3c1bacf05b5e7ffb9294103c693bbc845126b6 100644
+index b828a780..5f3c1bac 100644
 --- a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
 @@ -283,7 +283,7 @@ pub(super) struct WelcomeLayout {
@@ -2688,7 +2688,7 @@ index b828a78072e79bcbe0d66e10a28cee1093a9ac5b..5f3c1bacf05b5e7ffb9294103c693bbc
          );
      }
 diff --git a/crates/codegen/xai-grok-shell/src/session/slash_commands.rs b/crates/codegen/xai-grok-shell/src/session/slash_commands.rs
-index 806f78787efc22527cf1863d08564c695315e4c9..f8a2aa01acd920cc1e4c8d6e6f0dc722844ff3b8 100644
+index 806f7878..f8a2aa01 100644
 --- a/crates/codegen/xai-grok-shell/src/session/slash_commands.rs
 +++ b/crates/codegen/xai-grok-shell/src/session/slash_commands.rs
 @@ -446,6 +446,7 @@ pub const PAGER_COMMAND_KEYS: &[&str] = &[

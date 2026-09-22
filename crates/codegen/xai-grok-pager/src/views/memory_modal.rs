@@ -98,7 +98,7 @@ there (or remove the line) to keep memory on. Anything already remembered is kep
 **Memory is off for this process.** Start a new session without `--no-memory` or \
 `GROK_MEMORY=0` to use it.
 
-Memory was turned off when Grok Build started, so it can't be turned on here. Anything already \
+Memory was turned off when Workshop started, so it can't be turned on here. Anything already \
 remembered is kept on disk."
         }
         Some(MemoryDisabledReason::RolloutRestricted) => {

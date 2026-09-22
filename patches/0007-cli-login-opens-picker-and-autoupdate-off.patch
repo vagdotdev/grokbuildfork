@@ -1,8 +1,8 @@
 diff --git a/crates/codegen/xai-grok-pager-bin/src/main.rs b/crates/codegen/xai-grok-pager-bin/src/main.rs
-index ec8d2084..2e66f037 100644
+index aa448be7..b0275719 100644
 --- a/crates/codegen/xai-grok-pager-bin/src/main.rs
 +++ b/crates/codegen/xai-grok-pager-bin/src/main.rs
-@@ -224,7 +224,7 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
+@@ -261,7 +261,7 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
          ),
      );
  }
@@ -11,7 +11,7 @@ index ec8d2084..2e66f037 100644
  /// `json` prints the served configuration instead of installing it.
  #[tracing::instrument(level = "debug", skip_all)]
  async fn run_setup_command(json: bool) {
-@@ -232,7 +232,7 @@ async fn run_setup_command(json: bool) {
+@@ -269,7 +269,7 @@ async fn run_setup_command(json: bool) {
      if !managed_config::has_principal() {
          eprintln!("No deployment key or team sign-in found.");
          eprintln!();
@@ -20,7 +20,7 @@ index ec8d2084..2e66f037 100644
          eprintln!("or set a deployment key:");
          eprintln!();
          if cfg!(unix) {
-@@ -240,7 +240,7 @@ async fn run_setup_command(json: bool) {
+@@ -277,7 +277,7 @@ async fn run_setup_command(json: bool) {
          } else {
              eprintln!("  $env:GROK_DEPLOYMENT_KEY=\"<your-key>\"");
          }
@@ -29,7 +29,7 @@ index ec8d2084..2e66f037 100644
          eprintln!();
          eprintln!("Or add the key to ~/.grok/config.toml:");
          eprintln!();
-@@ -280,7 +280,7 @@ async fn run_setup_command(json: bool) {
+@@ -317,7 +317,7 @@ async fn run_setup_command(json: bool) {
          }
          SetupOutcome::Skipped => {
              eprintln!(
@@ -38,7 +38,7 @@ index ec8d2084..2e66f037 100644
              );
          }
          SetupOutcome::Staged => {
-@@ -572,7 +572,7 @@ async fn run_workspace_mgmt(args: WorkspaceMgmtArgs) -> Result<()> {
+@@ -609,7 +609,7 @@ async fn run_workspace_mgmt(args: WorkspaceMgmtArgs) -> Result<()> {
          WorkspaceGate::Unknown => {
              anyhow::bail!(
                  "Could not load your settings for `grok workspace`. Check your \
@@ -47,7 +47,7 @@ index ec8d2084..2e66f037 100644
               try again."
              )
          }
-@@ -681,7 +681,7 @@ async fn spawn_and_connect_leader(
+@@ -718,7 +718,7 @@ async fn spawn_and_connect_leader(
          agent_config.login_device_flow,
          agent_config.endpoints.proxy_url(),
          false,
@@ -56,7 +56,7 @@ index ec8d2084..2e66f037 100644
      )
      .await?;
      let env_urls = LeaderEnvUrls::from(&agent_config.grok_com_config);
-@@ -1148,7 +1148,7 @@ fn shutdown_and_flush_telemetry(exit_code: i32) -> ! {
+@@ -1185,7 +1185,7 @@ fn shutdown_and_flush_telemetry(exit_code: i32) -> ! {
  }
  fn finalize_span_profile() {
      if let Some(path) = xai_grok_telemetry::span_profile::finalize() {
@@ -65,7 +65,7 @@ index ec8d2084..2e66f037 100644
      }
  }
  #[tracing::instrument(level = "debug", skip_all)]
-@@ -1183,7 +1183,7 @@ async fn forward_stdio_line_to_leader(
+@@ -1220,7 +1220,7 @@ async fn forward_stdio_line_to_leader(
      }
  }
  /// Emitted by both leader guards (server mode and leader-connect) so the two sites can't drift.
@@ -74,7 +74,7 @@ index ec8d2084..2e66f037 100644
       load per-process plugins";
  /// Run the `agent` subcommand, dispatching to the appropriate mode.
  #[tracing::instrument(level = "debug", skip_all)]
-@@ -1234,7 +1234,7 @@ async fn run_agent_command(
+@@ -1271,7 +1271,7 @@ async fn run_agent_command(
      let is_leader = matches!(agent_args.mode, Some(AgentCmd::Leader(_)));
      if !is_stdio && !is_leader {
          eprintln!(
@@ -83,7 +83,7 @@ index ec8d2084..2e66f037 100644
              xai_grok_version::display_version_with_commit(
                  env!("VERSION_WITH_COMMIT"),
                  xai_grok_update::channel_label(),
-@@ -1282,7 +1282,7 @@ async fn run_agent_command(
+@@ -1319,7 +1319,7 @@ async fn run_agent_command(
          None,
      );
      if let Some(warning) = launch_yolo.blocked_warning {
@@ -92,7 +92,7 @@ index ec8d2084..2e66f037 100644
      }
      agent_config.default_yolo_mode = launch_yolo.yolo;
      agent_config.default_auto_mode = xai_grok_shell::util::config::effective_auto_for_launch(
-@@ -1776,10 +1776,10 @@ impl WorkerCount {
+@@ -1813,10 +1813,10 @@ impl WorkerCount {
                  used,
                  cores,
              } => Some(format!(
@@ -105,7 +105,7 @@ index ec8d2084..2e66f037 100644
              )),
          }
      }
-@@ -1951,8 +1951,9 @@ fn install_heap_profile_hooks() {
+@@ -1988,8 +1988,9 @@ fn install_heap_profile_hooks() {
      });
  }
  fn version_text(channel_label: &str) -> String {
@@ -116,7 +116,7 @@ index ec8d2084..2e66f037 100644
          xai_grok_version::display_version_with_commit(
              xai_grok_version::full_version(),
              channel_label,
-@@ -2015,7 +2016,7 @@ fn main() {
+@@ -2054,7 +2055,7 @@ fn main() {
          xai_grok_shell::agent::external_otel_pin::strip_conflicting_process_env();
      }
      let args = configure_process_env(args).unwrap_or_else(|err| {
@@ -125,7 +125,7 @@ index ec8d2084..2e66f037 100644
          std::process::exit(1);
      });
      xai_grok_pager::memory_trace::start(xai_grok_pager::memory_trace::default_dir());
-@@ -2068,7 +2069,7 @@ fn main() {
+@@ -2107,7 +2108,7 @@ fn main() {
      builder.worker_threads(workers.get()).enable_all();
      let runtime =
          xai_tty_utils::runtime::build_with_blocking_pool(&mut builder).unwrap_or_else(|e| {
@@ -134,7 +134,7 @@ index ec8d2084..2e66f037 100644
              shutdown_and_flush_telemetry(1);
          });
      let result = run_and_shutdown(runtime, async_main(args), RUNTIME_SHUTDOWN_GRACE);
-@@ -2330,6 +2331,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2373,6 +2374,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
              }
              Command::Login {
                  legacy: _,
@@ -142,7 +142,7 @@ index ec8d2084..2e66f037 100644
                  oauth,
                  device_auth,
                  devbox,
-@@ -2338,8 +2340,27 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2381,8 +2383,27 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                  let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                  let config = xai_grok_shell::config::load_agent_config_disk_only()
                      .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
@@ -171,7 +171,7 @@ index ec8d2084..2e66f037 100644
                      config.login_device_flow,
                      config.endpoints.proxy_url(),
                      oauth,
-@@ -2397,7 +2418,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2440,7 +2461,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
              None,
          );
          if let Some(warning) = launch_yolo.blocked_warning {
@@ -180,7 +180,7 @@ index ec8d2084..2e66f037 100644
          }
          let json_schema = args
              .json_schema
-@@ -2481,7 +2502,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2524,7 +2545,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
              if finish_update_on_exit(adopted, &update_config).await {
                  eprintln!("Update installed. Run `grok` to start.");
              } else {
@@ -189,7 +189,7 @@ index ec8d2084..2e66f037 100644
              }
              Ok(())
          }
-@@ -2566,6 +2587,14 @@ fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
+@@ -2609,6 +2630,14 @@ fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
      if no_auto_update_flag {
          return false;
      }
@@ -204,7 +204,7 @@ index ec8d2084..2e66f037 100644
      !std::env::var_os("GROK_DISABLE_AUTOUPDATER")
          .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
  }
-@@ -2656,7 +2685,7 @@ async fn run_update_command(
+@@ -2699,7 +2728,7 @@ async fn run_update_command(
          );
      }
      let telemetry_cfg = xai_grok_shell::config::load_agent_config_disk_only()
@@ -213,7 +213,7 @@ index ec8d2084..2e66f037 100644
          .ok();
      if let Some(agent_cfg) = telemetry_cfg {
          let auth_manager =
-@@ -2683,7 +2712,7 @@ async fn run_update_command(
+@@ -2726,7 +2755,7 @@ async fn run_update_command(
      result?;
      Ok(())
  }
@@ -222,7 +222,7 @@ index ec8d2084..2e66f037 100644
  /// to relaunch onto the new binary. Best-effort and non-fatal: discovery/connect/control failures are logged and
  /// skipped.
  #[tracing::instrument(level = "debug", skip_all)]
-@@ -2843,7 +2872,7 @@ mod tests {
+@@ -2886,7 +2915,7 @@ mod tests {
          );
          assert_eq!(
              resolve_worker_override("100000", cores).notice().unwrap(),
@@ -231,7 +231,7 @@ index ec8d2084..2e66f037 100644
          );
      }
      #[test]
-@@ -2856,7 +2885,7 @@ mod tests {
+@@ -2899,7 +2928,7 @@ mod tests {
          }
          assert_eq!(
              resolve_worker_override("abc", cores).notice().unwrap(),
@@ -240,7 +240,7 @@ index ec8d2084..2e66f037 100644
          );
      }
      #[test]
-@@ -2870,7 +2899,7 @@ mod tests {
+@@ -2913,7 +2942,7 @@ mod tests {
              let mut output = Vec::new();
              write_version(&mut output, label).unwrap();
              let output = String::from_utf8(output).unwrap();
@@ -249,7 +249,7 @@ index ec8d2084..2e66f037 100644
              assert!(output.contains(env!("VERSION_WITH_COMMIT")));
              assert!(output.ends_with(expected_suffix), "{output:?}");
          }
-@@ -3037,30 +3066,37 @@ mod tests {
+@@ -3080,30 +3109,37 @@ mod tests {
      }
      #[cfg(unix)]
      #[test]

@@ -1,8 +1,8 @@
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs
-index 9d7ffa1f..a5f7cafa 100644
+index aa5bae4b..d1f1629b 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs
-@@ -2048,6 +2048,7 @@ pub(super) mod paste_key_tests {
+@@ -2053,6 +2053,7 @@ pub(super) mod paste_key_tests {
      /// The Unix stamp includes the inode and ctime, which a rewrite always advances.
      #[cfg(unix)]
      #[test]
