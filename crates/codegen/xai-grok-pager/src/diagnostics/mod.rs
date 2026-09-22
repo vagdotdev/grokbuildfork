@@ -40,7 +40,7 @@ pub use model::{
     ClipboardFacts, ColorFacts, DataControlFact, DiagnosticFacts, DiagnosticFinding, DiagnosticId,
     DiagnosticReport, FindingDisposition, KeyboardFact, ManualRemediation, NewlineFact, ProbeNote,
     ProbeStatus, RuntimeFact, TmuxColorPassthrough, TmuxFacts, TmuxOptionFact, TmuxSupportFact,
-    VoiceFacts,
+    VoiceEngineFacts, VoiceFacts,
 };
 pub use view::{DiagnosticSnapshot, view};
 
@@ -49,6 +49,13 @@ pub fn apply_voice_probe(report: &mut DiagnosticReport, emit_missing_issue: bool
     if !xai_grok_voice::AUDIO_SUPPORTED {
         return;
     }
+    apply_voice_engine_probe(report, &xai_grok_voice::VoiceConfig::from_config_table(
+        &xai_grok_shell::config::load_effective_config()
+            .ok()
+            .and_then(|v| v.as_table().cloned())
+            .unwrap_or_default(),
+        None,
+    ));
     match xai_grok_voice::input_device_info() {
         Ok(device) => {
             report.facts.voice = Some(VoiceFacts::Device {
@@ -69,6 +76,37 @@ pub fn apply_voice_probe(report: &mut DiagnosticReport, emit_missing_issue: bool
             }
         }
     }
+}
+
+/// Workshop overlay: helper present, model path, checksum status, last error (voice-spec §6.4).
+/// Hashes the selected model (one to two seconds); `/doctor` is a debugging aid, not a startup step.
+pub fn apply_voice_engine_probe(report: &mut DiagnosticReport, voice: &xai_grok_voice::VoiceConfig) {
+    let dir = workshop_voice::store::default_dir();
+    let facts = workshop_voice::doctor::probe(
+        &dir,
+        voice.model.as_deref(),
+        voice.engine_path.as_deref().map(std::path::Path::new),
+        true,
+    );
+    let model_ok = facts.model_status.is_ready();
+    report.facts.voice_engine = Some(model::VoiceEngineFacts {
+        provider: match voice.provider {
+            xai_grok_voice::VoiceProvider::Local => "local".to_owned(),
+            xai_grok_voice::VoiceProvider::Xai => "xai".to_owned(),
+        },
+        engine_path: facts
+            .engine_path
+            .as_ref()
+            .map(|p| p.display().to_string()),
+        engine_version: facts.engine_version,
+        engine_error: facts.engine_error,
+        model_tier: facts.tier,
+        model_tier_source: facts.tier_source.to_owned(),
+        model_path: facts.model_path.display().to_string(),
+        model_status: facts.model_status.describe(),
+        model_ok,
+        last_error: facts.last_error.or(facts.engine_note),
+    });
 }
 
 fn voice_missing_finding(error: String) -> DiagnosticFinding {

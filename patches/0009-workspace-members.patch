@@ -1,8 +1,17 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 02506757..1b83cae6 100644
+index 02506757..10172b9f 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -102,11 +102,19 @@ members = [
+@@ -5,6 +5,8 @@ async-openai = { git = "https://github.com/our-forks/async-openai.git", rev = "9
+ 
+ [workspace]
+ resolver = "2"
++# Workshop overlay: the voice-engine helper is its own workspace so whisper.cpp never enters this build graph.
++exclude = ["voice/engine"]
+ members = [
+     "crates/build/xai-proto-build",
+     "crates/codegen/ptyctl",
+@@ -102,11 +104,19 @@ members = [
      "crates/common/xai-tool-runtime",
      "crates/common/xai-tool-types",
      "crates/common/xai-tracing",
@@ -22,7 +31,7 @@ index 02506757..1b83cae6 100644
  ]
  
  [workspace.package]
-@@ -321,6 +329,10 @@ xai-compaction-transcript = { path = "crates/codegen/xai-compaction-transcript"
+@@ -321,6 +331,10 @@ xai-compaction-transcript = { path = "crates/codegen/xai-compaction-transcript"
  xai-computer-hub-core = { path = "crates/common/xai-computer-hub-core" }
  xai-computer-hub-sdk = { path = "crates/common/xai-computer-hub-sdk" }
  xai-dirs = { path = "crates/codegen/xai-dirs" }

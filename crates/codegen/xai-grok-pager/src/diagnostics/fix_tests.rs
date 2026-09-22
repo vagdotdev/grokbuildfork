@@ -41,6 +41,7 @@ pub(super) fn report() -> DiagnosticReport {
                 fix: None,
             },
             voice: None,
+            voice_engine: None,
         },
         findings: Vec::new(),
         probe_notes: Vec::new(),
