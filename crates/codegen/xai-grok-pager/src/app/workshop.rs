@@ -108,8 +108,10 @@ pub fn is_first_run() -> bool {
         .is_some_and(|models| !models.is_empty())
 }
 
-/// The first-run connection: the OpenCode engine's own default free model (from its cached live
-/// catalog when this home has seen one, else the pinned seed — Big Pickle today).
+/// The first-run connection: the OpenCode engine's own default free model. Before the engine has
+/// ever run there is no live catalog, so this is the cached one when this home has seen one, else
+/// the pinned seed (Big Pickle today); the first engine start replaces it with whatever the live
+/// catalog marks as default (`live_engine_default`), and the pinned name stands only offline.
 pub fn first_run_connection() -> WorkshopConnection {
     WorkshopConnection::Engine {
         model: EngineModel::first_run_default(&cached_engine_models()),
@@ -167,6 +169,12 @@ pub fn store_engine_models(models: &[EngineModel]) {
 
 /// Build the picker snapshot: loopback local-server probe, builtin + cached catalogs, broker
 /// connection state, engine cache, and the CLI rail probe (child processes, so on the blocking pool).
+///
+/// This is the single data entry point of the `/model` + `/auth` overlay: everything the two views
+/// list comes from the `PickerSnapshot` returned here (`workshop_auth::models_rows` builds the rows
+/// from a `Catalog` plus the engine models; `PickerState::apply_snapshot` takes it). Live provider
+/// catalogs plug in by widening the `Catalog` / engine models handed to `models_rows`, not by
+/// touching the views.
 pub async fn load_picker_snapshot() -> PickerSnapshot {
     let local = workshop_providers::probe_all_local_servers(Duration::from_millis(600)).await;
     let mut catalog = Catalog::builtin();
@@ -339,6 +347,9 @@ pub enum WorkshopTurnMsg {
         engine: Arc<OpenCodeEngine>,
         session: String,
     },
+    /// The engine's live catalog names a different default than the pinned seed the first run
+    /// activated: the connection follows OpenCode's default (composer label, persisted file).
+    EngineDefaultResolved { model: EngineModel },
     Delta(String),
     Tool { name: String, summary: String },
     ToolResult { ok: bool },
@@ -373,7 +384,7 @@ pub enum WorkshopTurnKind {
     Engine {
         engine: Option<Arc<OpenCodeEngine>>,
         session: Option<String>,
-        model_ref: String,
+        model: EngineModel,
     },
     Adapter {
         adapter_id: AdapterId,
@@ -468,6 +479,36 @@ async fn start_engine(
         .map_err(|e| e.to_string())
 }
 
+/// Fetch the engine's live free catalog, cache it for `/model`, and return OpenCode's current
+/// default model. `None` when the catalog cannot be read (offline, old engine).
+async fn live_engine_default(engine: &OpenCodeEngine) -> Option<EngineModel> {
+    let catalog = engine.free_models().await.ok()?;
+    let models: Vec<EngineModel> = catalog
+        .models
+        .iter()
+        .map(|m| EngineModel {
+            model_ref: m.model_ref.clone(),
+            name: m.name.clone(),
+            is_default: m.is_default,
+            tool_call: m.tool_call,
+            context_limit: m.context_limit,
+        })
+        .collect();
+    if models.is_empty() {
+        return None;
+    }
+    store_engine_models(&models);
+    let default = catalog.default_or_first()?;
+    models
+        .iter()
+        .find(|m| m.model_ref == default.model_ref)
+        .cloned()
+        .map(|mut m| {
+            m.is_default = true;
+            m
+        })
+}
+
 async fn build_stream(
     spec: &WorkshopTurnSpec,
     tx: &mpsc::UnboundedSender<WorkshopTurnMsg>,
@@ -477,15 +518,31 @@ async fn build_stream(
         WorkshopTurnKind::Engine {
             engine,
             session,
-            model_ref,
+            model,
         } => {
+            let mut model = model.clone();
             let engine = match engine {
                 Some(e) => e.clone(),
-                None => Arc::new(
-                    start_engine(&spec.cwd, tx.clone(), spec.always_approve)
-                        .await
-                        .map_err(TurnStartError::EngineUnavailable)?,
-                ),
+                None => {
+                    let engine = Arc::new(
+                        start_engine(&spec.cwd, tx.clone(), spec.always_approve)
+                            .await
+                            .map_err(TurnStartError::EngineUnavailable)?,
+                    );
+                    // The default engine model is whichever model OpenCode's live catalog marks
+                    // as default; the pinned seed only stands in while that catalog is unreachable.
+                    if model.is_default
+                        && let Some(live) = live_engine_default(&engine).await
+                    {
+                        if live.model_ref != model.model_ref {
+                            let _ = tx.send(WorkshopTurnMsg::EngineDefaultResolved {
+                                model: live.clone(),
+                            });
+                        }
+                        model = live;
+                    }
+                    engine
+                }
             };
             let session = match session {
                 Some(s) if engine.session_exists(s).await.unwrap_or(false) => s.clone(),
@@ -499,7 +556,7 @@ async fn build_stream(
                 session: session.clone(),
             });
             let mut req = TurnRequest::new(spec.text.clone());
-            req.model = Some(model_ref.clone());
+            req.model = Some(model.model_ref.clone());
             req.permission = permission;
             let turn = engine
                 .prompt(&session, req)

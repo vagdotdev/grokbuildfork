@@ -38,7 +38,7 @@ index ae3b381c..64b8ac8d 100644
      /// Whether a local or wake cancel is still in flight.
      pub(crate) fn any_cancel_pending(&self) -> bool {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-index a4d77733..809e6059 100644
+index a4d77733..f835d06b 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 @@ -614,6 +614,80 @@ pub(super) fn dispatch_send_prompt_inner(
@@ -84,7 +84,7 @@ index a4d77733..809e6059 100644
 +                .workshop_engine_session
 +                .clone()
 +                .or_else(|| workshop::load_resume_id("opencode", &cwd)),
-+            model_ref: model.model_ref.clone(),
++            model: model.clone(),
 +        },
 +        WorkshopConnection::Adapter { rail, model } => WorkshopTurnKind::Adapter {
 +            adapter_id: workshop::rail_adapter_id(*rail),

@@ -653,7 +653,7 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
                 .workshop_engine_session
                 .clone()
                 .or_else(|| workshop::load_resume_id("opencode", &cwd)),
-            model_ref: model.model_ref.clone(),
+            model: model.clone(),
         },
         WorkshopConnection::Adapter { rail, model } => WorkshopTurnKind::Adapter {
             adapter_id: workshop::rail_adapter_id(*rail),

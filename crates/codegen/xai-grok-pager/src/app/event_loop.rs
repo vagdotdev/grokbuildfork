@@ -4061,6 +4061,17 @@ fn handle_workshop_turn_msg(
         return (true, effects);
     }
     let redraw = match msg {
+        M::EngineDefaultResolved { model } => {
+            // OpenCode's live default replaces the pinned seed the first run activated.
+            let conn = crate::app::workshop::WorkshopConnection::Engine { model };
+            crate::app::workshop::save_active_connection(&conn);
+            let label = conn.composer_label();
+            for agent in app.agents.values_mut() {
+                agent.workshop_model_label = label.clone();
+            }
+            app.workshop_connection = conn;
+            true
+        }
         M::EngineReady { engine, session } => {
             // Cache the engine + session so the next turn reuses this `opencode serve`, and persist
             // the id per workspace for resume across a restart.
