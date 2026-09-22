@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "product": "workshop",
+  "channel": "stable",
+  "version": "0.2.0",
+  "tag": "v0.2.0",
+  "published_at": "2026-09-22T22:22:29Z",
+  "release_repo": "vagdotdev/grokbuildfork",
+  "release_url": "https://github.com/vagdotdev/grokbuildfork/releases/tag/v0.2.0",
+  "checksums_url": "https://github.com/vagdotdev/grokbuildfork/releases/download/v0.2.0/SHA256SUMS",
+  "attested": true,
+  "previous_version": null,
+  "previous_tag": null,
+  "artifacts": {
+    "linux-aarch64": {
+      "url": "https://github.com/vagdotdev/grokbuildfork/releases/download/v0.2.0/workshop-0.2.0-linux-aarch64.tar.gz",
+      "sha256": "ebc350ec22766eaae1592bad26bab4f70545cf064f21b95b7e6438904017be38",
+      "size": 65411795,
+      "format": "tar.gz",
+      "binary": "workshop"
+    },
+    "linux-x86_64": {
+      "url": "https://github.com/vagdotdev/grokbuildfork/releases/download/v0.2.0/workshop-0.2.0-linux-x86_64.tar.gz",
+      "sha256": "cc3d1470dcf60465ad56ddb7c99ef7197dd2081d2ce1fe3594a050ad449bbeaa",
+      "size": 68639078,
+      "format": "tar.gz",
+      "binary": "workshop"
+    },
+    "macos-aarch64": {
+      "url": "https://github.com/vagdotdev/grokbuildfork/releases/download/v0.2.0/workshop-0.2.0-macos-aarch64.tar.gz",
+      "sha256": "207c32e9afef3e698a01c1f7972a6bb3654403f999df03397674b38e900f01f0",
+      "size": 60818156,
+      "format": "tar.gz",
+      "binary": "workshop"
+    },
+    "macos-x86_64": {
+      "url": "https://github.com/vagdotdev/grokbuildfork/releases/download/v0.2.0/workshop-0.2.0-macos-x86_64.tar.gz",
+      "sha256": "20a6ac7b204995fde02d23ea0ccd7a5b5dbd13450d594b55ca2bf656104f4cf5",
+      "size": 64103355,
+      "format": "tar.gz",
+      "binary": "workshop"
+    }
+  }
+}
