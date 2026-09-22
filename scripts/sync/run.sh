@@ -116,17 +116,24 @@ fi
 report_load
 gh_output verdict "$VERDICT"
 gh_output pr_title "$PR_TITLE"
+pr_failed=0
 case "$PR" in
   dry-run) "$here/open-pr.sh" --dry-run --base "$BASE" --remote "$REMOTE" ;;
   create)
-    if (( FORCE )); then "$here/open-pr.sh" --base "$BASE" --remote "$REMOTE" --force
-    else "$here/open-pr.sh" --base "$BASE" --remote "$REMOTE"; fi
+    pr_args=(--base "$BASE" --remote "$REMOTE")
+    (( FORCE )) && pr_args+=(--force)
+    # A failed PR creation (token cannot open PRs) must not hide the verdict:
+    # outputs are still written, the job fails at the end.
+    "$here/open-pr.sh" "${pr_args[@]}" || pr_failed=1
     report_load
     gh_output pr_url "${PR_URL:-}"
+    gh_output pr_error "${PR_ERROR:-}"
+    gh_output pr_branch_url "${PR_BRANCH_URL:-}"
     ;;
 esac
 
 report_set OUTCOME "$VERDICT"
 gh_output outcome "$VERDICT"
 log "done: verdict=$VERDICT branch=$BRANCH report=$SYNC_REPORT_DIR"
+(( pr_failed )) && die "sync PR could not be opened (see above); verdict was $VERDICT"
 [[ "$VERDICT" != red ]]
