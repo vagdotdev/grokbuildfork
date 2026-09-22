@@ -421,21 +421,24 @@ mod tests {
             other => panic!("expected Error, got {other:?}"),
         }
     }
+    /// Workshop: bare `/model` (no args, or whitespace) opens the Models overlay instead of erroring.
     #[test]
-    fn model_empty_arg_returns_error() {
+    fn model_empty_arg_opens_the_models_overlay() {
         let models = sample_models();
         let mut ctx = make_ctx(&models);
         let cmd = model::ModelCommand;
-        let result = cmd.run(&mut ctx, "");
-        assert!(matches!(result, CommandResult::Error(_)));
-    }
-    #[test]
-    fn model_whitespace_only_arg_returns_error() {
-        let models = sample_models();
-        let mut ctx = make_ctx(&models);
-        let cmd = model::ModelCommand;
-        let result = cmd.run(&mut ctx, "   ");
-        assert!(matches!(result, CommandResult::Error(_)));
+        for args in ["", "   "] {
+            let result = cmd.run(&mut ctx, args);
+            assert!(
+                matches!(
+                    result,
+                    CommandResult::Action(Action::OpenConnectionPicker(
+                        workshop_auth::PickerTab::Models
+                    ))
+                ),
+                "{args:?}: {result:?}"
+            );
+        }
     }
     #[test]
     fn model_suggest_args_returns_available_models() {

@@ -2854,7 +2854,7 @@ index 87a4bd86..509a43f5 100644
      }
  
 diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs b/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs
-index 05d93b08..09a7cad2 100644
+index 05d93b08..38f76834 100644
 --- a/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs
 @@ -1,6 +1,8 @@
@@ -2875,6 +2875,42 @@ index 05d93b08..09a7cad2 100644
          Arc::new(login::LoginCommand),
          Arc::new(logout::LogoutCommand),
          Arc::new(home::HomeCommand),
+@@ -417,21 +421,24 @@ mod tests {
+             other => panic!("expected Error, got {other:?}"),
+         }
+     }
++    /// Workshop: bare `/model` (no args, or whitespace) opens the Models overlay instead of erroring.
+     #[test]
+-    fn model_empty_arg_returns_error() {
++    fn model_empty_arg_opens_the_models_overlay() {
+         let models = sample_models();
+         let mut ctx = make_ctx(&models);
+         let cmd = model::ModelCommand;
+-        let result = cmd.run(&mut ctx, "");
+-        assert!(matches!(result, CommandResult::Error(_)));
+-    }
+-    #[test]
+-    fn model_whitespace_only_arg_returns_error() {
+-        let models = sample_models();
+-        let mut ctx = make_ctx(&models);
+-        let cmd = model::ModelCommand;
+-        let result = cmd.run(&mut ctx, "   ");
+-        assert!(matches!(result, CommandResult::Error(_)));
++        for args in ["", "   "] {
++            let result = cmd.run(&mut ctx, args);
++            assert!(
++                matches!(
++                    result,
++                    CommandResult::Action(Action::OpenConnectionPicker(
++                        workshop_auth::PickerTab::Models
++                    ))
++                ),
++                "{args:?}: {result:?}"
++            );
++        }
+     }
+     #[test]
+     fn model_suggest_args_returns_available_models() {
 diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/model.rs b/crates/codegen/xai-grok-pager/src/slash/commands/model.rs
 index 51c3c5f1..5db8c447 100644
 --- a/crates/codegen/xai-grok-pager/src/slash/commands/model.rs
