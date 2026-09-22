@@ -739,6 +739,9 @@ pub struct AgentView {
     pub(crate) session_binding_epoch: u32,
     pub scrollback: ScrollbackState,
     pub prompt: PromptWidget,
+    /// Workshop: composer label for an Engine/Adapter connection (`Big Pickle · OpenCode`,
+    /// `Claude · {model}`); `None` for Shell (Direct/Local), which shows the shell model name.
+    pub(crate) workshop_model_label: Option<String>,
     /// Sticky: once the user types in the prompt, hide the tip for the session.
     pub tip_typing_dismissed: bool,
     pub todo: TodoPane,

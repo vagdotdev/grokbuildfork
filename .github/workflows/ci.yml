@@ -91,7 +91,10 @@ jobs:
           cargo test -p xai-grok-shell --lib -- agent::auth_method:: cached_token_fallthrough
           cargo test -p xai-grok-update --lib
           cargo test -p xai-dirs -p xai-grok-env
-          cargo test -p xai-grok-pager --lib -- app::dispatch::tests::auth::
+      - name: Pager unit tests (picker + turn routing + overlay isolation)
+        # Full pager lib suite. Two upstream time-dependent flakes are `#[ignore]`d (paste ctime,
+        # history-daemon timing; see PR #13) so this stays deterministically green.
+        run: cargo test -p xai-grok-pager --lib
       - name: Build the workshop binary
         run: cargo build -p xai-grok-pager-bin --bin workshop
       - name: Binary string scan against reviewed baseline

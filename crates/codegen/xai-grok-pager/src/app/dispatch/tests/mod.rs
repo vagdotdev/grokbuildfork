@@ -182,6 +182,13 @@ fn test_app() -> AppView {
         auth_use_oauth: false,
         connection_picker: None,
         workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
+        workshop_engine: None,
+        workshop_engine_session: None,
+        workshop_turn_active: false,
+        workshop_turn_tx: None,
+        workshop_turn_cancel: None,
+        workshop_turn_stream_entry: None,
+        workshop_turn_agent: None,
         auth_clipboard_delivery: None,
         auth_clipboard_feedback_generation: 0,
         team_id: None,
@@ -591,12 +598,12 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
 pub(super) fn start_login_flow(app: &mut AppView) -> Vec<Effect> {
     use workshop_auth::PickerInput;
     dispatch(Action::Login, app);
-    let cards = app
+    let rows = app
         .connection_picker
         .as_ref()
-        .map(|p| p.models.len())
+        .map(|p| p.rows.len())
         .expect("Login must open the connection picker");
-    for _ in 0..cards {
+    for _ in 0..rows {
         dispatch(Action::ConnectionPicker(PickerInput::Down), app);
     }
     dispatch(Action::ConnectionPicker(PickerInput::Enter), app); // shows the labeled copy (arms)

@@ -350,7 +350,8 @@ pub(super) fn dispatch_connection_picker(
 }
 
 /// An adapter/engine connection needs no shell credential: mark auth done so the home prompt is
-/// usable, and close the picker.
+/// usable, stamp the composer label (`Big Pickle · OpenCode`, `Claude · {model}`), and close the
+/// picker.
 fn finish_workshop_adapter_selection(app: &mut AppView) -> Vec<Effect> {
     if !matches!(app.auth_state, AuthState::Done) {
         app.auth_state = AuthState::Done;
@@ -358,6 +359,10 @@ fn finish_workshop_adapter_selection(app: &mut AppView) -> Vec<Effect> {
         app.usage_visible = false;
         app.sync_billing_surface_to_agents();
         app.welcome_prompt_focused = !app.is_access_blocked();
+    }
+    let label = app.workshop_connection.composer_label();
+    for agent in app.agents.values_mut() {
+        agent.workshop_model_label = label.clone();
     }
     close_connection_picker(app);
     vec![]
@@ -367,6 +372,10 @@ fn finish_workshop_adapter_selection(app: &mut AppView) -> Vec<Effect> {
 /// non-interactive `xai.api_key` method (the anonymous sentinel or a real key counts), and switch
 /// the active session. Completion arrives as `AuthComplete` / `AuthFailed` for `request_seq`.
 fn start_workshop_activation(app: &mut AppView, model_id: String) -> Vec<Effect> {
+    // Direct/Local (Shell): the composer shows the shell model name, not a Workshop runtime label.
+    for agent in app.agents.values_mut() {
+        agent.workshop_model_label = None;
+    }
     abort_prior_auth(app);
     let request_seq = app.next_auth_request_seq;
     app.next_auth_request_seq += 1;

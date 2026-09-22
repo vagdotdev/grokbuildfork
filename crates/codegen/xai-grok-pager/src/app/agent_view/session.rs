@@ -133,6 +133,7 @@ impl AgentView {
             session_binding_epoch: 0,
             scrollback,
             prompt,
+            workshop_model_label: None,
             tip_typing_dismissed: false,
             todo: TodoPane::new(),
             tasks: TasksPane::new(),

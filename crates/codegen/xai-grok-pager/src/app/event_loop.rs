@@ -1711,6 +1711,12 @@ pub(crate) async fn run(
     let (progress_tx, mut progress_rx) =
         tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
     let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
+    // Workshop: a persistent channel for streaming Engine/Adapter turns. Submit handlers clone the
+    // sender (stored on `app`) into a detached turn task; the `select!` arm below renders its events.
+    // The sender lives as long as the loop, so the receiver never closes and the arm idles cleanly.
+    let (workshop_turn_tx, mut workshop_turn_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::app::workshop::WorkshopTurnMsg>();
+    app.workshop_turn_tx = Some(workshop_turn_tx);
     let voice_auth_factory = connection.auth_manager.clone();
     let mut tick_interval = tick_interval;
     let mut animation_tick_at: Option<Instant> = None;
@@ -2966,6 +2972,19 @@ pub(crate) async fn run(
                 presenter.request(false);
             }
 
+            // Workshop: stream one Engine/Adapter turn's events into the active agent's scrollback.
+            // Serviced only when nothing else is pending, so it never starves ACP, input, or timers.
+            // Placed before the ACP-independent voice arm; the ACP path is untouched by all of this.
+            Some(msg) = workshop_turn_rx.recv() => {
+                if handle_workshop_turn_msg(&mut app, msg) {
+                    schedule_tick(&mut animation_tick_at, &app, tick_interval);
+                    let now = Instant::now();
+                    if presenter.request_throttled(now, min_draw_interval) {
+                        app.update_notifications();
+                    }
+                }
+            }
+
             // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
             // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
             // Voice is only serviced when nothing else is pending
@@ -4006,6 +4025,110 @@ pub(crate) fn dispatch_then_forward(
     effects
 }
 /// Spawn effects into the task set. Returns `true` if the app should quit.
+/// Render one streamed Workshop turn message (OpenCode engine / vendor CLI adapter) into the active
+/// agent's scrollback. Returns whether a redraw is warranted. Mirrors the ACP renderer's block
+/// vocabulary (`agent_message_streaming` + `push_chunk_to_agent`, `tool_call`, `system`) but is
+/// entirely separate from the ACP path, which only runs for `Shell` (Direct/Local) connections.
+fn handle_workshop_turn_msg(app: &mut AppView, msg: crate::app::workshop::WorkshopTurnMsg) -> bool {
+    use crate::app::workshop::WorkshopTurnMsg as M;
+    use crate::scrollback::block::RenderBlock;
+
+    let Some(agent_id) = app.workshop_turn_agent else {
+        return false;
+    };
+    match msg {
+        M::EngineReady { engine, session } => {
+            // Cache the engine + session so the next turn reuses this `opencode serve`, and persist
+            // the id per workspace for resume across a restart.
+            if let Some(agent) = app.agents.get(&agent_id) {
+                let cwd = agent.session.cwd.clone();
+                crate::app::workshop::save_resume_id("opencode", &cwd, &session);
+            }
+            app.workshop_engine = Some(engine);
+            app.workshop_engine_session = Some(session);
+            false
+        }
+        M::Delta(text) => {
+            let entry = app.workshop_turn_stream_entry;
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                match entry {
+                    Some(id) => {
+                        agent.scrollback.push_chunk_to_agent(id, &text);
+                    }
+                    None => {
+                        let id = agent
+                            .scrollback
+                            .push_block(RenderBlock::agent_message_streaming());
+                        agent.scrollback.push_chunk_to_agent(id, &text);
+                        app.workshop_turn_stream_entry = Some(id);
+                    }
+                }
+            }
+            true
+        }
+        M::Tool { name, summary } => {
+            // A tool call ends the current assistant paragraph; the next delta starts a fresh block.
+            if let Some(id) = app.workshop_turn_stream_entry.take()
+                && let Some(agent) = app.agents.get_mut(&agent_id)
+            {
+                agent.scrollback.finish_running(id);
+            }
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent
+                    .scrollback
+                    .push_block(RenderBlock::tool_call(name, summary, true));
+            }
+            true
+        }
+        M::ToolResult { .. } => false,
+        M::Permission { summary, decision } => {
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent
+                    .scrollback
+                    .push_block(RenderBlock::system(format!("Permission: {summary} — {decision}")));
+            }
+            true
+        }
+        M::Error(message) => {
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent.scrollback.push_block(RenderBlock::system(message));
+            }
+            true
+        }
+        M::Done {
+            session_id,
+            cancelled,
+        } => {
+            if let Some(id) = app.workshop_turn_stream_entry.take()
+                && let Some(agent) = app.agents.get_mut(&agent_id)
+            {
+                agent.scrollback.finish_running(id);
+            }
+            if let Some(session) = &session_id
+                && let Some(agent) = app.agents.get(&agent_id)
+            {
+                let cwd = agent.session.cwd.clone();
+                let backend = match &app.workshop_connection {
+                    crate::app::workshop::WorkshopConnection::Adapter { rail, .. } => {
+                        rail.vendor().id()
+                    }
+                    _ => "opencode",
+                };
+                crate::app::workshop::save_resume_id(backend, &cwd, session);
+            }
+            if cancelled && let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent
+                    .scrollback
+                    .push_block(RenderBlock::system("Turn cancelled."));
+            }
+            app.workshop_turn_active = false;
+            app.workshop_turn_cancel = None;
+            app.workshop_turn_agent = None;
+            true
+        }
+    }
+}
+
 fn process_effects(
     effs: Vec<super::actions::Effect>,
     tasks: &mut JoinSet<TaskResult>,

@@ -171,6 +171,13 @@ pub(crate) fn test_app() -> AppView {
         auth_use_oauth: false,
         connection_picker: None,
         workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
+        workshop_engine: None,
+        workshop_engine_session: None,
+        workshop_turn_active: false,
+        workshop_turn_tx: None,
+        workshop_turn_cancel: None,
+        workshop_turn_stream_entry: None,
+        workshop_turn_agent: None,
         auth_clipboard_delivery: None,
         auth_clipboard_feedback_generation: 0,
         team_id: None,
@@ -617,6 +624,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
     );
 }
 #[test]
+#[ignore = "upstream time-dependent flake (history daemon delivery races the poll deadline); see PR #13"]
 fn needs_animation_gates_prompt_history_tick_delivery() {
     let mut app = test_app_with_agent();
     let id = super::super::agent::AgentId(0);

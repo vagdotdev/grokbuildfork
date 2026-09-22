@@ -566,9 +566,19 @@ fn login_with_empty_auth_methods_opens_picker_and_fails_closed() {
 
     let effects = dispatch(Action::Login, &mut app);
 
+    // Opening the picker loads its rows/rails asynchronously (`WorkshopLoadPicker`); that is a data
+    // probe, never an auth flow. The invariant is that Login alone starts no `Authenticate`.
     assert!(
-        effects.is_empty(),
-        "must not start Authenticate without an advertised method"
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::Authenticate { .. })),
+        "must not start Authenticate without an advertised method, got {effects:?}"
+    );
+    assert!(
+        effects
+            .iter()
+            .all(|e| matches!(e, Effect::WorkshopLoadPicker)),
+        "Login only loads the picker, got {effects:?}"
     );
     assert!(
         app.connection_picker.is_some(),
@@ -604,13 +614,13 @@ fn login_with_empty_auth_methods_opens_picker_and_fails_closed() {
 /// Enter on a non-xAI card (Local, OpenAI, …) opens setup details and never emits `Authenticate`.
 #[test]
 fn picker_non_xai_cards_never_authenticate() {
-    use workshop_auth::{PickerInput, XAI_CARD_ID};
+    use workshop_auth::{PickerInput, XAI_ROW_ID};
     let mut app = test_app();
     dispatch(Action::Login, &mut app);
-    let n = app.connection_picker.as_ref().unwrap().models.len();
+    let n = app.connection_picker.as_ref().unwrap().rows.len();
     for i in 0..n {
-        let id = app.connection_picker.as_ref().unwrap().models[i].id;
-        if id == XAI_CARD_ID {
+        let id = app.connection_picker.as_ref().unwrap().rows[i].id();
+        if id == XAI_ROW_ID {
             continue;
         }
         app.connection_picker.as_mut().unwrap().models_selected = i;

@@ -1001,6 +1001,22 @@ pub struct AppView {
     /// Workshop: which runtime prompts are routed through (shell loop, OpenCode engine, or a
     /// vendor CLI adapter). Set by the picker; `Shell` is the default.
     pub workshop_connection: crate::app::workshop::WorkshopConnection,
+    /// Workshop: the running OpenCode engine (`opencode serve`), started lazily on the first
+    /// Engine-connection turn and reused across turns. `None` until then. Adapter (CLI) turns keep
+    /// no long-lived handle — each turn spawns the vendor CLI fresh with a persisted resume id.
+    pub workshop_engine: Option<std::sync::Arc<workshop_adapters::opencode_engine::OpenCodeEngine>>,
+    pub workshop_engine_session: Option<String>,
+    /// True while an Engine/Adapter turn streams; a second submit is rejected and Esc/Ctrl-C cancels.
+    pub workshop_turn_active: bool,
+    /// Sender the event loop installs once so submit handlers can stream a turn's events back into
+    /// the loop's Workshop `select!` arm. `None` outside the interactive loop (headless, tests).
+    pub workshop_turn_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::app::workshop::WorkshopTurnMsg>>,
+    /// Cancel signal for the in-flight turn (Esc / Ctrl-C → abort/kill).
+    pub workshop_turn_cancel: Option<tokio::sync::watch::Sender<bool>>,
+    /// The streaming assistant block for the current turn, appended to as deltas arrive.
+    pub workshop_turn_stream_entry: Option<crate::scrollback::EntryId>,
+    /// Agent whose scrollback the current turn renders into.
+    pub workshop_turn_agent: Option<crate::app::agent::AgentId>,
     /// Delivery state from the last clipboard copy during auth.
     pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     /// Generation of the current auth copy feedback and its clear timer.
@@ -1527,6 +1543,13 @@ impl AppView {
             auth_use_oauth: false,
             connection_picker: None,
             workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
+            workshop_engine: None,
+            workshop_engine_session: None,
+            workshop_turn_active: false,
+            workshop_turn_tx: None,
+            workshop_turn_cancel: None,
+            workshop_turn_stream_entry: None,
+            workshop_turn_agent: None,
             auth_clipboard_delivery: None,
             auth_clipboard_feedback_generation: 0,
             team_id: None,

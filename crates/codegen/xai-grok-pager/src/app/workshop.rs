@@ -6,10 +6,19 @@
 //! `WORKSHOP_<PROVIDER>_API_KEY` env var (never into the file), asks the shell to reload its model
 //! list, and authenticates with the non-interactive method. Nothing here starts an OAuth flow.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::{mpsc, watch};
+use workshop_adapters::opencode_engine::{
+    EngineOptions, InstallOptions, OpenCodeEngine, PermissionHandler, PermissionReply, TurnHandle,
+    TurnRequest, ensure_opencode,
+};
+use workshop_adapters::supervisor::{RunHandle, SupervisorOptions, spawn};
+use workshop_adapters::{
+    AdapterEvent, AdapterId, DetectOptions, Detection, PermissionPolicy, RunRequest, detect,
+};
 use workshop_auth::{EngineModel, PickerSnapshot, models_rows};
 use workshop_providers::{
     Catalog, CredentialBroker, CredentialInjection, FileSecretStore, KeyringSecretStore,
@@ -35,7 +44,7 @@ impl WorkshopConnection {
     pub fn composer_label(&self) -> Option<String> {
         match self {
             Self::Shell => None,
-            Self::Engine { model } => Some(format!("OpenCode · {}", model.name)),
+            Self::Engine { model } => Some(format!("{} · OpenCode", model.name)),
             Self::Adapter { rail, model } => Some(workshop_detect::composer_label(*rail, model)),
         }
     }
@@ -210,6 +219,297 @@ pub async fn openrouter_sign_in() -> Result<&'static str, String> {
         .await
         .map_err(|e| e.to_string())?;
     save_provider_key("openrouter", &key)
+}
+
+/// A live turn stream from either backend. `OpenCodeEngine::prompt` (free tier) and the CLI
+/// supervisor (`spawn`, subscriptions) share the same `AdapterEvent` contract — `next_event`,
+/// `cancel`, `session_id` — so one consumer loop in the TUI serves both.
+pub enum TurnStream {
+    Engine(TurnHandle),
+    Adapter(RunHandle),
+}
+
+impl TurnStream {
+    pub async fn next_event(&mut self) -> Option<AdapterEvent> {
+        match self {
+            Self::Engine(t) => t.next_event().await,
+            Self::Adapter(r) => r.next_event().await,
+        }
+    }
+    pub fn cancel(&self) {
+        match self {
+            Self::Engine(t) => t.cancel(),
+            Self::Adapter(r) => r.cancel(),
+        }
+    }
+    pub fn session_id(&self) -> Option<String> {
+        match self {
+            Self::Engine(t) => Some(t.session_id().to_string()),
+            Self::Adapter(r) => r.session_id(),
+        }
+    }
+}
+
+/// What the UI thread learns as a turn streams. Mapped to scrollback `RenderBlock`s by the event
+/// loop's Workshop `select!` arm (kept UI-agnostic so `workshop-adapters` never depends on the pager).
+#[derive(Debug)]
+pub enum WorkshopTurnMsg {
+    /// The OpenCode engine started (lazily, on the first turn); cache it and the session so later
+    /// turns reuse the same `opencode serve` and conversation. Engine turns only.
+    EngineReady {
+        engine: Arc<OpenCodeEngine>,
+        session: String,
+    },
+    Delta(String),
+    Tool { name: String, summary: String },
+    ToolResult { ok: bool },
+    /// A permission ask the backend escalated; `decision` is what Workshop answered (asks are
+    /// answered from the pager's permission mode — a synchronous vendor hook, so it is surfaced,
+    /// not blocking-interactive).
+    Permission { summary: String, decision: &'static str },
+    Error(String),
+    /// The turn ended; `session_id` is persisted per workspace for resume.
+    Done {
+        session_id: Option<String>,
+        cancelled: bool,
+    },
+}
+
+/// Which backend a submitted prompt should run on.
+pub enum WorkshopTurnKind {
+    Engine {
+        engine: Option<Arc<OpenCodeEngine>>,
+        session: Option<String>,
+        model_ref: String,
+    },
+    Adapter {
+        adapter_id: AdapterId,
+        resume: Option<String>,
+        model: Option<String>,
+    },
+}
+
+/// One submitted prompt to route off the ACP path.
+pub struct WorkshopTurnSpec {
+    pub kind: WorkshopTurnKind,
+    pub cwd: PathBuf,
+    pub text: String,
+    /// The pager's always-approve mode; maps to `WorkspaceWrite` (else `ReadOnly`).
+    pub always_approve: bool,
+}
+
+fn summarize_tool_input(input: &serde_json::Value) -> String {
+    for key in ["filePath", "path", "command", "pattern", "query", "url"] {
+        if let Some(v) = input.get(key).and_then(serde_json::Value::as_str) {
+            return v.to_owned();
+        }
+    }
+    String::new()
+}
+
+fn resume_store_path() -> PathBuf {
+    workshop_home().join("adapter-sessions.json")
+}
+
+/// The vendor/engine session id last seen for `(backend, workspace)`, for resume.
+pub fn load_resume_id(backend: &str, cwd: &Path) -> Option<String> {
+    let map: serde_json::Value = std::fs::read_to_string(resume_store_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())?;
+    map.get(format!("{backend}:{}", cwd.display()))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+}
+
+/// Persist the session id for `(backend, workspace)` so the next turn resumes the conversation.
+pub fn save_resume_id(backend: &str, cwd: &Path, session_id: &str) {
+    let path = resume_store_path();
+    let mut map: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    map.insert(
+        format!("{backend}:{}", cwd.display()),
+        serde_json::Value::String(session_id.to_owned()),
+    );
+    if let Ok(bytes) = serde_json::to_vec_pretty(&map) {
+        let _ = workshop_providers::atomic_write_private(&path, &bytes);
+    }
+}
+
+/// Build the engine permission hook: surface each ask to the UI and answer it from the pager's
+/// permission mode. `PermissionHandler` is synchronous (it cannot await the user), so this is a
+/// surfaced auto-decision, not a blocking prompt — full interactive asks are a follow-up.
+fn engine_permission_handler(
+    tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
+    always_approve: bool,
+) -> PermissionHandler {
+    Arc::new(move |req| {
+        let decision = if always_approve {
+            PermissionReply::Once
+        } else {
+            PermissionReply::Reject
+        };
+        let _ = tx.send(WorkshopTurnMsg::Permission {
+            summary: format!("{} ({})", req.title, req.kind),
+            decision: if always_approve { "allowed" } else { "rejected" },
+        });
+        decision
+    })
+}
+
+async fn start_engine(
+    workspace: &Path,
+    tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
+    always_approve: bool,
+) -> Result<OpenCodeEngine, String> {
+    // Detect an `opencode` on PATH / known dirs / the Workshop tools tree; install the pinned
+    // version via the vendor's own script only if absent (never a bundled binary).
+    let cli = ensure_opencode(&DetectOptions::default(), Some(&InstallOptions::default()))
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut opts = EngineOptions::new(workspace);
+    opts.permission_handler = Some(engine_permission_handler(tx, always_approve));
+    OpenCodeEngine::start(&cli, opts)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn build_stream(
+    spec: &WorkshopTurnSpec,
+    tx: &mpsc::UnboundedSender<WorkshopTurnMsg>,
+    permission: PermissionPolicy,
+) -> Result<TurnStream, String> {
+    match &spec.kind {
+        WorkshopTurnKind::Engine {
+            engine,
+            session,
+            model_ref,
+        } => {
+            let engine = match engine {
+                Some(e) => e.clone(),
+                None => Arc::new(start_engine(&spec.cwd, tx.clone(), spec.always_approve).await?),
+            };
+            let session = match session {
+                Some(s) if engine.session_exists(s).await.unwrap_or(false) => s.clone(),
+                _ => engine
+                    .create_session(Some("Workshop"))
+                    .await
+                    .map_err(|e| e.to_string())?,
+            };
+            let _ = tx.send(WorkshopTurnMsg::EngineReady {
+                engine: engine.clone(),
+                session: session.clone(),
+            });
+            let mut req = TurnRequest::new(spec.text.clone());
+            req.model = Some(model_ref.clone());
+            req.permission = permission;
+            let turn = engine
+                .prompt(&session, req)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(TurnStream::Engine(turn))
+        }
+        WorkshopTurnKind::Adapter {
+            adapter_id,
+            resume,
+            model,
+        } => {
+            let adapter = workshop_adapters::vendors::by_id(*adapter_id);
+            let cli = match detect(&*adapter, &DetectOptions::default()).await {
+                Detection::Installed(cli) => cli,
+                Detection::Unverified { reason, .. } => {
+                    return Err(format!("{} could not be verified: {reason}", adapter.id()));
+                }
+                Detection::NotInstalled => {
+                    return Err(format!("{} is not installed", adapter.id()));
+                }
+            };
+            let mut req = RunRequest::new(spec.text.clone(), &spec.cwd);
+            req.model = model.clone();
+            req.resume = resume.clone();
+            req.permission = permission;
+            let handle = spawn(&*adapter, &cli, req, &SupervisorOptions::default())
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(TurnStream::Adapter(handle))
+        }
+    }
+}
+
+/// Drive one turn on the chosen backend, forwarding stream events to the UI over `tx` and honoring
+/// a `cancel` signal (Esc / Ctrl-C → abort/kill). Runs as a detached task; the UI thread owns the
+/// receiver and renders. Never touches the ACP path.
+pub async fn run_workshop_turn(
+    spec: WorkshopTurnSpec,
+    tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
+    mut cancel_rx: watch::Receiver<bool>,
+) {
+    let permission = if spec.always_approve {
+        PermissionPolicy::WorkspaceWrite
+    } else {
+        PermissionPolicy::ReadOnly
+    };
+    let mut stream = match build_stream(&spec, &tx, permission).await {
+        Ok(s) => s,
+        Err(error) => {
+            let _ = tx.send(WorkshopTurnMsg::Error(error));
+            let _ = tx.send(WorkshopTurnMsg::Done {
+                session_id: None,
+                cancelled: false,
+            });
+            return;
+        }
+    };
+
+    let mut cancelled = false;
+    loop {
+        tokio::select! {
+            ev = stream.next_event() => match ev {
+                Some(AdapterEvent::TextDelta { text }) => {
+                    let _ = tx.send(WorkshopTurnMsg::Delta(text));
+                }
+                Some(AdapterEvent::ToolCall { name, input, .. }) => {
+                    let _ = tx.send(WorkshopTurnMsg::Tool {
+                        name,
+                        summary: summarize_tool_input(&input),
+                    });
+                }
+                Some(AdapterEvent::ToolResult { is_error, .. }) => {
+                    let _ = tx.send(WorkshopTurnMsg::ToolResult { ok: !is_error });
+                }
+                Some(AdapterEvent::Error { message }) => {
+                    let _ = tx.send(WorkshopTurnMsg::Error(message));
+                }
+                Some(AdapterEvent::Thinking { .. })
+                | Some(AdapterEvent::Usage(_))
+                | Some(AdapterEvent::Done { .. }) => {}
+                None => break,
+            },
+            _ = cancel_rx.changed() => {
+                if *cancel_rx.borrow() && !cancelled {
+                    cancelled = true;
+                    stream.cancel();
+                }
+            }
+        }
+    }
+
+    let session_id = stream.session_id();
+    let _ = tx.send(WorkshopTurnMsg::Done {
+        session_id,
+        cancelled,
+    });
+}
+
+/// Map a subscription rail to its `workshop-adapters` CLI adapter id.
+pub fn rail_adapter_id(rail: workshop_detect::Rail) -> AdapterId {
+    match rail.vendor() {
+        workshop_detect::Vendor::Claude => AdapterId::Claude,
+        workshop_detect::Vendor::Codex => AdapterId::Codex,
+        workshop_detect::Vendor::Cursor => AdapterId::Cursor,
+        workshop_detect::Vendor::OpenCode => AdapterId::OpenCode,
+    }
 }
 
 /// The official CLI login command for a rail, to run attached to the user's terminal.

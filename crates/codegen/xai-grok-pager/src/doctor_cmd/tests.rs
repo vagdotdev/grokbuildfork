@@ -247,7 +247,15 @@ fn fake_standalone_facts_compose_through_shared_view() {
     );
     let report = collect_report_with(snapshot);
 
-    assert_eq!(report.issue_count(), 1);
+    // Count only terminal-domain findings: `collect_report_with` also runs a live input-device
+    // probe (`apply_voice_probe`), which on a headless host / CI runner with no microphone adds an
+    // incidental `voice/no-input-device` finding. This test is about terminal/clipboard composition.
+    let terminal_issues = report
+        .findings
+        .iter()
+        .filter(|f| f.id.domain == "terminal")
+        .count();
+    assert_eq!(terminal_issues, 1);
     assert!(
         report
             .findings

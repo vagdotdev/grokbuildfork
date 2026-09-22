@@ -1954,9 +1954,13 @@ fn login_mid_session_switches_to_welcome_and_stashes_view() {
     assert_eq!(app.active_view, ActiveView::Welcome);
     assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
     assert!(app.connection_picker.is_some(), "Login opens the picker");
+    // Opening the picker loads its rows/rails (`WorkshopLoadPicker`) — a data probe, not auth.
     assert!(
-        effects.is_empty() && !matches!(app.auth_state, AuthState::Authenticating { .. }),
-        "Login alone must not kick off an auth flow",
+        effects
+            .iter()
+            .all(|e| matches!(e, Effect::WorkshopLoadPicker))
+            && !matches!(app.auth_state, AuthState::Authenticating { .. }),
+        "Login alone must not kick off an auth flow, got {effects:?}",
     );
     let effects = start_login_flow(&mut app);
     assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
