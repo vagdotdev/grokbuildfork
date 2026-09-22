@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde::Deserialize;
-use serde_json::Value;
 use tokio::fs;
 use tokio::process::Command;
 
@@ -10,33 +9,157 @@ use xai_grok_shell::env::GrokBuildEnvironment;
 use xai_grok_shell::util::grok_home::grok_home;
 
 const TTL_SECONDS_BEFORE_AUTO_UPDATE: Duration = Duration::from_secs(60 * 30);
-const NPM_PACKAGE: &str = "@xai-official/grok";
-pub const GH_RELEASE_REPO: &str = "xai-org-shared/grok-build";
 
-/// Primary CLI base URL: Cloudflare-fronted x.ai endpoint with edge caching for binaries and origin-respecting no-cache for channel pointers.
-pub(crate) const CLI_BASE_URL_PRIMARY: &str = "https://x.ai/cli";
+// Workshop (gate:no-xai, Gate 4). The updater reads Workshop's own release channel: JSON channel
+// manifests on the `release-channel` branch of `RELEASE_REPO` (scripts/release/), never `x.ai/cli`,
+// the Grok GCS bucket, npm `@xai-official/grok` or `xai-org-shared/grok-build`. npm installs are
+// not supported. Background auto-update stays off (`should_check_for_updates` in the binary) while
+// the release repository is private; an explicit `workshop update` still works for a `gh`-authed user.
 
-/// Fallback CLI base URL: direct GCS, used when the primary is unreachable (Cloudflare outage, regional CF egress issue, DNS hijack, etc.).
-pub(crate) const CLI_BASE_URL_FALLBACK: &str =
-    "https://storage.googleapis.com/grok-build-public-artifacts/cli";
+/// GitHub `OWNER/NAME` hosting Workshop releases. Baked from `WORKSHOP_RELEASE_REPO` at build time
+/// (see `build.rs`); defaults to the private fork until the public release repository exists.
+pub const RELEASE_REPO: &str = env!("WORKSHOP_RELEASE_REPO_RESOLVED");
+/// Upstream name kept for patch size; the value is Workshop's release repository.
+pub const GH_RELEASE_REPO: &str = RELEASE_REPO;
 
-/// CLI base URLs in preference order.
-/// Callers (channel-pointer fetch, binary download, in-app updater) try each in turn and stop at the first success.
-pub(crate) const CLI_BASE_URLS: &[&str] = &[CLI_BASE_URL_PRIMARY, CLI_BASE_URL_FALLBACK];
+/// Channel manifests live at `{CHANNEL_BASE_URL}/{stable|alpha}.json`
+/// (`scripts/release/channel-manifest.schema.json`).
+pub const CHANNEL_BASE_URL: &str = env!("WORKSHOP_CHANNEL_BASE_URL");
 
-/// [`CLI_BASE_URLS`], unless tests set `GROK_CLI_BASE_URL` to point fetches and downloads at one base (as they set `GROK_INSTALLER`).
-/// Loopback-only: downloads are verified by a smoke test, not a checksum, so redirecting to an arbitrary base could serve a hijacked install.
+/// Channel base URLs in preference order. A single base for now; a mirror is a roadmap item.
+pub(crate) const CLI_BASE_URLS: &[&str] = &[CHANNEL_BASE_URL];
+
+/// Error for every npm code path: Workshop is not published to npm.
+pub(crate) const NPM_UNSUPPORTED: &str =
+    "npm installs are not supported by Workshop; reinstall with the installer (see `workshop update` output)";
+
+/// [`CLI_BASE_URLS`], unless tests set `WORKSHOP_CLI_BASE_URL` to point fetches and downloads at one base (as they set `WORKSHOP_INSTALLER`).
+/// Loopback-only: this is how tests point the updater at `scripts/release/smoke-install.sh`'s server, and
+/// redirecting to an arbitrary base could serve a hijacked manifest.
 pub(crate) fn cli_base_urls() -> Vec<String> {
-    if let Ok(base) = std::env::var("GROK_CLI_BASE_URL") {
+    if let Ok(base) = std::env::var("WORKSHOP_CLI_BASE_URL") {
         let base = base.trim();
         if is_loopback_base(base) {
             return vec![base.to_owned()];
         }
         if !base.is_empty() {
-            tracing::warn!("GROK_CLI_BASE_URL ignored: only loopback bases are honored");
+            tracing::warn!("WORKSHOP_CLI_BASE_URL ignored: only loopback bases are honored");
         }
     }
     CLI_BASE_URLS.iter().map(|s| (*s).to_owned()).collect()
+}
+
+/// Test-only entry point for [`cli_base_urls`] (the workshop-gates crate pins the loopback-only override).
+#[doc(hidden)]
+pub fn cli_base_urls_for_test() -> Vec<String> {
+    cli_base_urls()
+}
+
+/// `true` for `https://` URLs and for loopback `http://` (tests against `smoke-install.sh`'s server).
+pub(crate) fn is_https_or_loopback(url: &str) -> bool {
+    let Ok(u) = url::Url::parse(url) else {
+        return false;
+    };
+    if !u.username().is_empty() || u.password().is_some() {
+        return false;
+    }
+    match u.scheme() {
+        "https" => true,
+        "http" => is_loopback_base(url),
+        _ => false,
+    }
+}
+
+/// One channel document (`stable.json` / `alpha.json`). Unknown fields are ignored; consumers reject
+/// `schema_version != 1` and `product != "workshop"`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChannelManifest {
+    pub schema_version: u32,
+    pub product: String,
+    pub channel: String,
+    pub version: String,
+    pub tag: String,
+    #[serde(default)]
+    pub attested: bool,
+    #[serde(default)]
+    pub previous_version: Option<String>,
+    #[serde(default)]
+    pub release_repo: Option<String>,
+    #[serde(default)]
+    pub checksums_url: Option<String>,
+    /// Keyed by `<os>-<arch>` exactly as `detect_platform()` labels it.
+    pub artifacts: std::collections::HashMap<String, ChannelArtifact>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChannelArtifact {
+    pub url: String,
+    pub sha256: String,
+    pub size: u64,
+    pub format: String,
+    /// Path of the executable inside the archive (`workshop`, `workshop.exe`).
+    pub binary: String,
+}
+
+impl ChannelManifest {
+    /// Structural validation shared by every consumer.
+    pub fn validate(&self, expected_channel: &str) -> Result<()> {
+        if self.schema_version != 1 {
+            anyhow::bail!(
+                "unsupported channel manifest schema_version {} (this build understands 1)",
+                self.schema_version
+            );
+        }
+        if self.product != "workshop" {
+            anyhow::bail!("channel manifest is for product {:?}, not workshop", self.product);
+        }
+        if self.channel != expected_channel {
+            anyhow::bail!(
+                "channel manifest says channel {:?} but {:?} was requested",
+                self.channel,
+                expected_channel
+            );
+        }
+        if semver::Version::parse(&self.version).is_err() {
+            anyhow::bail!(
+                "invalid semver in {} channel manifest: '{}'",
+                self.channel,
+                self.version
+            );
+        }
+        Ok(())
+    }
+    /// The artifact for this platform label, or an error naming the gap.
+    pub fn artifact_for(&self, platform: &str) -> Result<&ChannelArtifact> {
+        let artifact = self.artifacts.get(platform).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no build for {platform} on the {} channel ({}); available: {}",
+                self.channel,
+                self.version,
+                {
+                    let mut keys: Vec<&str> = self.artifacts.keys().map(String::as_str).collect();
+                    keys.sort_unstable();
+                    keys.join(", ")
+                }
+            )
+        })?;
+        if artifact.format != "tar.gz" {
+            anyhow::bail!(
+                "unsupported artifact format {:?} for {platform}",
+                artifact.format
+            );
+        }
+        if artifact.sha256.len() != 64 || !artifact.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+            anyhow::bail!("channel manifest has no valid sha256 for {platform}");
+        }
+        if !is_https_or_loopback(&artifact.url) {
+            anyhow::bail!(
+                "refusing to download {platform} artifact from a non-https URL: {}",
+                artifact.url
+            );
+        }
+        Ok(artifact)
+    }
 }
 
 /// Parsed, not prefix-matched: `http://127.0.0.1:9@evil.com` starts with a
@@ -133,27 +256,19 @@ fn semver_max(a: &str, b: &str) -> Result<String> {
     Ok(std::cmp::max(va, vb).to_string())
 }
 
-/// Fetch the latest version from npm registry using `npm view`.
-/// For alpha channel, fetches both `@alpha` and `@latest` dist-tags and returns the semver-greater.
-/// This keeps alpha users from getting stuck when a newer stable ships without updating the alpha dist-tag.
-async fn fetch_npm_version(channel: &str, npm_registry: Option<&str>) -> Result<String> {
-    if channel == "alpha" {
-        let (alpha_v, stable_v) = tokio::try_join!(
-            fetch_npm_tag("alpha", npm_registry),
-            fetch_npm_tag("latest", npm_registry),
-        )?;
-        return semver_max(&alpha_v, &stable_v);
-    }
-    fetch_npm_tag("latest", npm_registry).await
+/// Workshop is not published to npm: every npm code path fails with [`NPM_UNSUPPORTED`].
+/// The signatures stay so the `fetch_latest_version` dispatch and the test entry points keep compiling.
+async fn fetch_npm_version(_channel: &str, _npm_registry: Option<&str>) -> Result<String> {
+    anyhow::bail!(NPM_UNSUPPORTED)
 }
 
-/// Test-only entry point: invokes the private [`fetch_npm_tag`] for tests that swap in a fake `npm` via PATH.
+/// Test-only entry point for the (unsupported) npm path.
 #[doc(hidden)]
 pub async fn fetch_npm_tag_for_test(tag: &str, npm_registry: Option<&str>) -> Result<String> {
     fetch_npm_tag(tag, npm_registry).await
 }
 
-/// Test-only entry point: invokes the private [`fetch_npm_version`] for tests that swap in a fake `npm` via PATH.
+/// Test-only entry point for the (unsupported) npm path.
 #[doc(hidden)]
 pub async fn fetch_npm_version_for_test(
     channel: &str,
@@ -162,40 +277,8 @@ pub async fn fetch_npm_version_for_test(
     fetch_npm_version(channel, npm_registry).await
 }
 
-async fn fetch_npm_tag(tag: &str, npm_registry: Option<&str>) -> Result<String> {
-    let pkg_spec = if tag == "latest" {
-        NPM_PACKAGE.to_string()
-    } else {
-        format!("{}@{}", NPM_PACKAGE, tag)
-    };
-    let mut args = vec!["view", &pkg_spec, "version", "--json"];
-    let registry_flag;
-    if let Some(registry) = npm_registry {
-        registry_flag = format!("--registry={}", registry);
-        args.push(&registry_flag);
-    }
-    let mut cmd = Command::new("npm");
-    cmd.args(&args).stdin(std::process::Stdio::null());
-    xai_grok_tools::util::detach_command(&mut cmd);
-    cmd.envs(xai_grok_tools::util::pager_env());
-    let output = cmd.output().await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("npm view @{} failed: {}", tag, stderr.trim());
-    }
-
-    let stdout = String::from_utf8(output.stdout)?;
-    let value: Value = serde_json::from_str(stdout.trim())?;
-    match value {
-        Value::String(version) => Ok(version),
-        Value::Array(values) => values
-            .iter()
-            .rev()
-            .find_map(|entry| entry.as_str().map(|item| item.to_string()))
-            .ok_or_else(|| anyhow::anyhow!("npm view @{} returned empty version list", tag)),
-        _ => anyhow::bail!("npm view @{} returned unexpected JSON", tag),
-    }
+async fn fetch_npm_tag(_tag: &str, _npm_registry: Option<&str>) -> Result<String> {
+    anyhow::bail!(NPM_UNSUPPORTED)
 }
 
 /// Fetch the latest version from GitHub Releases using `gh release list`.
@@ -250,9 +333,9 @@ async fn fetch_gh_release_latest(exclude_pre: bool) -> Result<String> {
     Ok(version)
 }
 
-/// No auth required; the upstream bucket is public. For the alpha channel, fetches both `alpha` and `stable` pointers and
-/// returns the semver-greater, matching the npm and gh-release paths. Each base also retries up to 3 times with
+/// Reads the Workshop channel manifest from each configured base in turn. Each base retries up to 3 times with
 /// exponential backoff (1s, 2s, 4s) on transient failures before falling through to the next base.
+/// The pipeline guarantees `alpha.json >= stable.json`, so a single manifest per channel suffices.
 pub(crate) async fn fetch_gcs_version(channel: &str) -> Result<String> {
     let mut last_err: Option<anyhow::Error> = None;
     let bases = cli_base_urls();
@@ -262,7 +345,7 @@ pub(crate) async fn fetch_gcs_version(channel: &str) -> Result<String> {
             Err(e) => {
                 if i + 1 < bases.len() {
                     tracing::warn!(
-                        "channel pointer fetch from {} failed ({:#}); trying next base URL",
+                        "channel manifest fetch from {} failed ({:#}); trying next base URL",
                         base,
                         e
                     );
@@ -271,24 +354,20 @@ pub(crate) async fn fetch_gcs_version(channel: &str) -> Result<String> {
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no CLI base URLs configured")))
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no channel base URLs configured")))
 }
 
-/// Test-only entry point: same as [`fetch_gcs_version`] but reads from `base_url` instead of the hardcoded GCS bucket.
+/// Same as [`fetch_gcs_version`] but reads from `base_url` (tests point this at a loopback server).
+/// Name kept from upstream for patch size; the source is the Workshop channel manifest, not GCS.
 #[doc(hidden)]
 pub async fn fetch_gcs_version_from_base(channel: &str, base_url: &str) -> Result<String> {
-    if channel == "alpha" {
-        let (alpha_v, stable_v) = tokio::try_join!(
-            fetch_gcs_channel_pointer("alpha", base_url),
-            fetch_gcs_channel_pointer("stable", base_url),
-        )?;
-        return semver_max(&alpha_v, &stable_v);
-    }
-    fetch_gcs_channel_pointer(channel, base_url).await
+    Ok(fetch_channel_manifest(channel, base_url).await?.version)
 }
 
-async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<String> {
-    let url = format!("{}/{}", base_url, channel);
+/// Read and validate `{base_url}/{channel}.json` (`scripts/release/channel-manifest.schema.json`).
+/// 15 s timeout, 3 retries with exponential backoff, as the pointer fetch had.
+pub async fn fetch_channel_manifest(channel: &str, base_url: &str) -> Result<ChannelManifest> {
+    let url = format!("{}/{}.json", base_url.trim_end_matches('/'), channel);
     let client = xai_grok_extra_ca::build_reqwest_client(|builder| {
         builder.timeout(Duration::from_secs(15))
     })?;
@@ -303,7 +382,7 @@ async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<Stri
             Ok(r) => r,
             Err(e) => {
                 last_err = Some(anyhow::anyhow!(
-                    "GCS channel pointer fetch failed for {}: {:#}",
+                    "channel manifest fetch failed for {}: {:#}",
                     url,
                     e
                 ));
@@ -314,7 +393,7 @@ async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<Stri
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             last_err = Some(anyhow::anyhow!(
-                "GCS channel pointer fetch failed: HTTP {} for {}: {}",
+                "channel manifest fetch failed: HTTP {} for {}: {}",
                 status,
                 url,
                 body.chars().take(200).collect::<String>().trim()
@@ -323,27 +402,16 @@ async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<Stri
         }
         match resp.text().await {
             Ok(body) => {
-                let version = body.trim().to_string();
-                if version.is_empty() {
-                    last_err = Some(anyhow::anyhow!(
-                        "empty {} channel pointer at {}",
-                        channel,
-                        url
-                    ));
-                    continue;
-                }
-                if semver::Version::parse(&version).is_err() {
-                    anyhow::bail!(
-                        "invalid semver in {} channel pointer: '{}'",
-                        channel,
-                        version
-                    );
-                }
-                return Ok(version);
+                // A malformed or foreign manifest is not transient; do not retry it.
+                let manifest: ChannelManifest = serde_json::from_str(&body).map_err(|e| {
+                    anyhow::anyhow!("invalid channel manifest at {}: {}", url, e)
+                })?;
+                manifest.validate(channel)?;
+                return Ok(manifest);
             }
             Err(e) => {
                 last_err = Some(anyhow::anyhow!(
-                    "GCS channel pointer body read failed for {}: {:#}",
+                    "channel manifest body read failed for {}: {:#}",
                     url,
                     e
                 ));
@@ -400,8 +468,8 @@ pub async fn write_version_cache(version: &str, stable_version: Option<&str>) {
 }
 
 /// Fetch the latest version for the given installer type and cache it. Each installer is fully independent: there is no
-/// cross-installer fallback. `"npm"`: uses `npm view` against the public registry; `"internal"`: reads the channel
-/// pointer from the public GCS bucket; `"gh-release"`: uses `gh release list` against GitHub Releases.
+/// cross-installer fallback. `"npm"`: unsupported (Workshop is not on npm); `"internal"`: reads the Workshop channel
+/// manifest; `"gh-release"`: uses `gh release list` against the Workshop release repository.
 pub async fn get_latest_version(installer: &str, config: &UpdateConfig) -> Result<String> {
     let version = fetch_latest_version(installer, config).await?;
     let stable_ptr = try_fetch_stable_pointer().await;
@@ -425,7 +493,7 @@ pub async fn is_version_cache_fresh() -> bool {
 pub use xai_grok_version::installed as get_installed_grok_version;
 
 /// Returns `None` when there is no parseable managed symlink (Windows copy-based installs, dev builds) or when the
-/// symlink is DANGLING — a link whose target binary was deleted (e.g. manual `~/.grok/downloads` cleanup) must not report
+/// symlink is DANGLING — a link whose target binary was deleted (e.g. manual `~/.workshop/downloads` cleanup) must not report
 /// an installed version, or every updater would claim "already up to date" forever while no runnable binary exists.
 pub fn installed_on_disk_version() -> Option<String> {
     #[cfg(unix)]
@@ -434,7 +502,7 @@ pub fn installed_on_disk_version() -> Option<String> {
         let target = std::fs::read_link(&app).ok()?;
         // metadata() follows the symlink: Err means the target is gone (dangling link) and the version it names is not actually on disk
         std::fs::metadata(&app).ok()?;
-        version_from_versioned_binary_name(target.file_name()?.to_str()?, "grok")
+        version_from_versioned_binary_name(target.file_name()?.to_str()?, "workshop")
     }
     #[cfg(not(unix))]
     {
@@ -442,9 +510,10 @@ pub fn installed_on_disk_version() -> Option<String> {
     }
 }
 
-/// Handles the internal layout (`grok-0.1.150-macos-aarch64`) and the npm layout without a platform suffix
-/// (`grok-0.1.150`). Pre-releases parse whole: `grok-0.1.150-alpha.1-linux-x86_64` gives `0.1.150-alpha.1`. Unknown
-/// layouts (`grok-latest`, `grok-pager-*` when `bin_prefix` is `grok`) return `None` instead of garbage.
+/// Handles the managed layout (`workshop-0.1.150-macos-aarch64`, written by `scripts/install.sh` and the updater)
+/// and a name without a platform suffix (`workshop-0.1.150`). Pre-releases parse whole:
+/// `workshop-0.1.150-alpha.1-linux-x86_64` gives `0.1.150-alpha.1`. Unknown layouts (`workshop-latest`,
+/// `workshop-pager-*` when `bin_prefix` is `workshop`) return `None` instead of garbage.
 pub(crate) fn version_from_versioned_binary_name(name: &str, bin_prefix: &str) -> Option<String> {
     const PLATFORM_OS: &[&str] = &["macos", "linux", "darwin", "windows"];
     let suffix = name.strip_prefix(bin_prefix)?.strip_prefix('-')?;
@@ -464,7 +533,7 @@ pub(crate) fn version_from_versioned_binary_name(name: &str, bin_prefix: &str) -
 pub(crate) async fn try_fetch_stable_pointer() -> Option<String> {
     tokio::time::timeout(Duration::from_millis(500), async {
         for base in cli_base_urls() {
-            if let Ok(v) = fetch_gcs_channel_pointer("stable", &base).await {
+            if let Ok(v) = fetch_gcs_version_from_base("stable", &base).await {
                 return Some(v);
             }
         }
@@ -539,7 +608,7 @@ mod tests {
         // Prefix-check bypass vectors.
         assert!(!is_loopback_base("http://127.0.0.1:9@evil.com"));
         assert!(!is_loopback_base("http://localhost.evil.com:80"));
-        assert!(!is_loopback_base("https://x.ai/cli"));
+        assert!(!is_loopback_base("https://updates.example.com/cli"));
         assert!(!is_loopback_base("http://192.168.1.1:80"));
         assert!(!is_loopback_base(""));
     }
@@ -559,39 +628,89 @@ mod tests {
         );
     }
 
-    /// Disk-version probe: parsing the version out of the managed install's symlink-target file name (`grok-<version>-<platform>`).
+    /// Disk-version probe: parsing the version out of the managed install's symlink-target file name
+    /// (`workshop-<version>-<platform>`, the layout `scripts/install.sh` and the updater both write).
     #[test]
     fn test_version_from_versioned_binary_name() {
         let cases: &[(&str, Option<&str>)] = &[
-            ("grok-0.2.46-darwin-arm64", Some("0.2.46")),
-            ("grok-0.1.220-linux-x86_64", Some("0.1.220")),
-            ("grok-0.2.5-windows-x86_64.exe", Some("0.2.5")),
+            ("workshop-0.2.46-macos-aarch64", Some("0.2.46")),
+            ("workshop-0.1.220-linux-x86_64", Some("0.1.220")),
+            ("workshop-0.2.5-windows-x86_64.exe", Some("0.2.5")),
             // Pre-releases must round-trip whole
             // Truncating to "0.1.220" would make an alpha install masquerade as the release and mask updates from alpha to stable
-            ("grok-0.1.220-alpha.4-linux-x86_64", Some("0.1.220-alpha.4")),
-            ("grok-0.1.220-alpha.4", Some("0.1.220-alpha.4")), // npm layout
-            ("grok-pager-0.1.5-darwin-arm64", None),           // "pager" is not a version
-            ("grok-garbage-darwin-arm64", None),               // unparseable version
-            ("grok-0.2.46", Some("0.2.46")),                   // no platform suffix
-            ("other-0.2.46-darwin-arm64", None),               // wrong prefix
-            ("grok-latest", None),                             // symlink alias, not a version
-            ("grok", None),                                    // bare name
+            ("workshop-0.1.220-alpha.4-linux-x86_64", Some("0.1.220-alpha.4")),
+            ("workshop-0.1.220-alpha.4", Some("0.1.220-alpha.4")), // no platform suffix
+            ("workshop-pager-0.1.5-macos-aarch64", None),          // "pager" is not a version
+            ("workshop-garbage-macos-aarch64", None),              // unparseable version
+            ("workshop-0.2.46", Some("0.2.46")),                   // no platform suffix
+            ("other-0.2.46-macos-aarch64", None),                  // wrong prefix
+            ("grok-0.2.46-macos-aarch64", None),                   // upstream layout is not ours
+            ("workshop-latest", None),                             // symlink alias, not a version
+            ("workshop", None),                                    // bare name
             ("", None),
         ];
         for (name, expected) in cases {
             assert_eq!(
-                version_from_versioned_binary_name(name, "grok").as_deref(),
+                version_from_versioned_binary_name(name, "workshop").as_deref(),
                 *expected,
                 "version_from_versioned_binary_name({name:?})"
             );
         }
+    }
 
-        // bin_prefix discrimination: the pager binary parses under its own prefix but not under "grok"
-        assert_eq!(
-            version_from_versioned_binary_name("grok-pager-0.1.5-darwin-arm64", "grok-pager")
-                .as_deref(),
-            Some("0.1.5")
+    /// The channel manifest (`scripts/release/channel-manifest.schema.json`) parses, validates, and indexes by platform.
+    #[test]
+    fn channel_manifest_parses_and_validates() {
+        let body = r#"{
+          "schema_version": 1, "product": "workshop", "channel": "stable",
+          "version": "0.1.0", "tag": "v0.1.0", "published_at": "2026-09-21T20:27:58Z",
+          "release_repo": "vagdotdev/grokbuildfork",
+          "release_url": "https://github.com/vagdotdev/grokbuildfork/releases/tag/v0.1.0",
+          "checksums_url": "https://github.com/vagdotdev/grokbuildfork/releases/download/v0.1.0/SHA256SUMS",
+          "attested": false, "previous_version": null, "previous_tag": null, "future_field": {"x": 1},
+          "artifacts": { "linux-x86_64": { "url": "https://github.com/vagdotdev/grokbuildfork/releases/download/v0.1.0/workshop-0.1.0-linux-x86_64.tar.gz",
+                          "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "size": 84543, "format": "tar.gz", "binary": "workshop" } }
+        }"#;
+        let m: ChannelManifest = serde_json::from_str(body).expect("unknown fields are ignored");
+        m.validate("stable").expect("valid stable manifest");
+        assert!(m.validate("alpha").is_err(), "channel mismatch is rejected");
+        let a = m.artifact_for("linux-x86_64").expect("platform present");
+        assert_eq!(a.binary, "workshop");
+        assert!(m.artifact_for("macos-aarch64").is_err(), "missing platform is an error");
+
+        let v2 = body.replace("\"schema_version\": 1", "\"schema_version\": 2");
+        let m2: ChannelManifest = serde_json::from_str(&v2).unwrap();
+        assert!(m2.validate("stable").is_err(), "schema_version 2 is rejected");
+
+        let http = body.replace("https://github.com", "http://github.com");
+        let m3: ChannelManifest = serde_json::from_str(&http).unwrap();
+        assert!(m3.artifact_for("linux-x86_64").is_err(), "non-https artifact URL is refused");
+        let loop_ok = body.replace(
+            "https://github.com/vagdotdev/grokbuildfork/releases/download/v0.1.0/workshop-0.1.0-linux-x86_64.tar.gz",
+            "http://127.0.0.1:8123/dl/v0.1.0/workshop-0.1.0-linux-x86_64.tar.gz",
         );
+        let m4: ChannelManifest = serde_json::from_str(&loop_ok).unwrap();
+        assert!(m4.artifact_for("linux-x86_64").is_ok(), "loopback http is accepted for tests");
+    }
+
+    /// Gate 4 (docs/workshop-production-plan.md): nothing in the updater names xAI infrastructure.
+    #[test]
+    fn updater_constants_do_not_point_at_xai() {
+        for s in [CHANNEL_BASE_URL, RELEASE_REPO, GH_RELEASE_REPO] {
+            for bad in [
+                "x.ai",
+                "grok.com",
+                "storage.googleapis.com",
+                "grok-build-public-artifacts",
+                "@xai-official",
+                "xai-org-shared",
+            ] {
+                assert!(!s.contains(bad), "{s} still points at xAI infrastructure ({bad})");
+            }
+        }
+        assert_eq!(RELEASE_REPO.split('/').count(), 2, "{RELEASE_REPO}");
+        assert!(CHANNEL_BASE_URL.starts_with("https://raw.githubusercontent.com/"));
+        assert!(CHANNEL_BASE_URL.ends_with("/release-channel"));
     }
 
     // ────────────────────────────────────────────────────────────────────── derive_channel — invariant matrix. Tests the
