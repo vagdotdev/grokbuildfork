@@ -7,19 +7,28 @@
 # Outputs: a GitHub Release on $WORKSHOP_RELEASE_REPO with
 #   workshop-<version>-<platform>.tar.gz      (linux/macos x86_64/aarch64; windows best-effort)
 #   voice-engine-<version>-<platform>.tar.gz  (whisper.cpp dictation helper, same platforms)
+#   *.tar.gz.sha256                           (per-asset checksum written by the job that built it)
 #   ggml-*.bin + MODEL.lock.json              (Whisper model mirror pinned by voice/MODEL.lock.json)
 #   SHA256SUMS
 #   GitHub artifact attestations (SLSA provenance) when the repo is public
 # and an updated channel manifest on the `release-channel` branch, consumed by
 # scripts/install.sh and the in-app updater.
 #
+# Asset hand-off: jobs never exchange Actions artifacts (the account's artifact storage
+# is metered and was exhausted). `meta` creates a DRAFT release for the tag, every
+# matrix job uploads straight to it (`gh release upload --clobber`), `assemble`
+# downloads the assets back to compose SHA256SUMS, and `publish` flips the draft live
+# after the install smoke tests pass. A draft creates no git tag, so dry runs leave
+# nothing behind once `cleanup` deletes theirs. A failed tag release keeps its draft
+# (with whatever was uploaded) for inspection; re-running the workflow reuses it.
+#
 # Signing: none beyond attestations (decision: no Apple Developer ID / notarization;
 # install.sh clears the macOS quarantine attribute instead).
 #
 # Configuration (Settings -> Secrets and variables -> Actions):
 #   variable WORKSHOP_RELEASE_REPO   OWNER/NAME hosting releases + release-channel branch.
-#                                    Defaults to this repository. Point it at the future
-#                                    public repo when releases move there.
+#                                    Defaults to this repository (vagdotdev/grokbuildfork).
+#                                    Point it at the future public repo when releases move there.
 #   secret   WORKSHOP_RELEASE_TOKEN  Required only when WORKSHOP_RELEASE_REPO is another
 #                                    repo: a token with contents:write on that repo.
 name: Release
@@ -38,6 +47,9 @@ concurrency:
 
 env:
   WORKSHOP_RELEASE_REPO: ${{ vars.WORKSHOP_RELEASE_REPO || github.repository }}
+  # `gh release ...` in every job. Drafts are only visible to tokens with push access, so
+  # jobs that read the draft declare `contents: write` as well.
+  GH_TOKEN: ${{ secrets.WORKSHOP_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
 
@@ -45,6 +57,8 @@ jobs:
   meta:
     name: Release metadata
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.info.outputs.version }}
       tag: ${{ steps.info.outputs.tag }}
@@ -68,6 +82,31 @@ jobs:
           fi
           scripts/release/tag-info.sh "$tag" | tee -a "$GITHUB_OUTPUT"
           echo "release repo: $WORKSHOP_RELEASE_REPO"
+      - name: Check credentials for a cross-repo release
+        if: env.WORKSHOP_RELEASE_REPO != github.repository
+        run: |
+          if [ -z "${{ secrets.WORKSHOP_RELEASE_TOKEN }}" ]; then
+            echo "::error::WORKSHOP_RELEASE_REPO=$WORKSHOP_RELEASE_REPO differs from this repo; set secret WORKSHOP_RELEASE_TOKEN (contents:write there)"
+            exit 1
+          fi
+      - name: Create the draft release that collects the assets
+        run: |
+          tag='${{ steps.info.outputs.tag }}'
+          if gh release view "$tag" --repo "$WORKSHOP_RELEASE_REPO" >/dev/null 2>&1; then
+            echo "release $tag already exists on $WORKSHOP_RELEASE_REPO; reusing it"
+            exit 0
+          fi
+          args=(--draft --title 'Workshop ${{ steps.info.outputs.version }}'
+            --notes 'Build in progress: the release workflow is uploading assets to this draft and publishes it once the install smoke tests pass.')
+          if [ '${{ steps.info.outputs.prerelease }}' = true ]; then
+            args+=(--prerelease)
+          fi
+          # A tag push in this repo must point the release at that tag; a dry run has no tag
+          # (GitHub creates none for a draft) and a cross-repo release gets its tag at publish.
+          if [ '${{ steps.info.outputs.publish }}' = true ] && [ "$WORKSHOP_RELEASE_REPO" = '${{ github.repository }}' ]; then
+            args+=(--verify-tag)
+          fi
+          gh release create "$tag" --repo "$WORKSHOP_RELEASE_REPO" "${args[@]}"
 
   lint:
     name: Lint release scripts
@@ -118,6 +157,8 @@ jobs:
             required: false # best-effort: never blocks a release
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ !matrix.required }}
+    permissions:
+      contents: write
     env:
       # xai-grok-version stamps this into the binary (`workshop --version`, updater
       # comparisons). Both names so the tree works before and after the branding patch.
@@ -188,12 +229,17 @@ jobs:
             --target-dir "voice/engine/target/${{ matrix.target }}/release" \
             --out dist
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist-${{ matrix.platform }}
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 14
+      - name: Per-asset checksums
+        shell: bash
+        run: |
+          . scripts/release/lib.sh
+          for f in dist/*.tar.gz; do
+            printf '%s  %s\n' "$(sha256_file "$f")" "$(basename "$f")" > "$f.sha256"
+          done
+          cat dist/*.sha256
+      - name: Upload to the draft release
+        shell: bash
+        run: gh release upload '${{ needs.meta.outputs.tag }}' dist/* --repo "$WORKSHOP_RELEASE_REPO" --clobber
 
   voice-models:
     # Mirror the Whisper models pinned in voice/MODEL.lock.json next to the CLI assets so the
@@ -201,6 +247,8 @@ jobs:
     name: Voice model mirror
     needs: [meta, lint]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
@@ -209,30 +257,35 @@ jobs:
           key: voice-models-${{ hashFiles('voice/MODEL.lock.json') }}
       - name: Fetch and verify every pinned tier
         run: scripts/release/fetch-voice-models.sh --dist dist --cache ~/.cache/workshop-voice-models
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist-voice-models
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 14
+      - name: Upload to the draft release
+        run: gh release upload '${{ needs.meta.outputs.tag }}' dist/* --repo "$WORKSHOP_RELEASE_REPO" --clobber
 
-  checksums:
-    name: Checksums and attestations
+  assemble:
+    name: Assemble release (SHA256SUMS, attestations)
     needs: [meta, build, voice-models]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write
       attestations: write
     outputs:
       attested: ${{ steps.attested.outputs.attested }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: dist-*
-          merge-multiple: true
-          path: dist
+      - name: Download the assets the build jobs uploaded
+        run: gh release download '${{ needs.meta.outputs.tag }}' --repo "$WORKSHOP_RELEASE_REPO" --dir dist
+      - name: Verify the per-asset checksums and that every required platform is present
+        run: |
+          cd dist
+          sha256sum -c -- *.sha256
+          for platform in linux-x86_64 linux-aarch64 macos-aarch64 macos-x86_64; do
+            for prefix in workshop voice-engine; do
+              f="$prefix-${{ needs.meta.outputs.version }}-$platform.tar.gz"
+              [ -f "$f" ] || { echo "::error::required asset missing from the release: $f"; exit 1; }
+            done
+          done
+          # SHA256SUMS covers the assets themselves, not the per-asset sidecars.
+          mkdir -p ../sidecars && mv -- *.sha256 ../sidecars/
       - name: SHA256SUMS
         run: |
           scripts/release/checksums.sh dist
@@ -259,27 +312,23 @@ jobs:
             echo "::notice::artifact attestations skipped (private repository)"
           fi
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-assets
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 14
+      - name: Upload SHA256SUMS to the draft release
+        run: gh release upload '${{ needs.meta.outputs.tag }}' dist/SHA256SUMS --repo "$WORKSHOP_RELEASE_REPO" --clobber
 
   smoke:
     name: Install smoke (${{ matrix.runner }})
-    needs: [meta, checksums]
+    needs: [meta, assemble]
     strategy:
       fail-fast: false
       matrix:
         runner: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-assets
-          path: dist
+      - name: Download the release assets
+        run: gh release download '${{ needs.meta.outputs.tag }}' --repo "$WORKSHOP_RELEASE_REPO" --dir dist
       - name: install.sh against a local mirror of the release assets (CLI + voice helper + model)
         run: |
           scripts/release/smoke-install.sh \
@@ -290,26 +339,17 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    needs: [meta, checksums, smoke]
+    needs: [meta, assemble, smoke]
     if: needs.meta.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    env:
-      GH_TOKEN: ${{ secrets.WORKSHOP_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-assets
-          path: dist
-      - name: Check credentials for a cross-repo release
-        if: needs.meta.outputs.release_repo != github.repository
+      - name: Download SHA256SUMS and the CLI archives
         run: |
-          if [ -z "${{ secrets.WORKSHOP_RELEASE_TOKEN }}" ]; then
-            echo "::error::WORKSHOP_RELEASE_REPO=${{ needs.meta.outputs.release_repo }} differs from this repo; set secret WORKSHOP_RELEASE_TOKEN (contents:write there)"
-            exit 1
-          fi
+          gh release download '${{ needs.meta.outputs.tag }}' --repo "$WORKSHOP_RELEASE_REPO" --dir dist \
+            --pattern SHA256SUMS --pattern 'workshop-*.tar.gz'
       - name: Release notes
         run: |
           scripts/release/release-notes.sh \
@@ -318,9 +358,9 @@ jobs:
             --channel "${{ needs.meta.outputs.channel }}" \
             --repo "${{ needs.meta.outputs.release_repo }}" \
             --dist dist \
-            --attested "${{ needs.checksums.outputs.attested }}" > notes.md
+            --attested "${{ needs.assemble.outputs.attested }}" > notes.md
           cat notes.md
-      - name: Create or refresh the release
+      - name: Publish the draft
         run: |
           scripts/release/publish-release.sh \
             --tag "${{ needs.meta.outputs.tag }}" \
@@ -329,11 +369,12 @@ jobs:
             --repo "${{ needs.meta.outputs.release_repo }}" \
             --source-repo "${{ github.repository }}" \
             --dist dist \
-            --notes notes.md
+            --notes notes.md \
+            --skip-upload
 
   channel:
     name: Update release-channel manifest
-    needs: [meta, checksums, publish]
+    needs: [meta, assemble, publish]
     if: needs.meta.outputs.publish == 'true'
     runs-on: ubuntu-latest
     # Serialize manifest pushes across concurrently published tags.
@@ -342,14 +383,12 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: write
-    env:
-      GH_TOKEN: ${{ secrets.WORKSHOP_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-assets
-          path: dist
+      - name: Download SHA256SUMS and the CLI archives
+        run: |
+          gh release download '${{ needs.meta.outputs.tag }}' --repo "$WORKSHOP_RELEASE_REPO" --dir dist \
+            --pattern SHA256SUMS --pattern 'workshop-*.tar.gz'
       - name: Regenerate manifests and push the release-channel branch
         run: |
           scripts/release/publish-channel.sh \
@@ -358,7 +397,7 @@ jobs:
             --channel "${{ needs.meta.outputs.channel }}" \
             --repo "${{ needs.meta.outputs.release_repo }}" \
             --dist dist \
-            --attested "${{ needs.checksums.outputs.attested }}"
+            --attested "${{ needs.assemble.outputs.attested }}"
       - name: Summary
         run: |
           {
@@ -367,5 +406,16 @@ jobs:
             echo "- Release: https://github.com/${{ needs.meta.outputs.release_repo }}/releases/tag/${{ needs.meta.outputs.tag }}"
             echo "- Manifest: https://raw.githubusercontent.com/${{ needs.meta.outputs.release_repo }}/release-channel/${{ needs.meta.outputs.channel }}.json"
             echo "- Install: \`curl -fsSL https://raw.githubusercontent.com/${{ needs.meta.outputs.release_repo }}/release-channel/install.sh | sh\`"
-            echo "- Attested: ${{ needs.checksums.outputs.attested }}"
+            echo "- Attested: ${{ needs.assemble.outputs.attested }}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  cleanup:
+    # Dry runs only: the draft was just the asset hand-off, and a draft owns no tag.
+    name: Delete the dry-run draft
+    needs: [meta, smoke]
+    if: always() && needs.meta.outputs.publish == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - run: gh release delete '${{ needs.meta.outputs.tag }}' --repo "$WORKSHOP_RELEASE_REPO" --yes || echo "no draft to delete"
