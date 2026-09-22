@@ -172,6 +172,27 @@ patch_files() { # patch_files STRIP FILE
     | sed -E -e 's/\{[^}]* => ([^}]*)\}/\1/g' -e 's/^[^{]* => //' | sort -u
 }
 
+# Paths a patch brings into existence: new files plus rename/copy targets
+# (`git apply --summary` lines " create mode …", " rename a => b (n%)",
+# " copy a => b (n%)", brace form "dir/{a => b}/f" included).
+patch_created_files() { # patch_created_files STRIP FILE
+  git apply --summary -p"$1" "$2" 2>/dev/null | sed -n -E \
+    -e 's/^ create mode [0-9]+ //p' \
+    -e '/^ (rename|copy) /{s/^ (rename|copy) //; s/ \([0-9]+%\)$//; s/\{[^}]* => ([^}]*)\}/\1/g; s/^[^{]* => //; p}' \
+    | sort -u
+}
+
+# Paths the whole series creates (sorted, unique). Disabled or missing
+# entries are skipped here; replay-patches.sh reports them.
+series_created_paths() { # series_created_paths SERIES-FILE PATCHES-DIR
+  local name strip tags note disabled
+  while IFS=$'\t' read -r name strip tags note disabled; do
+    (( disabled )) && continue
+    [[ -f "$2/$name" ]] || continue
+    patch_created_files "$strip" "$2/$name"
+  done < <(parse_series "$1") | sort -u
+}
+
 # Regenerate the diff body of patch FILE from the staged changes, keeping its
 # header (format-patch mail header or free-form comment). A format-patch
 # `---` separator gets a fresh diffstat. The rewritten file is staged.

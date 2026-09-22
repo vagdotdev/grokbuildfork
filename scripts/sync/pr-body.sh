@@ -98,6 +98,9 @@ status_cell() { # STATUS
 {
   printf '<!-- workshop-sync:report -->\n'
   printf '## Upstream sync: grok-build `%s` (%s)\n\n' "$short_new" "${UPSTREAM_VERSION:-?}"
+  if [[ "${UPSTREAM_MOVED:-1}" == 0 ]]; then
+    printf '_Forced replay of the locked snapshot: upstream did not move, so there is nothing to sync and no PR is opened. This run is a replay proof; the verdict and verification below are its result._\n\n'
+  fi
   case $verdict in
     red)
       printf '**Verdict: RED — do not merge.**\n\n'
@@ -205,7 +208,8 @@ status_cell() { # STATUS
   printf -- '- overlay collisions: %s\n' "${OVERLAY_COLLISION_COUNT:-0}"
   if [[ -s "$R/overlay-collisions.txt" ]]; then sed 's/^/  - `/; s/$/`/' "$R/overlay-collisions.txt"; fi
   printf -- '- files deleted upstream (routine): %s\n' "${UPSTREAM_DELETED_COUNT:-0}"
-  printf -- '- stale files dropped (neither upstream nor overlay): %s\n' "${DROPPED_FILE_COUNT:-0}"
+  printf -- '- files created by the patch series, re-created by the replay: %s\n' "${PATCH_RECREATED_COUNT:-0}"
+  printf -- '- stale files dropped (neither upstream, overlay, nor patch-created): %s\n' "${DROPPED_FILE_COUNT:-0}"
   if [[ -s "$R/dropped-files.txt" ]]; then
     printf '\n<details><summary>Dropped files (in the base branch, not upstream, not overlay)</summary>\n\n```\n'
     head -n 100 "$R/dropped-files.txt"; printf '```\n</details>\n'

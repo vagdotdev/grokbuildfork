@@ -26,7 +26,7 @@ builds, passes the no-xAI gates, and opens a sync PR.
 |---|---|
 | `run.sh` | Orchestrates everything below. `run.sh --pr dry-run` is the local end-to-end. |
 | `fetch-upstream.sh` | Fetches upstream into `refs/sync/upstream-new`, the locked commit into `refs/sync/upstream-lock`; records SHA, `SOURCE_REV`, version, commit date; lists upstream commits and changed files; flags security-review paths. Upstream unchanged → `UPSTREAM_MOVED=0`. |
-| `replace-tree.sh` | `git read-tree -u --reset` the upstream tree, then restore every overlay path from the base commit. Reports upstream deletions, stale files dropped, and upstream files colliding with overlay paths. |
+| `replace-tree.sh` | `git read-tree -u --reset` the upstream tree, then restore every overlay path from the base commit. Reports upstream deletions, files the patch series creates (re-created by the replay), stale files dropped, and upstream files colliding with overlay paths. |
 | `update-lockfile.sh` | Rewrites `upstream-lock.toml` and stages it. |
 | `replay-patches.sh` | Applies the series in order, one commit per patch (details below). |
 | `verify.sh` | `cargo check -p xai-grok-pager-bin` + every `crates/workshop-*` workspace member; `cargo test -p workshop-gates`, `scripts/no-xai-scan.sh`, `cargo test -p workshop-adapters` when present. Commits a refreshed `Cargo.lock`. |
@@ -101,8 +101,13 @@ results, tree-replacement stats and the full upstream file list.
 
 Auto-PR is not auto-merge: every sync PR gets human review and the required
 `no-xai` check. If upstream did not move, the workflow exits 0 and does nothing.
-If a sync branch for the same upstream SHA already has an open PR, the run is a
-no-op (dispatch with `force` to rebuild it).
+A **forced** run on an unchanged upstream (dispatch `force=true`, or a
+`sync/<stamp>@<locked sha>` tag) is a replay proof: it imports, replays, builds
+and runs the gates, and the job summary carries the verdict and verification
+table, but it pushes no branch and opens no PR because there is nothing to sync
+(the tree would differ from `main` only by the lockfile date). It exits 0 on
+green/attention and 1 on red. If a sync branch for the same upstream SHA already
+has an open PR, the run is a no-op (dispatch with `force` to rebuild it).
 
 ## Conflict policy
 
@@ -125,9 +130,11 @@ no-op (dispatch with `force` to rebuild it).
 5. **No silent tree replace.** Overlay paths are enumerated
    (`scripts/overlay-paths.txt` or the built-in default) and restored after
    every fetch. Files upstream deleted since the lock are counted as routine
-   deletions; anything else that was in the base branch but is neither upstream
-   nor overlay is listed under "stale files dropped" in the PR for a human to
-   confirm.
+   deletions, and files the patch series creates (new files, rename targets —
+   read from the patches with `git apply --summary`) are expected to vanish
+   and come back with the replay; anything else that was in the base branch
+   but is neither upstream, overlay, nor patch-created is listed under "stale
+   files dropped" in the PR for a human to confirm.
 6. **Human review** on every sync PR. Auto-PR ≠ auto-merge.
 7. If upstream changes Login / OIDC / env / updater / paths / telemetry files
    (`security-review-paths.txt`), the sync is a **security review**, not a
@@ -168,6 +175,9 @@ scripts/sync/run.sh --pr dry-run                    # full pipeline, prints the 
 scripts/sync/run.sh --pr dry-run --skip-build       # replay + PR body only
 scripts/sync/run.sh --pr create --base main         # what the workflow does (needs GH_TOKEN)
 scripts/sync/fetch-upstream.sh                      # just compare lock vs upstream
+scripts/sync/run.sh --in-place --force --ref "$(sed -n 's/^git_sha = "\(.*\)"/\1/p' upstream-lock.toml)" --pr dry-run
+                                                    # forced replay of the locked snapshot; expect verdict green
+scripts/sync/tests/replace-tree-patch-created.sh    # shell test: patch-created files are not "stale"
 ```
 
 `run.sh` needs a clean working tree and creates `sync/grok-build-<sha12>` from
