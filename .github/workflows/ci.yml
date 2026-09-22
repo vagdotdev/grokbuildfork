@@ -75,10 +75,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.92.0
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: voice/engine
-          shared-key: voice-engine
+      # No target cache here on purpose: whisper.cpp compiles with `-march=native`, so a `target/`
+      # cached on one runner's CPU can SIGILL when restored on another (illegal instruction at
+      # decode). The helper build is fast (~1 min); always compile it for the runner we probe on.
       - name: Build and test the helper
         run: |
           cargo build --release --manifest-path voice/engine/Cargo.toml
