@@ -407,17 +407,17 @@ fn auto_respond_to_permissions(
     }
     None
 }
-/// "Not signed in" error message, tailored to the session type.
+/// "No connection configured" error message, tailored to the session type.
+/// Workshop: headless / ACP runs without a configured connection fail closed here; nothing opens a browser.
 fn auth_required_message(interactive: bool) -> String {
     if interactive {
-        "Not signed in. Run `grok login` to authenticate \
-         (or `grok login --device-code` if no browser is available)."
+        "No connection configured. Run `workshop login` to see the connection picker \
+         (Local model, API key, subscription CLI, optional xAI), then retry."
             .to_string()
     } else {
-        "Not signed in. To authenticate without a browser, run:\n  \
-         grok login --device-code\n\n\
-         Alternatively, set the XAI_API_KEY environment variable \
-         or run `grok login` on a machine with a browser."
+        "No connection configured. Run `workshop login` for the connection picker, then add a \
+         Local model or an API key to $WORKSHOP_HOME/config.toml (see the picker's snippet) \
+         and retry. Workshop never opens a browser or contacts xAI by default."
             .to_string()
     }
 }

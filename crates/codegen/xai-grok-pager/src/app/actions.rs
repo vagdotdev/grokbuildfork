@@ -623,7 +623,12 @@ pub enum Action {
     /// Log out and immediately start a new login flow.
     SwitchAccount,
     /// User pressed login on the welcome screen.
+    /// Workshop: opens the connection picker; never starts an OAuth flow by itself.
     Login,
+    /// Workshop: open the connection picker on a specific tab (`/auth`, `/models`).
+    OpenConnectionPicker(workshop_auth::PickerTab),
+    /// Workshop: a key press routed to the open connection picker.
+    ConnectionPicker(workshop_auth::PickerInput),
     /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
     /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
     CancelLogin,
@@ -1781,9 +1786,23 @@ pub enum Effect {
         method_id: acp::AuthMethodId,
         use_oauth: bool,
         force_interactive: bool,
+        /// Workshop: the user explicitly selected the labeled optional xAI card. Only then may the
+        /// shell attach the xAI OAuth2 provider for this login (`workshop_xai_opt_in` meta).
+        xai_opt_in: bool,
     },
     /// Poll for auth URL from the agent (ext request).
     PollAuthUrl { request_seq: u64 },
+    /// Workshop: load the connection picker's rows and rails (local probe, catalogs, CLI detection).
+    WorkshopLoadPicker,
+    /// Workshop: a `[model.<key>]` was written; ask the shell to reload its model list, authenticate
+    /// with the non-interactive method, and switch the active session (if any) to `model_id`.
+    WorkshopActivateModel {
+        request_seq: u64,
+        model_id: String,
+        session: Option<(AgentId, acp::SessionId)>,
+    },
+    /// Workshop: OpenRouter PKCE sign-in (browser + loopback callback), then save the key.
+    WorkshopOpenRouterSignIn,
     /// Submit a manually-pasted auth code (ext request).
     SubmitAuthCode { request_seq: u64, code: String },
     /// Fetch MCP server list from the shell (x.ai/mcp/list).
@@ -2667,6 +2686,19 @@ pub enum TaskResult {
         result: Result<(), SwitchModelError>,
         /// Forwarded from `Effect::SwitchModel.prev_model_id` for rollback on `IncompatibleAgent`.
         prev_model_id: Option<acp::ModelId>,
+    },
+    /// Workshop: picker rows/rails loaded.
+    WorkshopPickerLoaded(workshop_auth::PickerSnapshot),
+    /// Workshop: a connect flow finished (`Ok(secret backend)` or an error message).
+    WorkshopConnectDone {
+        provider_id: String,
+        result: Result<&'static str, String>,
+    },
+    /// Workshop: the terminal login command exited; the rails must be re-probed unless the user
+    /// cancelled it (Ctrl+C), which leaves them as they were.
+    WorkshopLoginTerminalDone {
+        rail: workshop_detect::Rail,
+        exit: workshop_detect::process::InteractiveExit,
     },
     /// Changelog fetched from CDN (both formats).
     ChangelogFetched {

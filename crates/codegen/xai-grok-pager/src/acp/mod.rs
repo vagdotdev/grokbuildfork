@@ -882,6 +882,7 @@ mod tests {
             enterprise_oidc_issuer: None,
             login_label: None,
             has_auth_provider_command: false,
+            has_oauth2_provider: false,
             preferred_method: None,
         });
         let (needs, label, method_id, mode) = startup_auth_metadata(&built.methods);

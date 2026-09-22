@@ -765,18 +765,79 @@ fn run_pending_suspends(
     presenter: &mut Presenter,
     suspend_retry_after: &mut Option<Instant>,
     suspend_wait_reports: &mut SuspendWaitReports,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<super::actions::Effect>> {
+    let mut follow_up: Vec<super::actions::Effect> = Vec::new();
     let editor_pending = app.pending_editor.is_some();
     let pager_pending = app.pending_pager_path.is_some();
+    let login_pending = app.pending_workshop_login.is_some();
     suspend_wait_reports.reset_missing(editor_pending, pager_pending);
     if !suspend_retry_ready(*suspend_retry_after, Instant::now()) {
-        return Ok(());
+        return Ok(follow_up);
     }
-    if !editor_pending && !pager_pending {
+    if !editor_pending && !pager_pending && !login_pending {
         *suspend_retry_after = None;
-        return Ok(());
+        return Ok(follow_up);
     }
     *suspend_retry_after = None;
+    // Workshop: the vendor CLI's own login owns the terminal for its duration; Workshop never
+    // captures or parses its output, and re-probes the rail when it exits.
+    if let Some((rail, argv)) = app.pending_workshop_login.take() {
+        let screen_mode = app.screen_mode;
+        let mut exit = workshop_detect::process::InteractiveExit::Failed;
+        let moved_cursor = match suspend_for_child(
+            screen_mode,
+            terminal,
+            input_paused,
+            reader_parked,
+            input_rx,
+            || {
+                // The TUI parks fd 2 on /dev/null (xai_tty_utils::redirect_native_stderr) and
+                // draws through a dup of the real terminal. An inherited stderr would swallow a
+                // vendor CLI that prints its sign-in instructions there (`codex login` prints
+                // its auth URL on stderr), so hand the child the terminal explicitly.
+                let banner = format!(
+                    "\nWorkshop: running `{}` — sign in, then this returns to Workshop.\n",
+                    argv.join(" ")
+                );
+                xai_grok_shell::util::with_locked_stderr(|stderr| {
+                    use std::io::Write as _;
+                    // Unlike `$EDITOR` / `$PAGER`, a login CLI prints plain lines and expects
+                    // the shell's screen and a visible cursor: leave the alternate screen so its
+                    // prompt is not drawn over the TUI frame (`suspend_for_child` re-enters it and
+                    // the caller's full repaint restores the cursor state).
+                    let _ = crossterm::execute!(stderr, crossterm::cursor::Show);
+                    if screen_mode.is_fullscreen() {
+                        let _ =
+                            crossterm::execute!(stderr, crossterm::terminal::LeaveAlternateScreen);
+                    }
+                    let _ = stderr.write_all(banner.as_bytes());
+                });
+                let stderr = xai_tty_utils::dup_tui_stderr()
+                    .ok()
+                    .map(std::process::Stdio::from);
+                // Ctrl+C in the terminal ends the vendor login only, never Workshop.
+                exit = workshop_detect::process::run_interactive(&argv, stderr);
+            },
+        ) {
+            Ok(moved_cursor) => moved_cursor,
+            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+                requeue_after_suspend_timeout(&mut app.pending_workshop_login, (rail, argv));
+                let _ = defer_suspend_retry(
+                    suspend_retry_after,
+                    &mut suspend_wait_reports.editor_reported,
+                    Instant::now(),
+                );
+                return Ok(follow_up);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        restore_after_child(terminal, app.screen_mode, moved_cursor);
+        follow_up.extend(dispatch::dispatch(
+            Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone { rail, exit }),
+            app,
+        ));
+        presenter.request_presentation(app, terminal, true);
+    }
     if let Some(request) = app.pending_editor.take() {
         let retry_request = request.clone();
         match crate::app::external_editor::prepare(app, request) {
@@ -818,7 +879,7 @@ fn run_pending_suspends(
                             report_suspend_wait(app, EDITOR_SUSPEND_WAIT);
                             presenter.request_presentation(app, terminal, false);
                         }
-                        return Ok(());
+                        return Ok(follow_up);
                     }
                     Err(error) => return Err(error.into()),
                 };
@@ -892,7 +953,7 @@ fn run_pending_suspends(
                     report_suspend_wait(app, TRANSCRIPT_SUSPEND_WAIT);
                     presenter.request_presentation(app, terminal, false);
                 }
-                return Ok(());
+                return Ok(follow_up);
             }
             Err(error) => return Err(error.into()),
         };
@@ -901,7 +962,7 @@ fn run_pending_suspends(
         presenter.request_presentation(app, terminal, true);
         suspend_wait_reports.pager_reported = false;
     }
-    Ok(())
+    Ok(follow_up)
 }
 /// Consume a pending in-process switch between `/minimal` and `/fullscreen`.
 /// Returns `true` when the caller must quit (exec fallback armed on `app.relaunch`).
@@ -1272,16 +1333,12 @@ pub(crate) async fn run(
         );
     }
     let mut post_render_effects = if needs_interactive_login {
+        // Workshop: an empty method list is the default cold start (no session-login provider,
+        // no key, no cached session). It opens the connection picker, never a browser.
         if connection.auth_methods.is_empty() {
-            app.auth_state = super::app_view::AuthState::Pending {
-                error: Some(
-                    xai_grok_shell::agent::auth_method::PREFERRED_API_KEY_UNAVAILABLE.to_string(),
-                ),
-            };
-            vec![]
-        } else {
-            dispatch::dispatch(Action::Login, &mut app)
+            app.auth_state = super::app_view::AuthState::Pending { error: None };
         }
+        dispatch::dispatch(Action::Login, &mut app)
     } else {
         vec![]
     };
@@ -1637,6 +1694,12 @@ pub(crate) async fn run(
     let (progress_tx, mut progress_rx) =
         tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
     let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
+    // Workshop: a persistent channel for streaming Engine/Adapter turns. Submit handlers clone the
+    // sender (stored on `app`) into a detached turn task; the `select!` arm below renders its events.
+    // The sender lives as long as the loop, so the receiver never closes and the arm idles cleanly.
+    let (workshop_turn_tx, mut workshop_turn_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::app::workshop::WorkshopTurnMsg>();
+    app.workshop_turn_tx = Some(workshop_turn_tx);
     let voice_auth_factory = connection.auth_manager.clone();
     let mut tick_interval = tick_interval;
     let mut animation_tick_at: Option<Instant> = None;
@@ -1897,7 +1960,7 @@ pub(crate) async fn run(
         if process_effects(workspace_effects, &mut tasks, &mut app, &progress_tx) {
             break;
         }
-        if let Err(e) = run_pending_suspends(
+        match run_pending_suspends(
             &mut app,
             terminal,
             &input_paused,
@@ -1907,9 +1970,16 @@ pub(crate) async fn run(
             &mut suspend_retry_after,
             &mut suspend_wait_reports,
         ) {
-            app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
-            flush_pending_stall(&mut stall_rollup);
-            return Err(e);
+            Ok(follow_up) => {
+                if process_effects(follow_up, &mut tasks, &mut app, &progress_tx) {
+                    break;
+                }
+            }
+            Err(e) => {
+                app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
+                flush_pending_stall(&mut stall_rollup);
+                return Err(e);
+            }
         }
         if run_pending_mode_switch(
             &mut app,
@@ -2890,6 +2960,19 @@ pub(crate) async fn run(
                 presenter.request(false);
             }
 
+            // Workshop: stream one Engine/Adapter turn's events into the active agent's scrollback.
+            // Serviced only when nothing else is pending, so it never starves ACP, input, or timers.
+            // Placed before the ACP-independent voice arm; the ACP path is untouched by all of this.
+            Some(msg) = workshop_turn_rx.recv() => {
+                if handle_workshop_turn_msg(&mut app, msg) {
+                    schedule_tick(&mut animation_tick_at, &app, tick_interval);
+                    let now = Instant::now();
+                    if presenter.request_throttled(now, min_draw_interval) {
+                        app.update_notifications();
+                    }
+                }
+            }
+
             // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
             // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
             // Voice is only serviced when nothing else is pending
@@ -3148,7 +3231,9 @@ struct RoutedInputEvent {
     is_startup_replay: bool,
 }
 fn tty_suspend_armed(app: &AppView) -> bool {
-    app.pending_editor.is_some() || app.pending_pager_path.is_some()
+    app.pending_editor.is_some()
+        || app.pending_pager_path.is_some()
+        || app.pending_workshop_login.is_some()
 }
 fn normalize_input_event(
     timed: TimedInputEvent,
@@ -3939,6 +4024,113 @@ pub(crate) fn dispatch_then_forward(
     effects
 }
 /// Spawn effects into the task set. Returns `true` if the app should quit.
+/// Render one streamed Workshop turn message (OpenCode engine / vendor CLI adapter) into the active
+/// agent's scrollback. Returns whether a redraw is warranted. Mirrors the ACP renderer's block
+/// vocabulary (`agent_message_streaming` + `push_chunk_to_agent`, `tool_call`, `system`) but is
+/// entirely separate from the ACP path, which only runs for `Shell` (Direct/Local) connections.
+fn handle_workshop_turn_msg(app: &mut AppView, msg: crate::app::workshop::WorkshopTurnMsg) -> bool {
+    use crate::app::workshop::WorkshopTurnMsg as M;
+    use crate::scrollback::block::RenderBlock;
+
+    let Some(agent_id) = app.workshop_turn_agent else {
+        return false;
+    };
+    match msg {
+        M::EngineReady { engine, session } => {
+            // Cache the engine + session so the next turn reuses this `opencode serve`, and persist
+            // the id per workspace for resume across a restart.
+            if let Some(agent) = app.agents.get(&agent_id) {
+                let cwd = agent.session.cwd.clone();
+                crate::app::workshop::save_resume_id("opencode", &cwd, &session);
+            }
+            app.workshop_engine = Some(engine);
+            app.workshop_engine_session = Some(session);
+            false
+        }
+        M::Delta(text) => {
+            let entry = app.workshop_turn_stream_entry;
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                match entry {
+                    Some(id) => {
+                        agent.scrollback.push_chunk_to_agent(id, &text);
+                    }
+                    None => {
+                        let id = agent
+                            .scrollback
+                            .push_block(RenderBlock::agent_message_streaming());
+                        agent.scrollback.push_chunk_to_agent(id, &text);
+                        app.workshop_turn_stream_entry = Some(id);
+                    }
+                }
+            }
+            true
+        }
+        M::Tool { name, summary } => {
+            // A tool call ends the current assistant paragraph; the next delta starts a fresh block.
+            if let Some(id) = app.workshop_turn_stream_entry.take()
+                && let Some(agent) = app.agents.get_mut(&agent_id)
+            {
+                agent.scrollback.finish_running(id);
+            }
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent
+                    .scrollback
+                    .push_block(RenderBlock::tool_call(name, summary, true));
+            }
+            true
+        }
+        M::ToolResult { .. } => false,
+        M::Permission { summary, decision } => {
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent
+                    .scrollback
+                    .push_block(RenderBlock::system(format!("Permission: {summary} — {decision}")));
+            }
+            true
+        }
+        M::Error(message) => {
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent.scrollback.push_block(RenderBlock::system(message));
+            }
+            true
+        }
+        M::Done {
+            session_id,
+            cancelled,
+        } => {
+            if let Some(id) = app.workshop_turn_stream_entry.take()
+                && let Some(agent) = app.agents.get_mut(&agent_id)
+            {
+                agent.scrollback.finish_running(id);
+            }
+            if let Some(session) = &session_id
+                && let Some(agent) = app.agents.get(&agent_id)
+            {
+                let cwd = agent.session.cwd.clone();
+                let backend = match &app.workshop_connection {
+                    crate::app::workshop::WorkshopConnection::Adapter { rail, .. } => {
+                        rail.vendor().id()
+                    }
+                    _ => "opencode",
+                };
+                crate::app::workshop::save_resume_id(backend, &cwd, session);
+            }
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent.workshop_turn_active = false;
+                if cancelled {
+                    agent
+                        .scrollback
+                        .push_block(RenderBlock::system("Turn cancelled."));
+                }
+            }
+            app.workshop_turn_active = false;
+            app.workshop_turn_cancel = None;
+            app.workshop_turn_agent = None;
+            true
+        }
+    }
+}
+
 fn process_effects(
     effs: Vec<super::actions::Effect>,
     tasks: &mut JoinSet<TaskResult>,
