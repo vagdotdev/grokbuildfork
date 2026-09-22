@@ -55,6 +55,7 @@ log "packaging $bin as $PRODUCT_BIN$exe ($version, $platform)"
 
 need_cmd tar
 mkdir -p "$out"
+out=$(cd "$out" && pwd) # tar runs from inside the stage dir; a relative --out would land there
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 
