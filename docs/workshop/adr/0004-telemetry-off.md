@@ -28,8 +28,10 @@ Status: accepted (M0/A). Owner: Workshop.
 
 ## Evidence
 
-`scripts/no-xai-scan.sh --binary target/debug/workshop` counts the forbidden strings in the built
-binary against `scripts/no-xai-binary-baseline.txt`; the CI `no-egress` smoke runs the binary in a
+`scripts/no-xai-scan.sh --binary target/debug/workshop` checks that every distinct string in the
+built binary naming a forbidden host is one of the reviewed contexts in
+`scripts/no-xai-binary-baseline.txt` (the release workflow runs the same check on the downloaded
+release archives); the CI `no-egress` smoke runs the binary in a
 network namespace with a logging proxy and fails on any `*.x.ai` / `*.grok.com` /
 `api.mixpanel.com` / `storage.googleapis.com` request. `scripts/hermetic-login-proof.sh` is the
 interactive counterpart for a human-driven session: mount-namespaced `/etc/resolv.conf` pointing at
