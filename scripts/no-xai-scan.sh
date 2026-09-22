@@ -121,6 +121,10 @@ PY
   if ! grep -q 'WORKSHOP_HOME' crates/codegen/xai-dirs/src/lib.rs; then
     violation "xai-dirs does not honor WORKSHOP_HOME"
   else ok "home resolves via WORKSHOP_HOME / ~/.workshop"; fi
+  local sleep_rs=crates/codegen/xai-grok-pager/src/notifications/sleep.rs
+  if grep -q -- '--who=grok' "$sleep_rs" || ! grep -q -- '--who=workshop' "$sleep_rs"; then
+    violation "$sleep_rs: the systemd idle inhibitor does not identify as workshop (--who=)"
+  else ok "systemd-inhibit registers as --who=workshop"; fi
 
   # Telemetry: no compile-time bake-in anywhere in CI config.
   if grep -rEq '^[[:space:]]*(export[[:space:]]+)?GROK_TELEMETRY_BUILD_[A-Z_]+[[:space:]]*[:=]' .github/ scripts/ 2>/dev/null; then
@@ -149,12 +153,13 @@ PY
 }
 
 BASELINE="scripts/no-xai-binary-baseline.txt"
-NEEDLES=(auth.x.ai accounts.x.ai cli-chat-proxy.grok.com x.ai/cli @xai-official grok-build-public-artifacts xai-org-shared/grok-build api.mixpanel.com)
+NEEDLES=(auth.x.ai accounts.x.ai cli-chat-proxy.grok.com x.ai/cli @xai-official grok-build-public-artifacts xai-org-shared/grok-build api.mixpanel.com --who=grok)
 # Needles that must be zero in the binary regardless of baseline (fully replaced surfaces: the
 # updater channel, the xAI proxy host, and the x.ai/cli install/CDN paths — the embedded end-user
 # docs that used to carry the last `x.ai/cli` and `cli-chat-proxy.grok.com` mentions were rebranded
-# in the milestone B string patch, so any reappearance is a regression, not a baseline drift).
-ZERO_NEEDLES=(@xai-official grok-build-public-artifacts xai-org-shared/grok-build x.ai/cli cli-chat-proxy.grok.com)
+# in the milestone B string patch, so any reappearance is a regression, not a baseline drift; the
+# `systemd-inhibit --who=grok` lock name the process registers with the OS is branding too).
+ZERO_NEEDLES=(@xai-official grok-build-public-artifacts xai-org-shared/grok-build x.ai/cli cli-chat-proxy.grok.com --who=grok)
 
 # Printable ASCII runs of >= 6 bytes from the whole file. GNU binutils on Linux; Xcode CLT ships
 # `strings` on macOS (llvm-strings underneath) with the same -a/-n flags; a plain Python fallback

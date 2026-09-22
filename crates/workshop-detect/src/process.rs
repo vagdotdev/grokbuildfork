@@ -111,6 +111,120 @@ pub fn run(
     })
 }
 
+/// How an interactive vendor login, run attached to the user's terminal, ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractiveExit {
+    /// Exit status 0.
+    Success,
+    /// Ended by the terminal's Ctrl+C: the caller saw the SIGINT the terminal sent the foreground
+    /// process group, or the child was killed by SIGINT / exited 130 (a wrapper's rendering of
+    /// it). `codex login` exits 0 on Ctrl+C, so the exit status alone cannot tell.
+    Interrupted,
+    /// Any other non-zero exit, or the command could not be started.
+    Failed,
+}
+
+/// Run `argv` attached to the caller's terminal (inherited stdin/stdout, `stderr` when given) and
+/// wait for it.
+///
+/// The child shares the terminal's foreground process group, so a Ctrl+C typed while it runs is
+/// delivered to the caller as well. For the duration of the run the caller only records SIGINT
+/// instead of acting on it, and the child resets it to the default before `exec`, so the keystroke
+/// ends the login and only the login; the caller's previous disposition is restored before
+/// returning.
+pub fn run_interactive(argv: &[String], stderr: Option<Stdio>) -> InteractiveExit {
+    let Some((program, args)) = argv.split_first() else {
+        return InteractiveExit::Failed;
+    };
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    if let Some(stderr) = stderr {
+        cmd.stderr(stderr);
+    }
+    #[cfg(unix)]
+    let shield = SigintShield::install(&mut cmd);
+    let exit = match cmd.status() {
+        Ok(status) => classify_interactive(status),
+        Err(_) => return InteractiveExit::Failed,
+    };
+    #[cfg(unix)]
+    if shield.interrupted() {
+        return InteractiveExit::Interrupted;
+    }
+    exit
+}
+
+fn classify_interactive(status: std::process::ExitStatus) -> InteractiveExit {
+    if status.success() {
+        return InteractiveExit::Success;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if status.signal() == Some(libc::SIGINT) {
+            return InteractiveExit::Interrupted;
+        }
+    }
+    if status.code() == Some(130) {
+        return InteractiveExit::Interrupted;
+    }
+    InteractiveExit::Failed
+}
+
+#[cfg(unix)]
+static SIGINT_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(unix)]
+extern "C" fn note_sigint(_signal: libc::c_int) {
+    SIGINT_SEEN.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Turns this process's SIGINT into a recorded flag while alive; restores the previous
+/// disposition on drop.
+#[cfg(unix)]
+struct SigintShield(Option<libc::sigaction>);
+
+#[cfg(unix)]
+impl SigintShield {
+    fn install(cmd: &mut Command) -> Self {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: `signal` is async-signal-safe; the hook runs between fork and exec and does not
+        // allocate (pre_exec contract).
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                Ok(())
+            });
+        }
+        SIGINT_SEEN.store(false, std::sync::atomic::Ordering::SeqCst);
+        // SAFETY: plain sigaction calls on zeroed structs; the handler only stores an atomic;
+        // `prev` is only read when the call reported success.
+        let prev = unsafe {
+            let mut record: libc::sigaction = std::mem::zeroed();
+            record.sa_sigaction = note_sigint as extern "C" fn(libc::c_int) as usize;
+            record.sa_flags = libc::SA_RESTART;
+            libc::sigemptyset(&mut record.sa_mask);
+            let mut prev: libc::sigaction = std::mem::zeroed();
+            (libc::sigaction(libc::SIGINT, &record, &mut prev) == 0).then_some(prev)
+        };
+        Self(prev)
+    }
+
+    fn interrupted(&self) -> bool {
+        SIGINT_SEEN.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SigintShield {
+    fn drop(&mut self) {
+        if let Some(prev) = self.0.take() {
+            // SAFETY: restores the disposition captured by `install`.
+            unsafe { libc::sigaction(libc::SIGINT, &prev, std::ptr::null_mut()) };
+        }
+    }
+}
+
 fn kill_group(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
@@ -225,5 +339,51 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out.stdout.trim(), "ONLY_THIS=1");
+    }
+
+    /// One test on purpose: the SIGINT shield is process-wide, so parallel runs would race the
+    /// save/restore of the disposition.
+    #[cfg(unix)]
+    #[test]
+    fn interactive_run_classifies_exits_and_shields_the_caller_from_sigint() {
+        fn sigint_disposition() -> libc::sighandler_t {
+            // SAFETY: query only (`act` null); `cur` is fully written on success.
+            unsafe {
+                let mut cur: libc::sigaction = std::mem::zeroed();
+                libc::sigaction(libc::SIGINT, std::ptr::null(), &mut cur);
+                cur.sa_sigaction
+            }
+        }
+        let sh = |script: &str| {
+            run_interactive(
+                &["/bin/sh".into(), "-c".into(), script.into()],
+                Some(Stdio::null()),
+            )
+        };
+        let before = sigint_disposition();
+        assert_eq!(sh("exit 0"), InteractiveExit::Success);
+        assert_eq!(sh("exit 3"), InteractiveExit::Failed);
+        assert_eq!(sh("exit 130"), InteractiveExit::Interrupted);
+        // The child's SIGINT is the default again after exec, so it dies of the signal it sends
+        // itself; the same signal sent to this process first is only recorded (a default
+        // disposition would have ended the test binary here).
+        assert_eq!(
+            sh("kill -INT $PPID; kill -INT $$; exit 7"),
+            InteractiveExit::Interrupted
+        );
+        // A login that handles Ctrl+C itself and exits 0 (`codex login`) is still a cancel: the
+        // terminal sent the caller the same SIGINT.
+        assert_eq!(sh("kill -INT $PPID; exit 0"), InteractiveExit::Interrupted);
+        assert_eq!(sh("exit 0"), InteractiveExit::Success, "flag is per run");
+        assert_eq!(
+            run_interactive(&["/nonexistent/vendor-cli".into()], None),
+            InteractiveExit::Failed
+        );
+        assert_eq!(run_interactive(&[], None), InteractiveExit::Failed);
+        assert_eq!(
+            sigint_disposition(),
+            before,
+            "the caller's SIGINT disposition is restored"
+        );
     }
 }

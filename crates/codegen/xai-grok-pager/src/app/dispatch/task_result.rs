@@ -1034,12 +1034,27 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
-        TaskResult::WorkshopLoginTerminalDone { rail, exit_ok } => {
+        TaskResult::WorkshopLoginTerminalDone { rail, exit } => {
+            use workshop_detect::process::InteractiveExit;
             if let Some(picker) = app.connection_picker.as_mut() {
+                // Focus returns to the rail list: the detail panel that Connect's Enter opened
+                // would otherwise hold ↑/↓ until the tab is switched away and back.
+                picker.detail_open = false;
+                if exit == InteractiveExit::Interrupted {
+                    picker.set_status(format!(
+                        "{} sign-in cancelled (Ctrl+C); nothing changed.",
+                        rail.display_name()
+                    ));
+                    return vec![];
+                }
                 picker.set_status(format!(
                     "{} login {}; re-probing…",
                     rail.display_name(),
-                    if exit_ok { "finished" } else { "exited with an error" }
+                    if exit == InteractiveExit::Success {
+                        "finished"
+                    } else {
+                        "exited with an error"
+                    }
                 ));
                 picker.loading = true;
                 return vec![Effect::WorkshopLoadPicker];

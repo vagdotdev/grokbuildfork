@@ -782,34 +782,41 @@ fn run_pending_suspends(
     // Workshop: the vendor CLI's own login owns the terminal for its duration; Workshop never
     // captures or parses its output, and re-probes the rail when it exits.
     if let Some((rail, argv)) = app.pending_workshop_login.take() {
-        let mut exit_ok = false;
+        let screen_mode = app.screen_mode;
+        let mut exit = workshop_detect::process::InteractiveExit::Failed;
         let moved_cursor = match suspend_for_child(
-            app.screen_mode,
+            screen_mode,
             terminal,
             input_paused,
             reader_parked,
             input_rx,
             || {
-                if let Some((program, args)) = argv.split_first() {
-                    // The TUI parks fd 2 on /dev/null (xai_tty_utils::redirect_native_stderr) and
-                    // draws through a dup of the real terminal. An inherited stderr would swallow a
-                    // vendor CLI that prints its sign-in instructions there (`codex login` prints
-                    // its auth URL on stderr), so hand the child the terminal explicitly.
-                    let banner = format!(
-                        "\nWorkshop: running `{}` — sign in, then this returns to Workshop.\n",
-                        argv.join(" ")
-                    );
-                    xai_grok_shell::util::with_locked_stderr(|stderr| {
-                        use std::io::Write as _;
-                        let _ = stderr.write_all(banner.as_bytes());
-                    });
-                    let mut child = std::process::Command::new(program);
-                    child.args(args);
-                    if let Ok(tty) = xai_tty_utils::dup_tui_stderr() {
-                        child.stderr(std::process::Stdio::from(tty));
+                // The TUI parks fd 2 on /dev/null (xai_tty_utils::redirect_native_stderr) and
+                // draws through a dup of the real terminal. An inherited stderr would swallow a
+                // vendor CLI that prints its sign-in instructions there (`codex login` prints
+                // its auth URL on stderr), so hand the child the terminal explicitly.
+                let banner = format!(
+                    "\nWorkshop: running `{}` — sign in, then this returns to Workshop.\n",
+                    argv.join(" ")
+                );
+                xai_grok_shell::util::with_locked_stderr(|stderr| {
+                    use std::io::Write as _;
+                    // Unlike `$EDITOR` / `$PAGER`, a login CLI prints plain lines and expects
+                    // the shell's screen and a visible cursor: leave the alternate screen so its
+                    // prompt is not drawn over the TUI frame (`suspend_for_child` re-enters it and
+                    // the caller's full repaint restores the cursor state).
+                    let _ = crossterm::execute!(stderr, crossterm::cursor::Show);
+                    if screen_mode.is_fullscreen() {
+                        let _ =
+                            crossterm::execute!(stderr, crossterm::terminal::LeaveAlternateScreen);
                     }
-                    exit_ok = child.status().map(|s| s.success()).unwrap_or(false);
-                }
+                    let _ = stderr.write_all(banner.as_bytes());
+                });
+                let stderr = xai_tty_utils::dup_tui_stderr()
+                    .ok()
+                    .map(std::process::Stdio::from);
+                // Ctrl+C in the terminal ends the vendor login only, never Workshop.
+                exit = workshop_detect::process::run_interactive(&argv, stderr);
             },
         ) {
             Ok(moved_cursor) => moved_cursor,
@@ -826,7 +833,7 @@ fn run_pending_suspends(
         };
         restore_after_child(terminal, app.screen_mode, moved_cursor);
         follow_up.extend(dispatch::dispatch(
-            Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone { rail, exit_ok }),
+            Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone { rail, exit }),
             app,
         ));
         presenter.request_presentation(app, terminal, true);

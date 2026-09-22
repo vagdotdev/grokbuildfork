@@ -148,6 +148,19 @@ index ab27a76d..639a3543 100644
  
  If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
  
+diff --git a/crates/codegen/xai-grok-pager/src/notifications/sleep.rs b/crates/codegen/xai-grok-pager/src/notifications/sleep.rs
+index 958d1328..5dc49fb6 100644
+--- a/crates/codegen/xai-grok-pager/src/notifications/sleep.rs
++++ b/crates/codegen/xai-grok-pager/src/notifications/sleep.rs
+@@ -96,7 +96,7 @@ impl SleepInhibitor {
+         let mut cmd = std::process::Command::new("systemd-inhibit");
+         cmd.args([
+             "--what=idle",
+-            "--who=grok",
++            "--who=workshop",
+             "--why=agent turn in progress",
+             "sleep",
+             "infinity",
 diff --git a/crates/codegen/xai-grok-pager/src/views/memory_modal.rs b/crates/codegen/xai-grok-pager/src/views/memory_modal.rs
 index ef7c763c..3ccb81f8 100644
 --- a/crates/codegen/xai-grok-pager/src/views/memory_modal.rs

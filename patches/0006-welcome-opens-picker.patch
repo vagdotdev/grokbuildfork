@@ -43,7 +43,7 @@ index d63bea59..5663ad57 100644
          });
          let (needs, label, method_id, mode) = startup_auth_metadata(&built.methods);
 diff --git a/crates/codegen/xai-grok-pager/src/app/actions.rs b/crates/codegen/xai-grok-pager/src/app/actions.rs
-index f1602289..090ab81c 100644
+index f1602289..6c1277ea 100644
 --- a/crates/codegen/xai-grok-pager/src/app/actions.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/actions.rs
 @@ -618,7 +618,12 @@ pub enum Action {
@@ -83,7 +83,7 @@ index f1602289..090ab81c 100644
      /// Submit a manually-pasted auth code (ext request).
      SubmitAuthCode { request_seq: u64, code: String },
      /// Fetch MCP server list from the shell (x.ai/mcp/list).
-@@ -2659,6 +2678,18 @@ pub enum TaskResult {
+@@ -2659,6 +2678,19 @@ pub enum TaskResult {
          /// Forwarded from `Effect::SwitchModel.prev_model_id` for rollback on `IncompatibleAgent`.
          prev_model_id: Option<acp::ModelId>,
      },
@@ -94,10 +94,11 @@ index f1602289..090ab81c 100644
 +        provider_id: String,
 +        result: Result<&'static str, String>,
 +    },
-+    /// Workshop: the terminal login command exited; the rails must be re-probed.
++    /// Workshop: the terminal login command exited; the rails must be re-probed unless the user
++    /// cancelled it (Ctrl+C), which leaves them as they were.
 +    WorkshopLoginTerminalDone {
 +        rail: workshop_detect::Rail,
-+        exit_ok: bool,
++        exit: workshop_detect::process::InteractiveExit,
 +    },
      /// Changelog fetched from CDN (both formats).
      ChangelogFetched {
@@ -705,10 +706,10 @@ index 89c36b27..efad77bb 100644
          Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
          Action::CopyAuthUrl => {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
-index b00317f2..ab1ed2f2 100644
+index b00317f2..783b120c 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
-@@ -999,6 +999,53 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -999,6 +999,68 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              }
              vec![]
          }
@@ -747,12 +748,27 @@ index b00317f2..ab1ed2f2 100644
 +            }
 +            vec![]
 +        }
-+        TaskResult::WorkshopLoginTerminalDone { rail, exit_ok } => {
++        TaskResult::WorkshopLoginTerminalDone { rail, exit } => {
++            use workshop_detect::process::InteractiveExit;
 +            if let Some(picker) = app.connection_picker.as_mut() {
++                // Focus returns to the rail list: the detail panel that Connect's Enter opened
++                // would otherwise hold ↑/↓ until the tab is switched away and back.
++                picker.detail_open = false;
++                if exit == InteractiveExit::Interrupted {
++                    picker.set_status(format!(
++                        "{} sign-in cancelled (Ctrl+C); nothing changed.",
++                        rail.display_name()
++                    ));
++                    return vec![];
++                }
 +                picker.set_status(format!(
 +                    "{} login {}; re-probing…",
 +                    rail.display_name(),
-+                    if exit_ok { "finished" } else { "exited with an error" }
++                    if exit == InteractiveExit::Success {
++                        "finished"
++                    } else {
++                        "exited with an error"
++                    }
 +                ));
 +                picker.loading = true;
 +                return vec![Effect::WorkshopLoadPicker];
@@ -762,7 +778,7 @@ index b00317f2..ab1ed2f2 100644
          TaskResult::ChangelogFetched { markdown, entries } => {
              app.changelog_markdown = markdown;
              app.changelog_bullets =
-@@ -1172,6 +1219,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1172,6 +1234,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              } = &app.auth_state
                  && *current_seq == request_seq
              {
@@ -775,7 +791,7 @@ index b00317f2..ab1ed2f2 100644
                  app.auth_code_input.reset();
              }
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
-index 0cbf3632..c5d03f6a 100644
+index 0cbf3632..1676eb18 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 @@ -394,7 +394,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
@@ -787,7 +803,7 @@ index 0cbf3632..c5d03f6a 100644
      let seq = authenticating_seq(&app);
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -554,34 +554,118 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
+@@ -554,34 +554,230 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
      );
  }
  
@@ -915,10 +931,122 @@ index 0cbf3632..c5d03f6a 100644
 +        assert_eq!(method_id.0.as_ref(), "grok.com");
 +    }
 +    assert!(app.connection_picker.is_none(), "picker closes when the flow starts");
++}
++
++/// Picker on the Subscriptions tab with every rail signed out (Connect shown), Claude selected.
++fn picker_with_signed_out_rails(app: &mut AppView) {
++    use workshop_auth::{PickerInput, PickerSnapshot};
++    use workshop_detect::{Pill, Rail, RailState};
++    dispatch(Action::Login, app);
++    let picker = app.connection_picker.as_mut().unwrap();
++    picker.apply_snapshot(PickerSnapshot {
++        rows: picker.rows.clone(),
++        rails: Rail::ALL
++            .iter()
++            .map(|r| RailState {
++                pill: Pill::SignIn,
++                installed: true,
++                show_connect: true,
++                ..RailState::detecting(*r)
++            })
++            .collect(),
++        default_selection: None,
++        secret_backend: None,
++    });
++    dispatch(Action::ConnectionPicker(PickerInput::SwitchTab), app);
++    assert_eq!(
++        app.connection_picker.as_ref().unwrap().tab,
++        workshop_auth::PickerTab::Subscriptions
++    );
++}
++
++/// The state Connect's Enter leaves behind (`PickerOutcome::RailConnect`): the rail detail is open
++/// and the vendor login is queued for the event loop. Set directly so the test never probes this
++/// machine's PATH for a real CLI (`rail_login_argv` does).
++fn queue_rail_connect(app: &mut AppView) -> workshop_detect::Rail {
++    let picker = app.connection_picker.as_mut().unwrap();
++    picker.detail_open = true;
++    let rail = picker.selected_rail().unwrap().rail;
++    app.pending_workshop_login = Some((rail, vec!["claude".into(), "auth".into(), "login".into()]));
++    rail
++}
++
++/// After the vendor login returns, ↑/↓ move between rails again: Connect's Enter opened the rail
++/// detail, and the login completion hands focus back to the rail list (no Tab away and back).
++#[test]
++fn picker_rail_login_done_restores_rail_navigation() {
++    use workshop_auth::PickerInput;
++    use workshop_detect::process::InteractiveExit;
++    let mut app = test_app();
++    picker_with_signed_out_rails(&mut app);
++    let rail = queue_rail_connect(&mut app);
++    // Before the fix: Down on an open rail detail without models is a no-op.
++    dispatch(Action::ConnectionPicker(PickerInput::Down), &mut app);
++    assert_eq!(app.connection_picker.as_ref().unwrap().rail_selected, 0);
++    app.pending_workshop_login.take();
++
++    let effects = dispatch(
++        Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone {
++            rail,
++            exit: InteractiveExit::Success,
++        }),
++        &mut app,
++    );
++    assert!(
++        effects
++            .iter()
++            .any(|e| matches!(e, Effect::WorkshopLoadPicker)),
++        "a finished login re-probes the rails, got {effects:?}"
++    );
++    let picker = app.connection_picker.as_ref().unwrap();
++    assert!(!picker.detail_open, "focus is back on the rail list");
++    assert_eq!(picker.rail_selected, 0);
++    dispatch(Action::ConnectionPicker(PickerInput::Down), &mut app);
++    assert_eq!(
++        app.connection_picker.as_ref().unwrap().rail_selected,
++        1,
++        "Down moves to the next rail right after the login returns"
++    );
++}
++
++/// Ctrl+C in the terminal ends the vendor login only: the picker reports the cancellation, keeps
++/// the rails as they were (no re-probe) and is navigable again.
++#[test]
++fn picker_rail_login_interrupted_reports_cancel_without_reprobe() {
++    use workshop_auth::PickerInput;
++    use workshop_detect::process::InteractiveExit;
++    let mut app = test_app();
++    picker_with_signed_out_rails(&mut app);
++    let rail = queue_rail_connect(&mut app);
++    app.pending_workshop_login.take();
++
++    let effects = dispatch(
++        Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone {
++            rail,
++            exit: InteractiveExit::Interrupted,
++        }),
++        &mut app,
++    );
++    assert!(
++        effects.is_empty(),
++        "a cancelled login is not re-probed, got {effects:?}"
++    );
++    let picker = app.connection_picker.as_ref().unwrap();
++    assert!(
++        picker
++            .status
++            .as_deref()
++            .is_some_and(|s| s.contains("sign-in cancelled")),
++        "status: {:?}",
++        picker.status
++    );
++    assert!(!picker.loading && !picker.detail_open);
++    dispatch(Action::ConnectionPicker(PickerInput::Down), &mut app);
++    assert_eq!(app.connection_picker.as_ref().unwrap().rail_selected, 1);
  }
  
  /// Puts the app in `Authenticating` with a live task's abort handle installed, as the event loop would.
-@@ -591,7 +675,7 @@ fn install_live_auth_task(
+@@ -591,7 +787,7 @@ fn install_live_auth_task(
      app: &mut AppView,
      rt: &tokio::runtime::Runtime,
  ) -> (tokio::task::JoinHandle<()>, u64) {
@@ -927,7 +1055,7 @@ index 0cbf3632..c5d03f6a 100644
      let task = rt.spawn(std::future::pending::<()>());
      match &mut app.auth_state {
          AuthState::Authenticating {
-@@ -621,7 +705,7 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -621,7 +817,7 @@ fn login_while_authenticating_aborts_prior_task() {
      let mut app = test_app_with_agent();
      let (prior_task, first_seq) = install_live_auth_task(&mut app, &rt);
  
@@ -936,7 +1064,7 @@ index 0cbf3632..c5d03f6a 100644
  
      rt.block_on(async {
          assert!(
-@@ -651,12 +735,12 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -651,12 +847,12 @@ fn login_while_authenticating_aborts_prior_task() {
  #[test]
  fn stale_auth_complete_after_relogin_is_ignored() {
      let mut app = test_app_with_agent();
@@ -951,7 +1079,7 @@ index 0cbf3632..c5d03f6a 100644
  
      dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -722,7 +806,7 @@ fn cancel_login_aborts_prior_task() {
+@@ -722,7 +918,7 @@ fn cancel_login_aborts_prior_task() {
  #[test]
  fn cancel_login_restores_view() {
      let mut app = test_app_with_agent();
@@ -1225,10 +1353,10 @@ index 1c507697..233aca18 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..fdf635c3 100644
+index eda61b3c..02134efa 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-@@ -765,18 +765,72 @@ fn run_pending_suspends(
+@@ -765,18 +765,79 @@ fn run_pending_suspends(
      presenter: &mut Presenter,
      suspend_retry_after: &mut Option<Instant>,
      suspend_wait_reports: &mut SuspendWaitReports,
@@ -1253,34 +1381,41 @@ index eda61b3c..fdf635c3 100644
 +    // Workshop: the vendor CLI's own login owns the terminal for its duration; Workshop never
 +    // captures or parses its output, and re-probes the rail when it exits.
 +    if let Some((rail, argv)) = app.pending_workshop_login.take() {
-+        let mut exit_ok = false;
++        let screen_mode = app.screen_mode;
++        let mut exit = workshop_detect::process::InteractiveExit::Failed;
 +        let moved_cursor = match suspend_for_child(
-+            app.screen_mode,
++            screen_mode,
 +            terminal,
 +            input_paused,
 +            reader_parked,
 +            input_rx,
 +            || {
-+                if let Some((program, args)) = argv.split_first() {
-+                    // The TUI parks fd 2 on /dev/null (xai_tty_utils::redirect_native_stderr) and
-+                    // draws through a dup of the real terminal. An inherited stderr would swallow a
-+                    // vendor CLI that prints its sign-in instructions there (`codex login` prints
-+                    // its auth URL on stderr), so hand the child the terminal explicitly.
-+                    let banner = format!(
-+                        "\nWorkshop: running `{}` — sign in, then this returns to Workshop.\n",
-+                        argv.join(" ")
-+                    );
-+                    xai_grok_shell::util::with_locked_stderr(|stderr| {
-+                        use std::io::Write as _;
-+                        let _ = stderr.write_all(banner.as_bytes());
-+                    });
-+                    let mut child = std::process::Command::new(program);
-+                    child.args(args);
-+                    if let Ok(tty) = xai_tty_utils::dup_tui_stderr() {
-+                        child.stderr(std::process::Stdio::from(tty));
++                // The TUI parks fd 2 on /dev/null (xai_tty_utils::redirect_native_stderr) and
++                // draws through a dup of the real terminal. An inherited stderr would swallow a
++                // vendor CLI that prints its sign-in instructions there (`codex login` prints
++                // its auth URL on stderr), so hand the child the terminal explicitly.
++                let banner = format!(
++                    "\nWorkshop: running `{}` — sign in, then this returns to Workshop.\n",
++                    argv.join(" ")
++                );
++                xai_grok_shell::util::with_locked_stderr(|stderr| {
++                    use std::io::Write as _;
++                    // Unlike `$EDITOR` / `$PAGER`, a login CLI prints plain lines and expects
++                    // the shell's screen and a visible cursor: leave the alternate screen so its
++                    // prompt is not drawn over the TUI frame (`suspend_for_child` re-enters it and
++                    // the caller's full repaint restores the cursor state).
++                    let _ = crossterm::execute!(stderr, crossterm::cursor::Show);
++                    if screen_mode.is_fullscreen() {
++                        let _ =
++                            crossterm::execute!(stderr, crossterm::terminal::LeaveAlternateScreen);
 +                    }
-+                    exit_ok = child.status().map(|s| s.success()).unwrap_or(false);
-+                }
++                    let _ = stderr.write_all(banner.as_bytes());
++                });
++                let stderr = xai_tty_utils::dup_tui_stderr()
++                    .ok()
++                    .map(std::process::Stdio::from);
++                // Ctrl+C in the terminal ends the vendor login only, never Workshop.
++                exit = workshop_detect::process::run_interactive(&argv, stderr);
 +            },
 +        ) {
 +            Ok(moved_cursor) => moved_cursor,
@@ -1297,7 +1432,7 @@ index eda61b3c..fdf635c3 100644
 +        };
 +        restore_after_child(terminal, app.screen_mode, moved_cursor);
 +        follow_up.extend(dispatch::dispatch(
-+            Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone { rail, exit_ok }),
++            Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone { rail, exit }),
 +            app,
 +        ));
 +        presenter.request_presentation(app, terminal, true);
@@ -1305,7 +1440,7 @@ index eda61b3c..fdf635c3 100644
      if let Some(request) = app.pending_editor.take() {
          let retry_request = request.clone();
          match crate::app::external_editor::prepare(app, request) {
-@@ -818,7 +872,7 @@ fn run_pending_suspends(
+@@ -818,7 +879,7 @@ fn run_pending_suspends(
                              report_suspend_wait(app, EDITOR_SUSPEND_WAIT);
                              presenter.request_presentation(app, terminal, false);
                          }
@@ -1314,7 +1449,7 @@ index eda61b3c..fdf635c3 100644
                      }
                      Err(error) => return Err(error.into()),
                  };
-@@ -892,7 +946,7 @@ fn run_pending_suspends(
+@@ -892,7 +953,7 @@ fn run_pending_suspends(
                      report_suspend_wait(app, TRANSCRIPT_SUSPEND_WAIT);
                      presenter.request_presentation(app, terminal, false);
                  }
@@ -1323,7 +1458,7 @@ index eda61b3c..fdf635c3 100644
              }
              Err(error) => return Err(error.into()),
          };
-@@ -901,7 +955,7 @@ fn run_pending_suspends(
+@@ -901,7 +962,7 @@ fn run_pending_suspends(
          presenter.request_presentation(app, terminal, true);
          suspend_wait_reports.pager_reported = false;
      }
@@ -1332,7 +1467,7 @@ index eda61b3c..fdf635c3 100644
  }
  /// Consume a pending in-process switch between `/minimal` and `/fullscreen`.
  /// Returns `true` when the caller must quit (exec fallback armed on `app.relaunch`).
-@@ -1272,16 +1326,12 @@ pub(crate) async fn run(
+@@ -1272,16 +1333,12 @@ pub(crate) async fn run(
          );
      }
      let mut post_render_effects = if needs_interactive_login {
@@ -1353,7 +1488,7 @@ index eda61b3c..fdf635c3 100644
      } else {
          vec![]
      };
-@@ -1632,6 +1682,12 @@ pub(crate) async fn run(
+@@ -1632,6 +1689,12 @@ pub(crate) async fn run(
      let (progress_tx, mut progress_rx) =
          tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
      let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
@@ -1366,7 +1501,7 @@ index eda61b3c..fdf635c3 100644
      let voice_auth_factory = connection.auth_manager.clone();
      let mut tick_interval = tick_interval;
      let mut animation_tick_at: Option<Instant> = None;
-@@ -1892,7 +1948,7 @@ pub(crate) async fn run(
+@@ -1892,7 +1955,7 @@ pub(crate) async fn run(
          if process_effects(workspace_effects, &mut tasks, &mut app, &progress_tx) {
              break;
          }
@@ -1375,7 +1510,7 @@ index eda61b3c..fdf635c3 100644
              &mut app,
              terminal,
              &input_paused,
-@@ -1902,9 +1958,16 @@ pub(crate) async fn run(
+@@ -1902,9 +1965,16 @@ pub(crate) async fn run(
              &mut suspend_retry_after,
              &mut suspend_wait_reports,
          ) {
@@ -1395,7 +1530,7 @@ index eda61b3c..fdf635c3 100644
          }
          if run_pending_mode_switch(
              &mut app,
-@@ -2885,6 +2948,19 @@ pub(crate) async fn run(
+@@ -2885,6 +2955,19 @@ pub(crate) async fn run(
                  presenter.request(false);
              }
  
@@ -1415,7 +1550,7 @@ index eda61b3c..fdf635c3 100644
              // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
              // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
              // Voice is only serviced when nothing else is pending
-@@ -3143,7 +3219,9 @@ struct RoutedInputEvent {
+@@ -3143,7 +3226,9 @@ struct RoutedInputEvent {
      is_startup_replay: bool,
  }
  fn tty_suspend_armed(app: &AppView) -> bool {
@@ -1426,7 +1561,7 @@ index eda61b3c..fdf635c3 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4012,113 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4019,113 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
