@@ -1,0 +1,32 @@
+# `voice-engine`: the whisper.cpp speech-to-text helper the Workshop TUI spawns for /voice.
+#
+# Deliberately its own Cargo workspace (excluded from the repository root workspace): the TUI must
+# not link whisper.cpp, and this is the only crate in the tree that pulls in the native build
+# (cmake + a C/C++ toolchain). The release workflow builds it per platform and ships it beside the
+# CLI; scripts/install.sh downloads it. Protocol: see src/protocol.rs and voice/MODEL.lock.json.
+[workspace]
+
+[package]
+name = "voice-engine"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Workshop voice dictation helper: whisper.cpp large-v3-turbo, framed PCM on stdin, line-JSON transcripts on stdout"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Metal only on Apple Silicon; Intel Macs, Linux and Windows run the CPU path (AVX2/AVX-512, NEON).
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+whisper-rs = { version = "0.16", features = ["metal"] }
+
+[target.'cfg(not(all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
+whisper-rs = { version = "0.16" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
