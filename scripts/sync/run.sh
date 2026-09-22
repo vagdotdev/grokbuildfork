@@ -120,7 +120,10 @@ gh_output verdict "$VERDICT"
 gh_output pr_title "$PR_TITLE"
 pr_failed=0
 case "$PR" in
-  dry-run) "$here/open-pr.sh" --dry-run --base "$BASE" --remote "$REMOTE" ;;
+  dry-run)
+    (( UPSTREAM_MOVED )) || log "upstream did not move: a real run would stop here with the verdict (no branch, no PR); dry-run output follows"
+    "$here/open-pr.sh" --dry-run --base "$BASE" --remote "$REMOTE"
+    ;;
   create)
     if (( ! UPSTREAM_MOVED )); then
       # Forced replay of the locked snapshot: the branch would differ from the
