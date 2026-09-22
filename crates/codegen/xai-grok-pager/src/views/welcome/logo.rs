@@ -9,18 +9,19 @@ use ratatui::widgets::{Paragraph, Widget};
 use crate::render::color::blend_color;
 use crate::theme::Theme;
 
-const LOGO: &str = include_str!("../../../assets/logo/logo07.txt");
-const LOGO_SMALL: &str = include_str!("../../../assets/logo/logo05.txt");
-
 /// Height at or above which the small logo is shown (below it, no logo).
 const SMALL_LOGO_MIN_HEIGHT: u16 = 22;
 /// Height at or above which the full logo is shown.
 const FULL_LOGO_MIN_HEIGHT: u16 = 26;
+/// Height at or above which the 2x art is shown, when the brand art set carries one (it is 7 rows taller than the full logo).
+const LARGE_LOGO_MIN_HEIGHT: u16 = 33;
 
 /// Which logo art the stacked column shows.
 /// The terminal height picks the tier; the stacked layout steps it down only while the column would not fit beside the draft.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogoTier {
+    /// The 2x art; only reachable while [`workshop_brand::HeroArt::large`] is set.
+    Large,
     Full,
     Compact,
     Hidden,
@@ -28,25 +29,37 @@ pub enum LogoTier {
 
 impl LogoTier {
     pub fn for_height(window_height: u16) -> Self {
-        Self::for_height_and_hidden(window_height, logo_hidden())
+        Self::for_height_and_hidden(window_height, logo_hidden(), large_enabled())
     }
 
-    /// Takes the legacy-console flag as a parameter so tests can drive it directly.
-    fn for_height_and_hidden(window_height: u16, hidden: bool) -> Self {
+    /// Takes the legacy-console and 2x flags as parameters so tests can drive them directly.
+    fn for_height_and_hidden(window_height: u16, hidden: bool, large: bool) -> Self {
         if hidden || window_height < SMALL_LOGO_MIN_HEIGHT {
             Self::Hidden
         } else if window_height < FULL_LOGO_MIN_HEIGHT {
             Self::Compact
+        } else if large && window_height >= LARGE_LOGO_MIN_HEIGHT {
+            Self::Large
         } else {
             Self::Full
         }
     }
 
     fn art(self) -> Option<&'static str> {
+        let art = workshop_brand::hero_art();
         match self {
-            Self::Full => Some(LOGO),
-            Self::Compact => Some(LOGO_SMALL),
+            Self::Large => art.large,
+            Self::Full => Some(art.full),
+            Self::Compact => Some(art.compact),
             Self::Hidden => None,
+        }
+    }
+
+    /// Per-cell shade map for a tonal art; only the large tier carries one.
+    fn shade(self) -> Option<&'static str> {
+        match self {
+            Self::Large => workshop_brand::hero_art().large_shade,
+            _ => None,
         }
     }
 
@@ -54,9 +67,15 @@ impl LogoTier {
         self.art().map_or(0, count_lines)
     }
 
+    /// Columns the art spans; 0 when the tier paints nothing.
+    pub fn visual_width(self) -> u16 {
+        self.art().map_or(0, visual_width)
+    }
+
     /// The next smaller tier; `None` once hidden.
     pub fn step_down(self) -> Option<Self> {
         match self {
+            Self::Large => Some(Self::Full),
             Self::Full => Some(Self::Compact),
             Self::Compact => Some(Self::Hidden),
             Self::Hidden => None,
@@ -64,12 +83,34 @@ impl LogoTier {
     }
 }
 
+/// Tiers the hero box tries in order, tallest first; each must fit the box before the next is considered.
+/// Hidden is not a candidate: on a legacy console the full tier already paints nothing and spans 0 columns.
+pub fn hero_logo_tiers() -> &'static [LogoTier] {
+    if large_enabled() && !logo_hidden() {
+        &[LogoTier::Large, LogoTier::Full]
+    } else {
+        &[LogoTier::Full]
+    }
+}
+
+#[cfg(not(test))]
+fn large_enabled() -> bool {
+    workshop_brand::hero_art().large.is_some()
+}
+
+/// Unit tests keep the upstream tier chain (no automatic 2x), so the layout invariants written for the 7-row hero still hold.
+/// The Large tier is exercised explicitly where it matters.
+#[cfg(test)]
+fn large_enabled() -> bool {
+    false
+}
+
 fn pick_logo(window_height: u16) -> Option<&'static str> {
     pick_logo_for(window_height, logo_hidden())
 }
 
 fn pick_logo_for(window_height: u16, hidden: bool) -> Option<&'static str> {
-    LogoTier::for_height_and_hidden(window_height, hidden).art()
+    LogoTier::for_height_and_hidden(window_height, hidden, large_enabled()).art()
 }
 
 /// The braille art has no ASCII stand-in; see the module doc.
@@ -140,7 +181,24 @@ fn shine_opacity(diag: f32, secs: f32) -> f32 {
     (pulse + SHINE * shine).clamp(0.0, 1.0)
 }
 
-fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, logo: &str) {
+/// How far the weak shade sinks from the resting gray toward the background, and the strong shade rises toward the text color.
+/// Both stay theme-derived so every palette (and polarity) keeps its own contrast.
+const SHADE_WEAK_MIX: f32 = 0.5;
+const SHADE_STRONG_MIX: f32 = 0.55;
+
+/// Resting colors for the three shade levels of a tonal art: weak, mid (the plain logo gray), strong.
+fn shade_palette(theme: &Theme) -> [Color; 3] {
+    let mid = theme.gray;
+    let weak = blend_color(mid, theme.bg_base, SHADE_WEAK_MIX).unwrap_or(mid);
+    let strong = blend_color(mid, theme.text_primary, SHADE_STRONG_MIX).unwrap_or(mid);
+    [weak, mid, strong]
+}
+
+fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, logo: &str, shade: Option<&str>) {
+    // Light themes paint the dots dark, so flip the portrait to keep it a positive image
+    let dark = theme.is_dark();
+    let ink = (!dark).then(|| workshop_brand::invert(logo));
+    let logo = ink.as_deref().unwrap_or(logo);
     let lines: Vec<&str> = non_empty_lines(logo).collect();
     let rows = lines.len().max(1) as f32;
     let cols = lines
@@ -151,9 +209,10 @@ fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, logo: &str) {
         .max(1) as f32;
     let secs = anim_phase_secs();
 
-    // Blend each glyph from the resting gray toward the bright text color by its shine opacity, so a sheen sweeps across the braille art
+    // Each glyph rests on its cell's shade (the plain gray without a shade map) and blends toward the bright text color by its shine opacity, so a sheen sweeps across the braille art
+    // A light theme's dots are ink, so a bright cell there carries few, weak dots and a dark cell many, strong ones: the shade levels mirror
     // Adjacent glyphs that land on the same blended color share one Span to hold down the per-frame allocation
-    let base = theme.gray;
+    let [weak, mid, strong] = shade_palette(theme);
     let hilite = theme.text_primary;
     let logo_lines: Vec<Line> = lines
         .iter()
@@ -163,6 +222,12 @@ fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, logo: &str) {
             let mut run = String::new();
             let mut run_color: Option<Color> = None;
             for (col, ch) in line.chars().enumerate() {
+                let level = shade.map_or(1, |s| workshop_brand::shade_level(s, row, col));
+                let base = match (dark, level) {
+                    (true, 0) | (false, 2) => weak,
+                    (true, 2) | (false, 0) => strong,
+                    _ => mid,
+                };
                 // Sweep along the diagonal from bottom-left to top-right: the coordinate grows as col increases and row decreases
                 let diag = (col as f32 + (rows - 1.0 - row as f32)) / (cols + rows);
                 let color = blend_color(base, hilite, shine_opacity(diag, secs)).unwrap_or(base);
@@ -195,40 +260,13 @@ pub fn logo_visual_width(window_height: u16) -> u16 {
 }
 
 pub fn render_logo(area: Rect, buf: &mut Buffer, theme: &Theme, window_height: u16) {
-    if let Some(logo) = pick_logo(window_height) {
-        render_into(area, buf, theme, logo);
-    }
+    render_logo_tier(area, buf, theme, LogoTier::for_height(window_height));
 }
 
 /// Paint the tier the layout reserved rows for, so the art can never outgrow its slot.
 pub fn render_logo_tier(area: Rect, buf: &mut Buffer, theme: &Theme, tier: LogoTier) {
     if let Some(logo) = tier.art() {
-        render_into(area, buf, theme, logo);
-    }
-}
-
-/// The hero box always shows the full logo: it is laid out beside the menu, so it fits whenever the box does.
-/// These report and render that logo directly, independent of the height-based [`pick_logo`] tiers used by the stacked layout.
-/// When [`logo_hidden`], they report 0 and render nothing.
-pub fn full_logo_line_count() -> u16 {
-    full_logo_line_count_for(logo_hidden())
-}
-
-fn full_logo_line_count_for(hidden: bool) -> u16 {
-    if hidden { 0 } else { count_lines(LOGO) }
-}
-
-pub fn full_logo_visual_width() -> u16 {
-    full_logo_visual_width_for(logo_hidden())
-}
-
-fn full_logo_visual_width_for(hidden: bool) -> u16 {
-    if hidden { 0 } else { visual_width(LOGO) }
-}
-
-pub fn render_full_logo(area: Rect, buf: &mut Buffer, theme: &Theme) {
-    if !logo_hidden() {
-        render_into(area, buf, theme, LOGO);
+        render_into(area, buf, theme, logo, tier.shade());
     }
 }
 
@@ -237,7 +275,7 @@ pub fn compact_logo_line_count() -> u16 {
     if logo_hidden() {
         0
     } else {
-        count_lines(LOGO_SMALL)
+        LogoTier::Compact.rows()
     }
 }
 
@@ -245,7 +283,7 @@ pub fn compact_logo_line_count() -> u16 {
 /// No-op when the logo is hidden.
 pub fn render_compact_logo(area: Rect, buf: &mut Buffer, theme: &Theme) {
     if !logo_hidden() {
-        render_into(area, buf, theme, LOGO_SMALL);
+        render_logo_tier(area, buf, theme, LogoTier::Compact);
     }
 }
 
@@ -253,49 +291,102 @@ pub fn render_compact_logo(area: Rect, buf: &mut Buffer, theme: &Theme) {
 mod tests {
     use super::*;
 
+    fn tier_for(window_height: u16, hidden: bool, large: bool) -> LogoTier {
+        LogoTier::for_height_and_hidden(window_height, hidden, large)
+    }
+
     #[test]
     fn logo_sizes_by_height() {
-        assert!(pick_logo_for(SMALL_LOGO_MIN_HEIGHT - 1, false).is_none());
         assert_eq!(
-            pick_logo_for(SMALL_LOGO_MIN_HEIGHT, false),
-            Some(LOGO_SMALL)
+            tier_for(SMALL_LOGO_MIN_HEIGHT - 1, false, false),
+            LogoTier::Hidden
         );
         assert_eq!(
-            pick_logo_for(FULL_LOGO_MIN_HEIGHT - 1, false),
-            Some(LOGO_SMALL)
+            tier_for(SMALL_LOGO_MIN_HEIGHT, false, false),
+            LogoTier::Compact
         );
-        assert_eq!(pick_logo_for(FULL_LOGO_MIN_HEIGHT, false), Some(LOGO));
+        assert_eq!(
+            tier_for(FULL_LOGO_MIN_HEIGHT - 1, false, false),
+            LogoTier::Compact
+        );
+        assert_eq!(tier_for(FULL_LOGO_MIN_HEIGHT, false, false), LogoTier::Full);
+        // Without a 2x art set the chain tops out at the full logo, however tall the terminal
+        assert_eq!(
+            tier_for(LARGE_LOGO_MIN_HEIGHT, false, false),
+            LogoTier::Full
+        );
+        assert_eq!(tier_for(u16::MAX, false, false), LogoTier::Full);
+    }
+
+    #[test]
+    fn large_tier_needs_the_2x_art_and_the_height() {
+        assert_eq!(
+            tier_for(LARGE_LOGO_MIN_HEIGHT - 1, false, true),
+            LogoTier::Full
+        );
+        assert_eq!(
+            tier_for(LARGE_LOGO_MIN_HEIGHT, false, true),
+            LogoTier::Large
+        );
+        // Stepping down walks the whole chain, so an overflowing column lands on the same tiers as before
+        assert_eq!(LogoTier::Large.step_down(), Some(LogoTier::Full));
+        assert_eq!(LogoTier::Full.step_down(), Some(LogoTier::Compact));
+        assert_eq!(LogoTier::Compact.step_down(), Some(LogoTier::Hidden));
+        assert_eq!(LogoTier::Hidden.step_down(), None);
     }
 
     // The braille art has no legacy-safe stand-in, so every height tier must collapse to no logo when the legacy-console flag is set
     #[test]
     fn logo_hidden_on_legacy_console_at_every_height() {
-        for h in [0, SMALL_LOGO_MIN_HEIGHT, FULL_LOGO_MIN_HEIGHT, u16::MAX] {
+        for h in [
+            0,
+            SMALL_LOGO_MIN_HEIGHT,
+            FULL_LOGO_MIN_HEIGHT,
+            LARGE_LOGO_MIN_HEIGHT,
+            u16::MAX,
+        ] {
+            assert_eq!(tier_for(h, true, true), LogoTier::Hidden, "height {h}");
             assert!(pick_logo_for(h, true).is_none(), "height {h}");
         }
     }
 
     #[test]
-    fn hero_box_always_uses_full_logo() {
-        // The box renders the full logo regardless of height (it's laid out beside the menu), and it's the large variant, never the small one
-        assert_eq!(full_logo_line_count_for(false), count_lines(LOGO));
-        assert_eq!(full_logo_visual_width_for(false), visual_width(LOGO));
-        assert!(full_logo_line_count_for(false) > count_lines(LOGO_SMALL));
-        assert!(full_logo_visual_width_for(false) > visual_width(LOGO_SMALL));
+    fn tiers_shrink_down_the_chain() {
+        // The hero box lays the art beside the menu, so each tier must be strictly smaller than the one above it in both axes
+        if logo_hidden() {
+            return;
+        }
+        assert!(LogoTier::Full.rows() > LogoTier::Compact.rows());
+        assert!(LogoTier::Full.visual_width() > LogoTier::Compact.visual_width());
+        assert_eq!(LogoTier::Hidden.rows(), 0);
+        assert_eq!(LogoTier::Hidden.visual_width(), 0);
+        if let Some(large) = workshop_brand::hero_art().large {
+            assert_eq!(LogoTier::Large.rows(), count_lines(large));
+            assert!(LogoTier::Large.rows() > LogoTier::Full.rows());
+            assert!(LogoTier::Large.visual_width() > LogoTier::Full.visual_width());
+        } else {
+            assert_eq!(LogoTier::Large.rows(), 0);
+        }
     }
 
     #[test]
-    fn full_logo_helpers_collapse_when_hidden() {
-        assert_eq!(full_logo_line_count_for(true), 0);
-        assert_eq!(full_logo_visual_width_for(true), 0);
+    fn hero_tiers_try_the_tallest_art_first_and_end_on_full() {
+        let tiers = hero_logo_tiers();
+        assert_eq!(tiers.last(), Some(&LogoTier::Full));
+        assert!(!tiers.contains(&LogoTier::Compact));
+        assert!(!tiers.contains(&LogoTier::Hidden));
+        assert_eq!(
+            tiers.contains(&LogoTier::Large),
+            large_enabled() && !logo_hidden()
+        );
     }
 
     #[test]
     fn compact_logo_line_count_matches_small_logo_when_visible() {
         // The minimal welcome card budgets exactly the small logo's rows
         if !logo_hidden() {
-            assert_eq!(compact_logo_line_count(), count_lines(LOGO_SMALL));
-            assert!(compact_logo_line_count() < count_lines(LOGO));
+            assert_eq!(compact_logo_line_count(), LogoTier::Compact.rows());
+            assert!(compact_logo_line_count() < LogoTier::Full.rows());
             assert!(compact_logo_line_count() > 0);
         } else {
             assert_eq!(compact_logo_line_count(), 0);
@@ -343,5 +434,77 @@ mod tests {
         // During the rest phase the band is parked off-screen, so an interior glyph falls back to at most the gentle pulse, never full bright
         let op = shine_opacity(0.5, 6.0); // secs % 4.0 = 2.0, past SWEEP_FRAC, in the rest phase
         assert!(op < 0.2, "resting opacity {op} should stay dim");
+    }
+
+    fn luminance(color: Color) -> f32 {
+        match color {
+            Color::Rgb(r, g, b) => 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32,
+            other => panic!("expected an RGB theme color, got {other:?}"),
+        }
+    }
+
+    /// The unquantized dark and light palettes, so the assertions see RGB regardless of `NO_COLOR` or the terminal under test.
+    fn polarities() -> [crate::theme::Theme; 2] {
+        [
+            crate::theme::Theme::groknight(),
+            crate::theme::Theme::grokday(),
+        ]
+    }
+
+    #[test]
+    fn shade_palette_steps_from_the_background_toward_the_text() {
+        // The three resting shades must be ordered by contrast against the canvas on both polarities, or tone shading would invert
+        for theme in polarities() {
+            let [weak, mid, strong] = shade_palette(&theme);
+            assert_eq!(mid, theme.gray);
+            let bg = luminance(theme.bg_base);
+            let (w, m, s) = (luminance(weak), luminance(mid), luminance(strong));
+            assert!(
+                (w - bg).abs() < (m - bg).abs() && (m - bg).abs() < (s - bg).abs(),
+                "weak {w} mid {m} strong {s} against bg {bg}"
+            );
+        }
+    }
+
+    #[test]
+    fn shaded_cells_take_their_level_and_flat_art_rests_on_gray() {
+        for theme in polarities() {
+            let [weak, mid, strong] = shade_palette(&theme);
+            // Two full cells (so the light theme's inverted glyph is still non-blank): shade 0 then 2
+            let art = "\u{28FF}\u{28FF}\n";
+            let area = Rect::new(0, 0, 2, 1);
+            let mut shaded = Buffer::empty(area);
+            render_into(area, &mut shaded, &theme, art, Some("02\n"));
+            let mut flat = Buffer::empty(area);
+            render_into(area, &mut flat, &theme, art, None);
+            // A dark cell is weak where dots are light and strong where dots are ink, and the reverse for a bright cell
+            let expected = if theme.is_dark() {
+                [weak, strong]
+            } else {
+                [strong, weak]
+            };
+            // The shimmer shifts every cell toward the text color, so only check the cell sits between its base and that color
+            let toward = |base: Color, cell: Color| {
+                let (b, c, t) = (
+                    luminance(base),
+                    luminance(cell),
+                    luminance(theme.text_primary),
+                );
+                (c - b) * (t - b) >= 0.0 && (c - b).abs() <= (t - b).abs()
+            };
+            for (x, base) in expected.into_iter().enumerate() {
+                let cell = shaded.cell((x as u16, 0)).unwrap().fg;
+                assert!(
+                    toward(base, cell),
+                    "cell {x}: {cell:?} not between {base:?} and the text color"
+                );
+                let plain = flat.cell((x as u16, 0)).unwrap().fg;
+                assert!(
+                    toward(mid, plain),
+                    "flat cell {x}: {plain:?} not between {mid:?} and the text color"
+                );
+                assert_ne!(cell, plain, "shading must change cell {x}");
+            }
+        }
     }
 }
