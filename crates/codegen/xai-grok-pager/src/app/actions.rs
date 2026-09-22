@@ -2685,10 +2685,11 @@ pub enum TaskResult {
         provider_id: String,
         result: Result<&'static str, String>,
     },
-    /// Workshop: the terminal login command exited; the rails must be re-probed.
+    /// Workshop: the terminal login command exited; the rails must be re-probed unless the user
+    /// cancelled it (Ctrl+C), which leaves them as they were.
     WorkshopLoginTerminalDone {
         rail: workshop_detect::Rail,
-        exit_ok: bool,
+        exit: workshop_detect::process::InteractiveExit,
     },
     /// Changelog fetched from CDN (both formats).
     ChangelogFetched {

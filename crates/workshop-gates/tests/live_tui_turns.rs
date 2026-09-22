@@ -484,7 +484,10 @@ case "$*" in
     if [ -f "$state/logged_in" ]; then printf '%s\n' {status_in}{status_redirect}; exit {in_exit}
     else printf '%s\n' {status_out}{status_redirect}; exit {out_exit}; fi ;;
   {login_args})
-    touch "$state/login_ran"; printf 'Opening browser to sign in...\n'; exit 0 ;;
+    touch "$state/login_ran"; printf 'Opening browser to sign in...\n'
+    # `<state>/login_hang`: wait like a real OAuth flow does, until the terminal's Ctrl+C.
+    if [ -f "$state/login_hang" ]; then sleep 60; fi
+    exit 0 ;;
 esac
 # Otherwise this is a turn: replay the adapter success fixture line by line. A per-line sleep keeps
 # the turn on-screen long enough to be cancelled mid-stream (SIGINT from the supervisor stops it).
@@ -638,9 +641,126 @@ fn rails_signin_connect_launches_login() {
         "Connect must launch `claude auth login` (marker missing):\n{}",
         j.h.screen_contents()
     );
+    // The TUI is back (alternate screen, picker frame) and the rails are re-probed.
+    wait_for(&mut j.h, "connect a model", 15);
+    assert!(
+        j.h.terminal_modes().alt_screen,
+        "TUI must re-enter the alternate screen after the login child exits"
+    );
+    // Focus is back on the rail list: ↓ moves from Claude to Codex without a Tab away and back.
+    j.h.inject_keys(b"\x1b[B").unwrap();
+    j.h.update(Duration::from_millis(400));
+    assert!(
+        selected_line(&j.h).is_some_and(|l| l.contains("Codex")),
+        "Down must move to the Codex rail right after the login returns:\n{}",
+        j.h.screen_contents()
+    );
+    snapshot(&j.h, &j.dir, "03-down-moves-to-codex");
     finish(
         j,
         "P3 rails (logged-out fakes): Claude rail Sign in → Connect launched `claude auth login` \
-         in the terminal (marker written). No network (fake CLIs).\n",
+         in the terminal (marker written); after it exited the TUI re-entered the alternate \
+         screen and ↓ moved to the next rail. No network (fake CLIs).\n",
+    );
+}
+
+/// The `›`-marked line of the screen (the selected row / rail).
+fn selected_line(h: &PtyHarness) -> Option<String> {
+    h.screen_contents()
+        .lines()
+        .find(|l| l.contains('\u{203a}'))
+        .map(str::to_owned)
+}
+
+/// P3 (logged out, hanging login): while the vendor login owns the terminal the TUI has left the
+/// alternate screen (its prompt is not drawn over the picker frame); Ctrl+C ends the login child
+/// only, and Workshop returns to the picker with a "sign-in cancelled" status and working ↑/↓.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake CLIs, no network); run with --include-ignored"]
+fn rails_signin_ctrl_c_cancels_only_the_vendor_login() {
+    let Some(bin) = bin_from_env() else { return };
+    let fakes = install_fakes(false);
+    let claude_state = fakes.state.join("claude");
+    std::fs::write(claude_state.join("login_hang"), "1").unwrap();
+    let mut j = spawn("rails-signin-ctrl-c", &bin, &[], Some(&fakes.bin));
+    open_subscriptions(&mut j);
+    wait_for(&mut j.h, "Sign in", 15);
+    assert!(
+        j.h.terminal_modes().alt_screen,
+        "the TUI runs on the alternate screen"
+    );
+    j.h.inject_keys(b"\r").unwrap();
+    j.h.update(Duration::from_millis(400));
+    j.h.inject_keys(b"\r").unwrap(); // Connect
+    let marker = claude_state.join("login_ran");
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(30) && !marker.exists() {
+        j.h.update(Duration::from_millis(200));
+    }
+    assert!(
+        marker.exists(),
+        "Connect must launch the fake login:\n{}",
+        j.h.screen_contents()
+    );
+    j.h.update(Duration::from_millis(800));
+    // The login has the shell's screen to itself: no picker frame under its output.
+    let screen = j.h.screen_contents();
+    assert!(
+        !j.h.terminal_modes().alt_screen,
+        "TUI must leave the alternate screen while the vendor login runs:\n{screen}"
+    );
+    assert!(
+        screen.contains("Workshop: running") && screen.contains("Opening browser to sign in"),
+        "banner and the login's own output must be visible:\n{screen}"
+    );
+    assert!(
+        !screen.contains("connect a model"),
+        "the picker frame must not be visible under the login output:\n{screen}"
+    );
+    snapshot(&j.h, &j.dir, "01-login-owns-the-terminal");
+
+    // Ctrl+C in the (cooked-mode) terminal: SIGINT to the foreground process group.
+    j.h.inject_keys(b"\x03").unwrap();
+    wait_for(&mut j.h, "sign-in cancelled", 20);
+    wait_for(&mut j.h, "connect a model", 5);
+    assert!(
+        j.h.is_running().unwrap_or(false),
+        "Workshop must survive the Ctrl+C that ended the login:\n{}",
+        j.h.screen_contents()
+    );
+    assert!(
+        j.h.terminal_modes().alt_screen,
+        "TUI must be back on the alternate screen"
+    );
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains("[Sign in]") && !screen.contains("re-probing"),
+        "a cancelled login leaves the rails as they were:\n{screen}"
+    );
+    snapshot(&j.h, &j.dir, "02-cancelled-back-in-picker");
+    // The login child (and its `sleep`) is gone.
+    let still_running = std::process::Command::new("pgrep")
+        .args([
+            "-f",
+            &format!("{} auth login", fakes.bin.join("claude").display()),
+        ])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    assert!(!still_running, "the fake login must not outlive Ctrl+C");
+    // Focus is back on the rail list.
+    j.h.inject_keys(b"\x1b[B").unwrap();
+    j.h.update(Duration::from_millis(400));
+    assert!(
+        selected_line(&j.h).is_some_and(|l| l.contains("Codex")),
+        "Down must move to the Codex rail after the cancelled login:\n{}",
+        j.h.screen_contents()
+    );
+    snapshot(&j.h, &j.dir, "03-down-moves-to-codex");
+    finish(
+        j,
+        "P3 rails (logged-out fakes, hanging login): Connect left the alternate screen for the \
+         vendor login; Ctrl+C ended only the login child; Workshop returned to the picker with \
+         a sign-in cancelled status, rails unchanged, ↓ working. No network (fake CLIs).\n",
     );
 }

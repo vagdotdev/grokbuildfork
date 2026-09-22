@@ -668,6 +668,118 @@ fn picker_xai_card_requires_two_enters_and_sets_opt_in() {
     assert!(app.connection_picker.is_none(), "picker closes when the flow starts");
 }
 
+/// Picker on the Subscriptions tab with every rail signed out (Connect shown), Claude selected.
+fn picker_with_signed_out_rails(app: &mut AppView) {
+    use workshop_auth::{PickerInput, PickerSnapshot};
+    use workshop_detect::{Pill, Rail, RailState};
+    dispatch(Action::Login, app);
+    let picker = app.connection_picker.as_mut().unwrap();
+    picker.apply_snapshot(PickerSnapshot {
+        rows: picker.rows.clone(),
+        rails: Rail::ALL
+            .iter()
+            .map(|r| RailState {
+                pill: Pill::SignIn,
+                installed: true,
+                show_connect: true,
+                ..RailState::detecting(*r)
+            })
+            .collect(),
+        default_selection: None,
+        secret_backend: None,
+    });
+    dispatch(Action::ConnectionPicker(PickerInput::SwitchTab), app);
+    assert_eq!(
+        app.connection_picker.as_ref().unwrap().tab,
+        workshop_auth::PickerTab::Subscriptions
+    );
+}
+
+/// The state Connect's Enter leaves behind (`PickerOutcome::RailConnect`): the rail detail is open
+/// and the vendor login is queued for the event loop. Set directly so the test never probes this
+/// machine's PATH for a real CLI (`rail_login_argv` does).
+fn queue_rail_connect(app: &mut AppView) -> workshop_detect::Rail {
+    let picker = app.connection_picker.as_mut().unwrap();
+    picker.detail_open = true;
+    let rail = picker.selected_rail().unwrap().rail;
+    app.pending_workshop_login = Some((rail, vec!["claude".into(), "auth".into(), "login".into()]));
+    rail
+}
+
+/// After the vendor login returns, ↑/↓ move between rails again: Connect's Enter opened the rail
+/// detail, and the login completion hands focus back to the rail list (no Tab away and back).
+#[test]
+fn picker_rail_login_done_restores_rail_navigation() {
+    use workshop_auth::PickerInput;
+    use workshop_detect::process::InteractiveExit;
+    let mut app = test_app();
+    picker_with_signed_out_rails(&mut app);
+    let rail = queue_rail_connect(&mut app);
+    // Before the fix: Down on an open rail detail without models is a no-op.
+    dispatch(Action::ConnectionPicker(PickerInput::Down), &mut app);
+    assert_eq!(app.connection_picker.as_ref().unwrap().rail_selected, 0);
+    app.pending_workshop_login.take();
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone {
+            rail,
+            exit: InteractiveExit::Success,
+        }),
+        &mut app,
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::WorkshopLoadPicker)),
+        "a finished login re-probes the rails, got {effects:?}"
+    );
+    let picker = app.connection_picker.as_ref().unwrap();
+    assert!(!picker.detail_open, "focus is back on the rail list");
+    assert_eq!(picker.rail_selected, 0);
+    dispatch(Action::ConnectionPicker(PickerInput::Down), &mut app);
+    assert_eq!(
+        app.connection_picker.as_ref().unwrap().rail_selected,
+        1,
+        "Down moves to the next rail right after the login returns"
+    );
+}
+
+/// Ctrl+C in the terminal ends the vendor login only: the picker reports the cancellation, keeps
+/// the rails as they were (no re-probe) and is navigable again.
+#[test]
+fn picker_rail_login_interrupted_reports_cancel_without_reprobe() {
+    use workshop_auth::PickerInput;
+    use workshop_detect::process::InteractiveExit;
+    let mut app = test_app();
+    picker_with_signed_out_rails(&mut app);
+    let rail = queue_rail_connect(&mut app);
+    app.pending_workshop_login.take();
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone {
+            rail,
+            exit: InteractiveExit::Interrupted,
+        }),
+        &mut app,
+    );
+    assert!(
+        effects.is_empty(),
+        "a cancelled login is not re-probed, got {effects:?}"
+    );
+    let picker = app.connection_picker.as_ref().unwrap();
+    assert!(
+        picker
+            .status
+            .as_deref()
+            .is_some_and(|s| s.contains("sign-in cancelled")),
+        "status: {:?}",
+        picker.status
+    );
+    assert!(!picker.loading && !picker.detail_open);
+    dispatch(Action::ConnectionPicker(PickerInput::Down), &mut app);
+    assert_eq!(app.connection_picker.as_ref().unwrap().rail_selected, 1);
+}
+
 /// Puts the app in `Authenticating` with a live task's abort handle installed, as the event loop would.
 /// Returns the task's JoinHandle and the seq.
 /// Callers assert the task actually gets aborted (`unwrap_err().is_cancelled()`), not merely that the handle slot was cleared.
