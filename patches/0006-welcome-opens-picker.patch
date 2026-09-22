@@ -1225,10 +1225,10 @@ index 1c507697..233aca18 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..1dafea0a 100644
+index eda61b3c..fdf635c3 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-@@ -765,18 +765,60 @@ fn run_pending_suspends(
+@@ -765,18 +765,72 @@ fn run_pending_suspends(
      presenter: &mut Presenter,
      suspend_retry_after: &mut Option<Instant>,
      suspend_wait_reports: &mut SuspendWaitReports,
@@ -1262,12 +1262,24 @@ index eda61b3c..1dafea0a 100644
 +            input_rx,
 +            || {
 +                if let Some((program, args)) = argv.split_first() {
-+                    eprintln!("\nWorkshop: running `{}` — sign in, then this returns to Workshop.\n", argv.join(" "));
-+                    exit_ok = std::process::Command::new(program)
-+                        .args(args)
-+                        .status()
-+                        .map(|s| s.success())
-+                        .unwrap_or(false);
++                    // The TUI parks fd 2 on /dev/null (xai_tty_utils::redirect_native_stderr) and
++                    // draws through a dup of the real terminal. An inherited stderr would swallow a
++                    // vendor CLI that prints its sign-in instructions there (`codex login` prints
++                    // its auth URL on stderr), so hand the child the terminal explicitly.
++                    let banner = format!(
++                        "\nWorkshop: running `{}` — sign in, then this returns to Workshop.\n",
++                        argv.join(" ")
++                    );
++                    xai_grok_shell::util::with_locked_stderr(|stderr| {
++                        use std::io::Write as _;
++                        let _ = stderr.write_all(banner.as_bytes());
++                    });
++                    let mut child = std::process::Command::new(program);
++                    child.args(args);
++                    if let Ok(tty) = xai_tty_utils::dup_tui_stderr() {
++                        child.stderr(std::process::Stdio::from(tty));
++                    }
++                    exit_ok = child.status().map(|s| s.success()).unwrap_or(false);
 +                }
 +            },
 +        ) {
@@ -1293,7 +1305,7 @@ index eda61b3c..1dafea0a 100644
      if let Some(request) = app.pending_editor.take() {
          let retry_request = request.clone();
          match crate::app::external_editor::prepare(app, request) {
-@@ -818,7 +860,7 @@ fn run_pending_suspends(
+@@ -818,7 +872,7 @@ fn run_pending_suspends(
                              report_suspend_wait(app, EDITOR_SUSPEND_WAIT);
                              presenter.request_presentation(app, terminal, false);
                          }
@@ -1302,7 +1314,7 @@ index eda61b3c..1dafea0a 100644
                      }
                      Err(error) => return Err(error.into()),
                  };
-@@ -892,7 +934,7 @@ fn run_pending_suspends(
+@@ -892,7 +946,7 @@ fn run_pending_suspends(
                      report_suspend_wait(app, TRANSCRIPT_SUSPEND_WAIT);
                      presenter.request_presentation(app, terminal, false);
                  }
@@ -1311,7 +1323,7 @@ index eda61b3c..1dafea0a 100644
              }
              Err(error) => return Err(error.into()),
          };
-@@ -901,7 +943,7 @@ fn run_pending_suspends(
+@@ -901,7 +955,7 @@ fn run_pending_suspends(
          presenter.request_presentation(app, terminal, true);
          suspend_wait_reports.pager_reported = false;
      }
@@ -1320,7 +1332,7 @@ index eda61b3c..1dafea0a 100644
  }
  /// Consume a pending in-process switch between `/minimal` and `/fullscreen`.
  /// Returns `true` when the caller must quit (exec fallback armed on `app.relaunch`).
-@@ -1272,16 +1314,12 @@ pub(crate) async fn run(
+@@ -1272,16 +1326,12 @@ pub(crate) async fn run(
          );
      }
      let mut post_render_effects = if needs_interactive_login {
@@ -1341,7 +1353,7 @@ index eda61b3c..1dafea0a 100644
      } else {
          vec![]
      };
-@@ -1632,6 +1670,12 @@ pub(crate) async fn run(
+@@ -1632,6 +1682,12 @@ pub(crate) async fn run(
      let (progress_tx, mut progress_rx) =
          tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
      let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
@@ -1354,7 +1366,7 @@ index eda61b3c..1dafea0a 100644
      let voice_auth_factory = connection.auth_manager.clone();
      let mut tick_interval = tick_interval;
      let mut animation_tick_at: Option<Instant> = None;
-@@ -1892,7 +1936,7 @@ pub(crate) async fn run(
+@@ -1892,7 +1948,7 @@ pub(crate) async fn run(
          if process_effects(workspace_effects, &mut tasks, &mut app, &progress_tx) {
              break;
          }
@@ -1363,7 +1375,7 @@ index eda61b3c..1dafea0a 100644
              &mut app,
              terminal,
              &input_paused,
-@@ -1902,9 +1946,16 @@ pub(crate) async fn run(
+@@ -1902,9 +1958,16 @@ pub(crate) async fn run(
              &mut suspend_retry_after,
              &mut suspend_wait_reports,
          ) {
@@ -1383,7 +1395,7 @@ index eda61b3c..1dafea0a 100644
          }
          if run_pending_mode_switch(
              &mut app,
-@@ -2885,6 +2936,19 @@ pub(crate) async fn run(
+@@ -2885,6 +2948,19 @@ pub(crate) async fn run(
                  presenter.request(false);
              }
  
@@ -1403,7 +1415,7 @@ index eda61b3c..1dafea0a 100644
              // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
              // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
              // Voice is only serviced when nothing else is pending
-@@ -3143,7 +3207,9 @@ struct RoutedInputEvent {
+@@ -3143,7 +3219,9 @@ struct RoutedInputEvent {
      is_startup_replay: bool,
  }
  fn tty_suspend_armed(app: &AppView) -> bool {
@@ -1414,7 +1426,7 @@ index eda61b3c..1dafea0a 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4000,113 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4012,113 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
