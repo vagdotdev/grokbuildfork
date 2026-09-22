@@ -15,15 +15,16 @@ recorded in `docs/workshop/adr/`.
 | `crates/codegen/xai-grok-*`, `crates/common/xai-*` | Upstream crates, **never renamed**; a handful carry small patches |
 | `crates/workshop-auth` | Connection picker policy (classes, cards, rails, presence-only CLI detection, text renderer) |
 | `crates/workshop-gates` | No-xAI gates 1–4 and the picker policy as `cargo test`; PTY smoke of the built binary |
-| `crates/workshop-adapters` | Agent adapters (separate PR) |
+| `crates/workshop-adapters` | Vendor CLI adapters (Claude/Codex/Cursor) + the OpenCode engine (`opencode serve`) |
+| `crates/workshop-providers`, `-detect`, `-brand`, `-voice` | Provider catalog + credential broker; presence-only CLI detection; welcome hero art; local voice STT |
 | `patches/series`, `patches/*.patch` | Quilt series over upstream files; tags `gate:no-xai` / `gate:no-theft` / `product` / `branding` |
 | `patches/groups.txt`, `scripts/regenerate-patches.sh` | Patch file ↔ upstream path groups; regenerates the series from the tree |
 | `scripts/no-xai-scan.sh` | Default-path source scan and binary string scan (`--sources`, `--binary BIN`) |
 | `scripts/no-egress-smoke.sh` | Startup + Login in a network namespace with hostname logging; fails on any xAI host |
 | `scripts/overlay-paths.txt`, `upstream-lock.toml` | What the upstream sync preserves, and which snapshot the tree is on |
-| `scripts/sync/`, `.github/workflows/sync-upstream.yml` | Upstream auto-sync (separate PR) |
-| `scripts/install.sh`, `scripts/release/`, `.github/workflows/release.yml` | Release pipeline (separate PR) |
-| `.github/workflows/ci.yml` | Gate jobs only (`fmt-check`, `no-xai`) |
+| `scripts/sync/`, `.github/workflows/sync-upstream.yml` | Upstream auto-sync |
+| `scripts/install.sh`, `scripts/release/`, `.github/workflows/release.yml` | Release pipeline (CLI installer + voice-engine helper and pinned Whisper model) |
+| `.github/workflows/ci.yml` | Three jobs: **fmt + check (overlay)**, **no-xai gates** (required; source/binary scans, overlay + touched-upstream tests, full pager lib suite, no-egress + no-theft-fs-audit, PTY picker + rails smokes), **voice-engine** (whisper.cpp helper build + model probe) |
 
 ## Build and run
 

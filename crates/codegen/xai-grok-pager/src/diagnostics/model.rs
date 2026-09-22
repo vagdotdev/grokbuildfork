@@ -143,7 +143,7 @@ pub struct TmuxFacts {
 pub enum TmuxColorPassthrough {
     /// The client advertises `RGB`, so truecolor SGR reaches the terminal.
     Forwarded,
-    /// tmux reduces 24-bit color to the client terminfo's palette, which is what makes themes look washed out even when Grok emits truecolor.
+    /// tmux reduces 24-bit color to the client terminfo's palette, which is what makes themes look washed out even when Workshop emits truecolor.
     Reduced,
     /// No usable evidence: tmux predates `terminal-features` (3.2), no client is attached, or the query failed. Never treated as a problem.
     Unknown,

@@ -41,10 +41,13 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.92.0
-          components: rustfmt, clippy
+      - name: Install Rust from rust-toolchain.toml
+        # Use the repo's pinned toolchain (rust-toolchain.toml → 1.94.0) instead of a second,
+        # ignored version. rustup reads the channel + components from the file; the component add
+        # is a no-op belt-and-suspenders for the fmt/clippy steps.
+        run: |
+          rustup toolchain install
+          rustup component add rustfmt clippy
       - uses: arduino/setup-protoc@v3
         with:
           version: "29.3"
@@ -72,9 +75,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.92.0
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install
       # No target cache here on purpose: whisper.cpp compiles with `-march=native`, so a `target/`
       # cached on one runner's CPU can SIGILL when restored on another (illegal instruction at
       # decode). The helper build is fast (~1 min); always compile it for the runner we probe on.
@@ -129,9 +131,8 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
           unshare -rn true && echo "unshare -rn works" || echo "WARNING: unshare -rn still restricted"
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.92.0
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install
       - uses: arduino/setup-protoc@v3
         with:
           version: "29.3"
