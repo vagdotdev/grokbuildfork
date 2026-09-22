@@ -324,9 +324,10 @@ pub(super) fn dispatch_connection_picker(
             }
         }
         PickerOutcome::SelectEngine(model) => {
-            let label = format!("OpenCode · {}", model.name);
             app.workshop_connection = crate::app::workshop::WorkshopConnection::Engine { model };
-            app.show_toast(&format!("Connection: {label} (engine)"));
+            // Engine/Adapter turns bypass the shell model, but the shell still needs an auth method
+            // to open an ACP session (the agent view that renders the streamed turn). Establish the
+            // same keyless/anonymous session Direct/Local uses; the placeholder model is never hit.
             finish_workshop_adapter_selection(app)
         }
         PickerOutcome::RailConnect(rail) => {
@@ -340,41 +341,40 @@ pub(super) fn dispatch_connection_picker(
             vec![]
         }
         PickerOutcome::SelectRailModel(rail, model) => {
-            let label = workshop_detect::composer_label(rail, &model);
             app.workshop_connection =
                 crate::app::workshop::WorkshopConnection::Adapter { rail, model };
-            app.show_toast(&format!("Connection: {label} (agent adapter)"));
             finish_workshop_adapter_selection(app)
         }
     }
 }
 
-/// An adapter/engine connection needs no shell credential: mark auth done so the home prompt is
-/// usable, stamp the composer label (`Big Pickle · OpenCode`, `Claude · {model}`), and close the
-/// picker.
+/// An Engine/Adapter connection routes turns through workshop-adapters, not the shell model — but
+/// the shell still needs a model + auth method to open the ACP session that backs the agent view.
+/// Write a keyless placeholder model and reuse the same anonymous activation Direct/Local uses, so
+/// the session is created and the streamed turn has a visible home; `dispatch_workshop_turn` then
+/// intercepts prompts before they reach the placeholder. The composer label is stamped from
+/// `workshop_connection` at session creation (`configure_agent_composer`) and here.
 fn finish_workshop_adapter_selection(app: &mut AppView) -> Vec<Effect> {
-    if !matches!(app.auth_state, AuthState::Done) {
-        app.auth_state = AuthState::Done;
-        app.is_api_key_auth = true;
-        app.usage_visible = false;
-        app.sync_billing_surface_to_agents();
-        app.welcome_prompt_focused = !app.is_access_blocked();
+    match crate::app::workshop::activate_placeholder_session() {
+        Ok(key) => start_workshop_activation(app, key),
+        Err(e) => {
+            if let Some(picker) = app.connection_picker.as_mut() {
+                picker.set_status(format!("Could not connect: {e}"));
+            }
+            vec![]
+        }
     }
-    let label = app.workshop_connection.composer_label();
-    for agent in app.agents.values_mut() {
-        agent.workshop_model_label = label.clone();
-    }
-    close_connection_picker(app);
-    vec![]
 }
 
 /// After config.toml gained `[model.<key>]`: reload the shell's model list, authenticate with the
 /// non-interactive `xai.api_key` method (the anonymous sentinel or a real key counts), and switch
 /// the active session. Completion arrives as `AuthComplete` / `AuthFailed` for `request_seq`.
 fn start_workshop_activation(app: &mut AppView, model_id: String) -> Vec<Effect> {
-    // Direct/Local (Shell): the composer shows the shell model name, not a Workshop runtime label.
+    // Stamp the composer label from the active connection: `None` for Direct/Local (Shell) → the
+    // shell model name shows; `Big Pickle · OpenCode` / `Claude · {model}` for Engine/Adapter.
+    let label = app.workshop_connection.composer_label();
     for agent in app.agents.values_mut() {
-        agent.workshop_model_label = None;
+        agent.workshop_model_label = label.clone();
     }
     abort_prior_auth(app);
     let request_seq = app.next_auth_request_seq;
@@ -504,12 +504,14 @@ pub(super) fn handle_auth_complete(
         app.welcome_prompt_focused = !app.is_access_blocked();
         app.auth_code_input.reset();
 
-        // Workshop: a Direct API / Local activation started from the connection picker has now
-        // reloaded the model and authenticated; hand the user back to the home prompt.
-        if let Some(picker) = app.connection_picker.take() {
-            let label = picker
-                .selected_row()
-                .map(|r| r.title())
+        // Workshop: a connection activation started from the picker has now reloaded the model and
+        // authenticated (Direct/Local) or established the anonymous session (Engine/Adapter); close
+        // the picker and hand the user back to the home prompt. The composer label is stamped at
+        // session creation from `workshop_connection` (see `configure_agent_composer`).
+        if app.connection_picker.take().is_some() {
+            let label = app
+                .workshop_connection
+                .composer_label()
                 .unwrap_or_else(|| "model".to_owned());
             app.show_toast(&format!("Connected: {label}"));
         }

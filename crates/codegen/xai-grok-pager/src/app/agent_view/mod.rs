@@ -742,6 +742,10 @@ pub struct AgentView {
     /// Workshop: composer label for an Engine/Adapter connection (`Big Pickle · OpenCode`,
     /// `Claude · {model}`); `None` for Shell (Direct/Local), which shows the shell model name.
     pub(crate) workshop_model_label: Option<String>,
+    /// Workshop: a streaming Engine/Adapter turn is in flight for this agent. Mirrors the app-level
+    /// flag so the per-agent input layer treats Ctrl+C as a cancellable activity (there is no ACP
+    /// turn to detect). Cleared when the turn ends.
+    pub(crate) workshop_turn_active: bool,
     /// Sticky: once the user types in the prompt, hide the tip for the session.
     pub tip_typing_dismissed: bool,
     pub todo: TodoPane,

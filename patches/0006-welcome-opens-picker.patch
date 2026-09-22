@@ -355,7 +355,7 @@ index 87f63aef..3dcc57a5 100644
          Self::parse_from(std::iter::once(bin_name).chain(std::env::args().skip(1)))
      }
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
-index 3b578a9d..827a224d 100644
+index 3b578a9d..8abf55cd 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 @@ -10,6 +10,7 @@ use crate::app::agent_view::AgentView;
@@ -498,9 +498,10 @@ index 3b578a9d..827a224d 100644
 +            }
 +        }
 +        PickerOutcome::SelectEngine(model) => {
-+            let label = format!("OpenCode · {}", model.name);
 +            app.workshop_connection = crate::app::workshop::WorkshopConnection::Engine { model };
-+            app.show_toast(&format!("Connection: {label} (engine)"));
++            // Engine/Adapter turns bypass the shell model, but the shell still needs an auth method
++            // to open an ACP session (the agent view that renders the streamed turn). Establish the
++            // same keyless/anonymous session Direct/Local uses; the placeholder model is never hit.
 +            finish_workshop_adapter_selection(app)
 +        }
 +        PickerOutcome::RailConnect(rail) => {
@@ -514,41 +515,40 @@ index 3b578a9d..827a224d 100644
 +            vec![]
 +        }
 +        PickerOutcome::SelectRailModel(rail, model) => {
-+            let label = workshop_detect::composer_label(rail, &model);
 +            app.workshop_connection =
 +                crate::app::workshop::WorkshopConnection::Adapter { rail, model };
-+            app.show_toast(&format!("Connection: {label} (agent adapter)"));
 +            finish_workshop_adapter_selection(app)
 +        }
 +    }
 +}
 +
-+/// An adapter/engine connection needs no shell credential: mark auth done so the home prompt is
-+/// usable, stamp the composer label (`Big Pickle · OpenCode`, `Claude · {model}`), and close the
-+/// picker.
++/// An Engine/Adapter connection routes turns through workshop-adapters, not the shell model — but
++/// the shell still needs a model + auth method to open the ACP session that backs the agent view.
++/// Write a keyless placeholder model and reuse the same anonymous activation Direct/Local uses, so
++/// the session is created and the streamed turn has a visible home; `dispatch_workshop_turn` then
++/// intercepts prompts before they reach the placeholder. The composer label is stamped from
++/// `workshop_connection` at session creation (`configure_agent_composer`) and here.
 +fn finish_workshop_adapter_selection(app: &mut AppView) -> Vec<Effect> {
-+    if !matches!(app.auth_state, AuthState::Done) {
-+        app.auth_state = AuthState::Done;
-+        app.is_api_key_auth = true;
-+        app.usage_visible = false;
-+        app.sync_billing_surface_to_agents();
-+        app.welcome_prompt_focused = !app.is_access_blocked();
++    match crate::app::workshop::activate_placeholder_session() {
++        Ok(key) => start_workshop_activation(app, key),
++        Err(e) => {
++            if let Some(picker) = app.connection_picker.as_mut() {
++                picker.set_status(format!("Could not connect: {e}"));
++            }
++            vec![]
++        }
 +    }
-+    let label = app.workshop_connection.composer_label();
-+    for agent in app.agents.values_mut() {
-+        agent.workshop_model_label = label.clone();
-+    }
-+    close_connection_picker(app);
-+    vec![]
 +}
 +
 +/// After config.toml gained `[model.<key>]`: reload the shell's model list, authenticate with the
 +/// non-interactive `xai.api_key` method (the anonymous sentinel or a real key counts), and switch
 +/// the active session. Completion arrives as `AuthComplete` / `AuthFailed` for `request_seq`.
 +fn start_workshop_activation(app: &mut AppView, model_id: String) -> Vec<Effect> {
-+    // Direct/Local (Shell): the composer shows the shell model name, not a Workshop runtime label.
++    // Stamp the composer label from the active connection: `None` for Direct/Local (Shell) → the
++    // shell model name shows; `Big Pickle · OpenCode` / `Claude · {model}` for Engine/Adapter.
++    let label = app.workshop_connection.composer_label();
 +    for agent in app.agents.values_mut() {
-+        agent.workshop_model_label = None;
++        agent.workshop_model_label = label.clone();
 +    }
 +    abort_prior_auth(app);
 +    let request_seq = app.next_auth_request_seq;
@@ -602,16 +602,18 @@ index 3b578a9d..827a224d 100644
      restore_auth_return_view(app, return_view);
      // This runs on all agents because the login may have been started from the dashboard
      // Clearing the stash alone is not enough
-@@ -318,6 +504,16 @@ pub(super) fn handle_auth_complete(
+@@ -318,6 +504,18 @@ pub(super) fn handle_auth_complete(
          app.welcome_prompt_focused = !app.is_access_blocked();
          app.auth_code_input.reset();
  
-+        // Workshop: a Direct API / Local activation started from the connection picker has now
-+        // reloaded the model and authenticated; hand the user back to the home prompt.
-+        if let Some(picker) = app.connection_picker.take() {
-+            let label = picker
-+                .selected_row()
-+                .map(|r| r.title())
++        // Workshop: a connection activation started from the picker has now reloaded the model and
++        // authenticated (Direct/Local) or established the anonymous session (Engine/Adapter); close
++        // the picker and hand the user back to the home prompt. The composer label is stamped at
++        // session creation from `workshop_connection` (see `configure_agent_composer`).
++        if app.connection_picker.take().is_some() {
++            let label = app
++                .workshop_connection
++                .composer_label()
 +                .unwrap_or_else(|| "model".to_owned());
 +            app.show_toast(&format!("Connected: {label}"));
 +        }
@@ -1163,7 +1165,7 @@ index 68008b64..534ea991 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index d2463b6f..ed62c354 100644
+index d2463b6f..2b3d32ed 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -764,18 +764,60 @@ fn run_pending_suspends(
@@ -1352,7 +1354,7 @@ index d2463b6f..ed62c354 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3959,6 +4025,110 @@ pub(crate) fn dispatch_then_forward(
+@@ -3959,6 +4025,113 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -1447,10 +1449,13 @@ index d2463b6f..ed62c354 100644
 +                };
 +                crate::app::workshop::save_resume_id(backend, &cwd, session);
 +            }
-+            if cancelled && let Some(agent) = app.agents.get_mut(&agent_id) {
-+                agent
-+                    .scrollback
-+                    .push_block(RenderBlock::system("Turn cancelled."));
++            if let Some(agent) = app.agents.get_mut(&agent_id) {
++                agent.workshop_turn_active = false;
++                if cancelled {
++                    agent
++                        .scrollback
++                        .push_block(RenderBlock::system("Turn cancelled."));
++                }
 +            }
 +            app.workshop_turn_active = false;
 +            app.workshop_turn_cancel = None;
@@ -1502,10 +1507,10 @@ index e6bea234..d4c1ff1e 100644
              ]
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..066f3d24
+index 00000000..b074b9a4
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,532 @@
+@@ -0,0 +1,542 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -1642,6 +1647,16 @@ index 00000000..066f3d24
 +        default_selection,
 +        secret_backend: Some(secret_backend),
 +    }
++}
++
++/// Write a keyless placeholder model + make it the shell default, then return its config key.
++/// Engine/Adapter connections don't use a shell model — but the shell needs *a* model + the
++/// non-interactive auth method to open an ACP session (the agent view that renders the streamed
++/// turn). The placeholder is never contacted: `dispatch_workshop_turn` intercepts prompts and
++/// routes them to the engine/adapter. Delegates to `workshop-auth` (which owns the config schema).
++pub fn activate_placeholder_session() -> Result<String, String> {
++    workshop_auth::config_write::activate_placeholder_session(&workshop_auth::config_path())
++        .map_err(|e| e.to_string())
 +}
 +
 +/// What activating a Direct API / Local row needs the process to do.

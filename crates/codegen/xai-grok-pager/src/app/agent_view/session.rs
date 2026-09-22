@@ -134,6 +134,7 @@ impl AgentView {
             scrollback,
             prompt,
             workshop_model_label: None,
+            workshop_turn_active: false,
             tip_typing_dismissed: false,
             todo: TodoPane::new(),
             tasks: TasksPane::new(),
@@ -861,6 +862,7 @@ impl AgentView {
         self.session.state.is_turn_running()
             || self.session.state.is_compact_running()
             || (self.wake_turn_active() && !self.wake_turn_cancelling())
+            || self.workshop_turn_active
     }
     /// Whether a local or wake cancel is still in flight.
     pub(crate) fn any_cancel_pending(&self) -> bool {

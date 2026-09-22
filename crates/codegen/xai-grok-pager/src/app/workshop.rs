@@ -136,6 +136,16 @@ pub async fn load_picker_snapshot() -> PickerSnapshot {
     }
 }
 
+/// Write a keyless placeholder model + make it the shell default, then return its config key.
+/// Engine/Adapter connections don't use a shell model — but the shell needs *a* model + the
+/// non-interactive auth method to open an ACP session (the agent view that renders the streamed
+/// turn). The placeholder is never contacted: `dispatch_workshop_turn` intercepts prompts and
+/// routes them to the engine/adapter. Delegates to `workshop-auth` (which owns the config schema).
+pub fn activate_placeholder_session() -> Result<String, String> {
+    workshop_auth::config_write::activate_placeholder_session(&workshop_auth::config_path())
+        .map_err(|e| e.to_string())
+}
+
 /// What activating a Direct API / Local row needs the process to do.
 #[derive(Debug, Clone)]
 pub struct ActivationPlan {

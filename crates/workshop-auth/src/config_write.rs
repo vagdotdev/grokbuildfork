@@ -98,6 +98,29 @@ pub fn model_table(spec: &ModelEntrySpec) -> toml::Table {
     t
 }
 
+/// Write a keyless placeholder model (neutral loopback base URL, anonymous sentinel) and make it
+/// the shell default; return its config key. Engine/Adapter connections route turns through
+/// workshop-adapters, not this model, but the shell needs a model + the non-interactive auth method
+/// to open a session. A turn never reaches the placeholder: the pager intercepts prompts first.
+pub fn activate_placeholder_session(path: &Path) -> Result<String, ConfigWriteError> {
+    let spec = ModelEntrySpec {
+        id: "workshop:connection".to_owned(),
+        model: "workshop-connection".to_owned(),
+        // The neutral sentinel host from patch 0003 (`neutral-production-endpoints`).
+        base_url: "http://127.0.0.1:1".to_owned(),
+        name: "Workshop connection".to_owned(),
+        api_backend: xai_grok_sampling_types::ApiBackend::ChatCompletions,
+        auth_scheme: xai_grok_sampler::AuthScheme::Bearer,
+        env_key: Vec::new(),
+        extra_headers: std::collections::BTreeMap::new(),
+        context_window: std::num::NonZeroU64::new(8192).expect("nonzero"),
+        max_completion_tokens: None,
+        stream_tool_calls: None,
+        credential: CredentialInjection::None,
+    };
+    activate_model(path, &spec)
+}
+
 /// Merge `spec` into the TOML document at `path` under `[model.<key>]`, set top-level
 /// `[models] default = "<key>"`, and write it back atomically (0600). Other tables are untouched.
 /// Returns the config key.

@@ -1,14 +1,18 @@
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
-index 6aeb988a..762d2b3a 100644
+index 6aeb988a..5faa1b48 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
-@@ -739,6 +739,9 @@ pub struct AgentView {
+@@ -739,6 +739,13 @@ pub struct AgentView {
      pub(crate) session_binding_epoch: u32,
      pub scrollback: ScrollbackState,
      pub prompt: PromptWidget,
 +    /// Workshop: composer label for an Engine/Adapter connection (`Big Pickle · OpenCode`,
 +    /// `Claude · {model}`); `None` for Shell (Direct/Local), which shows the shell model name.
 +    pub(crate) workshop_model_label: Option<String>,
++    /// Workshop: a streaming Engine/Adapter turn is in flight for this agent. Mirrors the app-level
++    /// flag so the per-agent input layer treats Ctrl+C as a cancellable activity (there is no ACP
++    /// turn to detect). Cleared when the turn ends.
++    pub(crate) workshop_turn_active: bool,
      /// Sticky: once the user types in the prompt, hide the tip for the session.
      pub tip_typing_dismissed: bool,
      pub todo: TodoPane,
@@ -34,22 +38,31 @@ index 2572590a..6d377a83 100644
          let info = match &self.prompt_mode {
              PromptMode::Normal => PromptInfo {
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
-index 78db8552..c931ef3c 100644
+index 78db8552..23ec102e 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
-@@ -133,6 +133,7 @@ impl AgentView {
+@@ -133,6 +133,8 @@ impl AgentView {
              session_binding_epoch: 0,
              scrollback,
              prompt,
 +            workshop_model_label: None,
++            workshop_turn_active: false,
              tip_typing_dismissed: false,
              todo: TodoPane::new(),
              tasks: TasksPane::new(),
+@@ -860,6 +862,7 @@ impl AgentView {
+         self.session.state.is_turn_running()
+             || self.session.state.is_compact_running()
+             || (self.wake_turn_active() && !self.wake_turn_cancelling())
++            || self.workshop_turn_active
+     }
+     /// Whether a local or wake cancel is still in flight.
+     pub(crate) fn any_cancel_pending(&self) -> bool {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-index 3006f1f0..0731f6a2 100644
+index 3006f1f0..aa1edca2 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-@@ -614,6 +614,78 @@ pub(super) fn dispatch_send_prompt_inner(
+@@ -614,6 +614,79 @@ pub(super) fn dispatch_send_prompt_inner(
      dispatch_send_prompt_submission(app, text, None, consume_input, literal, is_follow_up)
  }
  
@@ -119,6 +132,7 @@ index 3006f1f0..0731f6a2 100644
 +            .scrollback
 +            .push_block(RenderBlock::user_prompt(text.as_str()));
 +        agent.prompt.set_text("");
++        agent.workshop_turn_active = true;
 +    }
 +
 +    tokio::spawn(workshop::run_workshop_turn(spec, tx, cancel_rx));
@@ -128,7 +142,7 @@ index 3006f1f0..0731f6a2 100644
  pub(super) fn dispatch_send_prompt_submission(
      app: &mut AppView,
      text: String,
-@@ -689,6 +761,16 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -689,6 +762,16 @@ pub(super) fn dispatch_send_prompt_submission(
          text
      };
  
@@ -145,6 +159,24 @@ index 3006f1f0..0731f6a2 100644
      // Capture app-level fields before the mut-borrow on `agent`.
      let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
      let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
+index e792108a..ef3c6be4 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
+@@ -736,9 +736,13 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
+     let announcements = app.active_announcements.clone();
+     let restricted = app.tier_restricted_commands.clone();
+     let plugins_visible = !app.appearance.disable_plugins;
++    // Workshop: a new/revealed agent shows the active connection's composer label (`Big Pickle ·
++    // OpenCode`, `Claude · {model}`); `None` for Direct/Local (Shell) → the shell model name shows.
++    let workshop_label = app.workshop_connection.composer_label();
+     let Some(agent) = app.agents.get_mut(&agent_id) else {
+         return;
+     };
++    agent.workshop_model_label = workshop_label;
+     agent.prompt.set_compact(compact);
+     agent.prompt.adopt_slash_mru(slash_mru);
+     agent.prompt.adopt_command_tags(command_tags);
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs
 index e9666d35..17db253d 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs

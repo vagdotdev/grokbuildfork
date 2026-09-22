@@ -680,6 +680,7 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
             .scrollback
             .push_block(RenderBlock::user_prompt(text.as_str()));
         agent.prompt.set_text("");
+        agent.workshop_turn_active = true;
     }
 
     tokio::spawn(workshop::run_workshop_turn(spec, tx, cancel_rx));

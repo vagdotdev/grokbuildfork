@@ -198,6 +198,59 @@ fn run_write_turn(j: &mut Journey, secs: u64) -> String {
     );
 }
 
+/// Start a turn, wait for it to begin streaming, then cancel it with Ctrl+C (the upstream cancel
+/// gesture; mid-turn Esc is swallowed by the app). Assert the TUI reports the cancellation and the
+/// composer becomes usable again (no hang).
+fn run_cancel_turn(j: &mut Journey) {
+    let prompt = "Write a long, detailed, multi-paragraph essay (at least 600 words) about the \
+                  history of command-line text editors. Take your time.";
+    j.h.inject_keys(prompt.as_bytes()).unwrap();
+    j.h.update(Duration::from_millis(300));
+    j.h.inject_keys(b"\r").unwrap();
+    // Wait until the turn is visibly underway (a running indicator or streamed text).
+    let started = Instant::now();
+    let mut streaming = false;
+    while started.elapsed() < Duration::from_secs(60) {
+        j.h.update(Duration::from_millis(300));
+        let screen = j.h.screen_contents();
+        if screen.contains("history") || screen.contains("editor") || screen.contains("Esc to interrupt")
+        {
+            streaming = true;
+            break;
+        }
+    }
+    assert!(streaming, "turn never started streaming:\n{}", j.h.screen_contents());
+    snapshot(&j.h, &j.dir, "06-cancel-midstream");
+    // Ctrl+C twice (the two-step cancel gesture on an empty prompt with a running turn).
+    j.h.inject_keys(b"\x03").unwrap();
+    j.h.update(Duration::from_millis(300));
+    j.h.inject_keys(b"\x03").unwrap();
+    if let Err(e) = j.h.wait_for_text("cancelled", Duration::from_secs(30)) {
+        panic!("turn was not cancelled: {e}\nscreen:\n{}", j.h.screen_contents());
+    }
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "07-cancelled");
+}
+
+/// A follow-up turn on the same session that must recall the earlier tool call (resume/memory).
+fn run_memory_turn(j: &mut Journey, secs: u64) -> String {
+    let prompt = "Without using any tools, what exact text did you put inside hello.txt earlier? \
+                  Reply with only that text.";
+    j.h.inject_keys(prompt.as_bytes()).unwrap();
+    j.h.update(Duration::from_millis(300));
+    j.h.inject_keys(b"\r").unwrap();
+    if let Err(e) = j.h.wait_for_text(FILE_CONTENT, Duration::from_secs(secs)) {
+        snapshot(&j.h, &j.dir, "08-memory-timeout");
+        panic!(
+            "second turn did not recall the file contents: {e}\nscreen:\n{}",
+            j.h.screen_contents()
+        );
+    }
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "08-memory-recalled");
+    j.h.screen_contents()
+}
+
 /// The whole journey's strace must show no connect()/DNS to an xAI / Grok / analytics host. Returns
 /// the DNS query-name fragments seen, so the caller can assert the *expected* host was contacted.
 fn assert_no_forbidden_egress(dir: &Path) -> String {
@@ -284,14 +337,21 @@ fn opencode_big_pickle_turn_with_tool_call() {
     }
     let Some(bin) = bin_from_env() else { return };
     let mut j = spawn("opencode", &bin, &[]);
-    pick_model_row(&mut j, "Big Pickle", "OpenCode");
+    // After selecting, the app lands in an agent composer whose label names the engine connection.
+    pick_model_row(&mut j, "Big Pickle", "Big Pickle \u{00b7} OpenCode");
+    // 1. A real tool-calling turn writes a file (streamed into the scrollback).
     let text = run_write_turn(&mut j, 240);
     assert!(text.contains(FILE_CONTENT), "file content: {text:?}");
+    // 2. Cancel a fresh turn mid-stream (Ctrl+C → engine abort).
+    run_cancel_turn(&mut j);
+    // 3. A follow-up turn on the same session recalls the earlier write (resume/memory intact).
+    let recalled = run_memory_turn(&mut j, 120);
+    assert!(recalled.contains(FILE_CONTENT), "memory turn recalled: {recalled:?}");
     assert_no_forbidden_egress(&j.dir);
     finish(
         j,
-        "OpenCode Big Pickle via the OpenCode engine (official `opencode serve` on loopback). Expected \
-         hosts in strace.log: 127.0.0.1:<engine port> from workshop; opencode's own upstream \
-         (opencode.ai) from the child.\n",
+        "OpenCode Big Pickle via the OpenCode engine (official `opencode serve` on loopback): turn +\n\
+         tool call, cancel mid-stream, and same-session memory. Expected hosts in strace.log:\n\
+         127.0.0.1:<engine port> from workshop; opencode's own upstream from the child.\n",
     );
 }

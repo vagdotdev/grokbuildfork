@@ -4116,10 +4116,13 @@ fn handle_workshop_turn_msg(app: &mut AppView, msg: crate::app::workshop::Worksh
                 };
                 crate::app::workshop::save_resume_id(backend, &cwd, session);
             }
-            if cancelled && let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent
-                    .scrollback
-                    .push_block(RenderBlock::system("Turn cancelled."));
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent.workshop_turn_active = false;
+                if cancelled {
+                    agent
+                        .scrollback
+                        .push_block(RenderBlock::system("Turn cancelled."));
+                }
             }
             app.workshop_turn_active = false;
             app.workshop_turn_cancel = None;
