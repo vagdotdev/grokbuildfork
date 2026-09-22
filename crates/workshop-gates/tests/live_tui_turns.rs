@@ -621,10 +621,9 @@ fn rails_signin_connect_launches_login() {
     open_subscriptions(&mut j);
     wait_for(&mut j.h, "Sign in", 15);
     snapshot(&j.h, &j.dir, "01-rails-signin");
-    // Enter opens the Claude rail detail; Enter again is Connect → suspends the TUI and runs the
-    // vendor's documented login command (`claude auth login`) attached to the terminal.
-    j.h.inject_keys(b"\r").unwrap();
-    j.h.update(Duration::from_millis(400));
+    // Enter on the signed-out Claude rail opens its detail and is Connect → suspends the TUI and
+    // runs the vendor's documented login command (`claude auth login`) attached to the terminal.
+    // (A second Enter would reach the login child's stdin, or start a second login.)
     j.h.inject_keys(b"\r").unwrap();
     // The fake `claude auth login` touches a marker and exits; the TUI resumes.
     let marker = fakes.state.join("claude").join("login_ran");
@@ -689,9 +688,8 @@ fn rails_signin_ctrl_c_cancels_only_the_vendor_login() {
         j.h.terminal_modes().alt_screen,
         "the TUI runs on the alternate screen"
     );
+    // Enter on a signed-out rail is Connect: the vendor login owns the terminal from here.
     j.h.inject_keys(b"\r").unwrap();
-    j.h.update(Duration::from_millis(400));
-    j.h.inject_keys(b"\r").unwrap(); // Connect
     let marker = claude_state.join("login_ran");
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(30) && !marker.exists() {
@@ -757,6 +755,8 @@ fn rails_signin_ctrl_c_cancels_only_the_vendor_login() {
         j.h.screen_contents()
     );
     snapshot(&j.h, &j.dir, "03-down-moves-to-codex");
+    j.h.write_cast(&j.dir.join("rails-signin-ctrl-c.cast"))
+        .expect("write asciinema cast");
     finish(
         j,
         "P3 rails (logged-out fakes, hanging login): Connect left the alternate screen for the \
