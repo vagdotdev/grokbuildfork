@@ -219,5 +219,10 @@ landed. They assume:
 - On-demand without `actions: write` (App installation tokens cannot dispatch):
   push a `sync/**` tag — `git tag sync/$(date +%Y%m%d-%H%M) && git push origin --tags`
   — which runs like `workflow_dispatch` with `upstream_ref=main`, `force=true`
-  against the default branch (never the tag); delete the tag afterwards
-  (`git push origin :refs/tags/sync/<stamp>`).
+  against the default branch (never the tag); `sync/<stamp>@<ref>` syncs that
+  upstream ref instead (e.g. the locked SHA for a forced replay). Delete the tag
+  afterwards (`git push origin :refs/tags/sync/<stamp>`).
+- With the default `GITHUB_TOKEN` the PR is only created if the repository
+  setting *Actions → General → Allow GitHub Actions to create and approve pull
+  requests* is on; otherwise the run pushes the sync branch, reports the reason
+  in the job summary and fails, and a human opens the PR from the branch.

@@ -6,8 +6,9 @@
 #
 # Triggers: daily schedule; workflow_dispatch; or pushing a `sync/**` tag, which
 # needs only `contents: write` (App installation tokens cannot dispatch) and
-# behaves like workflow_dispatch with upstream_ref=main, force=true. The tag is
-# only a trigger: the run checks out the default branch, never the tag.
+# behaves like workflow_dispatch with upstream_ref=main, force=true
+# (`sync/<stamp>@<ref>` picks another upstream ref). The tag is only a trigger:
+# the run checks out the default branch, never the tag.
 name: sync-upstream
 
 on:
@@ -62,11 +63,14 @@ jobs:
     steps:
       - name: Resolve effective inputs
         # One place derives what the run does. A `sync/**` tag push is the
-        # dispatch-less trigger: main, forced, full verify. Everything below
-        # reads these outputs, never inputs.* directly.
+        # dispatch-less trigger: main, forced, full verify; a tag named
+        # `sync/<stamp>@<ref>` syncs that upstream ref instead of main (e.g. the
+        # locked SHA for a forced replay). Everything below reads these
+        # outputs, never inputs.* directly.
         id: plan
         env:
           EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
           INPUT_UPSTREAM_REF: ${{ inputs.upstream_ref }}
           INPUT_FORCE: ${{ inputs.force }}
           INPUT_SKIP_VERIFY: ${{ inputs.skip_verify }}
@@ -75,6 +79,7 @@ jobs:
           set -euo pipefail
           if [ "$EVENT_NAME" = push ]; then
             upstream_ref=main force=true skip_verify=false
+            case "$REF_NAME" in *@*) upstream_ref="${REF_NAME##*@}" ;; esac
           else
             upstream_ref="${INPUT_UPSTREAM_REF:-main}" force="${INPUT_FORCE:-false}" skip_verify="${INPUT_SKIP_VERIFY:-false}"
           fi
@@ -158,11 +163,14 @@ jobs:
           SYNC_REPORT_DIR: ${{ runner.temp }}/workshop-sync-report
           OUTCOME: ${{ steps.sync.outputs.outcome }}
           PR_URL: ${{ steps.sync.outputs.pr_url }}
+          PR_ERROR: ${{ steps.sync.outputs.pr_error }}
+          PR_BRANCH_URL: ${{ steps.sync.outputs.pr_branch_url }}
           UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
         run: |
           {
             echo "## sync-upstream: ${OUTCOME:-failed before verdict}"
             [ -n "$PR_URL" ] && echo "PR: $PR_URL"
+            [ -n "$PR_ERROR" ] && echo "PR not opened: $PR_ERROR — open it from ${PR_BRANCH_URL:-the pushed sync branch}, or set SYNC_PR_TOKEN / allow Actions to create PRs."
             [ -n "$UPSTREAM_SHA" ] && echo "upstream: \`$UPSTREAM_SHA\`"
             echo
             if [ -f "$SYNC_REPORT_DIR/pr-body.md" ]; then cat "$SYNC_REPORT_DIR/pr-body.md"; fi
@@ -170,6 +178,9 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
+        # Diagnostic only (the job summary carries the report); an artifact
+        # storage quota must not turn the run red.
+        continue-on-error: true
         with:
           name: sync-report-${{ github.run_id }}
           path: ${{ runner.temp }}/workshop-sync-report

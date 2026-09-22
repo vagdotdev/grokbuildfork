@@ -100,8 +100,23 @@ if [[ -n "$existing_pr" ]]; then
   url="$existing_pr"
   action=updated
 else
-  url="$(gh pr create --base "$BASE" --head "$branch" --title "$title" --body-file "$R/pr-body.md" \
-    "${label_args[@]}" "${draft_flag[@]}")"
+  if ! url="$(gh pr create --base "$BASE" --head "$branch" --title "$title" --body-file "$R/pr-body.md" \
+      "${label_args[@]}" "${draft_flag[@]}" 2> "$R/pr-create.err")"; then
+    # Typical on hosted runners with GITHUB_TOKEN: "GitHub Actions is not
+    # permitted to create or approve pull requests" (repo Actions setting) or a
+    # token without pull-requests:write. The branch is pushed; a human can open
+    # the PR from it. Record the reason and let run.sh fail the job visibly.
+    err="$(tr '\n' ' ' < "$R/pr-create.err")"
+    compare_url="$(gh repo view --json url --jq .url 2>/dev/null || true)"
+    [[ -n "$compare_url" ]] && compare_url="$compare_url/compare/$BASE...$branch?expand=1"
+    report_set PR_URL ""
+    report_set PR_ACTION create-failed
+    report_set PR_ERROR "$err"
+    report_set PR_BRANCH_URL "$compare_url"
+    warn "branch $branch pushed but the PR could not be created: $err"
+    warn "open it manually: ${compare_url:-$branch} (or set SYNC_PR_TOKEN / allow Actions to create PRs)"
+    exit 1
+  fi
   action=created
 fi
 report_set PR_URL "$url"
