@@ -2,14 +2,14 @@
 # Make the upstream-owned part of the tree an exact copy of the fetched
 # snapshot (refs/sync/upstream-new) while keeping every overlay path from HEAD.
 #
-#   scripts/sync/replace-tree.sh [--report-dir DIR]
+#   scripts/sync/replace-tree.sh [--patches DIR] [--report-dir DIR]
 #
 # Ownership rule: everything is upstream-owned unless it matches an overlay
 # pattern (scripts/overlay-paths.txt or the built-in list in lib.sh). Files
 # that HEAD has, upstream lacks, and no overlay pattern claims are dropped:
-# upstream deletions go to upstream-deleted-files.txt (routine), anything else
-# to dropped-files.txt for a human to confirm (patch outputs are re-created by
-# the replay).
+# upstream deletions go to upstream-deleted-files.txt (routine), files the
+# patch series creates go to patch-created-files.txt (the replay re-creates
+# them), anything else to dropped-files.txt for a human to confirm.
 # Upstream files that collide with an overlay pattern are listed in
 # overlay-collisions.txt and make the run red (conflict policy rule 4).
 #
@@ -21,6 +21,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --patches) SYNC_PATCHES_DIR="$2"; shift 2 ;;
     --report-dir) SYNC_REPORT_DIR="$2"; shift 2 ;;
     -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -48,17 +49,23 @@ filter_paths "${overlay[@]}" < "$tmp/upstream.txt" > "$SYNC_REPORT_DIR/overlay-c
 # upstream now ships itself (upstream wins there; rule 4 says rename ours).
 filter_paths "${overlay[@]}" < "$tmp/head.txt" \
   | comm -23 - "$SYNC_REPORT_DIR/overlay-collisions.txt" > "$tmp/overlay-files.txt"
-# Dropped: in HEAD, not overlay, not in the new upstream tree, and not an
-# upstream deletion (present in the locked upstream tree). What remains is
-# something neither side owns: leftovers or files a patch used to create.
+# Not upstream, not overlay: split into upstream deletions (present in the
+# locked upstream tree), files the patch series creates (the replay brings
+# them back), and genuinely stale files that neither side owns.
 : > "$tmp/lock.txt"
 if git show-ref --quiet --verify "$SYNC_REF_LOCK"; then
   git ls-tree -r --name-only "$SYNC_REF_LOCK" | sort > "$tmp/lock.txt"
 fi
-comm -23 "$tmp/head.txt" "$tmp/upstream.txt" | comm -23 - "$tmp/overlay-files.txt" \
-  | comm -23 - "$tmp/lock.txt" > "$SYNC_REPORT_DIR/dropped-files.txt"
-comm -23 "$tmp/head.txt" "$tmp/upstream.txt" | comm -23 - "$tmp/overlay-files.txt" \
-  | comm -12 - "$tmp/lock.txt" > "$SYNC_REPORT_DIR/upstream-deleted-files.txt"
+: > "$SYNC_REPORT_DIR/patch-created-files.txt"
+if [[ -f "$SYNC_PATCHES_DIR/series" ]]; then
+  series_created_paths "$SYNC_PATCHES_DIR/series" "$SYNC_PATCHES_DIR" > "$SYNC_REPORT_DIR/patch-created-files.txt"
+fi
+comm -23 "$tmp/head.txt" "$tmp/upstream.txt" | comm -23 - "$tmp/overlay-files.txt" > "$tmp/orphans.txt"
+comm -12 "$tmp/orphans.txt" "$tmp/lock.txt" > "$SYNC_REPORT_DIR/upstream-deleted-files.txt"
+comm -23 "$tmp/orphans.txt" "$tmp/lock.txt" | comm -12 - "$SYNC_REPORT_DIR/patch-created-files.txt" \
+  > "$SYNC_REPORT_DIR/patch-recreated-files.txt"
+comm -23 "$tmp/orphans.txt" "$tmp/lock.txt" | comm -23 - "$SYNC_REPORT_DIR/patch-created-files.txt" \
+  > "$SYNC_REPORT_DIR/dropped-files.txt"
 
 # Snapshot the upstream tree into index + working tree, then bring the overlay
 # files back from HEAD. Untracked files (target/, .sync-report) are untouched.
@@ -71,8 +78,9 @@ report_set OVERLAY_FILE_COUNT "$(wc -l < "$tmp/overlay-files.txt")"
 report_set OVERLAY_COLLISION_COUNT "$(wc -l < "$SYNC_REPORT_DIR/overlay-collisions.txt")"
 report_set DROPPED_FILE_COUNT "$(wc -l < "$SYNC_REPORT_DIR/dropped-files.txt")"
 report_set UPSTREAM_DELETED_COUNT "$(wc -l < "$SYNC_REPORT_DIR/upstream-deleted-files.txt")"
+report_set PATCH_RECREATED_COUNT "$(wc -l < "$SYNC_REPORT_DIR/patch-recreated-files.txt")"
 
-log "restored $(wc -l < "$tmp/overlay-files.txt") overlay file(s); $(wc -l < "$SYNC_REPORT_DIR/upstream-deleted-files.txt") file(s) deleted upstream; dropped $(wc -l < "$SYNC_REPORT_DIR/dropped-files.txt") stale non-upstream file(s)"
+log "restored $(wc -l < "$tmp/overlay-files.txt") overlay file(s); $(wc -l < "$SYNC_REPORT_DIR/upstream-deleted-files.txt") file(s) deleted upstream; $(wc -l < "$SYNC_REPORT_DIR/patch-recreated-files.txt") patch-created file(s) to be replayed; dropped $(wc -l < "$SYNC_REPORT_DIR/dropped-files.txt") stale non-upstream file(s)"
 if [[ -s "$SYNC_REPORT_DIR/overlay-collisions.txt" ]]; then
   warn "upstream now ships files under overlay paths (kept upstream's version, needs a human):"
   sed 's/^/  /' "$SYNC_REPORT_DIR/overlay-collisions.txt" >&2

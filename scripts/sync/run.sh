@@ -12,7 +12,9 @@
 #
 # Exit status: 0 when upstream did not move or the verdict is green/attention,
 # 1 when the verdict is red (gate patch failed, series invalid, build or gate
-# suite failed). The PR (draft when not green) is opened before exiting.
+# suite failed) or the PR could not be opened. The PR (draft when not green)
+# is opened before exiting. A --force run on an unchanged upstream is a replay
+# proof: it verifies and reports but pushes no branch and opens no PR.
 set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -120,15 +122,22 @@ pr_failed=0
 case "$PR" in
   dry-run) "$here/open-pr.sh" --dry-run --base "$BASE" --remote "$REMOTE" ;;
   create)
-    pr_args=(--base "$BASE" --remote "$REMOTE")
-    (( FORCE )) && pr_args+=(--force)
-    # A failed PR creation (token cannot open PRs) must not hide the verdict:
-    # outputs are still written, the job fails at the end.
-    "$here/open-pr.sh" "${pr_args[@]}" || pr_failed=1
-    report_load
-    gh_output pr_url "${PR_URL:-}"
-    gh_output pr_error "${PR_ERROR:-}"
-    gh_output pr_branch_url "${PR_BRANCH_URL:-}"
+    if (( ! UPSTREAM_MOVED )); then
+      # Forced replay of the locked snapshot: the branch would differ from the
+      # base only by the lockfile date. The verdict is the proof; nothing to sync.
+      log "upstream did not move: replay proof only, not pushing a branch or opening a PR"
+      report_set PR_ACTION skipped-unchanged
+    else
+      pr_args=(--base "$BASE" --remote "$REMOTE")
+      (( FORCE )) && pr_args+=(--force)
+      # A failed PR creation (token cannot open PRs) must not hide the verdict:
+      # outputs are still written, the job fails at the end.
+      "$here/open-pr.sh" "${pr_args[@]}" || pr_failed=1
+      report_load
+      gh_output pr_url "${PR_URL:-}"
+      gh_output pr_error "${PR_ERROR:-}"
+      gh_output pr_branch_url "${PR_BRANCH_URL:-}"
+    fi
     ;;
 esac
 
