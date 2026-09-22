@@ -5,11 +5,11 @@ use crate::diagnostics::{
 };
 use crate::host::{DisplayServer, HostOs};
 
-const LIVE_TUI_PROBE_CTA: &str = "Some checks only run in Grok. Start Grok and run /doctor.";
+const LIVE_TUI_PROBE_CTA: &str = "Some checks only run in Workshop. Start Workshop and run /doctor.";
 
 pub(super) fn format(report: &DiagnosticReport) -> String {
     let facts = &report.facts;
-    let mut out = String::from("Grok Doctor\n\nEnvironment\n");
+    let mut out = String::from("Workshop Doctor\n\nEnvironment\n");
 
     fact(&mut out, "terminal", &facts.terminal.to_string());
     match &facts.xtversion {
@@ -126,8 +126,10 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
     };
     fact(&mut out, "status", status);
 
-    if let Some(voice) = &facts.voice {
+    if facts.voice.is_some() || facts.voice_engine.is_some() {
         out.push_str("\nVoice\n");
+    }
+    if let Some(voice) = &facts.voice {
         match voice {
             VoiceFacts::Device { name, detail } => {
                 fact(&mut out, "microphone", &format!("{name} ({detail})"));
@@ -135,6 +137,40 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
             VoiceFacts::Missing { error } => {
                 fact(&mut out, "microphone", &format!("none detected ({error})"));
             }
+        }
+    }
+    if let Some(engine) = &facts.voice_engine {
+        fact(&mut out, "provider", &engine.provider);
+        match (&engine.engine_path, &engine.engine_version) {
+            (Some(path), Some(version)) => fact(&mut out, "engine", &format!("{path} ({version})")),
+            (Some(path), None) => fact(
+                &mut out,
+                "engine",
+                &format!(
+                    "{path} (not runnable: {})",
+                    engine.engine_error.as_deref().unwrap_or("unknown error")
+                ),
+            ),
+            (None, _) => fact(
+                &mut out,
+                "engine",
+                &format!(
+                    "not installed ({})",
+                    engine.engine_error.as_deref().unwrap_or("voice-engine missing")
+                ),
+            ),
+        }
+        fact(
+            &mut out,
+            "model",
+            &format!(
+                "{} ({}, {})",
+                engine.model_path, engine.model_tier, engine.model_tier_source
+            ),
+        );
+        fact(&mut out, "checksum", &engine.model_status);
+        if let Some(err) = &engine.last_error {
+            fact(&mut out, "last error", err);
         }
     }
 

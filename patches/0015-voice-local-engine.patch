@@ -1,5 +1,5 @@
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
-index 2572590a..9188c171 100644
+index d9583697f2594d2866235a446b5325c78190f0cd..f42ee66950003c74cefd10e08d29d4d9cce0396f 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
 @@ -2252,18 +2252,26 @@ impl AgentView {
@@ -53,7 +53,7 @@ index 2572590a..9188c171 100644
          let info = match &self.prompt_mode {
              PromptMode::Normal => PromptInfo {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/voice.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/voice.rs
-index e16c9d24..d5305515 100644
+index e16c9d244b7e2e47cff5d30f72fbac021f08566f..d530551511c8819db7e4b67a422b733294fe4d76 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/voice.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/voice.rs
 @@ -364,8 +364,8 @@ fn voice_ctrl_space_release_leaves_toggle_recording_running() {
@@ -115,7 +115,7 @@ index e16c9d24..d5305515 100644
          subscription_tier: Some("SuperGrok".into()),
          ..Default::default()
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs
-index ebbefb24..ce9d7edf 100644
+index ebbefb2479dc82b6fa41227dd37493ffa5498650..ce9d7edff3490510c4979348603391fc17168eb5 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs
 @@ -80,9 +80,9 @@ pub(super) fn dispatch_enable_voice_mode(app: &mut AppView, from_hold: bool) ->
@@ -131,7 +131,7 @@ index ebbefb24..ce9d7edf 100644
          return open_voice_tier_upsell(app);
      }
 diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs b/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs
-index 4647b2bb..f92323c4 100644
+index 4647b2bb97c901a57c8f99870bee78ff296cfcea..f92323c47c195d83e1f892a3ce0f888456ebd0d4 100644
 --- a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs
 +++ b/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs
 @@ -123,8 +123,10 @@ pub fn format_doctor(report: &DiagnosticReport) -> String {
@@ -175,7 +175,7 @@ index 4647b2bb..f92323c4 100644
      format_findings(report, &mut out);
      out
 diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format_tests.rs b/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format_tests.rs
-index 02f5defd..c730a4c9 100644
+index 02f5defd7d2670089449d78b47096109f6a05653..c730a4c9792164889c8e0dfabe07018069656400 100644
 --- a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format_tests.rs
 @@ -202,17 +202,17 @@ fn tmux_config_and_reload_notes_output_is_stable() {
@@ -253,7 +253,7 @@ index 02f5defd..c730a4c9 100644
          findings: Vec::new(),
          probe_notes: Vec::new(),
 diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/fix.rs b/crates/codegen/xai-grok-pager/src/diagnostics/fix.rs
-index 53c96dba..a63f1120 100644
+index 53c96dbaaa87a8647d66650ec4a2dba1d16fd375..a63f1120e53763c9e0e095034aba8a05b0e595b1 100644
 --- a/crates/codegen/xai-grok-pager/src/diagnostics/fix.rs
 +++ b/crates/codegen/xai-grok-pager/src/diagnostics/fix.rs
 @@ -18,13 +18,13 @@ pub const TMUX_CLIPBOARD_ID: DiagnosticId = DiagnosticId::new("terminal", "tmux-
@@ -423,7 +423,7 @@ index 53c96dba..a63f1120 100644
          payload: FixPayload::SshWrap(SshWrapPlan { shell, managed }),
      })
 diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs b/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs
-index 2dfa5642..2880a733 100644
+index 2dfa5642a18a69231578da3aed12456a04b192e1..2880a733d859458bec0d80eab7ab50620faabda1 100644
 --- a/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs
 @@ -41,6 +41,7 @@ pub(super) fn report() -> DiagnosticReport {
@@ -517,7 +517,7 @@ index 2dfa5642..2880a733 100644
      ];
      for (shell, content) in cases {
 diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs b/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
-index 6bef1daa..266eba40 100644
+index 2bf694896c84f7872a0034061083e49b5783b544..5a0bbacc0d850d87e5f84e16a8e112330092ac90 100644
 --- a/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
 @@ -40,15 +40,22 @@ pub use model::{
@@ -681,7 +681,7 @@ index 6bef1daa..266eba40 100644
              .to_string(),
      );
      Some(warning)
-@@ -2501,7 +2539,7 @@ mod tests {
+@@ -2431,7 +2469,7 @@ mod tests {
          assert!(finding.automatic_remediation.is_none());
          assert!(finding.note.as_deref().is_some_and(|note| {
              note.contains("install a supported audio recorder")
@@ -690,7 +690,7 @@ index 6bef1daa..266eba40 100644
                  && note.contains("can't detect denied macOS microphone access")
          }));
      }
-@@ -2983,7 +3021,7 @@ mod tests {
+@@ -2911,7 +2949,7 @@ mod tests {
          );
      }
  
@@ -700,7 +700,7 @@ index 6bef1daa..266eba40 100644
      fn color_support_warning_reports_tmux_clamp_without_color_evidence() {
          let w = color_support_warning(
 diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/model.rs b/crates/codegen/xai-grok-pager/src/diagnostics/model.rs
-index 25294d16..f2c42d8d 100644
+index 25294d16f519cb10a351815b99dbf45f80af5133..f2c42d8d998d96de160dce2b0ba96db33d1c4f5c 100644
 --- a/crates/codegen/xai-grok-pager/src/diagnostics/model.rs
 +++ b/crates/codegen/xai-grok-pager/src/diagnostics/model.rs
 @@ -95,6 +95,27 @@ pub struct DiagnosticFacts {
@@ -741,7 +741,7 @@ index 25294d16..f2c42d8d 100644
      /// No usable evidence: tmux predates `terminal-features` (3.2), no client is attached, or the query failed. Never treated as a problem.
      Unknown,
 diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/view.rs b/crates/codegen/xai-grok-pager/src/diagnostics/view.rs
-index 5522e60f..22f9673b 100644
+index 5522e60f7195665dd3cbb7b8b6c37b4c230bea50..22f9673bb96b5bf85dcc40e22ddeb72bc9c3b224 100644
 --- a/crates/codegen/xai-grok-pager/src/diagnostics/view.rs
 +++ b/crates/codegen/xai-grok-pager/src/diagnostics/view.rs
 @@ -248,6 +248,7 @@ fn facts(
@@ -832,7 +832,7 @@ index 5522e60f..22f9673b 100644
          ),
      };
 diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/view_tests.rs b/crates/codegen/xai-grok-pager/src/diagnostics/view_tests.rs
-index 96ddc4b0..88d14906 100644
+index 96ddc4b042c7a82ef63ed387efc07d1c734d1447..88d1490683ed7b3c25f8110cc5bf9aba2514e0d6 100644
 --- a/crates/codegen/xai-grok-pager/src/diagnostics/view_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/diagnostics/view_tests.rs
 @@ -268,15 +268,15 @@ fn all_tmux_finding_metadata_uses_stable_automatic_fix_ids_without_schema_change
@@ -855,7 +855,7 @@ index 96ddc4b0..88d14906 100644
          ]
      );
 diff --git a/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs b/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
-index 5cc76928..b1bebdfe 100644
+index 5cc76928e9b17546e036ef69091bc112d175d3a2..b1bebdfe34f02c715d5af81e544e0ccb913ff98c 100644
 --- a/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
 +++ b/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
 @@ -5,11 +5,11 @@ use crate::diagnostics::{
@@ -926,7 +926,7 @@ index 5cc76928..b1bebdfe 100644
      if !report.findings.is_empty() {
          out.push_str("\nFindings\n");
 diff --git a/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs b/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs
-index 3c4932bb..6feea87d 100644
+index 3c4932bb1948c48baedc4a6174c857798bff1a81..6feea87d50356957f27dcce0ed8d59fd45b83f5e 100644
 --- a/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs
 +++ b/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs
 @@ -3,7 +3,7 @@ use serde::Serialize;
@@ -993,7 +993,7 @@ index 3c4932bb..6feea87d 100644
      }
  }
 diff --git a/crates/codegen/xai-grok-pager/src/doctor_cmd/tests.rs b/crates/codegen/xai-grok-pager/src/doctor_cmd/tests.rs
-index 252cee35..ee39ea77 100644
+index 252cee356d37275cf15e1c2eaa3fc3506fc11800..ee39ea772e16b435f27a5fcbd772cf9e911bffe8 100644
 --- a/crates/codegen/xai-grok-pager/src/doctor_cmd/tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/doctor_cmd/tests.rs
 @@ -129,6 +129,7 @@ fn healthy_report() -> DiagnosticReport {
@@ -1126,10 +1126,10 @@ index 252cee35..ee39ea77 100644
  
  #[test]
 diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
-index 084ceed3..27499245 100644
+index eca1c9565208303ff2640c9852a040dfdbd6a008..2f60253425aa2c02e535d04317cfdbf81ccf01b5 100644
 --- a/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
-@@ -2297,12 +2297,26 @@ fn paint_dispatch_config_badge(
+@@ -2187,12 +2187,26 @@ fn paint_dispatch_config_badge(
  /// Shared by the dispatch box and the peek panel that replaces it, so a capture started in either box shows the same indicator.
  pub(super) fn paint_record_badge(buf: &mut Buffer, area: Rect, theme: &Theme, listening: bool) {
      if listening && area.width >= 12 {
@@ -1159,7 +1159,7 @@ index 084ceed3..27499245 100644
                  .add_modifier(Modifier::BOLD),
          );
 diff --git a/crates/codegen/xai-grok-pager/src/voice/handle.rs b/crates/codegen/xai-grok-pager/src/voice/handle.rs
-index 6b1daea6..42afcd9a 100644
+index 6b1daea638b3fad7342ae71a8f95f5fc99adfd4b..42afcd9a62c593a958557ed4288447e0520e9957 100644
 --- a/crates/codegen/xai-grok-pager/src/voice/handle.rs
 +++ b/crates/codegen/xai-grok-pager/src/voice/handle.rs
 @@ -177,11 +177,18 @@ pub(crate) fn commit_interim_into_prompt(app: &mut AppView) -> Option<VoiceInter
@@ -1190,7 +1190,7 @@ index 6b1daea6..42afcd9a 100644
              app.voice_reset();
              app.show_toast(&format!("Voice: {message}"));
 diff --git a/crates/codegen/xai-grok-pager/src/voice/mod.rs b/crates/codegen/xai-grok-pager/src/voice/mod.rs
-index a3ab3969..09aabf80 100644
+index a3ab3969d9d62eb65f3b60ad540e8032b0771997..09aabf80996dbbf1ce219be93c21d5dde03b446d 100644
 --- a/crates/codegen/xai-grok-pager/src/voice/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/voice/mod.rs
 @@ -18,8 +18,27 @@
@@ -1222,7 +1222,7 @@ index a3ab3969..09aabf80 100644
      VoiceInterimCommit, commit_interim_into_prompt, merge_voice_fragment, prompt_blank_for_voice,
      space_voice_fragment,
 diff --git a/crates/codegen/xai-grok-voice/Cargo.toml b/crates/codegen/xai-grok-voice/Cargo.toml
-index be26f22a..0e3f9cfe 100644
+index be26f22aaeccf9187b04fe6488a9023d5dd9f0ae..0e3f9cfe298f70e0330ebe37157f1c5344e43c30 100644
 --- a/crates/codegen/xai-grok-voice/Cargo.toml
 +++ b/crates/codegen/xai-grok-voice/Cargo.toml
 @@ -21,6 +21,8 @@ toml = { workspace = true }
@@ -1246,7 +1246,7 @@ index be26f22a..0e3f9cfe 100644
  # `audio` = "microphone capture is compiled in". It's enabled on every OS for
  # production builds: macOS/Windows link `cpal`; Linux shells out to a system
 diff --git a/crates/codegen/xai-grok-voice/src/config.rs b/crates/codegen/xai-grok-voice/src/config.rs
-index 8a7f7fb4..fd01a500 100644
+index 8a7f7fb4efdc021e2b174c66bc8599e9b4808f3e..fd01a5008ba735fb3002a1128189be5ab2b15492 100644
 --- a/crates/codegen/xai-grok-voice/src/config.rs
 +++ b/crates/codegen/xai-grok-voice/src/config.rs
 @@ -5,12 +5,33 @@ use crate::error::VoiceError;
@@ -1601,7 +1601,7 @@ index 8a7f7fb4..fd01a500 100644
          assert!(cfg.user_agent.is_empty());
      }
 diff --git a/crates/codegen/xai-grok-voice/src/event.rs b/crates/codegen/xai-grok-voice/src/event.rs
-index 1f795284..68735fa5 100644
+index 1f795284fb3f2d7f4dc8797d9544a44e46bb1f56..68735fa5f4fdce7d4405bea43443300bc9d745a6 100644
 --- a/crates/codegen/xai-grok-voice/src/event.rs
 +++ b/crates/codegen/xai-grok-voice/src/event.rs
 @@ -7,6 +7,11 @@ pub enum VoiceEvent {
@@ -1617,19 +1617,19 @@ index 1f795284..68735fa5 100644
      Error {
          /// Short description for a one-line toast.
 diff --git a/crates/codegen/xai-grok-voice/src/lib.rs b/crates/codegen/xai-grok-voice/src/lib.rs
-index f12eba02..481ea527 100644
+index 4f3c4c315b89465e439b048aecc5efb64d9f8bb3..4dfaca5dfe47eb0912e4743037aa0eb42a608b3c 100644
 --- a/crates/codegen/xai-grok-voice/src/lib.rs
 +++ b/crates/codegen/xai-grok-voice/src/lib.rs
 @@ -20,6 +20,7 @@ pub mod stt;
  
- pub use auth::{SharedVoiceAuth, StaticVoiceAuth, VoiceAuthProvider};
+ pub use auth::{SharedVoiceAuth, StaticVoiceAuth, VoiceAuthError, VoiceAuthProvider};
  pub use config::VoiceConfig;
 +pub use config::VoiceProvider;
  pub use error::VoiceError;
  pub use event::VoiceEvent;
  pub use language::{
 diff --git a/crates/codegen/xai-grok-voice/src/pipeline.rs b/crates/codegen/xai-grok-voice/src/pipeline.rs
-index f48b9163..7737b274 100644
+index f48b916356b8e59b2791513c08624bc5c767bf73..7737b274569c86182e7aa2a17e0a88d879ec5753 100644
 --- a/crates/codegen/xai-grok-voice/src/pipeline.rs
 +++ b/crates/codegen/xai-grok-voice/src/pipeline.rs
 @@ -12,10 +12,12 @@ use tokio::task::JoinHandle;
@@ -1679,7 +1679,7 @@ index f48b9163..7737b274 100644
  
 diff --git a/crates/codegen/xai-grok-voice/src/stt/local.rs b/crates/codegen/xai-grok-voice/src/stt/local.rs
 new file mode 100644
-index 00000000..4e594ed3
+index 0000000000000000000000000000000000000000..4e594ed3a1998b1dbb1c886ed961f3dd3e644c21
 --- /dev/null
 +++ b/crates/codegen/xai-grok-voice/src/stt/local.rs
 @@ -0,0 +1,112 @@
@@ -1796,7 +1796,7 @@ index 00000000..4e594ed3
 +    }
 +}
 diff --git a/crates/codegen/xai-grok-voice/src/stt/mod.rs b/crates/codegen/xai-grok-voice/src/stt/mod.rs
-index 628d59a8..dd098d89 100644
+index 628d59a8283081c130c84a29c8fe8ce4bd70bbc6..dd098d893eb853d518311d5380288c2fded360e2 100644
 --- a/crates/codegen/xai-grok-voice/src/stt/mod.rs
 +++ b/crates/codegen/xai-grok-voice/src/stt/mod.rs
 @@ -1,7 +1,39 @@
@@ -1841,7 +1841,7 @@ index 628d59a8..dd098d89 100644
 +    }
 +}
 diff --git a/crates/codegen/xai-grok-voice/src/stt/streaming.rs b/crates/codegen/xai-grok-voice/src/stt/streaming.rs
-index b4486bdf..accf0e90 100644
+index b4486bdf9e8399408d04539efd4a75bf6e01e65d..accf0e90b9251dcec18a7121b6493ee7a499bd00 100644
 --- a/crates/codegen/xai-grok-voice/src/stt/streaming.rs
 +++ b/crates/codegen/xai-grok-voice/src/stt/streaming.rs
 @@ -248,9 +248,18 @@ fn build_stt_ws_url(config: &VoiceConfig) -> Result<Url, VoiceError> {
@@ -1884,7 +1884,7 @@ index b4486bdf..accf0e90 100644
          assert!(url.query().unwrap_or_default().contains("language=ja"));
 diff --git a/crates/codegen/xai-grok-voice/tests/local_dictation.rs b/crates/codegen/xai-grok-voice/tests/local_dictation.rs
 new file mode 100644
-index 00000000..6c264324
+index 0000000000000000000000000000000000000000..6c2643242ec78357918a967312d2fc68203ba237
 --- /dev/null
 +++ b/crates/codegen/xai-grok-voice/tests/local_dictation.rs
 @@ -0,0 +1,150 @@

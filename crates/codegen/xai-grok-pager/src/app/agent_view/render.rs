@@ -2252,18 +2252,26 @@ impl AgentView {
                 dot,
                 Style::default().fg(dot_color).bg(bg),
             );
-            buf.set_string(
-                content_x + 2,
-                rec_area.y,
-                "Recording",
-                Style::default().fg(theme.accent_error).bg(bg),
-            );
             let stop_str = "[stop]";
             let stop_w = unicode_width::UnicodeWidthStr::width(stop_str) as u16;
             let stop_x = rec_area.x
                 + rec_area
                     .width
                     .saturating_sub(layout_cfg.block_pad_right + stop_w);
+            // Workshop overlay: while the local engine downloads or loads its model the row carries
+            // that one progress line (voice-spec §5 rule 6); otherwise the plain "Recording".
+            let label_avail = stop_x.saturating_sub(content_x + 3) as usize;
+            let (label, label_style) = match crate::voice::banner_status() {
+                Some(status) if label_avail > 0 => (
+                    crate::render::line_utils::truncate_str(&status, label_avail),
+                    Style::default().fg(theme.accent_running).bg(bg),
+                ),
+                _ => (
+                    "Recording".to_owned(),
+                    Style::default().fg(theme.accent_error).bg(bg),
+                ),
+            };
+            buf.set_string(content_x + 2, rec_area.y, &label, label_style);
             let stop_fg = if self.hit_voice_stop_button.hovered {
                 theme.accent_error
             } else {
@@ -2338,9 +2346,13 @@ impl AgentView {
         let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
         let usage_warning = usage_warning_text.as_deref();
         let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
-        let model_label = match self.session.models.reasoning_effort {
-            Some(eff) => format!("{model_id} ({eff})"),
-            None => model_id,
+        let model_label = match &self.workshop_model_label {
+            // Workshop Engine/Adapter connection: name the runtime, not a shell model.
+            Some(label) => label.clone(),
+            None => match self.session.models.reasoning_effort {
+                Some(eff) => format!("{model_id} ({eff})"),
+                None => model_id,
+            },
         };
         let info = match &self.prompt_mode {
             PromptMode::Normal => PromptInfo {
