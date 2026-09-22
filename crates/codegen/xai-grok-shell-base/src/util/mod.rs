@@ -383,9 +383,10 @@ mod tests {
     use super::*;
     #[test]
     fn test_is_cli_chat_proxy_url_accepts_proxy_subpath() {
-        assert!(is_cli_chat_proxy_url(
-            "https://cli-chat-proxy.grok.com/v1/chat/completions"
-        ));
+        assert!(is_cli_chat_proxy_url(&format!(
+            "{}/chat/completions",
+            crate::env::PROD_CLI_CHAT_PROXY_BASE_URL
+        )));
     }
     #[test]
     fn test_is_cli_chat_proxy_url_rejects_public_api() {
@@ -396,11 +397,27 @@ mod tests {
         assert!(!is_cli_chat_proxy_url(
             "https://cli-chat-proxy.grok.com.evil.example/v1"
         ));
+        assert!(!is_cli_chat_proxy_url("http://127.0.0.1.evil.example/v1"));
     }
+    /// Workshop: the compiled proxy default is loopback, which `is_cli_chat_proxy_url` accepts on any
+    /// path, so the `/v1` vs `/v11` prefix check is pinned on the trusted-base matcher with an explicit
+    /// non-loopback base.
     #[test]
     fn test_is_cli_chat_proxy_url_rejects_v11_prefix_confusion() {
+        assert!(!matches_trusted_base_url(
+            "https://proxy.example/v11/chat/completions",
+            "https://proxy.example/v1"
+        ));
+        assert!(matches_trusted_base_url(
+            "https://proxy.example/v1/chat/completions",
+            "https://proxy.example/v1"
+        ));
+    }
+    /// Workshop: the inherited xAI proxy host is not trusted as first-party any more.
+    #[test]
+    fn test_is_cli_chat_proxy_url_rejects_inherited_xai_proxy() {
         assert!(!is_cli_chat_proxy_url(
-            "https://cli-chat-proxy.grok.com/v11/chat/completions"
+            "https://cli-chat-proxy.grok.com/v1/chat/completions"
         ));
     }
     #[test]
@@ -408,9 +425,10 @@ mod tests {
         assert!(is_xai_api_url("https://api.x.ai/v1"));
         assert!(is_xai_api_url("https://api.x.ai/v1/chat/completions"));
         assert!(is_xai_api_url("https://x.ai"));
-        assert!(is_xai_api_url(
-            "https://cli-chat-proxy.grok.com/v1/chat/completions"
-        ));
+        assert!(is_xai_api_url(&format!(
+            "{}/chat/completions",
+            crate::env::PROD_CLI_CHAT_PROXY_BASE_URL
+        )));
         assert!(!is_xai_api_url("https://api.openai.com/v1"));
         assert!(!is_xai_api_url("https://api.anthropic.com/v1"));
         assert!(!is_xai_api_url("https://generativelanguage.googleapis.com"));
