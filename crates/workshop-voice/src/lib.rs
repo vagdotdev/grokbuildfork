@@ -1,74 +1,75 @@
-//! Workshop voice: provider-neutral speech-to-text behind Grok Build's dictation UX.
+//! Workshop voice: local speech-to-text for `/voice` without xAI.
 //!
-//! Upstream (`xai-grok-voice`) hardwires one provider: a bearer from the xAI login and a
-//! WebSocket to `wss://api.x.ai/v1/stt`. This overlay keeps the user-visible feature —
-//! `/voice`, Ctrl+Space / F8, the interim overlay, commit-at-caret — and swaps the transport
-//! for an [`SttBackend`]:
+//! The TUI keeps upstream's microphone child, keybinds, banner and prompt insertion. This crate
+//! supplies what replaced the xAI WebSocket:
 //!
-//! - [`local::LocalWhisperBackend`] — whisper.cpp on the user's machine (the default);
-//! - BYOK cloud streaming STT (OpenAI, Groq, Deepgram) — designed in
-//!   `internal/voice-stt-repoint-spec.md`, not yet implemented;
-//! - [`xai::XaiSttBackend`] (feature `xai`) — the inherited service, only when the user
-//!   connected the optional xAI provider.
+//! - [`manifest`]: the pinned Whisper model tiers (`voice/MODEL.lock.json`, compiled in);
+//! - [`store`]: the shared model directory, verification, and a resumable, retrying download;
+//! - [`tier`]: silent per-machine model selection (Apple Silicon → turbo, else probe and step down);
+//! - [`engine`]: the warm `voice-engine` helper process and its framed protocol;
+//! - [`session`]: one `/voice` press end to end — resolve, self-heal, start, step down, open;
+//! - [`doctor`]: the `/doctor` Voice facts.
 //!
-//! [`pipeline::run_voice_pipeline`] is a drop-in for `xai_grok_voice::run_voice_pipeline`: same
-//! `VoiceCommand` in, same `VoiceEvent` out, so the pager's voice state machine is untouched.
-//! No telemetry; no network unless a cloud provider is chosen or a model is downloaded.
+//! No speech model is linked here; the helper process holds the weights while it lives.
 
 #![deny(clippy::indexing_slicing)]
 
-pub mod backend;
-pub mod capture;
-pub mod eval;
-pub mod local;
-pub mod pipeline;
-pub mod provider;
-#[cfg(feature = "xai")]
-pub mod xai;
+pub mod doctor;
+pub mod engine;
+pub mod manifest;
+pub mod protocol;
+pub mod session;
+pub mod store;
+pub mod tier;
 
-pub use backend::{SttBackend, SttEvent, SttSession, SttSessionOptions, VoiceError};
-#[cfg(feature = "audio")]
-pub use capture::MicCapture;
-pub use capture::{AudioCapture, CaptureHandle, PcmReplayCapture};
-pub use local::{LocalOptions, LocalWhisperBackend, WhisperModel};
-pub use pipeline::{PipelineDeps, PipelineOptions, VoiceCommand, VoiceEvent, run_voice_pipeline};
-pub use provider::{
-    DEFAULT_LOCAL_MODEL, Resolution, ResolveContext, VoiceProvider, VoiceProviderConfig, resolve,
-};
+pub use engine::{EngineSession, ReadyInfo, SessionEvent, locate_engine};
+pub use session::{OpenOptions, Opened, open};
+pub use store::{ModelStatus, ModelStore, Progress};
 
-/// Build [`SttSessionOptions`] from upstream's `[voice]` config, resolving `auto` the way the
-/// upstream client does for its own wire format while letting local/cloud backends auto-detect.
-pub fn session_options_from_voice_config(cfg: &xai_grok_voice::VoiceConfig) -> SttSessionOptions {
-    let language = if cfg.language.trim() == xai_grok_voice::STT_LANGUAGE_AUTO {
-        None
-    } else {
-        Some(xai_grok_voice::language_for_api(&cfg.language).to_owned())
-    };
-    SttSessionOptions {
-        sample_rate: cfg.sample_rate,
-        language,
-        endpointing_ms: cfg.stt_endpointing_ms,
-        interim_results: cfg.stt_interim_results,
-    }
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("{0}")]
+    Config(String),
+    /// The `voice-engine` helper is not installed where the TUI looks for it.
+    #[error(
+        "voice engine not found (re-run the Workshop installer; it restores the helper without re-downloading the model)"
+    )]
+    EngineMissing,
+    #[error("voice engine: {0}")]
+    Engine(String),
+    #[error("voice model: {0}")]
+    Model(String),
+    #[error("voice model download: {0}")]
+    Download(String),
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
+    pub static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    #[test]
-    fn session_options_follow_upstream_voice_config() {
-        let mut cfg = xai_grok_voice::VoiceConfig {
-            language: "de".into(),
-            stt_endpointing_ms: 650,
-            ..xai_grok_voice::VoiceConfig::default()
-        };
-        let opts = session_options_from_voice_config(&cfg);
-        assert_eq!(opts.language.as_deref(), Some("de"));
-        assert_eq!(opts.endpointing_ms, 650);
-        assert_eq!(opts.sample_rate, 16_000);
-
-        cfg.language = "auto".into();
-        assert_eq!(session_options_from_voice_config(&cfg).language, None);
+    /// Set/unset env vars for the closure, then restore. Callers hold [`ENV_LOCK`].
+    pub fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
+        let saved: Vec<_> = vars
+            .iter()
+            .map(|(k, _)| ((*k).to_owned(), std::env::var_os(k)))
+            .collect();
+        for (k, v) in vars {
+            // SAFETY: tests hold ENV_LOCK; no other thread touches these variables meanwhile.
+            unsafe {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+        f();
+        for (k, v) in saved {
+            unsafe {
+                match v {
+                    Some(v) => std::env::set_var(&k, v),
+                    None => std::env::remove_var(&k),
+                }
+            }
+        }
     }
 }

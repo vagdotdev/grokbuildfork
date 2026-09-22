@@ -5,6 +5,8 @@ async-openai = { git = "https://github.com/our-forks/async-openai.git", rev = "9
 
 [workspace]
 resolver = "2"
+# Workshop overlay: the voice-engine helper is its own workspace so whisper.cpp never enters this build graph.
+exclude = ["voice/engine"]
 members = [
     "crates/build/xai-proto-build",
     "crates/codegen/ptyctl",
