@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use xai_grok_login::backend::{ActiveAuthBackend, AuthBackend};
 use xai_grok_login::{GrokAuth, GrokComConfig};
-const GROK_CODE_BACKEND_URL: &str = "https://code.grok.com";
+// Workshop (gate:no-xai, Gate 3): the remote share / permissions backend is loopback until Workshop
+// owns one (ADR 0004: inherited remote share stays off); `GROK_CODE_BACKEND_URL` overrides.
+const GROK_CODE_BACKEND_URL: &str = "http://127.0.0.1:1";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const GROK_CODE_WEB_URL: &str = "https://grok.com";
 pub fn share_url(permission_id: &str) -> String {
