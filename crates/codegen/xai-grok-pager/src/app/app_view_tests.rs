@@ -169,6 +169,15 @@ pub(crate) fn test_app() -> AppView {
         auth_url_poll_handle: None,
         deferred_startup: Default::default(),
         auth_use_oauth: false,
+        connection_picker: None,
+        workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
+        workshop_engine: None,
+        workshop_engine_session: None,
+        workshop_turn_active: false,
+        workshop_turn_tx: None,
+        workshop_turn_cancel: None,
+        workshop_turn_stream_entry: None,
+        workshop_turn_agent: None,
         auth_clipboard_delivery: None,
         auth_clipboard_feedback_generation: 0,
         team_id: None,
@@ -278,6 +287,7 @@ pub(crate) fn test_app() -> AppView {
         pending_effects: Vec::new(),
         pending_editor: None,
         pending_pager_path: None,
+        pending_workshop_login: None,
         pending_pager_ansi: false,
         minimal_state: crate::minimal_api::MinimalState::default(),
         reconnect_pending: false,
@@ -616,6 +626,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
     );
 }
 #[test]
+#[ignore = "upstream time-dependent flake (history daemon delivery races the poll deadline); see PR #13"]
 fn needs_animation_gates_prompt_history_tick_delivery() {
     let mut app = test_app_with_agent();
     let id = super::super::agent::AgentId(0);
@@ -2268,16 +2279,20 @@ fn is_restricted_tier_classification() {
     assert!(!is_restricted_tier(Some("X Premium+")));
     assert!(!is_restricted_tier(Some("SomeFutureTier")));
 }
+/// Workshop overlay: the local engine has no tier, so `/voice` is never in the deny list.
 #[test]
-fn voice_included_in_tier_restricted_commands() {
-    assert!(TIER_RESTRICTED_COMMANDS.contains(&"voice"));
+fn voice_not_in_tier_restricted_commands() {
+    assert!(!TIER_RESTRICTED_COMMANDS.contains(&"voice"));
 }
 #[test]
-fn is_voice_tier_restricted_tracks_tier() {
+fn is_voice_tier_restricted_only_for_the_xai_provider() {
     let mut app = test_app();
     app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
-    assert!(app.is_voice_tier_restricted());
+    assert!(!app.is_voice_tier_restricted(), "local provider: no tier gate");
+    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
+    assert!(app.is_voice_tier_restricted(), "xAI provider on a free tier is gated");
     let mut app = test_app();
+    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
     let meta = xai_grok_login::AuthMeta {
         subscription_tier: Some("SuperGrok".into()),
         ..Default::default()

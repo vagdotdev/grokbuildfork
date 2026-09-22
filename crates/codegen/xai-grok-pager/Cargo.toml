@@ -23,6 +23,9 @@ xai-grok-gboom = { path = "../xai-grok-gboom" }
 # Diff hunk construction (extracted)
 xai-grok-pager-diff = { path = "../xai-grok-pager-diff" }
 
+# Workshop brand overlay (welcome-hero portrait art and title)
+workshop-brand = { path = "../../workshop-brand" }
+
 # Rendering
 ratatui = { workspace = true, features = ["crossterm", "unstable-widget-ref"] }
 xai-grok-announcements = { workspace = true }
@@ -112,8 +115,17 @@ xai-grok-dashboard-store = { workspace = true }
 # backend instead, so cpal -> alsa-sys never reaches the static musl binary
 # (cpal is target-gated to non-Linux inside xai-grok-voice).
 xai-grok-voice = { path = "../xai-grok-voice", default-features = false, features = ["audio"] }
+# Workshop overlay: local voice engine facts for `/doctor` (the pipeline itself goes through xai-grok-voice).
+workshop-voice = { path = "../../workshop-voice" }
 xai-grok-login = { workspace = true }
 xai-grok-shell = { workspace = true }
+# Workshop overlay: connection picker state (Login / welcome `l` / `/login` / `/auth` / `/models`),
+# provider catalog + credential broker, CLI detection, and the adapters/engine the picker routes to.
+workshop-auth = { path = "../../workshop-auth" }
+workshop-providers = { workspace = true }
+workshop-detect = { workspace = true }
+workshop-adapters = { workspace = true }
+webbrowser = { workspace = true }
 # The status-line contract: the config the user writes and the payload the
 # agent sends. A leaf crate rather than the agent's, so the client reads it
 # from upstream of the crate that fills it in.

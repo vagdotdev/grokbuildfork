@@ -13,6 +13,8 @@ pub mod actions;
 pub mod agent;
 pub mod agent_view;
 pub mod app_view;
+/// Workshop overlay: connection picker loading and activation.
+pub mod workshop;
 pub mod bundle;
 pub(crate) mod cancel_latency;
 pub mod cli;
@@ -2245,9 +2247,9 @@ mod tests {
         assert!(!args.no_alt_screen);
     }
     #[test]
-    fn cli_command_name_is_grok() {
+    fn cli_command_name_is_workshop() {
         use clap::CommandFactory;
-        assert_eq!(PagerArgs::command().get_name(), "grok");
+        assert_eq!(PagerArgs::command().get_name(), "workshop");
     }
     #[test]
     fn cli_help_output_header() {
@@ -2257,9 +2259,9 @@ mod tests {
         assert_eq!(
             first_5,
             vec![
-                "Grok Build TUI",
+                "Workshop: a coding-agent runtime that connects to local models, API keys, or subscription CLIs",
                 "",
-                "Usage: grok [OPTIONS] [PROMPT] [COMMAND]",
+                "Usage: workshop [OPTIONS] [PROMPT] [COMMAND]",
                 "",
                 "Arguments:",
             ]

@@ -899,6 +899,7 @@ pub(super) async fn send_authenticate(
     method_id: acp::AuthMethodId,
     use_oauth: bool,
     force_interactive: bool,
+    xai_opt_in: bool,
 ) -> TaskResult {
     let mut meta = serde_json::json!({
         "use_oauth": use_oauth,
@@ -906,6 +907,11 @@ pub(super) async fn send_authenticate(
     });
     if force_interactive && let Some(obj) = meta.as_object_mut() {
         obj.insert("force_interactive".into(), serde_json::json!(true));
+    }
+    // Workshop: only the labeled optional xAI card sets this; the shell refuses an interactive
+    // session login without it when no session-login provider is configured.
+    if xai_opt_in && let Some(obj) = meta.as_object_mut() {
+        obj.insert("workshop_xai_opt_in".into(), serde_json::json!(true));
     }
     let req = acp::AuthenticateRequest::new(method_id).meta(meta.as_object().cloned());
     match acp_send(req, tx).await {
