@@ -1,0 +1,142 @@
+diff --git a/crates/codegen/xai-grok-login/src/config.rs b/crates/codegen/xai-grok-login/src/config.rs
+index adc40cd4..bcebf0cc 100644
+--- a/crates/codegen/xai-grok-login/src/config.rs
++++ b/crates/codegen/xai-grok-login/src/config.rs
+@@ -191,10 +191,28 @@ impl GrokComConfig {
+         } else if let Some(ref oauth2) = self.oauth2 {
+             oauth2.auth_scope()
+         } else {
+-            unreachable!("oauth2 config is always present (xAI default or env override)")
++            // Workshop: no OAuth2 provider is configured by default. Interactive session login
++            // is unavailable until the user adds one (optional xAI card, `GROK_OAUTH2_*`, or
++            // enterprise OIDC), so the scope only names that state.
++            WORKSHOP_NO_PROVIDER_AUTH_SCOPE.to_owned()
+         }
+     }
++    /// `true` when an interactive session-login provider (enterprise OIDC or OAuth2) is configured.
++    /// Workshop's default is `false`: the connection picker, not a browser, opens on Login.
++    pub fn has_session_login_provider(&self) -> bool {
++        self.oidc.is_some() || self.oauth2.is_some()
++    }
++    /// Return a copy with the optional xAI first-party OAuth2 provider attached.
++    /// Only the labeled "xAI (optional)" connection card calls this, after the user selects it.
++    pub fn with_xai_first_party_oauth2(mut self) -> Self {
++        if self.oidc.is_none() && self.oauth2.is_none() {
++            self.oauth2 = Some(OAuth2ProviderConfig::xai_first_party());
++        }
++        self
++    }
+ }
++/// auth.json scope key when no session-login provider is configured (Workshop default).
++pub const WORKSHOP_NO_PROVIDER_AUTH_SCOPE: &str = "workshop::no-session-provider";
+ impl OAuth2ProviderConfig {
+     pub fn is_team_principal(&self) -> bool {
+         self.principal_type.as_deref() == Some(TEAM_PRINCIPAL_TYPE)
+@@ -237,23 +255,31 @@ impl OAuth2ProviderConfig {
+     pub fn auth_scope(&self) -> String {
+         self.base_auth_scope()
+     }
++    /// The xAI first-party OAuth2 provider (`auth.x.ai`, or the local accounts-app under
++    /// `GROK_LOCAL_AUTH=1`). Workshop never constructs this by default; see
++    /// [`GrokComConfig::with_xai_first_party_oauth2`].
++    pub fn xai_first_party() -> Self {
++        Self {
++            issuer: xai_oauth2_issuer().to_owned(),
++            client_id: obfstr::obfstr!("b1a00492-073a-47ea-816f-4c329264a828").to_owned(),
++            scopes: default_oauth2_scopes(),
++            principal_type: None,
++            principal_id: None,
++            referrer: Some(DEFAULT_OAUTH2_REFERRER.to_owned()),
++        }
++    }
+ }
+ impl Default for GrokComConfig {
++    /// Workshop default: no session-login provider. `oauth2` is populated only from an explicit
++    /// `GROK_OAUTH2_ISSUER` / `GROK_OAUTH2_CLIENT_ID` pair; the xAI provider is never the fallback
++    /// (gate:no-xai, Gate 1). The optional xAI card attaches it via
++    /// [`GrokComConfig::with_xai_first_party_oauth2`] after the user selects that card.
+     fn default() -> Self {
+         let oidc = OidcAuthConfig::from_env();
+         let oauth2 = if oidc.is_some() {
+             None
+         } else {
+-            Some(
+-                OAuth2ProviderConfig::from_env().unwrap_or_else(|| OAuth2ProviderConfig {
+-                    issuer: xai_oauth2_issuer().to_owned(),
+-                    client_id: obfstr::obfstr!("b1a00492-073a-47ea-816f-4c329264a828").to_owned(),
+-                    scopes: default_oauth2_scopes(),
+-                    principal_type: None,
+-                    principal_id: None,
+-                    referrer: Some(DEFAULT_OAUTH2_REFERRER.to_owned()),
+-                }),
+-            )
++            OAuth2ProviderConfig::from_env()
+         };
+         Self {
+             grok_ws_origin: std::env::var("GROK_WS_ORIGIN")
+diff --git a/crates/codegen/xai-grok-login/src/flow.rs b/crates/codegen/xai-grok-login/src/flow.rs
+index 4607a00d..fa2bb8a2 100644
+--- a/crates/codegen/xai-grok-login/src/flow.rs
++++ b/crates/codegen/xai-grok-login/src/flow.rs
+@@ -1391,7 +1391,8 @@ mod tests {
+             !cli_should_use_device(&cfg, None, LoginTransportOverride::ForceDevice, "").await,
+             "enterprise OIDC must stay on loopback"
+         );
+-        let xai = GrokComConfig::default();
++        // Workshop: the xAI OAuth2 provider is attached only on explicit opt-in.
++        let xai = GrokComConfig::default().with_xai_first_party_oauth2();
+         assert!(xai.oauth2.is_some() && xai.oidc.is_none());
+         assert!(cli_should_use_device(&xai, None, LoginTransportOverride::ForceDevice, "").await);
+     }
+@@ -1554,12 +1555,13 @@ mod tests {
+     }
+     #[test]
+     fn weblogin_cred_is_never_compatible() {
+-        let cfg = GrokComConfig::default();
++        // Against a configured (opted-in xAI) provider a legacy WebLogin credential has no issuer to match.
++        let cfg = GrokComConfig::default().with_xai_first_party_oauth2();
+         assert!(!is_cached_credential_compatible(&legacy_auth(), &cfg));
+     }
+     #[test]
+     fn oidc_cred_with_matching_issuer_is_compatible() {
+-        let cfg = GrokComConfig::default();
++        let cfg = GrokComConfig::default().with_xai_first_party_oauth2();
+         assert!(is_cached_credential_compatible(
+             &oidc_auth(XAI_OAUTH2_ISSUER),
+             &cfg,
+@@ -1567,7 +1569,7 @@ mod tests {
+     }
+     #[test]
+     fn external_cred_compatibility_follows_issuer() {
+-        let cfg = GrokComConfig::default();
++        let cfg = GrokComConfig::default().with_xai_first_party_oauth2();
+         assert!(is_cached_credential_compatible(
+             &GrokAuth {
+                 auth_mode: AuthMode::External,
+@@ -1747,7 +1749,7 @@ mod tests {
+     #[tokio::test]
+     async fn run_auth_flow_falls_through_when_no_refresh_token() {
+         let dir = tempfile::tempdir().unwrap();
+-        let mut cfg = GrokComConfig::default();
++        let mut cfg = GrokComConfig::default().with_xai_first_party_oauth2();
+         cfg.oauth2.as_mut().unwrap().issuer = "http://127.0.0.1:1".into();
+         let writer = Arc::new(
+             AuthManager::new(dir.path(), cfg.clone()).with_proxy_base_url("http://127.0.0.1:1"),
+diff --git a/crates/codegen/xai-grok-login/src/manager_tests.rs b/crates/codegen/xai-grok-login/src/manager_tests.rs
+index 236358bb..e785913e 100644
+--- a/crates/codegen/xai-grok-login/src/manager_tests.rs
++++ b/crates/codegen/xai-grok-login/src/manager_tests.rs
+@@ -155,7 +155,13 @@ fn has_usable_token_covers_memory_and_disk() {
+ }
+ #[test]
+ fn auth_scope_uses_oauth2_when_present() {
++    // Workshop: the xAI provider is attached only on explicit opt-in; the default scope is neutral.
+     let cfg = GrokComConfig::default();
++    assert_eq!(
++        cfg.auth_scope(),
++        crate::config::WORKSHOP_NO_PROVIDER_AUTH_SCOPE
++    );
++    let cfg = cfg.with_xai_first_party_oauth2();
+     assert_eq!(
+         cfg.auth_scope(),
+         format!(

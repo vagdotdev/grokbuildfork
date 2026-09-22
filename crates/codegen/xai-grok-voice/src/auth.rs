@@ -1,12 +1,9 @@
 //! Bearer resolution for voice STT requests.
-//! The voice clients are long-lived: a single voice session opens many STT
-//! WebSocket connections over its lifetime, and an OAuth/session bearer rotates
-//! (~15 min). Capturing a token once at startup would 401 mid-session. So
-//! instead of a static `String`, the clients hold a [`SharedVoiceAuth`] and
-//! resolve a fresh bearer at the point of each connection.
+//! The voice clients are long-lived: a single voice session opens many STT WebSocket connections over its lifetime.
+//! An OAuth/session bearer rotates (~15 min), so capturing a token once at startup would 401 mid-session.
+//! Instead of a static `String`, the clients hold a [`SharedVoiceAuth`] and resolve a fresh bearer at the point of each connection.
 //!
-//! This crate stays dependency-light: it defines its own minimal async trait
-//! rather than depending on the shell's `AuthManager` / tools' `ApiKeyProvider`.
+//! This crate stays dependency-light: it defines its own minimal async trait instead of the shell's `AuthManager` or tools' `ApiKeyProvider`.
 //! The pager adapts the shell's refreshing provider onto this trait.
 
 use std::future::{Future, ready};
@@ -26,14 +23,15 @@ pub type SharedVoiceAuth = Arc<dyn VoiceAuthProvider>;
 #[cfg(feature = "audio")]
 pub(crate) async fn require_bearer(auth: &SharedVoiceAuth) -> Result<String, VoiceError> {
     auth.bearer().await.ok_or_else(|| {
-        VoiceError::Auth("not signed in — run `grok login` or set XAI_API_KEY".into())
+        VoiceError::Auth(
+            "not signed in — run `grok login`, set XAI_API_KEY, or set a model api_key/env_key"
+                .into(),
+        )
     })
 }
 
 /// A fixed bearer that never refreshes.
-///
-/// Used by the standalone `voice-probe` binary and tests, where there is no
-/// `AuthManager` — only a raw `XAI_API_KEY`.
+/// Used by the standalone `voice-probe` binary and tests, where there is no `AuthManager`, only a raw `XAI_API_KEY`.
 pub struct StaticVoiceAuth(pub String);
 
 impl std::fmt::Debug for StaticVoiceAuth {
@@ -51,8 +49,7 @@ impl VoiceAuthProvider for StaticVoiceAuth {
 }
 
 impl StaticVoiceAuth {
-    /// Build a [`SharedVoiceAuth`] from a static key, trimming whitespace and
-    /// rejecting an empty value.
+    /// Build a [`SharedVoiceAuth`] from a static key, trimming whitespace and rejecting an empty value.
     pub fn shared(key: impl Into<String>) -> Option<SharedVoiceAuth> {
         let key = key.into().trim().to_string();
         if key.is_empty() {

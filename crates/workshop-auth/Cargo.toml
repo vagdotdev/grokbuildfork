@@ -1,0 +1,27 @@
+[package]
+name = "workshop-auth"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+publish = false
+description = "Workshop connection picker policy: connection classes, Models/Subscriptions tabs, selection outcomes, config writer. Rows come from workshop-providers, rail state from workshop-detect; never reads another app's credentials."
+
+[dependencies]
+# Home resolution for the config file the picker writes.
+xai-dirs = { path = "../codegen/xai-dirs" }
+# Models tab rows, credential broker, `[model.<key>]` resolution.
+workshop-providers = { workspace = true }
+# Subscriptions rails: the single source for CLI detection and login state.
+workshop-detect = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+xai-grok-sampler = { workspace = true }
+xai-grok-sampling-types = { path = "../codegen/xai-grok-sampling-types" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

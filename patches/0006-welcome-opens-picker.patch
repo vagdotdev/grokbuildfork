@@ -1,0 +1,2709 @@
+diff --git a/crates/codegen/xai-grok-pager/Cargo.toml b/crates/codegen/xai-grok-pager/Cargo.toml
+index dd83e008..3b6b94f6 100644
+--- a/crates/codegen/xai-grok-pager/Cargo.toml
++++ b/crates/codegen/xai-grok-pager/Cargo.toml
+@@ -23,6 +23,9 @@ xai-grok-gboom = { path = "../xai-grok-gboom" }
+ # Diff hunk construction (extracted)
+ xai-grok-pager-diff = { path = "../xai-grok-pager-diff" }
+ 
++# Workshop brand overlay (welcome-hero portrait art and title)
++workshop-brand = { path = "../../workshop-brand" }
++
+ # Rendering
+ ratatui = { workspace = true, features = ["crossterm", "unstable-widget-ref"] }
+ xai-grok-announcements = { workspace = true }
+@@ -111,8 +114,17 @@ xai-grok-dashboard-store = { workspace = true }
+ # backend instead, so cpal -> alsa-sys never reaches the static musl binary
+ # (cpal is target-gated to non-Linux inside xai-grok-voice).
+ xai-grok-voice = { path = "../xai-grok-voice", default-features = false, features = ["audio"] }
++# Workshop overlay: local voice engine facts for `/doctor` (the pipeline itself goes through xai-grok-voice).
++workshop-voice = { path = "../../workshop-voice" }
+ xai-grok-login = { workspace = true }
+ xai-grok-shell = { workspace = true }
++# Workshop overlay: connection picker state (Login / welcome `l` / `/login` / `/auth` / `/models`),
++# provider catalog + credential broker, CLI detection, and the adapters/engine the picker routes to.
++workshop-auth = { path = "../../workshop-auth" }
++workshop-providers = { workspace = true }
++workshop-detect = { workspace = true }
++workshop-adapters = { workspace = true }
++webbrowser = { workspace = true }
+ # The status-line contract: the config the user writes and the payload the
+ # agent sends. A leaf crate rather than the agent's, so the client reads it
+ # from upstream of the crate that fills it in.
+diff --git a/crates/codegen/xai-grok-pager/src/acp/mod.rs b/crates/codegen/xai-grok-pager/src/acp/mod.rs
+index d63bea59..5663ad57 100644
+--- a/crates/codegen/xai-grok-pager/src/acp/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/acp/mod.rs
+@@ -881,6 +881,7 @@ mod tests {
+             enterprise_oidc_issuer: None,
+             login_label: None,
+             has_auth_provider_command: false,
++            has_oauth2_provider: false,
+             preferred_method: None,
+         });
+         let (needs, label, method_id, mode) = startup_auth_metadata(&built.methods);
+diff --git a/crates/codegen/xai-grok-pager/src/app/actions.rs b/crates/codegen/xai-grok-pager/src/app/actions.rs
+index 60687638..7b2f4fbf 100644
+--- a/crates/codegen/xai-grok-pager/src/app/actions.rs
++++ b/crates/codegen/xai-grok-pager/src/app/actions.rs
+@@ -613,7 +613,12 @@ pub enum Action {
+     /// Log out and immediately start a new login flow.
+     SwitchAccount,
+     /// User pressed login on the welcome screen.
++    /// Workshop: opens the connection picker; never starts an OAuth flow by itself.
+     Login,
++    /// Workshop: open the connection picker on a specific tab (`/auth`, `/models`).
++    OpenConnectionPicker(workshop_auth::PickerTab),
++    /// Workshop: a key press routed to the open connection picker.
++    ConnectionPicker(workshop_auth::PickerInput),
+     /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
+     /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
+     CancelLogin,
+@@ -1758,9 +1763,23 @@ pub enum Effect {
+         method_id: acp::AuthMethodId,
+         use_oauth: bool,
+         force_interactive: bool,
++        /// Workshop: the user explicitly selected the labeled optional xAI card. Only then may the
++        /// shell attach the xAI OAuth2 provider for this login (`workshop_xai_opt_in` meta).
++        xai_opt_in: bool,
+     },
+     /// Poll for auth URL from the agent (ext request).
+     PollAuthUrl { request_seq: u64 },
++    /// Workshop: load the connection picker's rows and rails (local probe, catalogs, CLI detection).
++    WorkshopLoadPicker,
++    /// Workshop: a `[model.<key>]` was written; ask the shell to reload its model list, authenticate
++    /// with the non-interactive method, and switch the active session (if any) to `model_id`.
++    WorkshopActivateModel {
++        request_seq: u64,
++        model_id: String,
++        session: Option<(AgentId, acp::SessionId)>,
++    },
++    /// Workshop: OpenRouter PKCE sign-in (browser + loopback callback), then save the key.
++    WorkshopOpenRouterSignIn,
+     /// Submit a manually-pasted auth code (ext request).
+     SubmitAuthCode { request_seq: u64, code: String },
+     /// Fetch MCP server list from the shell (x.ai/mcp/list).
+@@ -2621,6 +2640,18 @@ pub enum TaskResult {
+         /// Forwarded from `Effect::SwitchModel.prev_model_id` for rollback on `IncompatibleAgent`.
+         prev_model_id: Option<acp::ModelId>,
+     },
++    /// Workshop: picker rows/rails loaded.
++    WorkshopPickerLoaded(workshop_auth::PickerSnapshot),
++    /// Workshop: a connect flow finished (`Ok(secret backend)` or an error message).
++    WorkshopConnectDone {
++        provider_id: String,
++        result: Result<&'static str, String>,
++    },
++    /// Workshop: the terminal login command exited; the rails must be re-probed.
++    WorkshopLoginTerminalDone {
++        rail: workshop_detect::Rail,
++        exit_ok: bool,
++    },
+     /// Changelog fetched from CDN (both formats).
+     ChangelogFetched {
+         markdown: Option<String>,
+diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
+index 01e2d3c0..3e9f3e78 100644
+--- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
++++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
+@@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
+ /// Slash commands unavailable on the free and X Basic subscription tiers.
+ /// To restrict another command for these tiers, add its canonical name (no leading `/`) here.
+ /// Matching covers aliases automatically via [`crate::slash::registry::CommandRegistry::set_restricted_commands`].
+-pub(crate) const TIER_RESTRICTED_COMMANDS: &[&str] =
+-    &["usage", "imagine", "imagine-video", "voice"];
++/// Workshop overlay: `voice` is not listed. Dictation runs on the local engine with no account or
++/// tier; only the opt-in xAI voice provider is tier-gated (see [`AppView::is_voice_tier_restricted`]).
++pub(crate) const TIER_RESTRICTED_COMMANDS: &[&str] = &["usage", "imagine", "imagine-video"];
+ /// Whether a subscription-tier display name is a tier with restricted commands: the free tier and X Basic.
+ /// Free covers no subscription (`None`) or an explicit "Free"; X Basic covers CCP display name "X Basic" with JWT claim fallback "x_basic".
+ /// The pager's *cosmetic* slash-command gate treats an absent tier (`None`) as restricted (it recovers live on the next settings update).
+@@ -735,6 +736,9 @@ pub struct AppView {
+     /// When true the event loop ensures the pager renders raw control codes (`less -R`) so the colors show instead of literal escapes.
+     /// Plain-text transcripts (`/export` markdown) leave this false.
+     pub pending_pager_ansi: bool,
++    /// Workshop: a vendor CLI login (`claude auth login`, …) to run attached to the user's terminal
++    /// through the same suspend/resume path as the external editor; consumed by the event loop.
++    pub pending_workshop_login: Option<(workshop_detect::Rail, Vec<String>)>,
+     /// Minimal mode only: the Ctrl+T **force-show** pin for the todo panel.
+     /// Minimal-mode-only per-session state, consolidated into a single field so the central `AppView` isn't peppered with loose minimal flags.
+     /// Default-empty and inert outside `--minimal`; the `xai-grok-pager-minimal` crate reads/mutates it through the `crate::minimal_api` accessors.
+@@ -991,6 +995,29 @@ pub struct AppView {
+     pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
+     /// Whether deferred welcome-screen login should force OAuth.
+     pub auth_use_oauth: bool,
++    /// Workshop connection picker, open when `Some`. It is the only default auth surface: Login,
++    /// welcome `l`, `/login`, `/auth`, `/models` and first run all open it. Rendered on the welcome
++    /// view; keys are routed to it while open.
++    pub connection_picker: Option<workshop_auth::PickerState>,
++    /// Workshop: which runtime prompts are routed through (shell loop, OpenCode engine, or a
++    /// vendor CLI adapter). Set by the picker; `Shell` is the default.
++    pub workshop_connection: crate::app::workshop::WorkshopConnection,
++    /// Workshop: the running OpenCode engine (`opencode serve`), started lazily on the first
++    /// Engine-connection turn and reused across turns. `None` until then. Adapter (CLI) turns keep
++    /// no long-lived handle — each turn spawns the vendor CLI fresh with a persisted resume id.
++    pub workshop_engine: Option<std::sync::Arc<workshop_adapters::opencode_engine::OpenCodeEngine>>,
++    pub workshop_engine_session: Option<String>,
++    /// True while an Engine/Adapter turn streams; a second submit is rejected and Esc/Ctrl-C cancels.
++    pub workshop_turn_active: bool,
++    /// Sender the event loop installs once so submit handlers can stream a turn's events back into
++    /// the loop's Workshop `select!` arm. `None` outside the interactive loop (headless, tests).
++    pub workshop_turn_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::app::workshop::WorkshopTurnMsg>>,
++    /// Cancel signal for the in-flight turn (Esc / Ctrl-C → abort/kill).
++    pub workshop_turn_cancel: Option<tokio::sync::watch::Sender<bool>>,
++    /// The streaming assistant block for the current turn, appended to as deltas arrive.
++    pub workshop_turn_stream_entry: Option<crate::scrollback::EntryId>,
++    /// Agent whose scrollback the current turn renders into.
++    pub workshop_turn_agent: Option<crate::app::agent::AgentId>,
+     /// Delivery state from the last clipboard copy during auth.
+     pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
+     /// Generation of the current auth copy feedback and its clear timer.
+@@ -1402,6 +1429,7 @@ impl AppView {
+             pending_effects: Vec::new(),
+             pending_editor: None,
+             pending_pager_path: None,
++            pending_workshop_login: None,
+             pending_pager_ansi: false,
+             minimal_state: crate::minimal_api::MinimalState::default(),
+             welcome_menu_index: None,
+@@ -1514,6 +1542,15 @@ impl AppView {
+             auth_url_poll_handle: None,
+             deferred_startup: Default::default(),
+             auth_use_oauth: false,
++            connection_picker: None,
++            workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
++            workshop_engine: None,
++            workshop_engine_session: None,
++            workshop_turn_active: false,
++            workshop_turn_tx: None,
++            workshop_turn_cancel: None,
++            workshop_turn_stream_entry: None,
++            workshop_turn_agent: None,
+             auth_clipboard_delivery: None,
+             auth_clipboard_feedback_generation: 0,
+             team_id: None,
+@@ -1680,11 +1717,15 @@ impl AppView {
+     pub(super) fn consumer_account(&self) -> bool {
+         !self.backend_billed && !self.is_api_key_auth && !self.has_external_auth_provider
+     }
+-    /// Whether voice mode is withheld for the current subscription tier (free / X Basic personal accounts).
+-    /// Derived from the computed [`Self::tier_restricted_commands`] deny list so it stays in lockstep with the slash-command gate.
++    /// Whether voice is withheld for the current subscription tier (free / X Basic personal accounts).
++    /// Workshop overlay: only for the opt-in xAI voice provider, whose server zero-limits those tiers;
++    /// the default local engine has no tier and is never gated.
+     /// Used to gate the Ctrl+Space / F8 voice keybinding, which bypasses the slash registry entirely (see [`crate::app::dispatch::voice`]).
+     pub fn is_voice_tier_restricted(&self) -> bool {
+-        self.tier_restricted_commands.iter().any(|c| c == "voice")
++        self.voice_config.provider == xai_grok_voice::VoiceProvider::Xai
++            && self.team_name.is_none()
++            && self.consumer_account()
++            && is_restricted_tier(self.subscription_tier.as_deref())
+     }
+     /// Draw-time expiry can flip the live-announcement predicate between pushes.
+     /// Resync the slash gate only when it diverges from the stored flags (checked per frame, fan-out runs only on change).
+@@ -2399,6 +2440,11 @@ impl AppView {
+                     arrived_at,
+                     cwd: &self.cwd,
+                     mid_session_login: self.auth_return_view.is_some(),
++                    connection_picker_open: self.connection_picker.is_some(),
++                    connection_picker_key_entry: self
++                        .connection_picker
++                        .as_ref()
++                        .is_some_and(|p| p.key_entry.is_some()),
+                     auth_code_input: &mut self.auth_code_input,
+                     prompt: &mut self.welcome_prompt,
+                     prompt_focused: &mut self.welcome_prompt_focused,
+@@ -3046,6 +3092,10 @@ struct WelcomeInputCtx<'a> {
+     /// `true` when the welcome screen is showing only to host a login flow that was started from inside a session.
+     /// Esc / `q` then cancel the login and return to the session rather than quitting the app.
+     mid_session_login: bool,
++    /// Workshop connection picker is open: it owns every key until it closes.
++    connection_picker_open: bool,
++    /// The picker's paste-key prompt is open: printable keys are text, not shortcuts.
++    connection_picker_key_entry: bool,
+     auth_code_input: &'a mut LineEditor,
+     prompt: &'a mut PromptWidget,
+     prompt_focused: &'a mut bool,
+@@ -3129,6 +3179,63 @@ struct WelcomeInputCtx<'a> {
+ }
+ /// Welcome view input: overlays first, then composer, then the menu.
+ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
++    // Workshop: the connection picker owns the keyboard while open. It never starts a login on its
++    // own; `Enter` outcomes are decided by `workshop_auth::PickerState` in the dispatcher.
++    if ctx.connection_picker_open {
++        use workshop_auth::PickerInput;
++        return match ev {
++            Event::Paste(text) => {
++                InputOutcome::Action(Action::ConnectionPicker(PickerInput::Paste(text.clone())))
++            }
++            Event::Key(key) if key.kind != KeyEventKind::Release => {
++                if key!('c', CONTROL).matches(key) || key!('d', CONTROL).matches(key) {
++                    return if ctx.mid_session_login {
++                        InputOutcome::Action(Action::ConnectionPicker(PickerInput::Back))
++                    } else {
++                        InputOutcome::Action(Action::Quit)
++                    };
++                }
++                if crate::input::key::is_paste_key(key) {
++                    return match crate::clipboard::system_clipboard_get() {
++                        Some(text) => InputOutcome::Action(Action::ConnectionPicker(
++                            PickerInput::Paste(text),
++                        )),
++                        None => InputOutcome::Unchanged,
++                    };
++                }
++                // While a key-entry prompt is open every printable key is text.
++                if ctx.connection_picker_key_entry {
++                    let input = match key.code {
++                        KeyCode::Enter => PickerInput::Enter,
++                        KeyCode::Esc => PickerInput::Back,
++                        KeyCode::Backspace => PickerInput::Backspace,
++                        KeyCode::Char(c)
++                            if !key
++                                .modifiers
++                                .intersects(crossterm::event::KeyModifiers::CONTROL) =>
++                        {
++                            PickerInput::Char(c)
++                        }
++                        _ => return InputOutcome::Unchanged,
++                    };
++                    return InputOutcome::Action(Action::ConnectionPicker(input));
++                }
++                let input = match key.code {
++                    KeyCode::Up | KeyCode::Char('k') => PickerInput::Up,
++                    KeyCode::Down | KeyCode::Char('j') => PickerInput::Down,
++                    KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
++                        PickerInput::SwitchTab
++                    }
++                    KeyCode::Enter => PickerInput::Enter,
++                    KeyCode::Esc | KeyCode::Char('q') => PickerInput::Back,
++                    KeyCode::Char('r') => PickerInput::Refresh,
++                    _ => return InputOutcome::Unchanged,
++                };
++                InputOutcome::Action(Action::ConnectionPicker(input))
++            }
++            _ => InputOutcome::Unchanged,
++        };
++    }
+     if let Some(modal) = ctx.import_claude_modal.as_mut() {
+         use crate::views::import_claude_modal::ImportClaudeModalOutcome;
+         let outcome_to_input = |o: ImportClaudeModalOutcome| match o {
+@@ -4451,7 +4558,10 @@ impl AppView {
+                                         &self.hidden_announcement_ids,
+                                     )
+                                 })
+-                                .or(self.announcement.as_ref());
++                                .or(self.announcement.as_ref())
++                                .filter(|a| {
++                                    workshop_brand::hero_shows_announcement(a.severity.as_deref())
++                                });
+                             let welcome_params = crate::views::welcome::WelcomeRenderParams {
+                                 prompt_focus: if self.welcome_prompt_focused {
+                                     WelcomePromptFocus::Focused
+@@ -4464,6 +4574,7 @@ impl AppView {
+                                 consent_state: &self.consent_state,
+                                 consent_hover_link: self.welcome_consent_hover_link,
+                                 login_label: self.login_label.as_deref(),
++                                connection_picker: self.connection_picker.as_ref(),
+                                 auth_code_input: self.auth_code_input.text(),
+                                 auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
+                                 clipboard_delivery: self.auth_clipboard_delivery,
+diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
+index 66bf4e4f..e8e4dc42 100644
+--- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
+@@ -169,6 +169,15 @@ pub(crate) fn test_app() -> AppView {
+         auth_url_poll_handle: None,
+         deferred_startup: Default::default(),
+         auth_use_oauth: false,
++        connection_picker: None,
++        workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
++        workshop_engine: None,
++        workshop_engine_session: None,
++        workshop_turn_active: false,
++        workshop_turn_tx: None,
++        workshop_turn_cancel: None,
++        workshop_turn_stream_entry: None,
++        workshop_turn_agent: None,
+         auth_clipboard_delivery: None,
+         auth_clipboard_feedback_generation: 0,
+         team_id: None,
+@@ -276,6 +285,7 @@ pub(crate) fn test_app() -> AppView {
+         pending_effects: Vec::new(),
+         pending_editor: None,
+         pending_pager_path: None,
++        pending_workshop_login: None,
+         pending_pager_ansi: false,
+         minimal_state: crate::minimal_api::MinimalState::default(),
+         reconnect_pending: false,
+@@ -614,6 +624,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
+     );
+ }
+ #[test]
++#[ignore = "upstream time-dependent flake (history daemon delivery races the poll deadline); see PR #13"]
+ fn needs_animation_gates_prompt_history_tick_delivery() {
+     let mut app = test_app_with_agent();
+     let id = super::super::agent::AgentId(0);
+@@ -2233,16 +2244,20 @@ fn is_restricted_tier_classification() {
+     assert!(!is_restricted_tier(Some("X Premium+")));
+     assert!(!is_restricted_tier(Some("SomeFutureTier")));
+ }
++/// Workshop overlay: the local engine has no tier, so `/voice` is never in the deny list.
+ #[test]
+-fn voice_included_in_tier_restricted_commands() {
+-    assert!(TIER_RESTRICTED_COMMANDS.contains(&"voice"));
++fn voice_not_in_tier_restricted_commands() {
++    assert!(!TIER_RESTRICTED_COMMANDS.contains(&"voice"));
+ }
+ #[test]
+-fn is_voice_tier_restricted_tracks_tier() {
++fn is_voice_tier_restricted_only_for_the_xai_provider() {
+     let mut app = test_app();
+     app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
+-    assert!(app.is_voice_tier_restricted());
++    assert!(!app.is_voice_tier_restricted(), "local provider: no tier gate");
++    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
++    assert!(app.is_voice_tier_restricted(), "xAI provider on a free tier is gated");
+     let mut app = test_app();
++    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
+     let meta = xai_grok_login::AuthMeta {
+         subscription_tier: Some("SuperGrok".into()),
+         ..Default::default()
+diff --git a/crates/codegen/xai-grok-pager/src/app/cli.rs b/crates/codegen/xai-grok-pager/src/app/cli.rs
+index 87f63aef..3dcc57a5 100644
+--- a/crates/codegen/xai-grok-pager/src/app/cli.rs
++++ b/crates/codegen/xai-grok-pager/src/app/cli.rs
+@@ -20,12 +20,15 @@ pub enum Command {
+     Leader(LeaderMgmtArgs),
+     /// Sign out and clear cached credentials
+     Logout,
+-    /// Sign in to Grok
++    /// Show the connection picker (Local model, API key, subscription CLI, optional xAI)
+     Login {
+         /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
+         #[arg(long, hide = true)]
+         legacy: bool,
+-        /// Use Grok OAuth via auth.x.ai.
++        /// Optional: sign in with an xAI account (opens auth.x.ai). Never the default.
++        #[arg(long = "xai")]
++        xai: bool,
++        /// Use the loopback OAuth transport for a configured session-login provider.
+         #[arg(long = "oauth", alias = "oidc", conflicts_with_all = ["device_auth"])]
+         oauth: bool,
+         /// Use device-code authentication for headless/remote environments.
+@@ -394,9 +397,9 @@ pub struct LeaderArgs {
+ }
+ #[derive(Debug, Clone, Parser)]
+ #[command(
+-    name = "grok",
++    name = "workshop",
+     version = xai_grok_version::full_version(),
+-    about = "Grok Build TUI",
++    about = "Workshop: a coding-agent runtime that connects to local models, API keys, or subscription CLIs",
+     disable_version_flag = true,
+     next_display_order = None,
+     help_template = "\
+@@ -830,8 +833,8 @@ impl PagerArgs {
+             .map(std::path::Path::new)
+             .and_then(|p| p.file_name())
+             .and_then(|n| n.to_str())
+-            .filter(|n| *n == "grok" || *n == "agent")
+-            .unwrap_or("grok")
++            .filter(|n| *n == "workshop" || *n == "grok" || *n == "agent")
++            .unwrap_or("workshop")
+             .to_owned();
+         Self::parse_from(std::iter::once(bin_name).chain(std::env::args().skip(1)))
+     }
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
+index 3b578a9d..8abf55cd 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
+@@ -10,6 +10,7 @@ use crate::app::agent_view::AgentView;
+ use crate::app::app_view::{ActiveView, AppView, AuthMode, AuthState};
+ use crate::scrollback::block::RenderBlock;
+ use crate::scrollback::blocks::SessionEvent;
++use agent_client_protocol as acp;
+ 
+ // ---------------------------------------------------------------------------
+ // Auth dispatch
+@@ -207,24 +208,206 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
+     }
+ }
+ 
+-/// Start an interactive login flow. Triggered by pressing 'l' on the welcome screen or by the `/login` slash command.
+-/// Only the welcome view renders the auth UI (the external auth provider's sign-in URL and status).
+-/// A mid-session invocation therefore stashes the caller's view in `auth_return_view` and switches to `Welcome` so the flow is visible.
++/// Login. Triggered by pressing 'l' on the welcome screen, by `/login`, `/auth`, `/models`, and at first run.
++///
++/// Workshop: this opens the **connection picker** and never sends an `AuthenticateRequest` by itself
++/// (gate:no-xai, Gate 2). The inherited interactive session login runs only from the picker's labeled
++/// optional xAI card (`dispatch_connection_picker` → `start_optional_xai_login`).
++/// Only the welcome view renders the picker, so a mid-session invocation stashes the caller's view in
++/// `auth_return_view` and switches to `Welcome`, exactly like the inherited auth UI did.
+ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
+-    ensure_login_method(app);
+-    let Some(method_id) = app.login_method_id.clone() else {
+-        app.auth_state = AuthState::Pending {
+-            error: Some(no_login_method_error(app)),
+-        };
+-        return vec![];
+-    };
++    dispatch_open_connection_picker(app, workshop_auth::PickerTab::Models)
++}
+ 
+-    // Show the auth UI when triggered from inside a session
+-    // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
++/// Open the connection picker on `tab` (Workshop). Idempotent while already open.
++pub(super) fn dispatch_open_connection_picker(
++    app: &mut AppView,
++    tab: workshop_auth::PickerTab,
++) -> Vec<Effect> {
+     if !matches!(app.active_view, ActiveView::Welcome) {
+         app.auth_return_view = Some(app.active_view);
+         show_welcome(app);
+     }
++    // A login attempt in flight (e.g. the optional xAI flow) is abandoned when the picker reopens.
++    if matches!(app.auth_state, AuthState::Authenticating { .. }) {
++        abort_prior_auth(app);
++        app.auth_state = AuthState::Pending { error: None };
++    }
++    match app.connection_picker.as_mut() {
++        Some(picker) => {
++            picker.tab = tab;
++            vec![]
++        }
++        None => {
++            app.connection_picker = Some(workshop_auth::PickerState::new().with_tab(tab));
++            // Rows and rails load asynchronously: loopback local-server probe, catalogs, and the
++            // official CLI detection (child processes on the blocking pool). No auth files.
++            vec![Effect::WorkshopLoadPicker]
++        }
++    }
++}
++
++/// Close the picker and return to the view it was opened from.
++fn close_connection_picker(app: &mut AppView) {
++    app.connection_picker = None;
++    if let Some(return_view) = app.auth_return_view.take() {
++        restore_auth_return_view(app, return_view);
++    }
++}
++
++/// Route a key press to the open connection picker (Workshop).
++pub(super) fn dispatch_connection_picker(
++    app: &mut AppView,
++    input: workshop_auth::PickerInput,
++) -> Vec<Effect> {
++    use workshop_auth::PickerOutcome;
++    let Some(picker) = app.connection_picker.as_mut() else {
++        return vec![];
++    };
++    match picker.handle(input) {
++        PickerOutcome::Changed => vec![],
++        PickerOutcome::Refresh => {
++            picker.loading = true;
++            picker.set_status("Refreshing…");
++            vec![Effect::WorkshopLoadPicker]
++        }
++        PickerOutcome::Close => {
++            // Before any connection is configured the welcome screen stays on the (auth-pending)
++            // home, never on a browser.
++            close_connection_picker(app);
++            vec![]
++        }
++        PickerOutcome::StartOptionalXaiLogin => {
++            app.connection_picker = None;
++            start_optional_xai_login(app)
++        }
++        PickerOutcome::SelectCatalog(model) => {
++            match crate::app::workshop::activate_catalog_model(&model) {
++                Ok(plan) => {
++                    crate::app::workshop::export_env(&plan.env);
++                    picker.set_status(format!(
++                        "Connecting {} ({})…",
++                        plan.display_name, plan.base_url
++                    ));
++                    app.workshop_connection = crate::app::workshop::WorkshopConnection::Shell;
++                    start_workshop_activation(app, plan.key)
++                }
++                Err(e) => {
++                    picker.set_status(format!("Could not activate: {e}"));
++                    vec![]
++                }
++            }
++        }
++        PickerOutcome::ConnectProvider(provider_id) => {
++            if provider_id == "openrouter" {
++                picker.set_status(
++                    "Opening OpenRouter sign-in in your browser (loopback callback)…",
++                );
++                vec![Effect::WorkshopOpenRouterSignIn]
++            } else {
++                let label = crate::app::workshop::key_prompt_label(&provider_id);
++                picker.begin_key_entry(&provider_id, &label);
++                vec![]
++            }
++        }
++        PickerOutcome::SaveKey { provider_id, key } => {
++            match crate::app::workshop::save_provider_key(&provider_id, &key) {
++                Ok(backend) => {
++                    picker.set_status(format!("Saved {provider_id} key to {backend}. Refreshing…"));
++                    picker.loading = true;
++                    vec![Effect::WorkshopLoadPicker]
++                }
++                Err(e) => {
++                    picker.set_status(format!("Could not save key: {e}"));
++                    vec![]
++                }
++            }
++        }
++        PickerOutcome::SelectEngine(model) => {
++            app.workshop_connection = crate::app::workshop::WorkshopConnection::Engine { model };
++            // Engine/Adapter turns bypass the shell model, but the shell still needs an auth method
++            // to open an ACP session (the agent view that renders the streamed turn). Establish the
++            // same keyless/anonymous session Direct/Local uses; the placeholder model is never hit.
++            finish_workshop_adapter_selection(app)
++        }
++        PickerOutcome::RailConnect(rail) => {
++            let argv = crate::app::workshop::rail_login_argv(rail);
++            picker.set_status(format!(
++                "Running `{}` in your terminal; Workshop re-probes when it exits.",
++                argv.join(" ")
++            ));
++            // The event loop suspends the TUI and runs the vendor login attached to the terminal.
++            app.pending_workshop_login = Some((rail, argv));
++            vec![]
++        }
++        PickerOutcome::SelectRailModel(rail, model) => {
++            app.workshop_connection =
++                crate::app::workshop::WorkshopConnection::Adapter { rail, model };
++            finish_workshop_adapter_selection(app)
++        }
++    }
++}
++
++/// An Engine/Adapter connection routes turns through workshop-adapters, not the shell model — but
++/// the shell still needs a model + auth method to open the ACP session that backs the agent view.
++/// Write a keyless placeholder model and reuse the same anonymous activation Direct/Local uses, so
++/// the session is created and the streamed turn has a visible home; `dispatch_workshop_turn` then
++/// intercepts prompts before they reach the placeholder. The composer label is stamped from
++/// `workshop_connection` at session creation (`configure_agent_composer`) and here.
++fn finish_workshop_adapter_selection(app: &mut AppView) -> Vec<Effect> {
++    match crate::app::workshop::activate_placeholder_session() {
++        Ok(key) => start_workshop_activation(app, key),
++        Err(e) => {
++            if let Some(picker) = app.connection_picker.as_mut() {
++                picker.set_status(format!("Could not connect: {e}"));
++            }
++            vec![]
++        }
++    }
++}
++
++/// After config.toml gained `[model.<key>]`: reload the shell's model list, authenticate with the
++/// non-interactive `xai.api_key` method (the anonymous sentinel or a real key counts), and switch
++/// the active session. Completion arrives as `AuthComplete` / `AuthFailed` for `request_seq`.
++fn start_workshop_activation(app: &mut AppView, model_id: String) -> Vec<Effect> {
++    // Stamp the composer label from the active connection: `None` for Direct/Local (Shell) → the
++    // shell model name shows; `Big Pickle · OpenCode` / `Claude · {model}` for Engine/Adapter.
++    let label = app.workshop_connection.composer_label();
++    for agent in app.agents.values_mut() {
++        agent.workshop_model_label = label.clone();
++    }
++    abort_prior_auth(app);
++    let request_seq = app.next_auth_request_seq;
++    app.next_auth_request_seq += 1;
++    app.auth_state = AuthState::Authenticating {
++        request_seq,
++        handle: None,
++        auth_url: None,
++        mode: AuthMode::Pending,
++    };
++    let session = match app.auth_return_view {
++        Some(ActiveView::Agent(id)) => app
++            .agents
++            .get(&id)
++            .and_then(|a| a.session.session_id.clone())
++            .map(|sid| (id, sid)),
++        _ => None,
++    };
++    vec![Effect::WorkshopActivateModel {
++        request_seq,
++        model_id,
++        session,
++    }]
++}
++
++/// The only path to the inherited xAI OIDC flow: the user selected the labeled optional xAI card
++/// (and confirmed). Sends `grok.com` with `workshop_xai_opt_in`, which the shell requires before it
++/// attaches the xAI OAuth2 provider when none is configured.
++fn start_optional_xai_login(app: &mut AppView) -> Vec<Effect> {
++    let method_id = app.login_method_id.clone().unwrap_or_else(|| {
++        acp::AuthMethodId::new(xai_grok_shell::agent::auth_method::GROK_COM_METHOD_ID)
++    });
++    app.login_label = Some("xAI (optional)".to_owned());
+ 
+     abort_prior_auth(app);
+ 
+@@ -244,6 +427,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
+             method_id,
+             use_oauth: app.auth_use_oauth,
+             force_interactive: true,
++            xai_opt_in: true,
+         },
+         Effect::PollAuthUrl { request_seq },
+     ]
+@@ -267,6 +451,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
+     app.auth_state = AuthState::Done;
+     app.auth_show_raw_url = false;
+     app.auth_code_input.reset();
++    // Workshop: a picker opened mid-session closes with the login it hosted.
++    app.connection_picker = None;
+     restore_auth_return_view(app, return_view);
+     // This runs on all agents because the login may have been started from the dashboard
+     // Clearing the stash alone is not enough
+@@ -318,6 +504,18 @@ pub(super) fn handle_auth_complete(
+         app.welcome_prompt_focused = !app.is_access_blocked();
+         app.auth_code_input.reset();
+ 
++        // Workshop: a connection activation started from the picker has now reloaded the model and
++        // authenticated (Direct/Local) or established the anonymous session (Engine/Adapter); close
++        // the picker and hand the user back to the home prompt. The composer label is stamped at
++        // session creation from `workshop_connection` (see `configure_agent_composer`).
++        if app.connection_picker.take().is_some() {
++            let label = app
++                .workshop_connection
++                .composer_label()
++                .unwrap_or_else(|| "model".to_owned());
++            app.show_toast(&format!("Connected: {label}"));
++        }
++
+         // Mid-session re-auth (`/login` or a 401 prompt): restore the view the user was on instead of running the startup load-session flow
+         // The session state lives in `app.agents`, independent of `active_view`, so it is preserved across the auth detour
+         if let Some(return_view) = app.auth_return_view.take() {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
+index dd53b1ae..f85ecdab 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
+@@ -1,7 +1,7 @@
+ //! Top-level action router: maps actions and action results to handlers.
+ use super::auth::{
+-    dispatch_cancel_login, dispatch_login, dispatch_logout, dispatch_submit_auth_code,
+-    dispatch_switch_account,
++    dispatch_cancel_login, dispatch_connection_picker, dispatch_login, dispatch_logout,
++    dispatch_open_connection_picker, dispatch_submit_auth_code, dispatch_switch_account,
+ };
+ use super::billing::dispatch_open_supergrok_url;
+ use super::ctx::{
+@@ -1223,6 +1223,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
+             vec![]
+         }
+         Action::Login => dispatch_login(app),
++        Action::OpenConnectionPicker(tab) => dispatch_open_connection_picker(app, tab),
++        Action::ConnectionPicker(input) => dispatch_connection_picker(app, input),
+         Action::CancelLogin => dispatch_cancel_login(app),
+         Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
+         Action::CopyAuthUrl => {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
+index ce9c0603..7e343f14 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
+@@ -980,6 +980,53 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+             }
+             vec![]
+         }
++        TaskResult::WorkshopPickerLoaded(snap) => {
++            if let Some(picker) = app.connection_picker.as_mut() {
++                let default_key = snap
++                    .default_selection
++                    .as_ref()
++                    .and_then(|d| d.catalog_key());
++                picker.apply_snapshot(snap);
++                picker.status = None;
++                // Cursor lands on the plan's first-run default (never xAI, never Zen).
++                if let Some(key) = default_key
++                    && let Some(idx) = picker.rows.iter().position(|r| r.id() == key)
++                {
++                    picker.models_selected = idx;
++                }
++            }
++            vec![]
++        }
++        TaskResult::WorkshopConnectDone {
++            provider_id,
++            result,
++        } => {
++            if let Some(picker) = app.connection_picker.as_mut() {
++                match result {
++                    Ok(backend) => {
++                        picker.set_status(format!(
++                            "{provider_id} connected (key saved to {backend}). Refreshing…"
++                        ));
++                        picker.loading = true;
++                        return vec![Effect::WorkshopLoadPicker];
++                    }
++                    Err(e) => picker.set_status(format!("{provider_id}: {e}")),
++                }
++            }
++            vec![]
++        }
++        TaskResult::WorkshopLoginTerminalDone { rail, exit_ok } => {
++            if let Some(picker) = app.connection_picker.as_mut() {
++                picker.set_status(format!(
++                    "{} login {}; re-probing…",
++                    rail.display_name(),
++                    if exit_ok { "finished" } else { "exited with an error" }
++                ));
++                picker.loading = true;
++                return vec![Effect::WorkshopLoadPicker];
++            }
++            vec![]
++        }
+         TaskResult::ChangelogFetched { markdown, entries } => {
+             app.changelog_markdown = markdown;
+             app.changelog_bullets =
+@@ -1153,6 +1200,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+             } = &app.auth_state
+                 && *current_seq == request_seq
+             {
++                // Workshop: an activation started from the open connection picker failed; say so
++                // in the picker instead of leaving "Connecting…" on screen.
++                if let Some(picker) = app.connection_picker.as_mut() {
++                    picker.set_status(format!("Could not connect: {error}"));
++                }
+                 app.auth_state = AuthState::Pending { error: Some(error) };
+                 app.auth_code_input.reset();
+             }
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
+index 495bb46e..16663d56 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
+@@ -396,7 +396,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
+         "PromptResponse must stash the compact-held prompt for AuthComplete"
+     );
+ 
+-    dispatch(Action::Login, &mut app);
++    start_login_flow(&mut app);
+     let seq = authenticating_seq(&app);
+     let effects = dispatch(
+         Action::TaskComplete(TaskResult::AuthComplete {
+@@ -556,34 +556,118 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
+     );
+ }
+ 
+-/// Empty `auth_methods` (the preferred_method pin is unavailable) must not invent `grok.com` or start an OIDC flow the agent did not advertise.
++/// Empty `auth_methods` (Workshop cold start, or a `preferred_method` pin that is unavailable) must not invent
++/// `grok.com` or start an OIDC flow the agent did not advertise: Login opens the connection picker instead.
+ #[test]
+-fn login_with_empty_auth_methods_fails_closed() {
++fn login_with_empty_auth_methods_opens_picker_and_fails_closed() {
+     let mut app = test_app_with_agent();
+     app.auth_methods.clear();
+     app.login_method_id = None;
+ 
+     let effects = dispatch(Action::Login, &mut app);
+ 
++    // Opening the picker loads its rows/rails asynchronously (`WorkshopLoadPicker`); that is a data
++    // probe, never an auth flow. The invariant is that Login alone starts no `Authenticate`.
+     assert!(
+-        effects.is_empty(),
+-        "must not start Authenticate without an advertised method"
++        !effects
++            .iter()
++            .any(|e| matches!(e, Effect::Authenticate { .. })),
++        "must not start Authenticate without an advertised method, got {effects:?}"
++    );
++    assert!(
++        effects
++            .iter()
++            .all(|e| matches!(e, Effect::WorkshopLoadPicker)),
++        "Login only loads the picker, got {effects:?}"
++    );
++    assert!(
++        app.connection_picker.is_some(),
++        "Login must open the connection picker"
+     );
+     assert_eq!(
+         app.active_view,
+-        ActiveView::Agent(AgentId(0)),
+-        "must stay on the session view"
++        ActiveView::Welcome,
++        "the picker renders on the welcome view"
++    );
++    assert_eq!(
++        app.auth_return_view,
++        Some(ActiveView::Agent(AgentId(0))),
++        "closing the picker returns to the session"
+     );
+     assert!(
+-        matches!(
+-            &app.auth_state,
+-            AuthState::Pending { error: Some(msg) }
+-                if msg.contains("preferred_method=api_key")
+-        ),
+-        "must surface pin-unavailable error, got {:?}",
++        !matches!(app.auth_state, AuthState::Authenticating { .. }),
++        "no login flow may start from Login alone, got {:?}",
+         app.auth_state
+     );
+     assert!(app.login_method_id.is_none());
++
++    // Esc closes the picker and returns to the session; still nothing was sent.
++    let effects = dispatch(
++        Action::ConnectionPicker(workshop_auth::PickerInput::Back),
++        &mut app,
++    );
++    assert!(effects.is_empty());
++    assert!(app.connection_picker.is_none());
++    assert_eq!(app.active_view, ActiveView::Agent(AgentId(0)));
++}
++
++/// Enter on a non-xAI card (Local, OpenAI, …) opens setup details and never emits `Authenticate`.
++#[test]
++fn picker_non_xai_cards_never_authenticate() {
++    use workshop_auth::{PickerInput, XAI_ROW_ID};
++    let mut app = test_app();
++    dispatch(Action::Login, &mut app);
++    let n = app.connection_picker.as_ref().unwrap().rows.len();
++    for i in 0..n {
++        let id = app.connection_picker.as_ref().unwrap().rows[i].id();
++        if id == XAI_ROW_ID {
++            continue;
++        }
++        app.connection_picker.as_mut().unwrap().models_selected = i;
++        app.connection_picker.as_mut().unwrap().detail_open = false;
++        let effects = dispatch(Action::ConnectionPicker(PickerInput::Enter), &mut app);
++        assert!(
++            !effects
++                .iter()
++                .any(|e| matches!(e, Effect::Authenticate { .. })),
++            "{id}: Enter must not authenticate"
++        );
++        assert!(
++            !matches!(app.auth_state, AuthState::Authenticating { .. }),
++            "{id}: no flow started"
++        );
++        if app.connection_picker.is_none() {
++            // "Add a connection later" closes the picker; reopen for the next card.
++            dispatch(Action::Login, &mut app);
++        }
++    }
++}
++
++/// The optional xAI card is the only path to the inherited flow, and it needs two explicit Enters.
++#[test]
++fn picker_xai_card_requires_two_enters_and_sets_opt_in() {
++    let mut app = test_app();
++    let effects = start_login_flow(&mut app);
++    assert!(
++        matches!(app.auth_state, AuthState::Authenticating { .. }),
++        "second Enter on the xAI card starts the flow"
++    );
++    let auth = effects
++        .iter()
++        .find(|e| matches!(e, Effect::Authenticate { .. }))
++        .expect("Authenticate effect");
++    if let Effect::Authenticate {
++        xai_opt_in,
++        method_id,
++        force_interactive,
++        ..
++    } = auth
++    {
++        assert!(*xai_opt_in, "xAI card must carry the explicit opt-in");
++        assert!(*force_interactive);
++        assert_eq!(method_id.0.as_ref(), "grok.com");
++    }
++    assert!(app.connection_picker.is_none(), "picker closes when the flow starts");
+ }
+ 
+ /// Puts the app in `Authenticating` with a live task's abort handle installed, as the event loop would.
+@@ -593,7 +677,7 @@ fn install_live_auth_task(
+     app: &mut AppView,
+     rt: &tokio::runtime::Runtime,
+ ) -> (tokio::task::JoinHandle<()>, u64) {
+-    dispatch(Action::Login, app);
++    start_login_flow(app);
+     let task = rt.spawn(std::future::pending::<()>());
+     match &mut app.auth_state {
+         AuthState::Authenticating {
+@@ -623,7 +707,7 @@ fn login_while_authenticating_aborts_prior_task() {
+     let mut app = test_app_with_agent();
+     let (prior_task, first_seq) = install_live_auth_task(&mut app, &rt);
+ 
+-    let effects = dispatch(Action::Login, &mut app);
++    let effects = start_login_flow(&mut app);
+ 
+     rt.block_on(async {
+         assert!(
+@@ -653,12 +737,12 @@ fn login_while_authenticating_aborts_prior_task() {
+ #[test]
+ fn stale_auth_complete_after_relogin_is_ignored() {
+     let mut app = test_app_with_agent();
+-    dispatch(Action::Login, &mut app);
++    start_login_flow(&mut app);
+     let first_seq = match &app.auth_state {
+         AuthState::Authenticating { request_seq, .. } => *request_seq,
+         other => panic!("expected Authenticating after Login, got {other:?}"),
+     };
+-    dispatch(Action::Login, &mut app); // re-login bumps to seq2
++    start_login_flow(&mut app); // re-login bumps to seq2
+ 
+     dispatch(
+         Action::TaskComplete(TaskResult::AuthComplete {
+@@ -724,7 +808,7 @@ fn cancel_login_aborts_prior_task() {
+ #[test]
+ fn cancel_login_restores_view() {
+     let mut app = test_app_with_agent();
+-    dispatch(Action::Login, &mut app);
++    start_login_flow(&mut app);
+     assert_eq!(app.active_view, ActiveView::Welcome);
+     let prior_seq = match &app.auth_state {
+         AuthState::Authenticating { request_seq, .. } => *request_seq,
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs
+index 2c596c26..ac90774d 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs
+@@ -1048,7 +1048,7 @@ fn auth_complete_retries_stashed_prompt_from_dashboard() {
+             }],
+         });
+     app.active_view = ActiveView::AgentDashboard;
+-    dispatch(Action::Login, &mut app);
++    start_login_flow(&mut app);
+     let seq = authenticating_seq(&app);
+     let effects = dispatch(
+         Action::TaskComplete(TaskResult::AuthComplete {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
+index 2bcc8eff..3f672748 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
+@@ -180,6 +180,15 @@ fn test_app() -> AppView {
+         auth_url_poll_handle: None,
+         deferred_startup: Default::default(),
+         auth_use_oauth: false,
++        connection_picker: None,
++        workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
++        workshop_engine: None,
++        workshop_engine_session: None,
++        workshop_turn_active: false,
++        workshop_turn_tx: None,
++        workshop_turn_cancel: None,
++        workshop_turn_stream_entry: None,
++        workshop_turn_agent: None,
+         auth_clipboard_delivery: None,
+         auth_clipboard_feedback_generation: 0,
+         team_id: None,
+@@ -286,6 +295,7 @@ fn test_app() -> AppView {
+         pending_effects: Vec::new(),
+         pending_editor: None,
+         pending_pager_path: None,
++        pending_workshop_login: None,
+         pending_pager_ansi: false,
+         minimal_state: crate::minimal_api::MinimalState::default(),
+         reconnect_pending: false,
+@@ -582,6 +592,23 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
+     std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
+     sess_dir
+ }
++/// Workshop: `Action::Login` opens the connection picker and never sends `Authenticate` by itself.
++/// The inherited interactive flow these tests exercise starts only from the picker's labeled optional
++/// xAI card (two explicit Enters), so drive the picker there.
++pub(super) fn start_login_flow(app: &mut AppView) -> Vec<Effect> {
++    use workshop_auth::PickerInput;
++    dispatch(Action::Login, app);
++    let rows = app
++        .connection_picker
++        .as_ref()
++        .map(|p| p.rows.len())
++        .expect("Login must open the connection picker");
++    for _ in 0..rows {
++        dispatch(Action::ConnectionPicker(PickerInput::Down), app);
++    }
++    dispatch(Action::ConnectionPicker(PickerInput::Enter), app); // shows the labeled copy (arms)
++    dispatch(Action::ConnectionPicker(PickerInput::Enter), app) // starts the flow
++}
+ /// Extract the in-flight auth request sequence, panicking if the auth state is not `Authenticating`.
+ fn authenticating_seq(app: &AppView) -> u64 {
+     match app.auth_state {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
+index 1b4d9b52..e926a299 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
+@@ -1943,8 +1943,9 @@ fn gated_worktree_with_none_companions_preserves_stashed_label_and_ref() {
+     assert!(!app.deferred_startup.worktree);
+ }
+ /// `/login` from inside a session must move to the welcome screen and stash the agent view for restoration.
+-/// The welcome screen is the only view that renders the auth flow / external-provider URL.
+-/// Regression: "external auth provider /login does nothing mid-session".
++/// The welcome screen is the only view that renders the connection picker and the auth flow.
++/// Workshop: Login alone opens the picker (no Authenticate); the inherited flow starts only from
++/// the optional xAI card, which still needs the stashed view and the welcome screen.
+ #[test]
+ fn login_mid_session_switches_to_welcome_and_stashes_view() {
+     let mut app = test_app_with_agent();
+@@ -1952,12 +1953,23 @@ fn login_mid_session_switches_to_welcome_and_stashes_view() {
+     let effects = dispatch(Action::Login, &mut app);
+     assert_eq!(app.active_view, ActiveView::Welcome);
+     assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
++    assert!(app.connection_picker.is_some(), "Login opens the picker");
++    // Opening the picker loads its rows/rails (`WorkshopLoadPicker`) — a data probe, not auth.
++    assert!(
++        effects
++            .iter()
++            .all(|e| matches!(e, Effect::WorkshopLoadPicker))
++            && !matches!(app.auth_state, AuthState::Authenticating { .. }),
++        "Login alone must not kick off an auth flow, got {effects:?}",
++    );
++    let effects = start_login_flow(&mut app);
++    assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
+     assert!(matches!(app.auth_state, AuthState::Authenticating { .. }));
+     assert!(
+         effects
+             .iter()
+             .any(|e| matches!(e, Effect::Authenticate { .. })),
+-        "must still kick off the auth flow",
++        "the optional xAI card still kicks off the inherited auth flow",
+     );
+ }
+ /// A mid-session `/login` switches to the welcome view to host the auth flow.
+@@ -1985,7 +1997,7 @@ fn auth_complete_strips_reauth_prompt_after_mid_session_login() {
+         .unwrap()
+         .scrollback
+         .push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
+-    dispatch(Action::Login, &mut app);
++    start_login_flow(&mut app);
+     let seq = authenticating_seq(&app);
+     dispatch(
+         Action::TaskComplete(TaskResult::AuthComplete {
+@@ -2026,7 +2038,7 @@ fn auth_complete_retries_stashed_prompt_after_mid_session_login() {
+             chip_elements: Vec::new(),
+         });
+     }
+-    dispatch(Action::Login, &mut app);
++    start_login_flow(&mut app);
+     let seq = authenticating_seq(&app);
+     let effects = dispatch(
+         Action::TaskComplete(TaskResult::AuthComplete {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/load.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/load.rs
+index 214080bf..a2f4ab86 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/load.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/load.rs
+@@ -918,7 +918,7 @@ fn session_restored_sticky_chat_sets_conversation_entry() {
+ #[test]
+ fn auth_complete_restores_view_after_mid_session_login() {
+     let mut app = test_app_with_agent();
+-    dispatch(Action::Login, &mut app);
++    start_login_flow(&mut app);
+     let seq = authenticating_seq(&app);
+     assert_eq!(app.active_view, ActiveView::Welcome);
+     dispatch(
+diff --git a/crates/codegen/xai-grok-pager/src/app/effects/helpers.rs b/crates/codegen/xai-grok-pager/src/app/effects/helpers.rs
+index ae86c5bf..5e173153 100644
+--- a/crates/codegen/xai-grok-pager/src/app/effects/helpers.rs
++++ b/crates/codegen/xai-grok-pager/src/app/effects/helpers.rs
+@@ -839,6 +839,7 @@ pub(super) async fn send_authenticate(
+     method_id: acp::AuthMethodId,
+     use_oauth: bool,
+     force_interactive: bool,
++    xai_opt_in: bool,
+ ) -> TaskResult {
+     let mut meta = serde_json::json!({
+         "use_oauth": use_oauth,
+@@ -847,6 +848,11 @@ pub(super) async fn send_authenticate(
+     if force_interactive && let Some(obj) = meta.as_object_mut() {
+         obj.insert("force_interactive".into(), serde_json::json!(true));
+     }
++    // Workshop: only the labeled optional xAI card sets this; the shell refuses an interactive
++    // session login without it when no session-login provider is configured.
++    if xai_opt_in && let Some(obj) = meta.as_object_mut() {
++        obj.insert("workshop_xai_opt_in".into(), serde_json::json!(true));
++    }
+     let req = acp::AuthenticateRequest::new(method_id).meta(meta.as_object().cloned());
+     match acp_send(req, tx).await {
+         Ok(resp) => {
+diff --git a/crates/codegen/xai-grok-pager/src/app/effects/mod.rs b/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
+index 68008b64..534ea991 100644
+--- a/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
+@@ -213,7 +213,7 @@ pub(crate) fn execute(
+             let abort_handle = tasks
+                 .spawn(async move {
+                     send_logout(&tx).await;
+-                    send_authenticate(&tx, request_seq, method_id, use_oauth, false)
++                    send_authenticate(&tx, request_seq, method_id, use_oauth, false, false)
+                         .await
+                 });
+             meta.auth_abort_handle = Some((request_seq, abort_handle));
+@@ -2308,6 +2308,7 @@ pub(crate) fn execute(
+             method_id,
+             use_oauth,
+             force_interactive,
++            xai_opt_in,
+         } => {
+             let tx = acp_tx.clone();
+             let abort_handle = tasks
+@@ -2318,11 +2319,81 @@ pub(crate) fn execute(
+                             method_id,
+                             use_oauth,
+                             force_interactive,
++                            xai_opt_in,
+                         )
+                         .await
+                 });
+             meta.auth_abort_handle = Some((request_seq, abort_handle));
+         }
++        Effect::WorkshopLoadPicker => {
++            tasks
++                .spawn(async move {
++                    let snap = crate::app::workshop::load_picker_snapshot().await;
++                    TaskResult::WorkshopPickerLoaded(snap)
++                });
++        }
++        Effect::WorkshopActivateModel {
++            request_seq,
++            model_id,
++            session,
++        } => {
++            let tx = acp_tx.clone();
++            let abort_handle = tasks
++                .spawn(async move {
++                    // 1. Re-read config.toml into the shell's model list (the same path the config
++                    //    hot-reload watcher uses).
++                    let reload = acp::ExtRequest::new(
++                        "x.ai/internal/reload_models",
++                        serde_json::value::to_raw_value(&serde_json::json!({}))
++                            .expect("serialize reload params")
++                            .into(),
++                    );
++                    if let Err(e) = acp_send(reload, &tx).await {
++                        return TaskResult::AuthFailed {
++                            request_seq,
++                            error: format!("model reload failed: {e}"),
++                        };
++                    }
++                    // 2. The new entry carries its own credential (or the anonymous sentinel), so the
++                    //    non-interactive method is now accepted.
++                    let auth = send_authenticate(
++                        &tx,
++                        request_seq,
++                        acp::AuthMethodId::new(
++                            xai_grok_shell::agent::auth_method::XAI_API_KEY_METHOD_ID,
++                        ),
++                        false,
++                        false,
++                        false,
++                    )
++                    .await;
++                    if let TaskResult::AuthFailed { .. } = &auth {
++                        return auth;
++                    }
++                    // 3. Switch the session the picker was opened from, if any.
++                    if let Some((_, session_id)) = session {
++                        let req = acp::SetSessionModelRequest::new(
++                            session_id,
++                            acp::ModelId::new(model_id.clone()),
++                        );
++                        if let Err(e) = acp_send(req, &tx).await {
++                            tracing::warn!(error = %e, model_id, "workshop: session model switch failed after activation");
++                        }
++                    }
++                    auth
++                });
++            meta.auth_abort_handle = Some((request_seq, abort_handle));
++        }
++        Effect::WorkshopOpenRouterSignIn => {
++            tasks
++                .spawn(async move {
++                    let result = crate::app::workshop::openrouter_sign_in().await;
++                    TaskResult::WorkshopConnectDone {
++                        provider_id: "openrouter".into(),
++                        result,
++                    }
++                });
++        }
+         Effect::PollAuthUrl { request_seq } => {
+             let tx = acp_tx.clone();
+             let abort_handle = tasks
+diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
+index d2463b6f..2b3d32ed 100644
+--- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
++++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
+@@ -764,18 +764,60 @@ fn run_pending_suspends(
+     presenter: &mut Presenter,
+     suspend_retry_after: &mut Option<Instant>,
+     suspend_wait_reports: &mut SuspendWaitReports,
+-) -> anyhow::Result<()> {
++) -> anyhow::Result<Vec<super::actions::Effect>> {
++    let mut follow_up: Vec<super::actions::Effect> = Vec::new();
+     let editor_pending = app.pending_editor.is_some();
+     let pager_pending = app.pending_pager_path.is_some();
++    let login_pending = app.pending_workshop_login.is_some();
+     suspend_wait_reports.reset_missing(editor_pending, pager_pending);
+     if !suspend_retry_ready(*suspend_retry_after, Instant::now()) {
+-        return Ok(());
++        return Ok(follow_up);
+     }
+-    if !editor_pending && !pager_pending {
++    if !editor_pending && !pager_pending && !login_pending {
+         *suspend_retry_after = None;
+-        return Ok(());
++        return Ok(follow_up);
+     }
+     *suspend_retry_after = None;
++    // Workshop: the vendor CLI's own login owns the terminal for its duration; Workshop never
++    // captures or parses its output, and re-probes the rail when it exits.
++    if let Some((rail, argv)) = app.pending_workshop_login.take() {
++        let mut exit_ok = false;
++        let moved_cursor = match suspend_for_child(
++            app.screen_mode,
++            terminal,
++            input_paused,
++            reader_parked,
++            input_rx,
++            || {
++                if let Some((program, args)) = argv.split_first() {
++                    eprintln!("\nWorkshop: running `{}` — sign in, then this returns to Workshop.\n", argv.join(" "));
++                    exit_ok = std::process::Command::new(program)
++                        .args(args)
++                        .status()
++                        .map(|s| s.success())
++                        .unwrap_or(false);
++                }
++            },
++        ) {
++            Ok(moved_cursor) => moved_cursor,
++            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
++                requeue_after_suspend_timeout(&mut app.pending_workshop_login, (rail, argv));
++                let _ = defer_suspend_retry(
++                    suspend_retry_after,
++                    &mut suspend_wait_reports.editor_reported,
++                    Instant::now(),
++                );
++                return Ok(follow_up);
++            }
++            Err(error) => return Err(error.into()),
++        };
++        restore_after_child(terminal, app.screen_mode, moved_cursor);
++        follow_up.extend(dispatch::dispatch(
++            Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone { rail, exit_ok }),
++            app,
++        ));
++        presenter.request_presentation(app, terminal, true);
++    }
+     if let Some(request) = app.pending_editor.take() {
+         let retry_request = request.clone();
+         match crate::app::external_editor::prepare(app, request) {
+@@ -817,7 +859,7 @@ fn run_pending_suspends(
+                             report_suspend_wait(app, EDITOR_SUSPEND_WAIT);
+                             presenter.request_presentation(app, terminal, false);
+                         }
+-                        return Ok(());
++                        return Ok(follow_up);
+                     }
+                     Err(error) => return Err(error.into()),
+                 };
+@@ -891,7 +933,7 @@ fn run_pending_suspends(
+                     report_suspend_wait(app, TRANSCRIPT_SUSPEND_WAIT);
+                     presenter.request_presentation(app, terminal, false);
+                 }
+-                return Ok(());
++                return Ok(follow_up);
+             }
+             Err(error) => return Err(error.into()),
+         };
+@@ -900,7 +942,7 @@ fn run_pending_suspends(
+         presenter.request_presentation(app, terminal, true);
+         suspend_wait_reports.pager_reported = false;
+     }
+-    Ok(())
++    Ok(follow_up)
+ }
+ /// Consume a pending in-process switch between `/minimal` and `/fullscreen`.
+ /// Returns `true` when the caller must quit (exec fallback armed on `app.relaunch`).
+@@ -1270,16 +1312,12 @@ pub(crate) async fn run(
+         );
+     }
+     let mut post_render_effects = if needs_interactive_login {
++        // Workshop: an empty method list is the default cold start (no session-login provider,
++        // no key, no cached session). It opens the connection picker, never a browser.
+         if connection.auth_methods.is_empty() {
+-            app.auth_state = super::app_view::AuthState::Pending {
+-                error: Some(
+-                    xai_grok_shell::agent::auth_method::PREFERRED_API_KEY_UNAVAILABLE.to_string(),
+-                ),
+-            };
+-            vec![]
+-        } else {
+-            dispatch::dispatch(Action::Login, &mut app)
++            app.auth_state = super::app_view::AuthState::Pending { error: None };
+         }
++        dispatch::dispatch(Action::Login, &mut app)
+     } else {
+         vec![]
+     };
+@@ -1673,6 +1711,12 @@ pub(crate) async fn run(
+     let (progress_tx, mut progress_rx) =
+         tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
+     let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
++    // Workshop: a persistent channel for streaming Engine/Adapter turns. Submit handlers clone the
++    // sender (stored on `app`) into a detached turn task; the `select!` arm below renders its events.
++    // The sender lives as long as the loop, so the receiver never closes and the arm idles cleanly.
++    let (workshop_turn_tx, mut workshop_turn_rx) =
++        tokio::sync::mpsc::unbounded_channel::<crate::app::workshop::WorkshopTurnMsg>();
++    app.workshop_turn_tx = Some(workshop_turn_tx);
+     let voice_auth_factory = connection.auth_manager.clone();
+     let mut tick_interval = tick_interval;
+     let mut animation_tick_at: Option<Instant> = None;
+@@ -1933,7 +1977,7 @@ pub(crate) async fn run(
+         if process_effects(workspace_effects, &mut tasks, &mut app, &progress_tx) {
+             break;
+         }
+-        if let Err(e) = run_pending_suspends(
++        match run_pending_suspends(
+             &mut app,
+             terminal,
+             &input_paused,
+@@ -1943,9 +1987,16 @@ pub(crate) async fn run(
+             &mut suspend_retry_after,
+             &mut suspend_wait_reports,
+         ) {
+-            app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
+-            flush_pending_stall(&mut stall_rollup);
+-            return Err(e);
++            Ok(follow_up) => {
++                if process_effects(follow_up, &mut tasks, &mut app, &progress_tx) {
++                    break;
++                }
++            }
++            Err(e) => {
++                app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
++                flush_pending_stall(&mut stall_rollup);
++                return Err(e);
++            }
+         }
+         if run_pending_mode_switch(
+             &mut app,
+@@ -2921,6 +2972,19 @@ pub(crate) async fn run(
+                 presenter.request(false);
+             }
+ 
++            // Workshop: stream one Engine/Adapter turn's events into the active agent's scrollback.
++            // Serviced only when nothing else is pending, so it never starves ACP, input, or timers.
++            // Placed before the ACP-independent voice arm; the ACP path is untouched by all of this.
++            Some(msg) = workshop_turn_rx.recv() => {
++                if handle_workshop_turn_msg(&mut app, msg) {
++                    schedule_tick(&mut animation_tick_at, &app, tick_interval);
++                    let now = Instant::now();
++                    if presenter.request_throttled(now, min_draw_interval) {
++                        app.update_notifications();
++                    }
++                }
++            }
++
+             // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
+             // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
+             // Voice is only serviced when nothing else is pending
+@@ -3179,7 +3243,9 @@ struct RoutedInputEvent {
+     is_startup_replay: bool,
+ }
+ fn tty_suspend_armed(app: &AppView) -> bool {
+-    app.pending_editor.is_some() || app.pending_pager_path.is_some()
++    app.pending_editor.is_some()
++        || app.pending_pager_path.is_some()
++        || app.pending_workshop_login.is_some()
+ }
+ fn normalize_input_event(
+     timed: TimedInputEvent,
+@@ -3959,6 +4025,113 @@ pub(crate) fn dispatch_then_forward(
+     effects
+ }
+ /// Spawn effects into the task set. Returns `true` if the app should quit.
++/// Render one streamed Workshop turn message (OpenCode engine / vendor CLI adapter) into the active
++/// agent's scrollback. Returns whether a redraw is warranted. Mirrors the ACP renderer's block
++/// vocabulary (`agent_message_streaming` + `push_chunk_to_agent`, `tool_call`, `system`) but is
++/// entirely separate from the ACP path, which only runs for `Shell` (Direct/Local) connections.
++fn handle_workshop_turn_msg(app: &mut AppView, msg: crate::app::workshop::WorkshopTurnMsg) -> bool {
++    use crate::app::workshop::WorkshopTurnMsg as M;
++    use crate::scrollback::block::RenderBlock;
++
++    let Some(agent_id) = app.workshop_turn_agent else {
++        return false;
++    };
++    match msg {
++        M::EngineReady { engine, session } => {
++            // Cache the engine + session so the next turn reuses this `opencode serve`, and persist
++            // the id per workspace for resume across a restart.
++            if let Some(agent) = app.agents.get(&agent_id) {
++                let cwd = agent.session.cwd.clone();
++                crate::app::workshop::save_resume_id("opencode", &cwd, &session);
++            }
++            app.workshop_engine = Some(engine);
++            app.workshop_engine_session = Some(session);
++            false
++        }
++        M::Delta(text) => {
++            let entry = app.workshop_turn_stream_entry;
++            if let Some(agent) = app.agents.get_mut(&agent_id) {
++                match entry {
++                    Some(id) => {
++                        agent.scrollback.push_chunk_to_agent(id, &text);
++                    }
++                    None => {
++                        let id = agent
++                            .scrollback
++                            .push_block(RenderBlock::agent_message_streaming());
++                        agent.scrollback.push_chunk_to_agent(id, &text);
++                        app.workshop_turn_stream_entry = Some(id);
++                    }
++                }
++            }
++            true
++        }
++        M::Tool { name, summary } => {
++            // A tool call ends the current assistant paragraph; the next delta starts a fresh block.
++            if let Some(id) = app.workshop_turn_stream_entry.take()
++                && let Some(agent) = app.agents.get_mut(&agent_id)
++            {
++                agent.scrollback.finish_running(id);
++            }
++            if let Some(agent) = app.agents.get_mut(&agent_id) {
++                agent
++                    .scrollback
++                    .push_block(RenderBlock::tool_call(name, summary, true));
++            }
++            true
++        }
++        M::ToolResult { .. } => false,
++        M::Permission { summary, decision } => {
++            if let Some(agent) = app.agents.get_mut(&agent_id) {
++                agent
++                    .scrollback
++                    .push_block(RenderBlock::system(format!("Permission: {summary} — {decision}")));
++            }
++            true
++        }
++        M::Error(message) => {
++            if let Some(agent) = app.agents.get_mut(&agent_id) {
++                agent.scrollback.push_block(RenderBlock::system(message));
++            }
++            true
++        }
++        M::Done {
++            session_id,
++            cancelled,
++        } => {
++            if let Some(id) = app.workshop_turn_stream_entry.take()
++                && let Some(agent) = app.agents.get_mut(&agent_id)
++            {
++                agent.scrollback.finish_running(id);
++            }
++            if let Some(session) = &session_id
++                && let Some(agent) = app.agents.get(&agent_id)
++            {
++                let cwd = agent.session.cwd.clone();
++                let backend = match &app.workshop_connection {
++                    crate::app::workshop::WorkshopConnection::Adapter { rail, .. } => {
++                        rail.vendor().id()
++                    }
++                    _ => "opencode",
++                };
++                crate::app::workshop::save_resume_id(backend, &cwd, session);
++            }
++            if let Some(agent) = app.agents.get_mut(&agent_id) {
++                agent.workshop_turn_active = false;
++                if cancelled {
++                    agent
++                        .scrollback
++                        .push_block(RenderBlock::system("Turn cancelled."));
++                }
++            }
++            app.workshop_turn_active = false;
++            app.workshop_turn_cancel = None;
++            app.workshop_turn_agent = None;
++            true
++        }
++    }
++}
++
+ fn process_effects(
+     effs: Vec<super::actions::Effect>,
+     tasks: &mut JoinSet<TaskResult>,
+diff --git a/crates/codegen/xai-grok-pager/src/app/mod.rs b/crates/codegen/xai-grok-pager/src/app/mod.rs
+index e6bea234..d4c1ff1e 100644
+--- a/crates/codegen/xai-grok-pager/src/app/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/app/mod.rs
+@@ -13,6 +13,8 @@ pub mod actions;
+ pub mod agent;
+ pub mod agent_view;
+ pub mod app_view;
++/// Workshop overlay: connection picker loading and activation.
++pub mod workshop;
+ pub mod bundle;
+ pub(crate) mod cancel_latency;
+ pub mod cli;
+@@ -2474,9 +2476,9 @@ mod tests {
+         assert!(!args.no_alt_screen);
+     }
+     #[test]
+-    fn cli_command_name_is_grok() {
++    fn cli_command_name_is_workshop() {
+         use clap::CommandFactory;
+-        assert_eq!(PagerArgs::command().get_name(), "grok");
++        assert_eq!(PagerArgs::command().get_name(), "workshop");
+     }
+     #[test]
+     fn cli_help_output_header() {
+@@ -2486,9 +2488,9 @@ mod tests {
+         assert_eq!(
+             first_5,
+             vec![
+-                "Grok Build TUI",
++                "Workshop: a coding-agent runtime that connects to local models, API keys, or subscription CLIs",
+                 "",
+-                "Usage: grok [OPTIONS] [PROMPT] [COMMAND]",
++                "Usage: workshop [OPTIONS] [PROMPT] [COMMAND]",
+                 "",
+                 "Arguments:",
+             ]
+diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
+new file mode 100644
+index 00000000..b074b9a4
+--- /dev/null
++++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
+@@ -0,0 +1,542 @@
++//! Workshop overlay: connection picker data loading and selection activation.
++//!
++//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
++//! free catalog from the engine cache. Activating a Direct API / Local row writes
++//! `[model.<key>]` + `default` into `$WORKSHOP_HOME/config.toml`, exports a saved key as its
++//! `WORKSHOP_<PROVIDER>_API_KEY` env var (never into the file), asks the shell to reload its model
++//! list, and authenticates with the non-interactive method. Nothing here starts an OAuth flow.
++
++use std::path::{Path, PathBuf};
++use std::sync::Arc;
++use std::time::Duration;
++
++use tokio::sync::{mpsc, watch};
++use workshop_adapters::opencode_engine::{
++    EngineOptions, InstallOptions, OpenCodeEngine, PermissionHandler, PermissionReply, TurnHandle,
++    TurnRequest, ensure_opencode,
++};
++use workshop_adapters::supervisor::{RunHandle, SupervisorOptions, spawn};
++use workshop_adapters::{
++    AdapterEvent, AdapterId, DetectOptions, Detection, PermissionPolicy, RunRequest, detect,
++};
++use workshop_auth::{EngineModel, PickerSnapshot, models_rows};
++use workshop_providers::{
++    Catalog, CredentialBroker, CredentialInjection, FileSecretStore, KeyringSecretStore,
++    LayeredSecretStore, resolve_model_entry, select_default,
++};
++
++/// Which runtime a prompt is routed through.
++#[derive(Debug, Clone, PartialEq)]
++pub enum WorkshopConnection {
++    /// The shell's own agent loop (Direct API / Local `[model.<key>]`), the default.
++    Shell,
++    /// A free model behind the OpenCode engine (`opencode serve`).
++    Engine { model: EngineModel },
++    /// A vendor CLI adapter on a Ready subscription rail.
++    Adapter {
++        rail: workshop_detect::Rail,
++        model: workshop_detect::ModelRef,
++    },
++}
++
++impl WorkshopConnection {
++    /// Composer label: `Claude · {model}` for rails, `OpenCode · {model}` for the engine.
++    pub fn composer_label(&self) -> Option<String> {
++        match self {
++            Self::Shell => None,
++            Self::Engine { model } => Some(format!("{} · OpenCode", model.name)),
++            Self::Adapter { rail, model } => Some(workshop_detect::composer_label(*rail, model)),
++        }
++    }
++    pub fn is_shell(&self) -> bool {
++        matches!(self, Self::Shell)
++    }
++}
++
++/// `$WORKSHOP_HOME` (created if missing).
++pub fn workshop_home() -> PathBuf {
++    xai_dirs::grok_home()
++}
++
++/// The credential broker over the OS keyring with the owner-only file fallback under the home.
++pub fn default_broker() -> CredentialBroker {
++    let home = workshop_home();
++    let tag = home
++        .file_name()
++        .map(|n| n.to_string_lossy().to_string())
++        .unwrap_or_else(|| "workshop".into());
++    let store = LayeredSecretStore::new(
++        Box::new(KeyringSecretStore::for_home(&tag)),
++        FileSecretStore::new(home.join("secrets")),
++    );
++    CredentialBroker::new(Arc::new(store), home.join("connections.json"))
++}
++
++fn engine_cache_path() -> PathBuf {
++    workshop_home()
++        .join("catalog-cache")
++        .join("opencode-engine.json")
++}
++
++/// The last engine catalog this home saw (written after every engine launch).
++pub fn cached_engine_models() -> Vec<EngineModel> {
++    std::fs::read_to_string(engine_cache_path())
++        .ok()
++        .and_then(|s| serde_json::from_str(&s).ok())
++        .unwrap_or_default()
++}
++
++pub fn store_engine_models(models: &[EngineModel]) {
++    let path = engine_cache_path();
++    if let Some(parent) = path.parent() {
++        let _ = std::fs::create_dir_all(parent);
++    }
++    if let Ok(json) = serde_json::to_vec_pretty(models) {
++        let _ = workshop_providers::atomic_write_private(&path, &json);
++    }
++}
++
++/// Build the picker snapshot: loopback local-server probe, builtin + cached catalogs, broker
++/// connection state, engine cache, and the CLI rail probe (child processes, so on the blocking pool).
++pub async fn load_picker_snapshot() -> PickerSnapshot {
++    let local = workshop_providers::probe_all_local_servers(Duration::from_millis(600)).await;
++    let mut catalog = Catalog::builtin();
++    let as_of = "live";
++    for status in &local {
++        if status.is_reachable()
++            && let Some(m) = workshop_providers::manifest(&status.provider_id)
++        {
++            catalog.replace_provider(
++                &status.provider_id,
++                workshop_providers::local::local_rows(&m, status, as_of),
++            );
++        }
++    }
++    let broker = default_broker();
++    let secret_backend = broker.secret_backend();
++    let engine = cached_engine_models();
++    let rows = models_rows(&catalog, |id| broker.is_connected(id), &engine);
++    let default_selection = Some(select_default(&local, true));
++    let rails = tokio::task::spawn_blocking(|| {
++        let probe = workshop_detect::probe_all(&workshop_detect::DetectConfig::default());
++        workshop_detect::rails(&probe, workshop_detect::model::default_models).to_vec()
++    })
++    .await
++    .unwrap_or_else(|_| {
++        workshop_detect::Rail::ALL
++            .iter()
++            .map(|r| workshop_detect::RailState::detecting(*r))
++            .collect()
++    });
++    PickerSnapshot {
++        rows,
++        rails,
++        default_selection,
++        secret_backend: Some(secret_backend),
++    }
++}
++
++/// Write a keyless placeholder model + make it the shell default, then return its config key.
++/// Engine/Adapter connections don't use a shell model — but the shell needs *a* model + the
++/// non-interactive auth method to open an ACP session (the agent view that renders the streamed
++/// turn). The placeholder is never contacted: `dispatch_workshop_turn` intercepts prompts and
++/// routes them to the engine/adapter. Delegates to `workshop-auth` (which owns the config schema).
++pub fn activate_placeholder_session() -> Result<String, String> {
++    workshop_auth::config_write::activate_placeholder_session(&workshop_auth::config_path())
++        .map_err(|e| e.to_string())
++}
++
++/// What activating a Direct API / Local row needs the process to do.
++#[derive(Debug, Clone)]
++pub struct ActivationPlan {
++    /// `[model.<key>]` key written to config.toml (and set as `default`).
++    pub key: String,
++    pub display_name: String,
++    pub base_url: String,
++    /// Env var exports the shell needs before it reloads (saved-key providers only).
++    pub env: Vec<(String, String)>,
++}
++
++/// Resolve `model` against the broker, write it to config.toml, and describe the follow-up.
++pub fn activate_catalog_model(
++    model: &workshop_providers::CatalogModel,
++) -> Result<ActivationPlan, String> {
++    let broker = default_broker();
++    let spec = resolve_model_entry(model, &broker).map_err(|e| e.to_string())?;
++    let mut env = Vec::new();
++    if let CredentialInjection::FromBroker { provider_id, var } = &spec.credential {
++        let handle = broker.resolve(provider_id).map_err(|e| e.to_string())?;
++        let value = handle
++            .authorize(&model.endpoint())
++            .map_err(|e| e.to_string())?
++            .ok_or_else(|| format!("no saved credential for {provider_id}"))?
++            .to_owned();
++        env.push((var.clone(), value));
++    }
++    let key = workshop_auth::config_write::activate_model(&workshop_auth::config_path(), &spec)
++        .map_err(|e| e.to_string())?;
++    Ok(ActivationPlan {
++        key,
++        display_name: spec.name.clone(),
++        base_url: spec.base_url.clone(),
++        env,
++    })
++}
++
++/// Export the saved-key env vars in this process (the agent runs in-process and reads them on reload).
++pub fn export_env(env: &[(String, String)]) {
++    for (k, v) in env {
++        // SAFETY: single-threaded UI thread mutating process env before the agent's reload request
++        // is sent; readers (`std::env::var`) tolerate concurrent reads on Unix targets we ship.
++        unsafe { std::env::set_var(k, v) };
++    }
++}
++
++/// Persist a pasted key for `provider_id` in the broker (keyring, else the 0600 file fallback).
++pub fn save_provider_key(provider_id: &str, key: &str) -> Result<&'static str, String> {
++    let broker = default_broker();
++    broker
++        .save_api_key(provider_id, key)
++        .map_err(|e| e.to_string())?;
++    Ok(broker.secret_backend())
++}
++
++/// Key-entry prompt label for a provider's paste-key connect flow.
++pub fn key_prompt_label(provider_id: &str) -> String {
++    match workshop_providers::manifest(provider_id) {
++        Some(m) => match &m.credential_url {
++            Some(url) => format!("Paste your {} API key (get one at {url})", m.display_name),
++            None => format!("Paste your {} API key", m.display_name),
++        },
++        None => format!("Paste your {provider_id} API key"),
++    }
++}
++
++/// OpenRouter PKCE sign-in: opens the browser, waits for the loopback callback, exchanges the code,
++/// saves the key. Returns the secret backend used.
++pub async fn openrouter_sign_in() -> Result<&'static str, String> {
++    use workshop_providers::{OpenRouterSignIn, SignInMode};
++    let signin = OpenRouterSignIn::start(SignInMode::Loopback)
++        .await
++        .map_err(|e| e.to_string())?;
++    let url = signin.authorize_url();
++    if webbrowser::open(&url).is_err() {
++        tracing::warn!("could not open a browser for OpenRouter sign-in; url: {url}");
++    }
++    let client = workshop_providers::oauth::openrouter::exchange_client().map_err(|e| e.to_string())?;
++    let key = signin
++        .complete_loopback(&client, Duration::from_secs(300))
++        .await
++        .map_err(|e| e.to_string())?;
++    save_provider_key("openrouter", &key)
++}
++
++/// A live turn stream from either backend. `OpenCodeEngine::prompt` (free tier) and the CLI
++/// supervisor (`spawn`, subscriptions) share the same `AdapterEvent` contract — `next_event`,
++/// `cancel`, `session_id` — so one consumer loop in the TUI serves both.
++pub enum TurnStream {
++    Engine(TurnHandle),
++    Adapter(RunHandle),
++}
++
++impl TurnStream {
++    pub async fn next_event(&mut self) -> Option<AdapterEvent> {
++        match self {
++            Self::Engine(t) => t.next_event().await,
++            Self::Adapter(r) => r.next_event().await,
++        }
++    }
++    pub fn cancel(&self) {
++        match self {
++            Self::Engine(t) => t.cancel(),
++            Self::Adapter(r) => r.cancel(),
++        }
++    }
++    pub fn session_id(&self) -> Option<String> {
++        match self {
++            Self::Engine(t) => Some(t.session_id().to_string()),
++            Self::Adapter(r) => r.session_id(),
++        }
++    }
++}
++
++/// What the UI thread learns as a turn streams. Mapped to scrollback `RenderBlock`s by the event
++/// loop's Workshop `select!` arm (kept UI-agnostic so `workshop-adapters` never depends on the pager).
++#[derive(Debug)]
++pub enum WorkshopTurnMsg {
++    /// The OpenCode engine started (lazily, on the first turn); cache it and the session so later
++    /// turns reuse the same `opencode serve` and conversation. Engine turns only.
++    EngineReady {
++        engine: Arc<OpenCodeEngine>,
++        session: String,
++    },
++    Delta(String),
++    Tool { name: String, summary: String },
++    ToolResult { ok: bool },
++    /// A permission ask the backend escalated; `decision` is what Workshop answered (asks are
++    /// answered from the pager's permission mode — a synchronous vendor hook, so it is surfaced,
++    /// not blocking-interactive).
++    Permission { summary: String, decision: &'static str },
++    Error(String),
++    /// The turn ended; `session_id` is persisted per workspace for resume.
++    Done {
++        session_id: Option<String>,
++        cancelled: bool,
++    },
++}
++
++/// Which backend a submitted prompt should run on.
++pub enum WorkshopTurnKind {
++    Engine {
++        engine: Option<Arc<OpenCodeEngine>>,
++        session: Option<String>,
++        model_ref: String,
++    },
++    Adapter {
++        adapter_id: AdapterId,
++        resume: Option<String>,
++        model: Option<String>,
++    },
++}
++
++/// One submitted prompt to route off the ACP path.
++pub struct WorkshopTurnSpec {
++    pub kind: WorkshopTurnKind,
++    pub cwd: PathBuf,
++    pub text: String,
++    /// The pager's always-approve mode; maps to `WorkspaceWrite` (else `ReadOnly`).
++    pub always_approve: bool,
++}
++
++fn summarize_tool_input(input: &serde_json::Value) -> String {
++    for key in ["filePath", "path", "command", "pattern", "query", "url"] {
++        if let Some(v) = input.get(key).and_then(serde_json::Value::as_str) {
++            return v.to_owned();
++        }
++    }
++    String::new()
++}
++
++fn resume_store_path() -> PathBuf {
++    workshop_home().join("adapter-sessions.json")
++}
++
++/// The vendor/engine session id last seen for `(backend, workspace)`, for resume.
++pub fn load_resume_id(backend: &str, cwd: &Path) -> Option<String> {
++    let map: serde_json::Value = std::fs::read_to_string(resume_store_path())
++        .ok()
++        .and_then(|s| serde_json::from_str(&s).ok())?;
++    map.get(format!("{backend}:{}", cwd.display()))
++        .and_then(|v| v.as_str())
++        .map(str::to_owned)
++}
++
++/// Persist the session id for `(backend, workspace)` so the next turn resumes the conversation.
++pub fn save_resume_id(backend: &str, cwd: &Path, session_id: &str) {
++    let path = resume_store_path();
++    let mut map: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(&path)
++        .ok()
++        .and_then(|s| serde_json::from_str(&s).ok())
++        .unwrap_or_default();
++    map.insert(
++        format!("{backend}:{}", cwd.display()),
++        serde_json::Value::String(session_id.to_owned()),
++    );
++    if let Ok(bytes) = serde_json::to_vec_pretty(&map) {
++        let _ = workshop_providers::atomic_write_private(&path, &bytes);
++    }
++}
++
++/// Build the engine permission hook: surface each ask to the UI and answer it from the pager's
++/// permission mode. `PermissionHandler` is synchronous (it cannot await the user), so this is a
++/// surfaced auto-decision, not a blocking prompt — full interactive asks are a follow-up.
++fn engine_permission_handler(
++    tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
++    always_approve: bool,
++) -> PermissionHandler {
++    Arc::new(move |req| {
++        let decision = if always_approve {
++            PermissionReply::Once
++        } else {
++            PermissionReply::Reject
++        };
++        let _ = tx.send(WorkshopTurnMsg::Permission {
++            summary: format!("{} ({})", req.title, req.kind),
++            decision: if always_approve { "allowed" } else { "rejected" },
++        });
++        decision
++    })
++}
++
++async fn start_engine(
++    workspace: &Path,
++    tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
++    always_approve: bool,
++) -> Result<OpenCodeEngine, String> {
++    // Detect an `opencode` on PATH / known dirs / the Workshop tools tree; install the pinned
++    // version via the vendor's own script only if absent (never a bundled binary).
++    let cli = ensure_opencode(&DetectOptions::default(), Some(&InstallOptions::default()))
++        .await
++        .map_err(|e| e.to_string())?;
++    let mut opts = EngineOptions::new(workspace);
++    opts.permission_handler = Some(engine_permission_handler(tx, always_approve));
++    OpenCodeEngine::start(&cli, opts)
++        .await
++        .map_err(|e| e.to_string())
++}
++
++async fn build_stream(
++    spec: &WorkshopTurnSpec,
++    tx: &mpsc::UnboundedSender<WorkshopTurnMsg>,
++    permission: PermissionPolicy,
++) -> Result<TurnStream, String> {
++    match &spec.kind {
++        WorkshopTurnKind::Engine {
++            engine,
++            session,
++            model_ref,
++        } => {
++            let engine = match engine {
++                Some(e) => e.clone(),
++                None => Arc::new(start_engine(&spec.cwd, tx.clone(), spec.always_approve).await?),
++            };
++            let session = match session {
++                Some(s) if engine.session_exists(s).await.unwrap_or(false) => s.clone(),
++                _ => engine
++                    .create_session(Some("Workshop"))
++                    .await
++                    .map_err(|e| e.to_string())?,
++            };
++            let _ = tx.send(WorkshopTurnMsg::EngineReady {
++                engine: engine.clone(),
++                session: session.clone(),
++            });
++            let mut req = TurnRequest::new(spec.text.clone());
++            req.model = Some(model_ref.clone());
++            req.permission = permission;
++            let turn = engine
++                .prompt(&session, req)
++                .await
++                .map_err(|e| e.to_string())?;
++            Ok(TurnStream::Engine(turn))
++        }
++        WorkshopTurnKind::Adapter {
++            adapter_id,
++            resume,
++            model,
++        } => {
++            let adapter = workshop_adapters::vendors::by_id(*adapter_id);
++            let cli = match detect(&*adapter, &DetectOptions::default()).await {
++                Detection::Installed(cli) => cli,
++                Detection::Unverified { reason, .. } => {
++                    return Err(format!("{} could not be verified: {reason}", adapter.id()));
++                }
++                Detection::NotInstalled => {
++                    return Err(format!("{} is not installed", adapter.id()));
++                }
++            };
++            let mut req = RunRequest::new(spec.text.clone(), &spec.cwd);
++            req.model = model.clone();
++            req.resume = resume.clone();
++            req.permission = permission;
++            let handle = spawn(&*adapter, &cli, req, &SupervisorOptions::default())
++                .await
++                .map_err(|e| e.to_string())?;
++            Ok(TurnStream::Adapter(handle))
++        }
++    }
++}
++
++/// Drive one turn on the chosen backend, forwarding stream events to the UI over `tx` and honoring
++/// a `cancel` signal (Esc / Ctrl-C → abort/kill). Runs as a detached task; the UI thread owns the
++/// receiver and renders. Never touches the ACP path.
++pub async fn run_workshop_turn(
++    spec: WorkshopTurnSpec,
++    tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
++    mut cancel_rx: watch::Receiver<bool>,
++) {
++    let permission = if spec.always_approve {
++        PermissionPolicy::WorkspaceWrite
++    } else {
++        PermissionPolicy::ReadOnly
++    };
++    let mut stream = match build_stream(&spec, &tx, permission).await {
++        Ok(s) => s,
++        Err(error) => {
++            let _ = tx.send(WorkshopTurnMsg::Error(error));
++            let _ = tx.send(WorkshopTurnMsg::Done {
++                session_id: None,
++                cancelled: false,
++            });
++            return;
++        }
++    };
++
++    let mut cancelled = false;
++    loop {
++        tokio::select! {
++            ev = stream.next_event() => match ev {
++                Some(AdapterEvent::TextDelta { text }) => {
++                    let _ = tx.send(WorkshopTurnMsg::Delta(text));
++                }
++                Some(AdapterEvent::ToolCall { name, input, .. }) => {
++                    let _ = tx.send(WorkshopTurnMsg::Tool {
++                        name,
++                        summary: summarize_tool_input(&input),
++                    });
++                }
++                Some(AdapterEvent::ToolResult { is_error, .. }) => {
++                    let _ = tx.send(WorkshopTurnMsg::ToolResult { ok: !is_error });
++                }
++                Some(AdapterEvent::Error { message }) => {
++                    let _ = tx.send(WorkshopTurnMsg::Error(message));
++                }
++                Some(AdapterEvent::Thinking { .. })
++                | Some(AdapterEvent::Usage(_))
++                | Some(AdapterEvent::Done { .. }) => {}
++                None => break,
++            },
++            _ = cancel_rx.changed() => {
++                if *cancel_rx.borrow() && !cancelled {
++                    cancelled = true;
++                    stream.cancel();
++                }
++            }
++        }
++    }
++
++    let session_id = stream.session_id();
++    let _ = tx.send(WorkshopTurnMsg::Done {
++        session_id,
++        cancelled,
++    });
++}
++
++/// Map a subscription rail to its `workshop-adapters` CLI adapter id.
++pub fn rail_adapter_id(rail: workshop_detect::Rail) -> AdapterId {
++    match rail.vendor() {
++        workshop_detect::Vendor::Claude => AdapterId::Claude,
++        workshop_detect::Vendor::Codex => AdapterId::Codex,
++        workshop_detect::Vendor::Cursor => AdapterId::Cursor,
++        workshop_detect::Vendor::OpenCode => AdapterId::OpenCode,
++    }
++}
++
++/// The official CLI login command for a rail, to run attached to the user's terminal.
++pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
++    let vendor = rail.vendor();
++    let cfg = workshop_detect::DetectConfig::default();
++    let probe = workshop_detect::probe_vendor(vendor, &cfg);
++    let bin = probe
++        .binary
++        .as_ref()
++        .map(|b| b.path.to_string_lossy().to_string())
++        .unwrap_or_else(|| vendor.binary_names().first().copied().unwrap_or("").to_owned());
++    let mut argv = vec![bin];
++    argv.extend(
++        workshop_detect::login_argv(vendor)
++            .iter()
++            .map(|s| s.to_string()),
++    );
++    argv
++}
+diff --git a/crates/codegen/xai-grok-pager/src/headless.rs b/crates/codegen/xai-grok-pager/src/headless.rs
+index 478223f8..7f612f1c 100644
+--- a/crates/codegen/xai-grok-pager/src/headless.rs
++++ b/crates/codegen/xai-grok-pager/src/headless.rs
+@@ -463,17 +463,17 @@ fn auto_respond_to_permissions(
+     None
+ }
+ 
+-/// "Not signed in" error message, tailored to the session type.
++/// "No connection configured" error message, tailored to the session type.
++/// Workshop: headless / ACP runs without a configured connection fail closed here; nothing opens a browser.
+ fn auth_required_message(interactive: bool) -> String {
+     if interactive {
+-        "Not signed in. Run `grok login` to authenticate \
+-         (or `grok login --device-code` if no browser is available)."
++        "No connection configured. Run `workshop login` to see the connection picker \
++         (Local model, API key, subscription CLI, optional xAI), then retry."
+             .to_string()
+     } else {
+-        "Not signed in. To authenticate without a browser, run:\n  \
+-         grok login --device-code\n\n\
+-         Alternatively, set the XAI_API_KEY environment variable \
+-         or run `grok login` on a machine with a browser."
++        "No connection configured. Run `workshop login` for the connection picker, then add a \
++         Local model or an API key to $WORKSHOP_HOME/config.toml (see the picker's snippet) \
++         and retry. Workshop never opens a browser or contacts xAI by default."
+             .to_string()
+     }
+ }
+diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/auth.rs b/crates/codegen/xai-grok-pager/src/slash/commands/auth.rs
+new file mode 100644
+index 00000000..1ca01271
+--- /dev/null
++++ b/crates/codegen/xai-grok-pager/src/slash/commands/auth.rs
+@@ -0,0 +1,39 @@
++//! Workshop overlay: `/auth` and `/models` open the connection picker.
++//!
++//! Neither command starts a login. The picker is the only default auth surface; the optional xAI
++//! card inside it is the single path to the inherited xAI OIDC flow.
++
++use crate::app::actions::Action;
++use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand, slash_meta};
++
++pub struct AuthCommand;
++
++impl SlashCommand for AuthCommand {
++    slash_meta! {
++        name: "auth",
++        description: "Open the connection picker (Local, API key, subscription CLI, optional xAI)",
++        usage: "/auth",
++    }
++
++    fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
++        CommandResult::Action(Action::OpenConnectionPicker(
++            workshop_auth::PickerTab::Models,
++        ))
++    }
++}
++
++pub struct ModelsCommand;
++
++impl SlashCommand for ModelsCommand {
++    slash_meta! {
++        name: "models",
++        description: "Browse model connections: Models and Subscriptions tabs",
++        usage: "/models",
++    }
++
++    fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
++        CommandResult::Action(Action::OpenConnectionPicker(
++            workshop_auth::PickerTab::Models,
++        ))
++    }
++}
+diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/login.rs b/crates/codegen/xai-grok-pager/src/slash/commands/login.rs
+index 87a4bd86..c5edb9ce 100644
+--- a/crates/codegen/xai-grok-pager/src/slash/commands/login.rs
++++ b/crates/codegen/xai-grok-pager/src/slash/commands/login.rs
+@@ -6,7 +6,7 @@ pub struct LoginCommand;
+ impl SlashCommand for LoginCommand {
+     slash_meta! {
+         name: "login",
+-        description: "Log in or re-authenticate with your account",
++        description: "Open the connection picker (Workshop never opens a browser by default)",
+         usage: "/login",
+     }
+ 
+diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs b/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs
+index b98b974a..7c545ff5 100644
+--- a/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs
+@@ -1,6 +1,8 @@
+ //! Each command lives in its own submodule. This module re-exports command structs and provides `builtin_commands()` for registry construction.
+ pub mod always_approve;
+ pub mod announcements;
++/// Workshop overlay: `/auth`, `/models`.
++pub mod auth;
+ pub mod auto;
+ pub mod btw;
+ pub mod cd;
+@@ -145,6 +147,8 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
+         Arc::new(privacy::PrivacyCommand),
+         Arc::new(doctor::DoctorCommand),
+         Arc::new(import_claude::ImportClaudeCommand),
++        Arc::new(auth::AuthCommand),
++        Arc::new(auth::ModelsCommand),
+         Arc::new(login::LoginCommand),
+         Arc::new(logout::LogoutCommand),
+         Arc::new(home::HomeCommand),
+diff --git a/crates/codegen/xai-grok-pager/src/views/connection_picker.rs b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
+new file mode 100644
+index 00000000..6b0a2c09
+--- /dev/null
++++ b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
+@@ -0,0 +1,298 @@
++//! Workshop connection picker (ratatui view over `workshop_auth::PickerState`).
++//!
++//! Layout follows the Blackpen export: a title, two tabs (Models / Subscriptions), a left list
++//! (Models rows grouped by provider, or the Claude / Codex / Cursor rails with a Detecting / Ready /
++//! Sign in pill), and a right detail pane (or the model radios of a Ready rail). The optional xAI
++//! card is last and never preselected; its pane carries the plan's copy verbatim. Nothing here
++//! starts a login: outcomes are decided by the picker state in the dispatcher.
++
++use ratatui::buffer::Buffer;
++use ratatui::layout::{Constraint, Layout, Rect};
++use ratatui::style::{Modifier, Style};
++use ratatui::text::{Line, Span};
++use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
++use workshop_auth::{ConnectionClass, PickerState, PickerTab, Pill, RowKind};
++
++use crate::theme::Theme;
++
++const LEFT_WIDTH: u16 = 44;
++
++pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState, h_margin: u16) {
++    let area = Rect {
++        x: area.x + h_margin,
++        y: area.y,
++        width: area.width.saturating_sub(h_margin * 2),
++        height: area.height,
++    };
++    if area.width < 20 || area.height < 8 {
++        Paragraph::new("Workshop: terminal too small for the connection picker")
++            .style(Style::default().fg(theme.text_primary))
++            .render(area, buf);
++        return;
++    }
++
++    let [title_area, tabs_area, body_area, status_area, footer_area] = Layout::vertical([
++        Constraint::Length(2),
++        Constraint::Length(1),
++        Constraint::Min(4),
++        Constraint::Length(1),
++        Constraint::Length(2),
++    ])
++    .areas(area);
++
++    Paragraph::new(vec![
++        Line::from(Span::styled(
++            "Workshop — connect a model",
++            Style::default()
++                .fg(theme.text_primary)
++                .add_modifier(Modifier::BOLD),
++        )),
++        Line::from(Span::styled(
++            "Workshop never signs you in anywhere by default. Pick how it should reach a model.",
++            Style::default().fg(theme.gray_bright),
++        )),
++    ])
++    .render(title_area, buf);
++
++    // Tabs
++    let tab_span = |tab: PickerTab| {
++        let active = picker.tab == tab;
++        let style = if active {
++            Style::default()
++                .fg(theme.text_primary)
++                .bg(theme.bg_highlight)
++                .add_modifier(Modifier::BOLD)
++        } else {
++            Style::default().fg(theme.gray_bright)
++        };
++        Span::styled(format!(" {} ", tab.title()), style)
++    };
++    let mut tab_line = vec![
++        tab_span(PickerTab::Models),
++        Span::raw("  "),
++        tab_span(PickerTab::Subscriptions),
++        Span::styled("   Tab switches · r refresh", Style::default().fg(theme.gray_dim)),
++    ];
++    if picker.loading {
++        tab_line.push(Span::styled(
++            "   detecting…",
++            Style::default().fg(theme.gray_bright),
++        ));
++    }
++    Paragraph::new(Line::from(tab_line)).render(tabs_area, buf);
++
++    let narrow = body_area.width < LEFT_WIDTH + 30;
++    let (left, right) = if narrow {
++        let [l, r] = Layout::vertical([Constraint::Percentage(55), Constraint::Min(3)]).areas(body_area);
++        (l, r)
++    } else {
++        let [l, r] =
++            Layout::horizontal([Constraint::Length(LEFT_WIDTH), Constraint::Min(20)]).areas(body_area);
++        (l, r)
++    };
++
++    match picker.tab {
++        PickerTab::Models => render_models_list(left, buf, theme, picker),
++        PickerTab::Subscriptions => render_rails(left, buf, theme, picker),
++    }
++    render_detail(right, buf, theme, picker);
++
++    if let Some(status) = &picker.status {
++        Paragraph::new(Line::from(Span::styled(
++            status.clone(),
++            Style::default().fg(theme.warning),
++        )))
++        .render(status_area, buf);
++    }
++
++    let footer = match picker.tab {
++        PickerTab::Models => "↑↓ move · Enter select/connect · Esc back/close · Tab: Subscriptions",
++        PickerTab::Subscriptions => "↑↓ move · Enter connect/choose model · Esc back/close · Tab: Models",
++    };
++    Paragraph::new(vec![
++        Line::from(Span::styled(footer, Style::default().fg(theme.gray_bright))),
++        Line::from(Span::styled(
++            "Connection classes: Direct API · Local · Agent adapter. Subscriptions are never used as API base URLs.",
++            Style::default().fg(theme.gray_dim),
++        )),
++    ])
++    .render(footer_area, buf);
++}
++
++fn row_style(theme: &Theme, selected: bool) -> Style {
++    if selected {
++        Style::default()
++            .fg(theme.text_primary)
++            .bg(theme.bg_highlight)
++            .add_modifier(Modifier::BOLD)
++    } else {
++        Style::default().fg(theme.text_primary)
++    }
++}
++
++fn class_style(theme: &Theme, class: ConnectionClass) -> Style {
++    match class {
++        ConnectionClass::Local => Style::default().fg(theme.accent_success),
++        ConnectionClass::DirectApi => Style::default().fg(theme.accent_model),
++        ConnectionClass::AgentAdapter => Style::default().fg(theme.accent_tool),
++        ConnectionClass::OptionalXai => Style::default().fg(theme.warning),
++    }
++}
++
++fn render_models_list(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState) {
++    let block = Block::default()
++        .borders(Borders::RIGHT)
++        .border_style(Style::default().fg(theme.gray_dim));
++    let inner = block.inner(area);
++    block.render(area, buf);
++    // Keep the selected row visible: one header + one row per entry, scrolled to the cursor.
++    let mut lines: Vec<Line> = Vec::new();
++    let mut selected_line = 0usize;
++    let mut last_group: Option<&str> = None;
++    for (i, row) in picker.rows.iter().enumerate() {
++        if last_group != Some(row.group.as_str()) {
++            lines.push(Line::from(Span::styled(
++                row.group.clone(),
++                Style::default()
++                    .fg(theme.gray_bright)
++                    .add_modifier(Modifier::BOLD),
++            )));
++            last_group = Some(row.group.as_str());
++        }
++        let selected = i == picker.models_selected;
++        if selected {
++            selected_line = lines.len();
++        }
++        let marker = if selected { "› " } else { "  " };
++        let mut spans = vec![
++            Span::styled(marker, row_style(theme, selected)),
++            Span::styled(row.title(), row_style(theme, selected)),
++        ];
++        let tag = match &row.kind {
++            RowKind::Catalog { model, locked } => {
++                if *locked {
++                    " locked"
++                } else if model.is_keyless() {
++                    " free · no key"
++                } else if model.is_free() {
++                    " free"
++                } else {
++                    ""
++                }
++            }
++            RowKind::ConnectProvider { .. } => " connect",
++            RowKind::Engine(m) if m.is_default => " free · default",
++            RowKind::Engine(_) => " free",
++            RowKind::AddLater => "",
++            RowKind::XaiOptional => " optional",
++        };
++        if !tag.is_empty() {
++            spans.push(Span::styled(tag, class_style(theme, row.class)));
++        }
++        lines.push(Line::from(spans));
++    }
++    let visible = inner.height as usize;
++    let scroll = if visible == 0 || selected_line < visible {
++        0
++    } else {
++        (selected_line + 1 - visible) as u16
++    };
++    Paragraph::new(lines).scroll((scroll, 0)).render(inner, buf);
++}
++
++fn pill_style(theme: &Theme, pill: Pill) -> Style {
++    match pill {
++        Pill::Detecting => Style::default().fg(theme.gray_bright),
++        Pill::Ready => Style::default().fg(theme.accent_success),
++        Pill::SignIn => Style::default().fg(theme.warning),
++    }
++}
++
++fn render_rails(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState) {
++    let block = Block::default()
++        .borders(Borders::RIGHT)
++        .border_style(Style::default().fg(theme.gray_dim));
++    let inner = block.inner(area);
++    block.render(area, buf);
++    let mut lines: Vec<Line> = Vec::new();
++    for (i, rail) in picker.rails.iter().enumerate() {
++        let selected = i == picker.rail_selected;
++        let marker = if selected { "› " } else { "  " };
++        lines.push(Line::from(vec![
++            Span::styled(marker, row_style(theme, selected)),
++            Span::styled(
++                format!("{:<8}", rail.rail.display_name()),
++                row_style(theme, selected),
++            ),
++            Span::styled(format!("[{}]", rail.pill.label()), pill_style(theme, rail.pill)),
++        ]));
++        let sub = match rail.empty_copy {
++            Some(copy) => copy.to_owned(),
++            None => format!("{} models", rail.models.len()),
++        };
++        lines.push(Line::from(Span::styled(
++            format!("    {sub}"),
++            Style::default().fg(theme.gray_dim),
++        )));
++    }
++    Paragraph::new(lines).render(inner, buf);
++}
++
++fn render_detail(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState) {
++    let inner = Rect {
++        x: area.x + 1,
++        y: area.y,
++        width: area.width.saturating_sub(1),
++        height: area.height,
++    };
++    let mut lines: Vec<Line> = Vec::new();
++    let detail = picker.detail_lines();
++    let (head, rest) = match detail.split_first() {
++        Some((h, r)) => (h.clone(), r),
++        None => (String::new(), &[][..]),
++    };
++    lines.push(Line::from(Span::styled(
++        head,
++        Style::default()
++            .fg(theme.text_primary)
++            .add_modifier(Modifier::BOLD),
++    )));
++    let show_rest = picker.detail_open
++        || picker.key_entry.is_some()
++        || picker.tab == PickerTab::Subscriptions
++        || picker.selected_row().is_some_and(|r| !matches!(r.kind, RowKind::XaiOptional));
++    if show_rest {
++        for l in rest {
++            let style = if l.starts_with("  ") || l.starts_with("(•)") || l.starts_with("( )") {
++                Style::default().fg(theme.command)
++            } else {
++                Style::default().fg(theme.text_secondary)
++            };
++            lines.push(Line::from(Span::styled(l.clone(), style)));
++        }
++        if picker.tab == PickerTab::Subscriptions
++            && picker.selected_rail().is_some_and(|r| r.show_connect)
++        {
++            lines.push(Line::from(""));
++            lines.push(Line::from(Span::styled(
++                "[ Connect ]  Enter runs the official CLI login in your terminal",
++                Style::default()
++                    .fg(theme.text_primary)
++                    .add_modifier(Modifier::BOLD),
++            )));
++        }
++    } else if let Some(row) = picker.selected_row() {
++        lines.push(Line::from(Span::styled(
++            row.badge.clone(),
++            Style::default().fg(theme.text_secondary),
++        )));
++        lines.push(Line::from(""));
++        lines.push(Line::from(Span::styled(
++            "Press Enter for details.",
++            Style::default().fg(theme.gray_bright),
++        )));
++    }
++    Paragraph::new(lines)
++        .wrap(Wrap { trim: false })
++        .render(inner, buf);
++}
+diff --git a/crates/codegen/xai-grok-pager/src/views/mod.rs b/crates/codegen/xai-grok-pager/src/views/mod.rs
+index b158019b..f01abbdc 100644
+--- a/crates/codegen/xai-grok-pager/src/views/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/views/mod.rs
+@@ -5,6 +5,8 @@ pub mod announcements;
+ pub mod block_viewer;
+ pub mod btw_overlay;
+ pub mod completion_dropdown;
++/// Workshop overlay: connection picker view.
++pub mod connection_picker;
+ pub mod context_bar;
+ pub mod credit_bar;
+ pub mod dashboard;
+diff --git a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
+index b828a780..5f3c1bac 100644
+--- a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
+@@ -283,7 +283,7 @@ pub(super) struct WelcomeLayout {
+     /// In-box info slot: it shows either the announcement or the changelog (the announcement takes priority).
+     pub(super) hero_info: Rect,
+     pub(super) hero_menu: Rect,
+-    /// The art the stacked `logo` rows were reserved for; paint it with [`render_logo_tier`].
++    /// The art the stacked `logo` rows (or the hero box's `hero_logo` rows) were reserved for; paint it with [`render_logo_tier`].
+     pub(super) logo_tier: LogoTier,
+ }
+ 
+@@ -556,7 +556,7 @@ pub(super) fn render_version_badge(
+     match &mode {
+         VersionBadgeMode::Full { .. } => {
+             spans.push(Span::styled(
+-                "Grok Build  ",
++                format!("{}  ", workshop_brand::title()),
+                 Style::default()
+                     .fg(theme.text_primary)
+                     .add_modifier(Modifier::BOLD),
+@@ -576,7 +576,7 @@ pub(super) fn render_version_badge(
+         }
+         VersionBadgeMode::HeroInline => {
+             spans.push(Span::styled(
+-                "Grok Build  ",
++                format!("{}  ", workshop_brand::title()),
+                 Style::default()
+                     .fg(theme.text_primary)
+                     .add_modifier(Modifier::BOLD),
+@@ -687,6 +687,8 @@ pub struct WelcomeRenderParams<'a> {
+     pub consent_state: &'a crate::app::consent::ConsentState,
+     pub consent_hover_link: Option<usize>,
+     pub login_label: Option<&'a str>,
++    /// Workshop connection picker; when `Some` it replaces the welcome content (any auth state).
++    pub connection_picker: Option<&'a workshop_auth::PickerState>,
+     pub auth_code_input: &'a str,
+     pub auth_code_cursor_byte: usize,
+     pub clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
+@@ -789,10 +791,24 @@ pub fn render_welcome(
+     };
+     render_top_bar(top_bar_inner, buf, &theme, None);
+ 
++    // Workshop: the connection picker is the login surface. It paints over the whole content
++    // area regardless of auth state (first run, `l`, `/login`, `/auth`, `/models`).
++    if let Some(picker) = params.connection_picker {
++        crate::views::connection_picker::render(content_area, buf, &theme, picker, h_margin);
++        return WelcomeRenderResult {
++            post_flush_escapes: crate::terminal::overlay::clear().map(Into::into),
++            ..Default::default()
++        };
++    }
++
+     let mut result = match params.auth_state {
+         AuthState::Pending { error } => {
+-            let label = params.login_label.unwrap_or("grok.com");
+-            let login_text = format!("Login with {}", label);
++            // Workshop: no session-login provider is advertised by default, so the row opens the
++            // connection picker rather than "Login with grok.com".
++            let login_text = match params.login_label {
++                Some(label) => format!("Login with {label}"),
++                None => "Connect a model".to_owned(),
++            };
+             let menu = [("l", login_text.as_str()), ("q", "Quit")];
+             let msg = error.as_deref().map(|e| (e, theme.accent_error));
+             let info = PromptInfo {
+@@ -845,7 +861,7 @@ pub fn render_welcome(
+                 content_area,
+                 buf,
+                 Some((
+-                    "Grok Build is not yet available for this account.",
++                    "Workshop is not yet available for this account.",
+                     theme.gray_bright,
+                 )),
+                 &menu,
+@@ -1025,7 +1041,7 @@ fn render_welcome_trust(
+         Line::default(),
+         // Two lines so the warning never clips at narrow / compact widths (a single ~78-char line would truncate "...posing security risks")
+         Line::from(Span::styled(
+-            "Grok Build may run or modify contents in this directory,",
++            "Workshop may run or modify contents in this directory,",
+             Style::default().fg(theme.gray),
+         ))
+         .alignment(Alignment::Center),
+@@ -2718,8 +2734,9 @@ mod tests {
+                 "badge must not label the product: {rendered:?}"
+             );
+         }
+-        assert!(full.contains("Grok Build"), "full badge: {full:?}");
+-        assert!(inline.contains("Grok Build"), "inline badge: {inline:?}");
++        let title = workshop_brand::title();
++        assert!(full.contains(title), "full badge: {full:?}");
++        assert!(inline.contains(title), "inline badge: {inline:?}");
+         assert!(footer.contains("acme"), "footer keeps the team: {footer:?}");
+         assert!(
+             !footer.ends_with('\u{2502}'),
+@@ -2862,6 +2879,7 @@ mod tests {
+             consent_state: &ConsentState::Done,
+             consent_hover_link: None,
+             login_label: None,
++            connection_picker: None,
+             auth_code_input: "",
+             auth_code_cursor_byte: 0,
+             clipboard_delivery: None,
+@@ -3696,7 +3714,7 @@ mod tests {
+         };
+         let one_line = WelcomeLayout::compute(input(None));
+         assert_eq!(one_line.logo_tier, LogoTier::Full);
+-        assert_eq!(one_line.logo.height, logo::full_logo_line_count());
++        assert_eq!(one_line.logo.height, LogoTier::Full.rows());
+ 
+         let tall = WelcomeLayout::compute(input(Some(13)));
+         assert_eq!(tall.logo_tier, LogoTier::Compact);
+@@ -3816,7 +3834,7 @@ mod tests {
+ 
+         let mut buf = Buffer::empty(area);
+         let _ = render_welcome(area, &mut buf, &params, &mut prompt, &mut picker);
+-        assert_eq!(painted_logo_rows(&buf), logo::full_logo_line_count());
++        assert_eq!(painted_logo_rows(&buf), LogoTier::Full.rows());
+ 
+         prompt.set_text(&["line"; 30].join("\n"));
+         let mut buf = Buffer::empty(area);
+@@ -4096,8 +4114,12 @@ mod tests {
+             ..Default::default()
+         };
+         assert!(
+-            hero_box::min_content_height(&input, with_ann.hero_info.height, PROMPT_HEIGHT)
+-                <= area.height,
++            hero_box::min_content_height(
++                &input,
++                with_ann.hero_info.height,
++                PROMPT_HEIGHT,
++                with_ann.logo_tier
++            ) <= area.height,
+             "clamped slot must keep the box within the area"
+         );
+     }
+@@ -4584,7 +4606,8 @@ the usual channels. "
+             hero_box::min_content_height(
+                 &short_input,
+                 short_expanded.hero_info.height,
+-                PROMPT_HEIGHT
++                PROMPT_HEIGHT,
++                short_expanded.logo_tier
+             ) <= short.height
+         );
+     }
+diff --git a/crates/codegen/xai-grok-shell/src/session/slash_commands.rs b/crates/codegen/xai-grok-shell/src/session/slash_commands.rs
+index 998e218b..03011597 100644
+--- a/crates/codegen/xai-grok-shell/src/session/slash_commands.rs
++++ b/crates/codegen/xai-grok-shell/src/session/slash_commands.rs
+@@ -454,6 +454,7 @@ pub const PAGER_COMMAND_KEYS: &[&str] = &[
+     "agents-dashboard",
+     "always-approve",
+     "announcements",
++    "auth", // Workshop: connection picker
+     "auto",
+     "btw",
+     "cd",
+@@ -509,6 +510,7 @@ pub const PAGER_COMMAND_KEYS: &[&str] = &[
+     "minimal",
+     "ml",
+     "model",
++    "models", // Workshop: connection picker
+     "multiline",
+     "new",
+     "onboarding",

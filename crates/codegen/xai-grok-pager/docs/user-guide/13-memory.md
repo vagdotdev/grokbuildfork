@@ -15,24 +15,103 @@ Without memory, each Grok session starts fresh: the model knows nothing about pr
 
 Memory is experimental and disabled by default.
 
+### Memory v2 (opt in)
+
+Memory v2 is an isolated observation-and-topic pipeline. Enable it only for new
+sessions:
+
+```toml
+[memory_v2]
+enabled = true
+```
+
+It uses `~/.grok/memory-v2/global/` and
+`~/.grok/memory-v2/workspaces/<workspace-id>/`; it never reads, migrates, or
+falls back to legacy `~/.grok/memory/`. Each scope has generated `MEMORY.md`,
+`topics/`, immutable `observations/_inbox/`, `archive/`, `memory_state.sqlite`,
+and `index.sqlite`. `MEMORY.md` is a bounded generated pointer index whose
+entries are absolute paths (so the model never has to resolve a relative path
+against the scope root); edit
+ordinary Markdown files under `topics/` through the restricted memory file
+workflow instead of editing the manifest.
+
+V2 captures successful completed turns asynchronously. `/flush` freezes the
+current requested cursor and waits for capture and indexing. Event-driven Dream
+claims a fixed inbox snapshot under a fenced lease, evaluates a no-tools model
+plan, atomically updates curated topics, then archives its claimed observations.
+Capture published during Dream remains pending for the next claim.
+
+Use `/memory status` for content-free local diagnostics: pinned controls,
+cursors, queue counts, pending age, Dream lease/snapshot, last outcomes, and
+archive/tombstone counts. The existing `/memory`, `/memory on`, and `/memory
+off` behavior is unchanged.
+
+`memory_v2.enabled` is the primary v2 switch. When it is true, v2 takes
+precedence over the legacy `[memory] enabled` setting. When it is false or
+absent, the legacy setting is resolved unchanged so existing memory users are
+not migrated unexpectedly. If neither setting enables memory, memory remains
+off. An explicit `[memory] enabled = false` in your TOML turns off both
+implementations, including a v2 rollout enabled remotely; only an explicit
+`[memory_v2] enabled = true` in the same TOML overrides it.
+
+Advanced rollout stages are pinned when a session starts:
+
+- `off`: no v2 reads, capture, Dream, or v2 file writes.
+- `record_only`: persist observations, but hide them from manifests/indexes and
+  never mutate curated topics.
+- `shadow`: additionally evaluate consolidation plans, without committing topic
+  changes.
+- `active`: full capture, manifest, index, and Dream behavior.
+
+Most users should only set `enabled = true`; it selects the full `active`
+behavior. The rollout and component switches exist for staged production
+validation and emergency rollback. A remote change affects only newly spawned
+sessions. A disabled v2 component fails closed; it never invokes legacy search,
+flush, Dream, or storage. Managed remote behavioral controls can only make
+local settings more restrictive: kill switches are any-deny-wins, rollout uses
+the less permissive stage, and retention uses the shorter duration.
+
+Capture lifecycle notifications (`queued`, `running`, `completed`, retries, and
+failures) are debug output and hidden from the UI by default. Telemetry and the
+dedicated memory debug log are still recorded. To display these messages while
+debugging, set `capture_status_enabled = true` under `[memory_v2]`. A successful
+capture then appears as a collapsed row; expand it to inspect each generated
+memory and open its committed observation file. These debug notifications are
+live-only and are not added to session replay history.
+
+Archived observation files and terminal capture-job metadata have bounded
+retention (`archived_retention_days` and `job_retention_days`). Explicit
+forgetting is currently exposed as a narrow library boundary: callers must
+provide one exact v2 Markdown path and the hash of bytes they deliberately
+read. The operation records a durable content-free tombstone and audit record
+before deletion. Broad requests, stale evidence, traversal, symlinks, protected
+files, unknown archives, and active/stale Dream leases are rejected. A future UI
+may wrap this API after it can preserve the same exact-evidence boundary.
+
+Memory-v2 product telemetry contains only fixed enums, booleans, counts, and
+durations. It never includes prompts, statements, topic names, keywords,
+paths, model output, or free-form errors.
+
 ---
 
 ## Enabling Memory
 
-### Per-Session Flag
+### Memory v2 (Recommended)
 
-```bash
-grok --experimental-memory
+```toml
+# ~/.grok/config.toml
+[memory_v2]
+enabled = true
 ```
 
-### Environment Variable
+### Legacy Environment Variable
 
 ```bash
 export GROK_MEMORY=1
 grok
 ```
 
-### Config File (Persistent)
+### Legacy Config (Persistent)
 
 ```toml
 # ~/.grok/config.toml
@@ -42,19 +121,11 @@ enabled = true
 
 ### Force-Disable
 
-To disable memory even when other settings enable it:
-
-```bash
-grok --no-memory
-```
-
-Or:
+To disable memory for the process even when TOML or remote settings enable it:
 
 ```bash
 export GROK_MEMORY=0
 ```
-
-The `--no-memory` flag has absolute highest priority and always disables memory.
 
 ### Mid-Session Toggle
 
@@ -71,11 +142,21 @@ You can also toggle from inside the `/memory` modal by pressing `t`.
 
 ### Priority Order
 
-1. `--no-memory` CLI flag (always disables)
-2. `--experimental-memory` CLI flag (enables)
-3. `GROK_MEMORY` env var: `1`/`true` enables, `0`/`false` disables
-4. `[memory]` section in config.toml
-5. Default: disabled
+1. A process-wide force-disable (`--no-memory` compatibility flag or
+   `GROK_MEMORY=0`) disables both implementations.
+2. An explicit `[memory] enabled = false` in effective TOML disables both
+   implementations, unless the same TOML also sets `[memory_v2] enabled = true`.
+   A remote v2 gate alone cannot override a local opt-out.
+3. `memory_v2.enabled` resolves from effective TOML, then the dedicated
+   `grok_build_memory_v2_enabled` managed setting. If true, v2 is selected
+   regardless of legacy `memory_enabled`.
+4. Otherwise, legacy enablement resolves through its existing compatibility
+   CLI, `GROK_MEMORY`, effective TOML, and managed-remote tiers.
+5. If neither gate is enabled, memory is disabled.
+
+All managed v2 behavior comes from the dedicated
+`grok_build_memory_v2_settings` object. Memory v2 does not consume fields from
+the legacy `grok_build_settings` object.
 
 ---
 
@@ -91,9 +172,9 @@ Memory is stored as Markdown files under `~/.grok/memory/`:
 
 Grok suffixes each workspace directory with a short hash of the repository's identity. The identity is the `origin` remote in `org/repo` form when the directory is a Git repository with an `origin` remote, or the directory path otherwise. Because clones and worktrees of the same repository share an `origin` remote, they also share one memory directory.
 
-An SQLite index supports hybrid search across all memory files:
-- **FTS5** provides full-text search for keyword matching.
-- **vec0** provides vector search for semantic similarity. Vector search is optional and requires an embedding.
+An SQLite index supports search across all memory files:
+- **FTS5** provides the default full-text search for keyword matching.
+- **vec0** adds vector search for semantic similarity when an embedding model is configured.
 
 ---
 
@@ -234,15 +315,14 @@ Dream reorganizes individual session logs and memory entries into a coherent, de
 
 ### Auto-Dream
 
-Dream also runs automatically. By default, Grok checks the consolidation gates when a session ends and runs Dream once enough time has passed and enough sessions have accumulated:
+Dream also runs automatically. By default, Grok checks the consolidation gates at launch and periodically during a session, and runs Dream once enough time has passed and enough sessions have accumulated:
 
 ```toml
 [memory.dream]
 enabled = true     # Run automatic consolidation (default: true)
-min_hours = 4      # Minimum hours between consolidations
-min_sessions = 3   # Minimum sessions since the last consolidation
-# check_interval_secs is unset by default, so Dream runs only at session end.
-# Set it to a positive number of seconds to also check on a periodic interval.
+min_hours = 24     # Minimum hours between consolidations
+min_sessions = 5   # Minimum sessions since the last consolidation
+check_interval_secs = 3600 # Also check the gates hourly
 ```
 
 ---
@@ -258,7 +338,7 @@ First-turn injection can be configured:
 ```toml
 [memory.initial_injection]
 enabled = true     # Enable or disable first-turn injection
-min_score = 0.0    # Optional score threshold; unset by default, which applies no filtering
+min_score = 0.9    # Score threshold for first-turn injection
 ```
 
 ### After Compaction
@@ -277,16 +357,12 @@ Read my workspace MEMORY.md
 ```
 
 The model has access to two memory tools:
-- `memory_search` -- Hybrid search across all memory (vector + full-text)
+- `memory_search` -- Search across all memory
 - `memory_get` -- Read a specific memory file by path
 
-### Hybrid Scoring
+### Search Scoring
 
-Memory search uses a weighted combination of:
-- **Vector similarity** (semantic) -- weight: 0.7
-- **BM25 text similarity** (keyword) -- weight: 0.3
-
-Results are filtered by a minimum score threshold (default: 0.35).
+The default embedding model is unset, so memory starts in full-text-only mode. If you configure an embedding model, search combines vector similarity (weight `0.7`) with BM25 text similarity (weight `0.3`). Results are filtered by a minimum score threshold (default: `0.7`).
 
 ### Source Weights
 
@@ -305,7 +381,7 @@ Session memories decay over time so recent sessions are prioritized:
 ```toml
 [memory.search.temporal_decay]
 enabled = true           # Enable time-based decay
-half_life_days = 7.0     # Score halves after this many days
+half_life_days = 30.0    # Score halves after this many days
 ```
 
 Only session chunks decay. Global and workspace memories are exempt since they contain curated long-term knowledge.
@@ -316,7 +392,7 @@ MMR re-ranking penalizes redundant results to improve diversity:
 
 ```toml
 [memory.search.mmr]
-enabled = false          # Opt-in diversity re-ranking
+enabled = true           # Enable diversity re-ranking
 lambda = 0.7             # 0.0 = max diversity, 1.0 = pure relevance
 ```
 
@@ -369,7 +445,7 @@ To edit memory from the shell, open the files in your editor directly -- for exa
 | Key | Default | Description |
 |-----|---------|-------------|
 | `provider` | `"api"` | Embedding provider (currently `"api"`) |
-| `model` | *(provider default)* | Embedding model name |
+| `model` | unset | Embedding model name. Unset or `""` uses full-text-only retrieval. |
 | `dimensions` | `1024` | Embedding vector dimensions |
 
 ### Search Settings (`[memory.search]`)
@@ -377,7 +453,7 @@ To edit memory from the shell, open the files in your editor directly -- for exa
 | Key | Default | Description |
 |-----|---------|-------------|
 | `max_results` | `6` | Maximum search results |
-| `min_score` | `0.35` | Minimum relevance score |
+| `min_score` | `0.7` | Minimum relevance score |
 | `vector_weight` | `0.7` | Weight for vector similarity |
 | `text_weight` | `0.3` | Weight for BM25 text similarity |
 
@@ -386,17 +462,17 @@ To edit memory from the shell, open the files in your editor directly -- for exa
 | Key | Default | Description |
 |-----|---------|-------------|
 | `enabled` | `true` | Enable first-turn memory injection |
-| `min_score` | unset | Score threshold for first-turn results. When unset, Grok applies no threshold, which is equivalent to `0.0`. |
+| `min_score` | `0.9` | Score threshold for first-turn results |
 
 ### Dream Settings (`[memory.dream]`)
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `enabled` | `true` | Enable automatic Dream consolidation |
-| `min_hours` | `4` | Minimum hours between consolidations |
-| `min_sessions` | `3` | Minimum sessions since the last consolidation |
+| `min_hours` | `24` | Minimum hours between consolidations |
+| `min_sessions` | `5` | Minimum sessions since the last consolidation |
 | `stale_lock_secs` | `3600` | Seconds before a stale consolidation lock is reclaimed |
-| `check_interval_secs` | unset | Periodic check interval in seconds. When unset, Dream runs only at session end. |
+| `check_interval_secs` | `3600` | Periodic Dream-gate check interval in seconds. Set `0` to disable periodic checks. |
 
 ### Flush Settings (`[compaction.memory_flush]`)
 
@@ -407,8 +483,8 @@ You configure flush under `[compaction]`, not `[memory]`, because it is a compac
 | `enabled` | `true` | Enable the pre-compaction memory flush |
 | `soft_threshold_tokens` | `4000` | Token headroom before the compact threshold that triggers a flush |
 | `max_flush_write_chars` | `8000` | Maximum characters the flush may write to memory |
-| `flush_model` | unset | Model for the flush turn. When unset, Grok uses the session's primary model. |
-| `idle_timeout_secs` | unset | Idle seconds before a background flush. When unset, flush runs only before compaction. |
+| `flush_model` | unset | Model for the flush turn. When unset or `""`, Grok uses the session's primary model. |
+| `idle_timeout_secs` | `300` | Idle seconds before a background flush. Set `0` to disable idle flushes. |
 | `semantic_dedup_threshold` | unset | Cosine-similarity threshold for de-duplicating flushed content. When unset, defaults to `0.92`. |
 
 ### Pruning Settings (`[compaction.pruning]`)
@@ -451,8 +527,8 @@ enabled = true    # default
 ### Memory Not Working
 
 1. Verify memory is enabled: check `grok inspect` output.
-2. Check the flag: `grok --experimental-memory` or `GROK_MEMORY=1`.
-3. Check for `--no-memory` or `GROK_MEMORY=0` overriding your config.
+2. Check `GROK_MEMORY` or `[memory] enabled` in effective TOML.
+3. Check for `GROK_MEMORY=0` or a deprecated compatibility flag overriding config.
 
 ### Memory Not Appearing in Sessions
 

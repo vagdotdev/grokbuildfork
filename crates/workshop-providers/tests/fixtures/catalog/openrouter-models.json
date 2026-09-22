@@ -1,0 +1,523 @@
+{
+ "data": [
+  {
+   "id": "z-ai/glm-5.2:free",
+   "canonical_slug": "z-ai/glm-5.2-20260616",
+   "hugging_face_id": "zai-org/GLM-5.2",
+   "name": "Z.ai: GLM 5.2 (free)",
+   "created": 1781631930,
+   "description": "GLM 5.2 is a large-scale reasoning model from Z.ai. It supports text input and output with a 1M-token context window, an",
+   "context_length": 32768,
+   "architecture": {
+    "modality": "text->text",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "top_provider": {
+    "context_length": 32768,
+    "max_completion_tokens": 29491,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "frequency_penalty",
+    "include_reasoning",
+    "max_tokens",
+    "min_p",
+    "presence_penalty",
+    "reasoning",
+    "reasoning_effort",
+    "repetition_penalty",
+    "seed",
+    "stop",
+    "temperature",
+    "top_k",
+    "top_p"
+   ],
+   "supported_voices": null,
+   "knowledge_cutoff": null,
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/z-ai/glm-5.2-20260616/endpoints"
+   },
+   "benchmarks": {
+    "design_arena": [
+     {
+      "arena": "agents",
+      "category": "agenticgamedev",
+      "elo": 1205,
+      "win_rate": 49,
+      "rank": 10
+     },
+     {
+      "arena": "agents",
+      "category": "androidnative",
+      "elo": 1189,
+      "win_rate": 53,
+      "rank": 17
+     },
+     {
+      "arena": "agents",
+      "category": "fullstack",
+      "elo": 1252,
+      "win_rate": 61,
+      "rank": 11
+     },
+     {
+      "arena": "agents",
+      "category": "godotgamedev",
+      "elo": 1142,
+      "win_rate": 40.1,
+      "rank": 17
+     },
+     {
+      "arena": "agents",
+      "category": "htmlslides",
+      "elo": 1178,
+      "win_rate": 49.6,
+      "rank": 13
+     },
+     {
+      "arena": "agents",
+      "category": "mobileapps",
+      "elo": 1191,
+      "win_rate": 50.5,
+      "rank": 22
+     },
+     {
+      "arena": "agents",
+      "category": "python-pptxslides",
+      "elo": 1194,
+      "win_rate": 48.7,
+      "rank": 16
+     },
+     {
+      "arena": "agents",
+      "category": "webapps",
+      "elo": 1230,
+      "win_rate": 56.2,
+      "rank": 13
+     },
+     {
+      "arena": "models",
+      "category": "3d",
+      "elo": 1320,
+      "win_rate": 53.9,
+      "rank": 13
+     },
+     {
+      "arena": "models",
+      "category": "asciiart",
+      "elo": 1225,
+      "win_rate": 47.6,
+      "rank": 20
+     },
+     {
+      "arena": "models",
+      "category": "codecategories",
+      "elo": 1307,
+      "win_rate": 52.9,
+      "rank": 10
+     },
+     {
+      "arena": "models",
+      "category": "dataviz",
+      "elo": 1309,
+      "win_rate": 53.7,
+      "rank": 10
+     },
+     {
+      "arena": "models",
+      "category": "gamedev",
+      "elo": 1296,
+      "win_rate": 49.8,
+      "rank": 17
+     },
+     {
+      "arena": "models",
+      "category": "svg",
+      "elo": 1247,
+      "win_rate": 50.3,
+      "rank": 15
+     },
+     {
+      "arena": "models",
+      "category": "uicomponent",
+      "elo": 1309,
+      "win_rate": 55.6,
+      "rank": 13
+     },
+     {
+      "arena": "models",
+      "category": "website",
+      "elo": 1303,
+      "win_rate": 53.3,
+      "rank": 11
+     }
+    ],
+    "artificial_analysis": {
+     "intelligence_index": 33.7,
+     "coding_index": 68.8,
+     "agentic_index": 38.4
+    }
+   },
+   "reasoning": {
+    "mandatory": false,
+    "default_enabled": true,
+    "supported_efforts": [
+     "xhigh",
+     "high"
+    ],
+    "default_effort": "high"
+   }
+  },
+  {
+   "id": "nvidia/nemotron-3.5-content-safety:free",
+   "canonical_slug": "nvidia/nemotron-3.5-content-safety-20260604",
+   "hugging_face_id": "nvidia/Nemotron-3.5-Content-Safety",
+   "name": "NVIDIA: Nemotron 3.5 Content Safety (free)",
+   "created": 1780581864,
+   "description": "NVIDIA Nemotron 3.5 Content Safety is a compact 4B-parameter multimodal guardrail model from NVIDIA, fine-tuned from Goo",
+   "context_length": 128000,
+   "architecture": {
+    "modality": "text+image->text",
+    "input_modalities": [
+     "text",
+     "image"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "top_provider": {
+    "context_length": 128000,
+    "max_completion_tokens": 8192,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "include_reasoning",
+    "max_tokens",
+    "reasoning",
+    "seed",
+    "temperature",
+    "top_p"
+   ],
+   "supported_voices": null,
+   "knowledge_cutoff": null,
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/nvidia/nemotron-3.5-content-safety-20260604/endpoints"
+   },
+   "reasoning": {
+    "mandatory": false,
+    "default_enabled": true
+   }
+  },
+  {
+   "id": "google/gemma-4-31b-it:free",
+   "canonical_slug": "google/gemma-4-31b-it-20260402",
+   "hugging_face_id": "google/gemma-4-31B-it",
+   "name": "Google: Gemma 4 31B (free)",
+   "created": 1775148486,
+   "description": "Gemma 4 31B Instruct is Google DeepMind's 30.7B dense multimodal model supporting text and image input with text output.",
+   "context_length": 262144,
+   "architecture": {
+    "modality": "text+image+video->text",
+    "input_modalities": [
+     "image",
+     "text",
+     "video"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Gemma",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "top_provider": {
+    "context_length": 262144,
+    "max_completion_tokens": 32768,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "include_reasoning",
+    "max_tokens",
+    "reasoning",
+    "response_format",
+    "seed",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_p"
+   ],
+   "supported_voices": null,
+   "knowledge_cutoff": null,
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/google/gemma-4-31b-it-20260402/endpoints"
+   },
+   "benchmarks": {
+    "design_arena": [],
+    "artificial_analysis": {
+     "intelligence_index": null,
+     "coding_index": 43.4,
+     "agentic_index": 4.2
+    }
+   },
+   "reasoning": {
+    "mandatory": false,
+    "default_enabled": false
+   }
+  },
+  {
+   "id": "google/lyria-3-pro-preview",
+   "canonical_slug": "google/lyria-3-pro-preview-20260330",
+   "hugging_face_id": null,
+   "name": "Google: Lyria 3 Pro Preview",
+   "created": 1774907286,
+   "description": "Full-length songs are priced at $0.08 per song. Lyria 3 is Google's family of music generation models, available through",
+   "context_length": 1048576,
+   "architecture": {
+    "modality": "text+image->text+audio",
+    "input_modalities": [
+     "text",
+     "image"
+    ],
+    "output_modalities": [
+     "text",
+     "audio"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "top_provider": {
+    "context_length": 1048576,
+    "max_completion_tokens": 65536,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "max_tokens",
+    "response_format",
+    "seed",
+    "temperature",
+    "top_p"
+   ],
+   "supported_voices": null,
+   "knowledge_cutoff": null,
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/google/lyria-3-pro-preview-20260330/endpoints"
+   }
+  },
+  {
+   "id": "nvidia/nemotron-3-super-120b-a12b:free",
+   "canonical_slug": "nvidia/nemotron-3-super-120b-a12b-20230311",
+   "hugging_face_id": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+   "name": "NVIDIA: Nemotron 3 Super (free)",
+   "created": 1773245239,
+   "description": "NVIDIA Nemotron 3 Super is a 120B-parameter open hybrid MoE model, activating just 12B parameters for maximum compute ef",
+   "context_length": 262144,
+   "architecture": {
+    "modality": "text->text",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "top_provider": {
+    "context_length": 262144,
+    "max_completion_tokens": 235929,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "include_reasoning",
+    "max_tokens",
+    "reasoning",
+    "reasoning_effort",
+    "response_format",
+    "seed",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_p"
+   ],
+   "supported_voices": null,
+   "knowledge_cutoff": null,
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/nvidia/nemotron-3-super-120b-a12b-20230311/endpoints"
+   },
+   "benchmarks": {
+    "design_arena": [],
+    "artificial_analysis": {
+     "intelligence_index": 12.8,
+     "coding_index": 37.7,
+     "agentic_index": 1.7
+    }
+   },
+   "reasoning": {
+    "mandatory": false,
+    "default_enabled": true,
+    "supports_max_tokens": true,
+    "supported_efforts": [
+     "medium",
+     "low"
+    ],
+    "default_effort": "medium"
+   }
+  },
+  {
+   "id": "openrouter/free",
+   "canonical_slug": "openrouter/free",
+   "hugging_face_id": "",
+   "name": "Free Models Router",
+   "created": 1769917427,
+   "description": "The simplest way to get free inference. openrouter/free is a router that selects free models at random from the models a",
+   "context_length": 200000,
+   "architecture": {
+    "modality": "text+image->text",
+    "input_modalities": [
+     "text",
+     "image"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Router",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "top_provider": {
+    "context_length": null,
+    "max_completion_tokens": null,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "frequency_penalty",
+    "include_reasoning",
+    "logprobs",
+    "max_completion_tokens",
+    "max_tokens",
+    "min_p",
+    "presence_penalty",
+    "reasoning",
+    "reasoning_effort",
+    "repetition_penalty",
+    "response_format",
+    "seed",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_k",
+    "top_logprobs",
+    "top_p"
+   ],
+   "supported_voices": null,
+   "knowledge_cutoff": null,
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/openrouter/free/endpoints"
+   }
+  },
+  {
+   "id": "xiaomi/mimo-v2.6-pro-ultraspeed",
+   "canonical_slug": "xiaomi/mimo-v2.6-pro-ultraspeed-20260921",
+   "hugging_face_id": null,
+   "name": "Xiaomi: MiMo-V2.6-Pro-UltraSpeed",
+   "created": 1790021267,
+   "description": "MiMo-V2.6-Pro-UltraSpeed is the fast speed edition of Xiaomi's flagship foundation model, MiMo-V2.6-Pro. Built from the ",
+   "context_length": 1048576,
+   "architecture": {
+    "modality": "text+image+audio+video->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "video",
+     "audio"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.00000435",
+    "completion": "0.0000087",
+    "input_cache_read": "0.000000036"
+   },
+   "top_provider": {
+    "context_length": 1048576,
+    "max_completion_tokens": 131072,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "frequency_penalty",
+    "include_reasoning",
+    "max_tokens",
+    "presence_penalty",
+    "reasoning",
+    "response_format",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_p"
+   ],
+   "supported_voices": null,
+   "knowledge_cutoff": null,
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/xiaomi/mimo-v2.6-pro-ultraspeed-20260921/endpoints"
+   },
+   "reasoning": {
+    "mandatory": false
+   }
+  }
+ ]
+}

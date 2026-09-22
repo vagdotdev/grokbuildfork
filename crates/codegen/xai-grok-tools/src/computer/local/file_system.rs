@@ -119,7 +119,10 @@ where
                     on_exhausted(&e, retry_count);
                     return Err(e);
                 }
-                let delay = WRITE_RETRY_DELAYS[retry_count];
+                let Some(&delay) = WRITE_RETRY_DELAYS.get(retry_count) else {
+                    on_exhausted(&e, retry_count);
+                    return Err(e);
+                };
                 retry_count += 1;
                 on_retry(&e, retry_count, delay);
                 sleep_for(delay).await;
@@ -162,6 +165,15 @@ impl AsyncFileSystem for LocalFs {
             return Err(e.into());
         }
         Ok(())
+    }
+
+    #[tracing::instrument(name = "fs.file_exists", skip_all)]
+    async fn file_exists(&self, path: &Path) -> Result<bool, ComputerError> {
+        match fs::metadata(path).await {
+            Ok(metadata) => Ok(metadata.is_file()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e.into()),
+        }
     }
 
     #[tracing::instrument(name = "fs.delete_file", skip_all)]

@@ -1,0 +1,22 @@
+[package]
+name = "workshop-detect"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Workshop overlay: detect official coding-agent CLIs (Claude Code, Codex, Cursor Agent, OpenCode) and their login state without touching vendor credentials"
+
+[dependencies]
+dunce = { workspace = true }
+libc = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+wait-timeout = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+walkdir = { workspace = true }
+
+[lints]
+workspace = true

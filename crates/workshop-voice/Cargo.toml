@@ -1,0 +1,31 @@
+[package]
+name = "workshop-voice"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+description = "Workshop overlay: local speech-to-text for /voice — pinned Whisper model store (verify, resume, self-heal download), the voice-engine helper client, and the /doctor probe. Links no speech model; the helper process does."
+
+[dependencies]
+fs2 = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "process", "io-util", "fs"] }
+tracing = { workspace = true }
+xai-dirs = { workspace = true }
+xai-grok-extra-ca = { workspace = true }
+# Sanctioned child-process spawn helper (workspace rule: never a raw `Command`).
+xai-tty-utils = { workspace = true }
+
+[dev-dependencies]
+hound = "3.5"
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
+# `examples/pty_dictation.rs`: drives the built TUI through a dictation for evidence runs.
+xai-grok-pager-pty-harness = { path = "../codegen/xai-grok-pager-pty-harness" }
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true

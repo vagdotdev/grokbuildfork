@@ -1,6 +1,6 @@
 # Getting Started
 
-Grok Build is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
+Workshop is a terminal-based AI coding agent built as a thin overlay on the public Grok Build tree. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, and manages tasks. It ships **no default model provider**: you connect a local model, an API key, or an installed coding-subscription CLI.
 
 You can use it interactively as a full-screen TUI, run it headlessly for scripting and CI/CD, or integrate it into editors via the Agent Client Protocol (ACP).
 
@@ -8,55 +8,26 @@ You can use it interactively as a full-screen TUI, run it headlessly for scripti
 
 ## Installation
 
-Install the latest stable release (macOS, Linux, or Windows via Git Bash):
+Workshop has no public install channel yet (auto-update is disabled in this build). Build from source with the pinned Rust toolchain and `protoc`:
 
 ```bash
-curl -fsSL https://x.ai/cli/install.sh | bash
+cargo build --release -p xai-grok-pager-bin
+./target/release/workshop --version
 ```
 
-Install a specific version:
-
-```bash
-curl -fsSL https://x.ai/cli/install.sh | bash -s 0.1.42
-```
-
-On **Windows (PowerShell)**, use the native PowerShell installer:
-
-```powershell
-irm https://x.ai/cli/install.ps1 | iex
-```
-
-Install a specific version:
-
-```powershell
-$env:GROK_VERSION="0.1.42"; irm https://x.ai/cli/install.ps1 | iex
-```
-
-The PowerShell installer automatically adds `%USERPROFILE%\.grok\bin` to your User PATH. Alternatively, install via [Git for Windows](https://gitforwindows.org/) (Git Bash) or MSYS2 using the bash script above. WSL users get the Linux binary automatically.
-
-Verify the installation:
-
-```bash
-grok --version
-```
-
-Update to the latest version at any time:
-
-```bash
-grok update
-```
+Workshop keeps its state in `~/.workshop` (override with `WORKSHOP_HOME`; the upstream `GROK_HOME` is honoured as a deprecated alias).
 
 ---
 
 ## First Launch
 
-Start Grok by running:
+Start Workshop by running:
 
 ```bash
-grok
+workshop
 ```
 
-On first launch, Grok opens your browser to authenticate with grok.com. After you sign in, Grok stores your credentials in `~/.grok/auth.json`, where they persist across sessions. Grok refreshes your credentials automatically and prompts you to sign in again when they can no longer be renewed.
+On first launch, Workshop opens the **connection picker**, never a browser sign-in. The **Models** tab lists local servers (Ollama, LM Studio, llama.cpp / vLLM) and bring-your-own-key providers (OpenAI, Anthropic, OpenRouter, a custom OpenAI-compatible endpoint); the **Subscriptions** tab lists the Claude, Codex, and Cursor CLIs Workshop can drive once they are installed and signed in with their own `login` commands. Pick a row to see the `[model.*]` snippet to add to `~/.workshop/config.toml`. The optional xAI card is last on the Models tab and only opens the xAI sign-in page after you confirm it; nothing is contacted until you connect something.
 
 If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
 
@@ -78,7 +49,7 @@ Once authenticated, Grok presents a full-screen TUI with two main areas:
 
 Type a message and press `Enter` to send it. Grok reads files, runs commands, and edits code as needed. Each tool run streams into the scrollback in real time.
 
-Press `Tab` to move focus between the prompt and the scrollback. While a turn is running, `Ctrl+C` cancels it (or clears a non-empty draft first); `Esc` is a no-op mid-turn. Idle, press `Esc` twice within 800ms to clear a non-empty prompt, or (with an empty prompt and conversation messages) to open rewind — see [Keyboard Shortcuts](03-keyboard-shortcuts.md#escape). With the scrollback focused, use the arrow keys to select entries and to collapse or expand them. To navigate with `j`/`k` and fold with `h`/`l` instead, enable Vim mode.
+Press `Tab` to move focus between the prompt and the scrollback. While a turn is running, `Ctrl+C` cancels it once the composer is empty — with a draft, the first press only clears it. `Esc` never cancels a turn; mid-turn it shows a reminder to use `Ctrl+C`. Idle, press `Esc` twice within 800ms to clear a non-empty prompt, or (with an empty prompt and conversation messages) to open rewind — see [Keyboard Shortcuts](03-keyboard-shortcuts.md#escape). With the scrollback focused, use the arrow keys to select entries and to collapse or expand them. To navigate with `j`/`k` and fold with `h`/`l` instead, enable Vim mode.
 
 ### File References
 
@@ -151,7 +122,7 @@ Tools can be extended with [MCP servers](05-configuration.md#mcp-servers) for in
 Type `/` in the prompt to access commands. These provide quick actions without writing a full prompt:
 
 ```
-/model grok-build                 # Switch model
+/model grok-4.6                 # Switch model
 /compact                          # Compress conversation history
 /always-approve                   # Toggle always-approve mode
 /new                              # Start a new session
@@ -186,7 +157,7 @@ grok --rules "Always use TypeScript. Prefer functional components."
 grok --yolo
 
 # Use a specific model
-grok -m grok-build
+grok -m grok-4.6
 
 # Resume a previous session
 grok --resume <session-id>

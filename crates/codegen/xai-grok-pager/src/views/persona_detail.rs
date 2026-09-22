@@ -1,26 +1,22 @@
-//! Persona detail/edit modal — structured view of a persona with inline editing.
+//! Persona detail/edit modal: structured view of a persona with inline editing.
 //!
 //! Opened by pressing Enter on a persona in the `/config-agents` Personas tab.
-//! Renders all persona TOML fields in labeled sections. Editable personas
-//! (user/project scope) support inline field editing; bundled personas are
-//! read-only.
+//! Renders all persona TOML fields in labeled sections.
+//! Editable personas (user/project scope) support inline field editing; bundled personas are read-only.
 
 use std::path::{Path, PathBuf};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
+use crate::input::line_editor::{LineEditOutcome, LineEditor};
 use crate::theme::Theme;
 use crate::views::modal_window::{
     self, ModalContentArea, ModalSizing, ModalWindowConfig, ModalWindowState, Shortcut,
 };
-
-// ---------------------------------------------------------------------------
-// Field enum
-// ---------------------------------------------------------------------------
 
 /// Navigable fields in the persona detail view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,12 +55,18 @@ impl PersonaField {
 
     fn next(self) -> Self {
         let idx = Self::ALL.iter().position(|&f| f == self).unwrap_or(0);
-        Self::ALL[(idx + 1) % Self::ALL.len()]
+        Self::ALL
+            .get((idx + 1) % Self::ALL.len())
+            .copied()
+            .unwrap_or(self)
     }
 
     fn prev(self) -> Self {
         let idx = Self::ALL.iter().position(|&f| f == self).unwrap_or(0);
-        Self::ALL[(idx + Self::ALL.len() - 1) % Self::ALL.len()]
+        Self::ALL
+            .get((idx + Self::ALL.len() - 1) % Self::ALL.len())
+            .copied()
+            .unwrap_or(self)
     }
 
     /// True for fields that support inline text editing.
@@ -76,28 +78,19 @@ impl PersonaField {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Mode state machine
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
-pub enum PersonaDetailMode {
+enum PersonaDetailMode {
     Browse,
     Editing {
         field: PersonaField,
-        buffer: String,
-        cursor: usize,
+        editor: LineEditor,
         original: String,
     },
 }
 
-// ---------------------------------------------------------------------------
-// Outcome
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
 pub enum PersonaDetailOutcome {
-    /// Normal handled event.
+    /// The event was handled and the modal changed.
     Changed,
     /// Nothing to do.
     Unchanged,
@@ -107,10 +100,6 @@ pub enum PersonaDetailOutcome {
     EditInEditor { path: PathBuf },
 }
 
-// ---------------------------------------------------------------------------
-// I/O entry
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 pub struct PersonaIOEntry {
     pub name: String,
@@ -118,10 +107,6 @@ pub struct PersonaIOEntry {
     pub required: bool,
     pub description: String,
 }
-
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
 
 pub struct PersonaDetailState {
     pub window: ModalWindowState,
@@ -139,7 +124,7 @@ pub struct PersonaDetailState {
     pub scope_label: String,
     pub selected_field: PersonaField,
     pub scroll_offset: usize,
-    pub mode: PersonaDetailMode,
+    mode: PersonaDetailMode,
     pub dirty: bool,
     pub instructions_expanded: bool,
     /// Scroll offset within expanded instructions (line index of first visible line).
@@ -276,6 +261,43 @@ impl PersonaDetailState {
         }
     }
 
+    pub fn is_editing(&self) -> bool {
+        matches!(&self.mode, PersonaDetailMode::Editing { .. })
+    }
+
+    #[cfg(test)]
+    fn editing_editor(&self) -> Option<&LineEditor> {
+        match &self.mode {
+            PersonaDetailMode::Editing { editor, .. } => Some(editor),
+            PersonaDetailMode::Browse => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn editing_viewport(&self, width: usize) -> Option<xai_ratatui_textarea::SingleLineViewport> {
+        self.editing_editor().map(|editor| editor.viewport(width))
+    }
+
+    #[cfg(test)]
+    fn editing_text(&self) -> Option<&str> {
+        self.editing_editor().map(LineEditor::text)
+    }
+
+    #[cfg(test)]
+    fn set_editing_text(&mut self, text: impl Into<String>) {
+        if let PersonaDetailMode::Editing { editor, .. } = &mut self.mode {
+            editor.set_text(text);
+        }
+    }
+
+    #[cfg(test)]
+    fn set_editing_cursor_byte(&mut self, cursor_byte: usize) -> LineEditOutcome {
+        match &mut self.mode {
+            PersonaDetailMode::Editing { editor, .. } => editor.set_cursor_byte(cursor_byte),
+            PersonaDetailMode::Browse => LineEditOutcome::Unhandled,
+        }
+    }
+
     /// Save current state back to the TOML file using toml_edit to preserve formatting.
     fn save_to_file(&self) -> Result<(), String> {
         let Some(ref path) = self.source_path else {
@@ -301,7 +323,7 @@ impl PersonaDetailState {
             if value.is_empty() {
                 doc.remove(key);
             } else {
-                doc[key] = toml_edit::value(value);
+                doc.insert(key, toml_edit::value(value));
             }
         }
 
@@ -310,9 +332,25 @@ impl PersonaDetailState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
+fn render_detail_editor(
+    buf: &mut Buffer,
+    x: u16,
+    y: u16,
+    width: usize,
+    editor: &LineEditor,
+    style: Style,
+    theme: &Theme,
+) {
+    let viewport = editor.viewport(width);
+    let visible = editor.text().get(viewport.visible_byte_range).unwrap_or("");
+    buf.set_string(x, y, visible, style);
+    if width > 0 {
+        let cursor_x = x + viewport.cursor_display_column as u16;
+        if let Some(cell) = buf.cell_mut((cursor_x, y)) {
+            cell.set_style(theme.block_cursor_over(theme.bg_base));
+        }
+    }
+}
 
 /// Render the persona detail modal.
 pub fn render_persona_detail(
@@ -392,27 +430,20 @@ pub fn render_persona_detail(
         let value_x = content_area.x + label_w;
         let value_w = w.saturating_sub(label_w as usize);
 
-        // Check if we're in editing mode for this field.
         if is_selected
             && let PersonaDetailMode::Editing {
-                ref buffer, cursor, ..
-            } = state.mode
+                field: editing_field,
+                editor,
+                ..
+            } = &state.mode
+            && *editing_field == field
         {
-            // Render inline editor.
-            let display: String = buffer.chars().take(value_w).collect();
             let field_style = if let Some(bg) = row_bg {
                 Style::default().fg(theme.text_primary).bg(bg)
             } else {
                 Style::default().fg(theme.text_primary)
             };
-            buf.set_string(value_x, y, &display, field_style);
-            // Cursor
-            let cursor_x = value_x + buffer[..cursor.min(buffer.len())].width() as u16;
-            if cursor_x < content_area.x + content_area.width
-                && let Some(cell) = buf.cell_mut((cursor_x, y))
-            {
-                cell.set_style(Style::default().fg(theme.bg_base).bg(theme.text_primary));
-            }
+            render_detail_editor(buf, value_x, y, value_w, editor, field_style, theme);
         } else if field == PersonaField::Instructions {
             // Multi-line instructions with expand/collapse and scroll.
             if value.is_empty() {
@@ -454,7 +485,7 @@ pub fn render_persona_detail(
                         y += 1;
                         if y < max_y {
                             let hint = format!(
-                                "  ... ({} more lines \u{2014} e to expand, j/k to scroll)",
+                                "  ... ({} more lines: e to expand, j/k to scroll)",
                                 total - max_collapsed
                             );
                             buf.set_string(
@@ -471,7 +502,9 @@ pub fn render_persona_detail(
                         .instructions_scroll
                         .min(total.saturating_sub(viewport_h));
                     state.instructions_scroll = scroll;
-                    let visible = &lines[scroll..total.min(scroll + viewport_h)];
+                    let visible = lines
+                        .get(scroll..total.min(scroll + viewport_h))
+                        .unwrap_or(&[]);
                     for (i, line) in visible.iter().enumerate() {
                         let x_pos = if i == 0 && scroll == 0 {
                             value_x
@@ -510,7 +543,7 @@ pub fn render_persona_detail(
             } else {
                 Style::default().fg(theme.gray_dim)
             };
-            buf.set_string(value_x, y, "\u{2014}", empty_style);
+            buf.set_string(value_x, y, "-", empty_style);
         } else if value.width() <= value_w {
             // Fits on one line.
             let val_style = if let Some(bg) = row_bg {
@@ -630,7 +663,7 @@ fn persona_detail_sizing(compact: bool) -> ModalSizing {
 }
 
 fn build_shortcuts(state: &PersonaDetailState) -> Vec<Shortcut<'static>> {
-    if matches!(state.mode, PersonaDetailMode::Editing { .. }) {
+    if state.is_editing() {
         vec![
             Shortcut {
                 label: "Enter save",
@@ -672,20 +705,32 @@ fn build_shortcuts(state: &PersonaDetailState) -> Vec<Shortcut<'static>> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Input handling
-// ---------------------------------------------------------------------------
-
 pub fn handle_persona_detail_key(
     state: &mut PersonaDetailState,
     key: &KeyEvent,
 ) -> PersonaDetailOutcome {
     state.message = None;
 
-    match &state.mode {
-        PersonaDetailMode::Editing { .. } => handle_editing_key(state, key),
-        PersonaDetailMode::Browse => handle_browse_key(state, key),
+    if state.is_editing() {
+        handle_editing_key(state, key)
+    } else {
+        handle_browse_key(state, key)
     }
+}
+
+pub fn handle_persona_detail_paste(
+    state: &mut PersonaDetailState,
+    text: &str,
+) -> PersonaDetailOutcome {
+    if !state.is_editing() {
+        return PersonaDetailOutcome::Unchanged;
+    }
+    state.message = None;
+    let outcome = match &mut state.mode {
+        PersonaDetailMode::Editing { editor, .. } => editor.insert_paste(text),
+        PersonaDetailMode::Browse => unreachable!("editing mode changed before paste"),
+    };
+    finish_edit(outcome)
 }
 
 fn handle_browse_key(state: &mut PersonaDetailState, key: &KeyEvent) -> PersonaDetailOutcome {
@@ -739,11 +784,18 @@ fn handle_browse_key(state: &mut PersonaDetailState, key: &KeyEvent) -> PersonaD
                 return PersonaDetailOutcome::Changed;
             }
             let current = state.field_value(field).to_owned();
+            if current.contains(['\n', '\r']) {
+                state.message =
+                    Some("Multiline values must be edited in the source file".to_string());
+                return PersonaDetailOutcome::Changed;
+            }
+            let mut editor = LineEditor::default();
+            editor.set_text(&current);
+            let original = current;
             state.mode = PersonaDetailMode::Editing {
                 field,
-                cursor: current.len(),
-                original: current.clone(),
-                buffer: current,
+                editor,
+                original,
             };
             PersonaDetailOutcome::Changed
         }
@@ -763,91 +815,47 @@ fn handle_browse_key(state: &mut PersonaDetailState, key: &KeyEvent) -> PersonaD
 }
 
 fn handle_editing_key(state: &mut PersonaDetailState, key: &KeyEvent) -> PersonaDetailOutcome {
-    let PersonaDetailMode::Editing {
-        field,
-        ref mut buffer,
-        ref mut cursor,
-        ref original,
-    } = state.mode
-    else {
-        return PersonaDetailOutcome::Unchanged;
-    };
-
-    match key.code {
-        KeyCode::Esc => {
-            // Cancel — restore original.
-            state.mode = PersonaDetailMode::Browse;
-            PersonaDetailOutcome::Changed
-        }
-        KeyCode::Enter => {
-            // Save the edit.
-            let new_value = buffer.clone();
-            let changed = new_value != *original;
+    if key.code == KeyCode::Esc {
+        state.mode = PersonaDetailMode::Browse;
+        return PersonaDetailOutcome::Changed;
+    }
+    if key.code == KeyCode::Enter {
+        let mode = std::mem::replace(&mut state.mode, PersonaDetailMode::Browse);
+        let PersonaDetailMode::Editing {
+            field,
+            editor,
+            original,
+        } = mode
+        else {
+            return PersonaDetailOutcome::Unchanged;
+        };
+        let new_value = editor.text().to_owned();
+        let changed = new_value != original;
+        if changed {
             state.set_field_value(field, new_value);
-            state.mode = PersonaDetailMode::Browse;
-            if changed {
-                state.dirty = true;
-                if let Err(e) = state.save_to_file() {
-                    state.message = Some(format!("Save failed: {e}"));
-                } else {
-                    state.message = Some("Saved".to_string());
-                }
+            state.dirty = true;
+            if let Err(e) = state.save_to_file() {
+                state.message = Some(format!("Save failed: {e}"));
+            } else {
+                state.message = Some("Saved".to_string());
             }
-            PersonaDetailOutcome::Changed
         }
-        KeyCode::Backspace => {
-            if *cursor > 0 {
-                let prev = buffer[..*cursor]
-                    .char_indices()
-                    .next_back()
-                    .map(|(i, _)| i)
-                    .unwrap_or(0);
-                buffer.remove(prev);
-                *cursor = prev;
-            }
-            PersonaDetailOutcome::Changed
-        }
-        KeyCode::Left => {
-            if *cursor > 0 {
-                let prev = buffer[..*cursor]
-                    .char_indices()
-                    .next_back()
-                    .map(|(i, _)| i)
-                    .unwrap_or(0);
-                *cursor = prev;
-            }
-            PersonaDetailOutcome::Changed
-        }
-        KeyCode::Right => {
-            if *cursor < buffer.len() {
-                let next = buffer[*cursor..]
-                    .char_indices()
-                    .nth(1)
-                    .map(|(i, _)| *cursor + i)
-                    .unwrap_or(buffer.len());
-                *cursor = next;
-            }
-            PersonaDetailOutcome::Changed
-        }
-        KeyCode::Home => {
-            *cursor = 0;
-            PersonaDetailOutcome::Changed
-        }
-        KeyCode::End => {
-            *cursor = buffer.len();
-            PersonaDetailOutcome::Changed
-        }
-        KeyCode::Char(c)
-            if !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
-                || crate::input::key::is_altgr(key.modifiers) =>
-        {
-            buffer.insert(*cursor, c);
-            *cursor += c.len_utf8();
-            PersonaDetailOutcome::Changed
-        }
-        _ => PersonaDetailOutcome::Unchanged,
+        return PersonaDetailOutcome::Changed;
+    }
+
+    let outcome = match &mut state.mode {
+        PersonaDetailMode::Editing { editor, .. } => editor.handle_key(key),
+        PersonaDetailMode::Browse => return PersonaDetailOutcome::Unchanged,
+    };
+    finish_edit(outcome)
+}
+
+fn finish_edit(outcome: LineEditOutcome) -> PersonaDetailOutcome {
+    match outcome {
+        LineEditOutcome::TextChanged
+        | LineEditOutcome::CursorChanged
+        | LineEditOutcome::HandledNoChange => PersonaDetailOutcome::Changed,
+        LineEditOutcome::Unhandled => PersonaDetailOutcome::Unchanged,
     }
 }
 
@@ -863,10 +871,6 @@ pub fn handle_persona_detail_mouse(
         _ => PersonaDetailOutcome::Unchanged,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 fn word_wrap_lines(text: &str, max_width: usize) -> Vec<String> {
     let mut lines = Vec::new();
@@ -896,3 +900,6 @@ fn word_wrap_lines(text: &str, max_width: usize) -> Vec<String> {
     }
     lines
 }
+
+#[cfg(test)]
+mod tests;

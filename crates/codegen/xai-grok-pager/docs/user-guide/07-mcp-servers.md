@@ -18,6 +18,8 @@ See the [MCP specification](https://modelcontextprotocol.io) for protocol detail
 
 MCP servers are configured in `~/.grok/config.toml` under `[mcp_servers.<name>]` sections.
 
+To distribute MCP servers to a team, or to restrict which servers users may run (`allowedMcpServers` / `deniedMcpServers` in `requirements.toml` / `managed_config.toml`, with Claude `managed-settings.json` advisory for foreign-defined servers), see [Distribute across an organization](09-plugins.md#distribute-across-an-organization) in the Plugins guide.
+
 ### stdio Transport (Local Process)
 
 Grok spawns a local process and communicates over stdin/stdout:
@@ -69,6 +71,17 @@ url = "https://mcp.example.com/api"
 headers = { "Authorization" = "Bearer token" }
 ```
 
+MCP data-plane requests (JSON-RPC and SSE) and the anonymous-access probe carry a
+default `User-Agent: grok-cli/<version>` header, where `<version>` is the Grok binary
+version. OAuth discovery, client registration, and token requests are issued by the
+rmcp OAuth client and keep its own behavior (no default `User-Agent`). A valid
+`User-Agent` entry in the server's `headers` overrides the default; an invalid
+configured `User-Agent` value is dropped by header parsing (with a warning), so such a
+server still receives the default. Exception: Figma MCP servers (server name `figma`,
+legacy managed name `grok_com_figma`, or a `figma.com` host — all case-insensitive)
+send the bare token `grok-cli` with no version unless the config supplies its own
+`User-Agent`.
+
 ### Streamable HTTP with Session ID
 
 ```toml
@@ -107,6 +120,10 @@ grok mcp add --transport sse linear https://mcp.linear.app/sse
 # Remove a server
 grok mcp remove github
 
+# Enable or disable a local/TOML (or compat-sourced) server
+grok mcp enable github
+grok mcp disable github
+
 # Diagnose a server's configuration and connectivity
 grok mcp doctor               # Check every configured server
 grok mcp doctor github        # Check one server
@@ -115,9 +132,15 @@ grok mcp doctor --json        # Machine-readable output
 
 The transport defaults to `stdio`; pass `--transport http` or `--transport sse` for remote servers.
 
-By default `grok mcp add` writes to `~/.grok/config.toml` (`--scope user`). Use `--scope project` to write to `.grok/config.toml` in the current directory instead, which can be committed and shared with your team (see [Project-Scoped MCP Servers](#project-scoped-mcp-servers)). Header and environment variable values are stored verbatim, so reference secrets as `${VAR}` instead of pasting them into a committed project config (see [Example Configurations](#example-configurations)). `grok mcp list` shows servers from both scopes, marking project-scoped ones with `(project)`.
+By default `grok mcp add` writes to `~/.grok/config.toml` (`--scope user`). Use `--scope project` to write to `.grok/config.toml` in the current directory instead, which can be committed and shared with your team (see [Project-Scoped MCP Servers](#project-scoped-mcp-servers)). Header and environment variable values are stored verbatim, so reference secrets as `${VAR}` instead of pasting them into a committed project config (see [Example Configurations](#example-configurations)). `grok mcp list` shows servers from both scopes, marking project-scoped ones with `(project)` and disabled ones with `(disabled)`.
 
 `grok mcp remove` searches both scopes and exits 0 after removing the server. It exits 1 when the name is not found, or when the name is defined in both user and project scope — pass `--scope` to say which one to remove.
+
+`grok mcp enable` / `disable` persist the personal on/off state to user `~/.grok/config.toml` (`disabled_mcp_servers`, and `[mcp_servers.<name>].enabled` when that entry exists). Scope:
+
+- **Known names:** user/project Grok TOML, names already on the disabled list, compat sources (`.mcp.json`, Claude, Cursor), and **plugin** MCP servers (same discovery as doctor/`/mcps`).
+- **Enable only:** if the cwd-nearest project definition has sticky `enabled = false`, that single key is cleared (comments preserved); disable never rewrites project configs.
+- **Not full `/mcps` parity:** gateway connectors (`managed_gateway:…`, stored under `disabled_mcp_tools.__managed_gateway_connectors`) stay Space-only in the TUI. Idempotent; unknown names exit 1.
 
 Breaking changes from earlier releases: `--env` now takes one `KEY=value` per flag (use `-e A=1 -e B=2`, not `--env A=1 B=2`), and server names may only contain letters, numbers, hyphens, and underscores.
 
@@ -160,16 +183,38 @@ Project-scoped files contribute `[mcp_servers]`, `[plugins]`, and `[permission]`
 
 ## Tool Naming
 
-MCP tools are namespaced with the server name to avoid collisions:
+MCP tools are namespaced with the server name to avoid collisions. The catalog key is `server__tool` (two underscores):
 
 - Server `filesystem` with tool `read_file` becomes `filesystem__read_file`
 - Server `github` with tool `create_issue` becomes `github__create_issue`
+- A tool segment may start with a digit: server `auth` with tool `2fa_enable` becomes `auth__2fa_enable`
+
+### What Grok admits
+
+Grok admits a listed tool into the session catalog when all of these hold (`xai-grok-mcp` `qualify_mcp_tool_name`):
+
+| Part | Rule |
+| --- | --- |
+| Server name | Starts with a letter or underscore. Then ASCII letters, digits, underscores, and hyphens only. |
+| Tool name | Non-empty. ASCII letters, digits, underscores, and hyphens only. May start with a digit. |
+| Delimiter | Exactly one `__`. Names with a second `__`, or with `___`, are skipped. |
+| Catalog key | `server` + `__` + `tool` is at most **256** characters. |
+
+A rejected tool is skipped. The log line is `Skipping MCP tool` with the reason. The rest of that server's tools still load.
+
+The **64-character** cap is a provider **function-name** budget. It applies to the meta-tools `search_tool` and `use_tool` themselves. It does **not** apply to catalog keys. A `server__tool` name longer than 64 characters stays in the catalog. The model still calls it through `use_tool` with that full name. Grok used to drop those tools at 64 characters. It no longer does.
+
+The server name in `[mcp_servers.<name>]` / `grok mcp add` is the catalog prefix. A name that starts with a digit is a valid TOML key. Catalog admission still rejects it (`InvalidServerName`). Rename the server so it starts with a letter or underscore.
+
+A server name that ends with `_` makes `server__tool` contain `___`. Admission skips that key (`InvalidOrAmbiguousQualifiedName`).
+
+`search_tool` / `use_tool` take the qualified catalog key, not the raw MCP tool name. Example: `github__create_issue`, not `create_issue`.
 
 ---
 
 ## Toggle Servers at Runtime
 
-You can enable or disable MCP servers during a session without restarting Grok.
+You can enable or disable MCP servers without restarting Grok (TUI `/mcps` or CLI — see [CLI Management](#cli-management)).
 
 ### The /mcps Modal
 
@@ -185,7 +230,7 @@ From the modal you can:
 - Expand a server to view the tools it provides
 - Refresh the list with `r` after you edit `config.toml`
 - Authenticate an OAuth server with `i`
-- Add a server with `a`, or remove one with `x`
+- Add a server with `a`, or remove a local server with `x` (the modal asks for confirmation; press lowercase `y` to remove, or any other key to cancel)
 
 ### Tool Discovery
 
@@ -225,7 +270,7 @@ Use the `url` form for hosted MCP servers and the `command` / `args` form for lo
 
 ### Native HTTP (hosted services)
 
-You must authenticate OAuth-based MCP servers before you can use them. Grok stores the resulting tokens under `~/.grok/mcp_credentials.json`. After you edit `config.toml`, press `r` in the `/mcps` modal to refresh the server list.
+You must authenticate OAuth-based MCP servers before you can use them. Grok stores the resulting tokens under `~/.grok/mcp_credentials.json` as local plaintext with owner-only file permissions (`0600` on Unix). Prefer full-disk encryption on the host. After you edit `config.toml`, press `r` in the `/mcps` modal to refresh the server list.
 
 ```toml
 [mcp_servers.linear]
@@ -310,6 +355,18 @@ See the [MCP Server Registry](https://github.com/modelcontextprotocol/servers) f
 
 ---
 
+## Subagents and MCP
+
+Subagents inherit the parent session’s connected MCP servers by default, including plugin-sourced agents. Use agent frontmatter `mcpInheritance` to restrict that set (`all`, `none`, `named`, or `except`). Details are in [Subagents — MCP inheritance](16-subagents.md#mcp-inheritance).
+
+If a child lists `search_tool` / `use_tool` but returns an empty catalog, check that:
+
+1. The parent session actually connected the server (see Extensions / `grok inspect`)
+2. The agent’s `mcpInheritance` is not `none` or a filter that excludes the server
+3. Plugin agents cannot declare their own `mcpServers` in frontmatter — they only see parent-connected servers
+
+---
+
 ## Troubleshooting
 
 ### Server Not Starting
@@ -329,6 +386,21 @@ For stdio servers, Grok captures the process's standard error to `~/.grok/logs/m
 ```bash
 tail -f ~/.grok/logs/mcp/filesystem.stderr.log
 ```
+
+### Blocked by organization policy
+
+If native TOML policy or Claude `managed-settings.json` sets `deniedMcpServers`, a nonempty `allowedMcpServers`, or `allowManagedMcpServersOnly`, Grok drops non-matching servers at merge time and logs `MCP server blocked by managed settings policy`. Native grok layers bind every server; the Claude file binds foreign-defined servers only. `grok inspect` shows the lists, lockdown scope, and each remaining server. Details and examples: [Restrict which MCP servers can run](09-plugins.md#restrict-which-mcp-servers-can-run).
+
+### A listed tool never appears
+
+The server starts and `tools/list` returns the tool, but `/mcps` and `search_tool` omit it.
+
+1. Check `Skipping MCP tool` in `GROK_LOG_FILE` / `--debug`. The reason names the rule that failed (invalid server name, invalid tool name, ambiguous `__`, or catalog key longer than 256 characters).
+2. Confirm the server config key starts with a letter or underscore. A digit-leading key never enters the catalog. A key that ends with `_` is skipped as an ambiguous `___` name.
+3. Confirm the tool name uses only `[A-Za-z0-9_-]`. Dots and colons in the raw MCP name are skipped.
+4. Do not shorten a `server__tool` key to 64 characters. Catalog keys may be up to 256. The 64-character cap is only for `search_tool` / `use_tool` as function names. See [Tool Naming](#tool-naming).
+
+This is separate from a tool that is missing on the **first** prompt because the handshake is still running. Send a second prompt after the server is up, or run `grok mcp doctor`.
 
 ### Viewing Server Status
 

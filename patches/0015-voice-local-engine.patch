@@ -1,0 +1,2040 @@
+diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
+index 2572590a..9188c171 100644
+--- a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
++++ b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
+@@ -2252,18 +2252,26 @@ impl AgentView {
+                 dot,
+                 Style::default().fg(dot_color).bg(bg),
+             );
+-            buf.set_string(
+-                content_x + 2,
+-                rec_area.y,
+-                "Recording",
+-                Style::default().fg(theme.accent_error).bg(bg),
+-            );
+             let stop_str = "[stop]";
+             let stop_w = unicode_width::UnicodeWidthStr::width(stop_str) as u16;
+             let stop_x = rec_area.x
+                 + rec_area
+                     .width
+                     .saturating_sub(layout_cfg.block_pad_right + stop_w);
++            // Workshop overlay: while the local engine downloads or loads its model the row carries
++            // that one progress line (voice-spec §5 rule 6); otherwise the plain "Recording".
++            let label_avail = stop_x.saturating_sub(content_x + 3) as usize;
++            let (label, label_style) = match crate::voice::banner_status() {
++                Some(status) if label_avail > 0 => (
++                    crate::render::line_utils::truncate_str(&status, label_avail),
++                    Style::default().fg(theme.accent_running).bg(bg),
++                ),
++                _ => (
++                    "Recording".to_owned(),
++                    Style::default().fg(theme.accent_error).bg(bg),
++                ),
++            };
++            buf.set_string(content_x + 2, rec_area.y, &label, label_style);
+             let stop_fg = if self.hit_voice_stop_button.hovered {
+                 theme.accent_error
+             } else {
+@@ -2338,9 +2346,13 @@ impl AgentView {
+         let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
+         let usage_warning = usage_warning_text.as_deref();
+         let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
+-        let model_label = match self.session.models.reasoning_effort {
+-            Some(eff) => format!("{model_id} ({eff})"),
+-            None => model_id,
++        let model_label = match &self.workshop_model_label {
++            // Workshop Engine/Adapter connection: name the runtime, not a shell model.
++            Some(label) => label.clone(),
++            None => match self.session.models.reasoning_effort {
++                Some(eff) => format!("{model_id} ({eff})"),
++                None => model_id,
++            },
+         };
+         let info = match &self.prompt_mode {
+             PromptMode::Normal => PromptInfo {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/voice.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/voice.rs
+index e16c9d24..d5305515 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/voice.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/voice.rs
+@@ -364,8 +364,8 @@ fn voice_ctrl_space_release_leaves_toggle_recording_running() {
+     );
+ }
+ 
+-/// A free-tier user hitting the voice keybinding gets the SuperGrok upsell instead of a doomed voice session.
+-/// The keybinding bypasses the slash registry, so this dispatcher is the enforcement point.
++/// A free-tier user of the opt-in xAI voice provider hitting the voice keybinding gets the SuperGrok upsell
++/// instead of a doomed voice session. The keybinding bypasses the slash registry, so this dispatcher is the enforcement point.
+ #[test]
+ fn voice_keybinding_on_restricted_tier_opens_upsell() {
+     if !xai_grok_voice::AUDIO_SUPPORTED {
+@@ -373,7 +373,8 @@ fn voice_keybinding_on_restricted_tier_opens_upsell() {
+     }
+     let mut app = test_app_with_agent();
+     app.voice_mode_enabled = true;
+-    // A personal login without a subscription tier is free tier, so voice is restricted
++    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
++    // A personal login without a subscription tier is free tier, so xAI voice is restricted
+     app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
+     assert!(app.is_voice_tier_restricted());
+ 
+@@ -389,6 +390,28 @@ fn voice_keybinding_on_restricted_tier_opens_upsell() {
+     );
+ }
+ 
++/// Workshop overlay: the default local engine has no tier; a free-tier login is not gated.
++#[test]
++fn voice_keybinding_local_provider_never_gated() {
++    if !xai_grok_voice::AUDIO_SUPPORTED {
++        return;
++    }
++    let mut app = test_app_with_agent();
++    let (tx, _rx) = tokio::sync::mpsc::channel(8);
++    app.voice_cmd_tx = Some(tx);
++    app.voice_mode_enabled = true;
++    app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
++    assert!(!app.is_voice_tier_restricted());
++
++    dispatch(Action::EnableVoiceMode, &mut app);
++
++    assert!(
++        app.agents.get(&AgentId(0)).unwrap().question_view.is_none(),
++        "no upsell for the local engine"
++    );
++    assert!(app.voice_listening(), "local voice starts on a free-tier login");
++}
++
+ /// A paid-tier user's voice keybinding is not intercepted by the tier gate.
+ #[test]
+ fn voice_keybinding_on_paid_tier_not_gated() {
+@@ -397,6 +420,7 @@ fn voice_keybinding_on_paid_tier_not_gated() {
+     }
+     let mut app = test_app_with_agent();
+     app.voice_mode_enabled = true;
++    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
+     let meta = xai_grok_login::AuthMeta {
+         subscription_tier: Some("SuperGrok".into()),
+         ..Default::default()
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs
+index ebbefb24..ce9d7edf 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs
+@@ -80,9 +80,9 @@ pub(super) fn dispatch_enable_voice_mode(app: &mut AppView, from_hold: bool) ->
+     if !app.voice_mode_enabled {
+         return vec![];
+     }
+-    // Tier gate: free / X Basic personal users can't use voice (the server zero-limits these tiers)
++    // Tier gate: free / X Basic personal users can't use the opt-in xAI voice provider (the server zero-limits these tiers)
+     // The Ctrl+Space / F8 keybinding bypasses the slash registry, so this is the enforcement point for it
+-    // Show the SuperGrok upsell instead of starting a doomed session (`/voice` itself is separately hidden and upsold via the deny list)
++    // Show the SuperGrok upsell instead of starting a doomed session. Workshop's default local engine has no tier.
+     if app.is_voice_tier_restricted() {
+         return open_voice_tier_upsell(app);
+     }
+diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs b/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs
+index 4647b2bb..f92323c4 100644
+--- a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs
++++ b/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs
+@@ -123,8 +123,10 @@ pub fn format_doctor(report: &DiagnosticReport) -> String {
+     };
+     out.push_str(&format!("  status       {status}\n"));
+ 
+-    if let Some(voice) = &facts.voice {
++    if facts.voice.is_some() || facts.voice_engine.is_some() {
+         out.push_str("\nVoice\n");
++    }
++    if let Some(voice) = &facts.voice {
+         match voice {
+             VoiceFacts::Device { name, detail } => {
+                 out.push_str(&format!("  microphone   {name} ({detail})\n"));
+@@ -134,6 +136,27 @@ pub fn format_doctor(report: &DiagnosticReport) -> String {
+             }
+         }
+     }
++    if let Some(engine) = &facts.voice_engine {
++        out.push_str(&format!("  provider     {}\n", engine.provider));
++        match (&engine.engine_path, &engine.engine_version) {
++            (Some(path), Some(version)) => {
++                out.push_str(&format!("  engine       {path} ({version})\n"));
++            }
++            (Some(path), None) => out.push_str(&format!(
++                "  engine       {path} (not runnable: {})\n",
++                engine.engine_error.as_deref().unwrap_or("unknown error")
++            )),
++            (None, _) => out.push_str("  engine       not installed\n"),
++        }
++        out.push_str(&format!(
++            "  model        {} ({}, {})\n",
++            engine.model_path, engine.model_tier, engine.model_tier_source
++        ));
++        out.push_str(&format!("  checksum     {}\n", engine.model_status));
++        if let Some(err) = &engine.last_error {
++            out.push_str(&format!("  last error   {err}\n"));
++        }
++    }
+ 
+     format_findings(report, &mut out);
+     out
+diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format_tests.rs b/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format_tests.rs
+index 02f5defd..c730a4c9 100644
+--- a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format_tests.rs
+@@ -202,17 +202,17 @@ fn tmux_config_and_reload_notes_output_is_stable() {
+             "Issues (3)\n",
+             "\n",
+             "  ! terminal.tmux-clipboard  `set-clipboard` is off in tmux, so OSC 52 clipboard copies are blocked\n",
+-            "      Automatic setup: `grok doctor fix tmux-clipboard`\n",
++            "      Automatic setup: `workshop doctor fix tmux-clipboard`\n",
+             "      Add `set -g set-clipboard on` to ~/.byobu/.tmux.conf\n",
+             "      Note: Reload tmux with `tmux source-file ~/.byobu/.tmux.conf`, or restart the tmux server.\n",
+             "\n",
+             "  ! terminal.dcs-passthrough  `allow-passthrough` is off in tmux, which can block clipboard copies in nested sessions\n",
+-            "      Automatic setup: `grok doctor fix dcs-passthrough`\n",
++            "      Automatic setup: `workshop doctor fix dcs-passthrough`\n",
+             "      Add `set -wg allow-passthrough on` to ~/.byobu/.tmux.conf\n",
+             "      Note: Reload tmux with `tmux source-file ~/.byobu/.tmux.conf`, or restart the tmux server.\n",
+             "\n",
+             "  ! terminal.tmux-extended-keys  `extended-keys` is off in tmux, so some shortcuts may not work\n",
+-            "      Automatic setup: `grok doctor fix tmux-extended-keys`\n",
++            "      Automatic setup: `workshop doctor fix tmux-extended-keys`\n",
+             "      Add `set -g extended-keys on` to ~/.byobu/.tmux.conf\n",
+             "      Note: Reload tmux with `tmux source-file ~/.byobu/.tmux.conf`, or restart the tmux server.\n",
+         )
+@@ -253,7 +253,7 @@ fn limited_color_output_is_stable() {
+             "\n",
+             "  ! terminal.limited-color  This terminal reports 256 color, so truecolor themes are unavailable\n",
+             "      Run: `export COLORTERM=truecolor`\n",
+-            "      Note: Add this export to your shell startup file, such as `~/.zshrc` or `~/.bashrc`, then restart Grok.\n",
++            "      Note: Add this export to your shell startup file, such as `~/.zshrc` or `~/.bashrc`, then restart Workshop.\n",
+         )
+     );
+ }
+@@ -293,7 +293,7 @@ fn unwrapped_ssh_recommendation_with_no_issues_output_is_stable() {
+             "Recommendations\n",
+             "\n",
+             "  i terminal.ssh-wrap  Use local SSH wrapping for more reliable clipboard copy and terminal recovery\n",
+-            "      Automatic setup: `grok doctor fix ssh-wrap`\n",
++            "      Automatic setup: `workshop doctor fix ssh-wrap`\n",
+             "      One-off: `grok wrap ssh <host>`\n",
+             "      Note: Run this on your local computer instead of plain `ssh`. It forwards copies to your local clipboard and restores terminal modes if the connection drops.\n",
+         )
+@@ -372,7 +372,7 @@ fn wezterm_xtversion_runtime_evidence_output_is_stable() {
+             "Issues (1)\n",
+             "\n",
+             "  ! terminal.wezterm-kitty  Shift+Enter can't insert a newline in WezTerm over SSH\n",
+-            "      Note: For this session, type `\\` and then press Enter. Grok can't negotiate the Kitty keyboard protocol over SSH yet. `enable_kitty_keyboard = true` applies only to local WezTerm sessions.\n",
++            "      Note: For this session, type `\\` and then press Enter. Workshop can't negotiate the Kitty keyboard protocol over SSH yet. `enable_kitty_keyboard = true` applies only to local WezTerm sessions.\n",
+         )
+     );
+ }
+@@ -540,7 +540,7 @@ fn runtime_startup_findings_are_visible_with_useful_doctor_content() {
+         },
+     );
+ 
+-    assert!(output.contains("Grok is using the terminal bell"));
++    assert!(output.contains("Workshop is using the terminal bell"));
+     assert!(output.contains("If the bell works for you"));
+     assert!(output.contains("may not report focus changes"));
+     assert!(output.contains(&crate::util::display_user_grok_path("config.toml")));
+@@ -584,7 +584,7 @@ fn runtime_findings_merge_before_single_formatter_orders_issues_before_recommend
+         },
+     );
+ 
+-    let issue = output.find("Grok is using the terminal bell").unwrap();
++    let issue = output.find("Workshop is using the terminal bell").unwrap();
+     let recommendation = output.find("Recommendations").unwrap();
+     assert!(issue < recommendation);
+     assert!(!output.contains("No issues found."));
+@@ -654,6 +654,7 @@ fn keyboard_fact_formats_from_explicit_target_evidence() {
+                 fix: None,
+             },
+             voice: None,
++            voice_engine: None,
+         },
+         findings: Vec::new(),
+         probe_notes: Vec::new(),
+diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/fix.rs b/crates/codegen/xai-grok-pager/src/diagnostics/fix.rs
+index 53c96dba..a63f1120 100644
+--- a/crates/codegen/xai-grok-pager/src/diagnostics/fix.rs
++++ b/crates/codegen/xai-grok-pager/src/diagnostics/fix.rs
+@@ -18,13 +18,13 @@ pub const TMUX_CLIPBOARD_ID: DiagnosticId = DiagnosticId::new("terminal", "tmux-
+ pub const DCS_PASSTHROUGH_ID: DiagnosticId = DiagnosticId::new("terminal", "dcs-passthrough");
+ pub const TMUX_EXTENDED_KEYS_ID: DiagnosticId = DiagnosticId::new("terminal", "tmux-extended-keys");
+ pub const TMUX_TRUECOLOR_ID: DiagnosticId = DiagnosticId::new("terminal", "tmux-truecolor");
+-pub const SSH_WRAP_FIX_COMMAND: &str = "grok doctor fix terminal.ssh-wrap";
++pub const SSH_WRAP_FIX_COMMAND: &str = "workshop doctor fix terminal.ssh-wrap";
+ pub const SSH_WRAP_ONE_OFF: &str = "grok wrap ssh <host>";
+ 
+-const MANAGED_NAMESPACE: &str = "grok doctor";
++const MANAGED_NAMESPACE: &str = "workshop doctor";
+ const SSH_WRAP_ALIAS_POSIX: &str = "alias ssh='grok wrap ssh'";
+ const SSH_WRAP_ALIAS_FISH: &str = "alias ssh 'grok wrap ssh'";
+-const TMUX_SCANNER_CAVEAT: &str = "Grok checks this file for direct global assignments of this option. Review sourced files, conditionals, plugins, and generated tmux setup yourself.";
++const TMUX_SCANNER_CAVEAT: &str = "Workshop checks this file for direct global assignments of this option. Review sourced files, conditionals, plugins, and generated tmux setup yourself.";
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ pub struct AutomaticRemediation {
+@@ -311,13 +311,13 @@ impl std::fmt::Display for FixError {
+         match self {
+             Self::UnknownId(id) => write!(
+                 formatter,
+-                "`{id}` is not an available Doctor fix. Run `grok doctor fix` to list available fixes."
++                "`{id}` is not an available Doctor fix. Run `workshop doctor fix` to list available fixes."
+             ),
+             Self::PlatformUnsupported => write!(
+                 formatter,
+                 "Automatic SSH setup is not available on Windows. Run `{SSH_WRAP_ONE_OFF}` when needed."
+             ),
+-            Self::HomeUnavailable => formatter.write_str("Grok could not find your home directory."),
++            Self::HomeUnavailable => formatter.write_str("Workshop could not find your home directory."),
+             Self::NotApplicable => formatter
+                 .write_str("This fix does not apply to VS Code Remote sessions."),
+             Self::TmuxNotApplicable => formatter
+@@ -329,11 +329,11 @@ impl std::fmt::Display for FixError {
+                 "Automatic setup supports Bash, zsh, and fish. For another shell, run `{SSH_WRAP_ONE_OFF}` when needed."
+             ),
+             Self::ByobuConfigUnavailable => formatter.write_str(
+-                "Grok could not determine Byobu's effective config directory. Keep `BYOBU_CONFIG_DIR` set in this session, then run the fix again.",
++                "Workshop could not determine Byobu's effective config directory. Keep `BYOBU_CONFIG_DIR` set in this session, then run the fix again.",
+             ),
+             Self::UnsafeDirectory { label, path } => write!(
+                 formatter,
+-                "Grok refused unsafe {label} `{}`. Use a non-root absolute directory without control characters, `~`, `.` or `..` components.",
++                "Workshop refused unsafe {label} `{}`. Use a non-root absolute directory without control characters, `~`, `.` or `..` components.",
+                 path.display()
+             ),
+             Self::ExistingCustomization { path, detail }
+@@ -342,13 +342,13 @@ impl std::fmt::Display for FixError {
+             {
+                 write!(
+                     formatter,
+-                    "Grok found an existing SSH alias or function in {} and did not change it: {detail}",
++                    "Workshop found an existing SSH alias or function in {} and did not change it: {detail}",
+                     path.display()
+                 )
+             }
+             Self::ExistingCustomization { path, detail } => write!(
+                 formatter,
+-                "Grok found an existing customization in {} and did not change it: {detail}",
++                "Workshop found an existing customization in {} and did not change it: {detail}",
+                 path.display()
+             ),
+             Self::Managed(error) => write!(
+@@ -359,9 +359,9 @@ impl std::fmt::Display for FixError {
+                 write!(formatter, "Could not update your tmux configuration: {error}")
+             }
+             Self::PostconditionFailed => formatter
+-                .write_str("The configuration changed, but Grok could not verify the SSH alias."),
++                .write_str("The configuration changed, but Workshop could not verify the SSH alias."),
+             Self::TmuxPostconditionFailed => formatter.write_str(
+-                "The configuration changed, but Grok could not verify the managed tmux option.",
++                "The configuration changed, but Workshop could not verify the managed tmux option.",
+             ),
+         }
+     }
+@@ -416,7 +416,7 @@ enum TmuxEvidence {
+ enum TmuxRemedy {
+     /// `set -g <option> <value>`: the last assignment wins, so a direct assignment in the user's own config must be classified before writing.
+     Assignment,
+-    /// `set -as <option> …`: tmux accumulates these and Grok appends its block at the end of the file.
++    /// `set -as <option> …`: tmux accumulates these and Workshop appends its block at the end of the file.
+     /// Earlier lines add to the fix rather than override it and are never a conflict.
+     Accumulating,
+ }
+@@ -489,28 +489,28 @@ const FIX_REGISTRY: &[FixSpec] = &[
+         id: TMUX_CLIPBOARD_ID,
+         handle: "tmux-clipboard",
+         label: TMUX_CLIPBOARD_SPEC.label,
+-        command: "grok doctor fix terminal.tmux-clipboard",
++        command: "workshop doctor fix terminal.tmux-clipboard",
+         kind: FixKind::TmuxOption(&TMUX_CLIPBOARD_SPEC),
+     },
+     FixSpec {
+         id: DCS_PASSTHROUGH_ID,
+         handle: "dcs-passthrough",
+         label: DCS_PASSTHROUGH_SPEC.label,
+-        command: "grok doctor fix terminal.dcs-passthrough",
++        command: "workshop doctor fix terminal.dcs-passthrough",
+         kind: FixKind::TmuxOption(&DCS_PASSTHROUGH_SPEC),
+     },
+     FixSpec {
+         id: TMUX_EXTENDED_KEYS_ID,
+         handle: "tmux-extended-keys",
+         label: TMUX_EXTENDED_KEYS_SPEC.label,
+-        command: "grok doctor fix terminal.tmux-extended-keys",
++        command: "workshop doctor fix terminal.tmux-extended-keys",
+         kind: FixKind::TmuxOption(&TMUX_EXTENDED_KEYS_SPEC),
+     },
+     FixSpec {
+         id: TMUX_TRUECOLOR_ID,
+         handle: "tmux-truecolor",
+         label: TMUX_TRUECOLOR_SPEC.label,
+-        command: "grok doctor fix terminal.tmux-truecolor",
++        command: "workshop doctor fix terminal.tmux-truecolor",
+         kind: FixKind::TmuxOption(&TMUX_TRUECOLOR_SPEC),
+     },
+ ];
+@@ -528,7 +528,7 @@ pub fn resolve_fix_id(value: &str) -> Result<DiagnosticId, FixError> {
+ }
+ 
+ pub(crate) fn human_fix_command(id: DiagnosticId) -> Option<String> {
+-    fix_spec(id).map(|spec| format!("grok doctor fix {}", spec.handle))
++    fix_spec(id).map(|spec| format!("workshop doctor fix {}", spec.handle))
+ }
+ 
+ pub(crate) fn automatic_fix_choices()
+@@ -609,10 +609,10 @@ pub(crate) fn format_applicable_automatic_fixes(
+         output.push_str(&format!("  {handle:<20} {label}\n"));
+         match availability {
+             AutomaticFixAvailability::Here => output.push_str(&format!(
+-                "    Run: grok doctor fix {handle}\n    In Grok: /doctor fix {handle}\n"
++                "    Run: workshop doctor fix {handle}\n    In Grok: /doctor fix {handle}\n"
+             )),
+             AutomaticFixAvailability::RunLocally => output.push_str(&format!(
+-                "    On your local computer, run: grok doctor fix {handle}\n"
++                "    On your local computer, run: workshop doctor fix {handle}\n"
+             )),
+         }
+     }
+@@ -645,7 +645,7 @@ pub(crate) fn format_fix_preview(plan: &FixPlan) -> String {
+         Some(path) => {
+             let _ = writeln!(
+                 output,
+-                "\nBackup will be saved to: {}\nIf that file exists, Grok will choose a unique name.",
++                "\nBackup will be saved to: {}\nIf that file exists, Workshop will choose a unique name.",
+                 preview_path(path)
+             );
+         }
+@@ -666,7 +666,7 @@ pub(crate) fn format_fix_preview(plan: &FixPlan) -> String {
+                 tmux_activation_instruction(payload.spec, &plan.change.requested_path);
+             let _ = writeln!(
+                 output,
+-                "\nWhat this changes:\n  Persists `{}`.\n  Grok does not reload or modify the live tmux server.\n  After applying, {instruction}\n  Run /doctor again to verify the live setting.",
++                "\nWhat this changes:\n  Persists `{}`.\n  Workshop does not reload or modify the live tmux server.\n  After applying, {instruction}\n  Run /doctor again to verify the live setting.",
+                 payload.spec.line,
+             );
+         }
+@@ -733,7 +733,7 @@ fn plan_ssh_wrap(
+             "Use `command ssh ...` to bypass the alias.",
+             "For manually entered `ssh -f`, ControlPersist workflows, or OpenSSH `~^Z` local suspend, use `command ssh ...`. Wrapping does not fully preserve those behaviors.",
+             "`grok wrap` starts the SSH process directly, so the alias does not loop.",
+-            "Grok checks this file for direct SSH aliases and functions. Review sourced files, plugins, and generated shell setup yourself.",
++            "Workshop checks this file for direct SSH aliases and functions. Review sourced files, plugins, and generated shell setup yourself.",
+         ],
+         payload: FixPayload::SshWrap(SshWrapPlan { shell, managed }),
+     })
+diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs b/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs
+index 2dfa5642..2880a733 100644
+--- a/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs
+@@ -41,6 +41,7 @@ pub(super) fn report() -> DiagnosticReport {
+                 fix: None,
+             },
+             voice: None,
++            voice_engine: None,
+         },
+         findings: Vec::new(),
+         probe_notes: Vec::new(),
+@@ -87,9 +88,9 @@ pub(super) fn request(home: &Path, shell: &str) -> FixRequest {
+ fn canonical_and_short_ids_resolve_to_canonical_id() {
+     assert_eq!(resolve_fix_id("terminal.ssh-wrap").unwrap(), SSH_WRAP_ID);
+     let command = human_fix_command(SSH_WRAP_ID).expect("SSH fix command");
+-    assert_eq!(command, "grok doctor fix ssh-wrap");
++    assert_eq!(command, "workshop doctor fix ssh-wrap");
+     assert_eq!(
+-        resolve_fix_id(command.strip_prefix("grok doctor fix ").unwrap()).unwrap(),
++        resolve_fix_id(command.strip_prefix("workshop doctor fix ").unwrap()).unwrap(),
+         SSH_WRAP_ID
+     );
+     assert!(human_fix_command(DiagnosticId::new("terminal", "unknown")).is_none());
+@@ -211,7 +212,7 @@ fn tmux_fix_registry_resolves_every_short_and_canonical_id() {
+         assert_eq!(resolve_fix_id(&id.to_string()).unwrap(), id);
+         assert_eq!(
+             human_fix_command(id).unwrap(),
+-            format!("grok doctor fix {handle}")
++            format!("workshop doctor fix {handle}")
+         );
+     }
+ }
+@@ -442,7 +443,7 @@ fn tmux_managed_items_coexist_and_each_apply_is_one_transaction() {
+         assert!(std::fs::read_to_string(&path).unwrap().contains(line));
+     }
+     let content = std::fs::read_to_string(&path).unwrap();
+-    assert_eq!(content.matches("# >>> grok doctor >>>").count(), 1);
++    assert_eq!(content.matches("# >>> workshop doctor >>>").count(), 1);
+     for id in [
+         TMUX_CLIPBOARD_ID,
+         DCS_PASSTHROUGH_ID,
+@@ -580,7 +581,7 @@ fn conflicting_direct_form_after_managed_block_fails_persistent_verification() {
+         std::fs::write(
+             &path,
+             format!(
+-                "# >>> grok doctor >>>\n# >>> terminal.tmux-clipboard >>>\nset -g set-clipboard on\n# <<< terminal.tmux-clipboard <<<\n# <<< grok doctor <<<\n{conflict}\n"
++                "# >>> workshop doctor >>>\n# >>> terminal.tmux-clipboard >>>\nset -g set-clipboard on\n# <<< terminal.tmux-clipboard <<<\n# <<< workshop doctor <<<\n{conflict}\n"
+             ),
+         )
+         .unwrap();
+@@ -597,8 +598,8 @@ fn healthy_direct_does_not_suppress_repair_of_noncanonical_managed_item() {
+     let path = temp.path().join(".tmux.conf");
+     let report = tmux_report(TMUX_CLIPBOARD_ID, TmuxEvidence::Clipboard);
+     for content in [
+-        "set -g set-clipboard on\n# >>> grok doctor >>>\n# >>> terminal.tmux-clipboard >>>\nset -g set-clipboard off\n# <<< terminal.tmux-clipboard <<<\n# <<< grok doctor <<<\n",
+-        "# >>> grok doctor >>>\n# >>> terminal.tmux-clipboard >>>\nset -g set-clipboard off\n# <<< terminal.tmux-clipboard <<<\n# <<< grok doctor <<<\nset -g set-clipboard on\n",
++        "set -g set-clipboard on\n# >>> workshop doctor >>>\n# >>> terminal.tmux-clipboard >>>\nset -g set-clipboard off\n# <<< terminal.tmux-clipboard <<<\n# <<< workshop doctor <<<\n",
++        "# >>> workshop doctor >>>\n# >>> terminal.tmux-clipboard >>>\nset -g set-clipboard off\n# <<< terminal.tmux-clipboard <<<\n# <<< workshop doctor <<<\nset -g set-clipboard on\n",
+     ] {
+         std::fs::write(&path, content).unwrap();
+         let plan = plan_fix(
+@@ -734,7 +735,7 @@ fn bash_zsh_and_fish_plans_use_exact_paths_and_aliases() {
+         assert_eq!(
+             plan.change().block,
+             format!(
+-                "# >>> grok doctor >>>\n# >>> terminal.ssh-wrap >>>\n{alias}\n# <<< terminal.ssh-wrap <<<\n# <<< grok doctor <<<"
++                "# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\n{alias}\n# <<< terminal.ssh-wrap <<<\n# <<< workshop doctor <<<"
+             )
+         );
+         assert!(
+@@ -949,7 +950,7 @@ fn comments_and_managed_alias_do_not_create_false_conflicts() {
+     let path = temp.path().join(".zshrc");
+     std::fs::write(
+         &path,
+-        "# alias ssh='ssh -A'\n# >>> grok doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='grok wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< grok doctor <<<\n",
++        "# alias ssh='ssh -A'\n# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='grok wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< workshop doctor <<<\n",
+     )
+     .unwrap();
+     let plan = plan_fix(request(temp.path(), "/bin/zsh"), &report(), &terminal()).unwrap();
+@@ -963,11 +964,11 @@ fn managed_alias_with_later_unmanaged_conflict_is_not_configured() {
+     let cases = [
+         (
+             ShellKind::Bash,
+-            "# >>> grok doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='grok wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< grok doctor <<<\nalias ssh='ssh -A'\n",
++            "# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='grok wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< workshop doctor <<<\nalias ssh='ssh -A'\n",
+         ),
+         (
+             ShellKind::Fish,
+-            "# >>> grok doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh 'grok wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< grok doctor <<<\nfunction ssh\n  command ssh -A $argv\nend\n",
++            "# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh 'grok wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< workshop doctor <<<\nfunction ssh\n  command ssh -A $argv\nend\n",
+         ),
+     ];
+     for (shell, content) in cases {
+diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs b/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
+index 6bef1daa..266eba40 100644
+--- a/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
+@@ -40,15 +40,22 @@ pub use model::{
+     ClipboardFacts, ColorFacts, DataControlFact, DiagnosticFacts, DiagnosticFinding, DiagnosticId,
+     DiagnosticReport, FindingDisposition, KeyboardFact, ManualRemediation, NewlineFact, ProbeNote,
+     ProbeStatus, RuntimeFact, TmuxColorPassthrough, TmuxFacts, TmuxOptionFact, TmuxSupportFact,
+-    VoiceFacts,
++    VoiceEngineFacts, VoiceFacts,
+ };
+ pub use view::{DiagnosticSnapshot, view};
+ 
+-/// Passive input-device probe for `grok doctor` / `/doctor`. The TUI passes true only while voice mode is enabled.
++/// Passive input-device probe for `workshop doctor` / `/doctor`. The TUI passes true only while voice mode is enabled.
+ pub fn apply_voice_probe(report: &mut DiagnosticReport, emit_missing_issue: bool) {
+     if !xai_grok_voice::AUDIO_SUPPORTED {
+         return;
+     }
++    apply_voice_engine_probe(report, &xai_grok_voice::VoiceConfig::from_config_table(
++        &xai_grok_shell::config::load_effective_config()
++            .ok()
++            .and_then(|v| v.as_table().cloned())
++            .unwrap_or_default(),
++        None,
++    ));
+     match xai_grok_voice::input_device_info() {
+         Ok(device) => {
+             report.facts.voice = Some(VoiceFacts::Device {
+@@ -71,6 +78,37 @@ pub fn apply_voice_probe(report: &mut DiagnosticReport, emit_missing_issue: bool
+     }
+ }
+ 
++/// Workshop overlay: helper present, model path, checksum status, last error (voice-spec §6.4).
++/// Hashes the selected model (one to two seconds); `/doctor` is a debugging aid, not a startup step.
++pub fn apply_voice_engine_probe(report: &mut DiagnosticReport, voice: &xai_grok_voice::VoiceConfig) {
++    let dir = workshop_voice::store::default_dir();
++    let facts = workshop_voice::doctor::probe(
++        &dir,
++        voice.model.as_deref(),
++        voice.engine_path.as_deref().map(std::path::Path::new),
++        true,
++    );
++    let model_ok = facts.model_status.is_ready();
++    report.facts.voice_engine = Some(model::VoiceEngineFacts {
++        provider: match voice.provider {
++            xai_grok_voice::VoiceProvider::Local => "local".to_owned(),
++            xai_grok_voice::VoiceProvider::Xai => "xai".to_owned(),
++        },
++        engine_path: facts
++            .engine_path
++            .as_ref()
++            .map(|p| p.display().to_string()),
++        engine_version: facts.engine_version,
++        engine_error: facts.engine_error,
++        model_tier: facts.tier,
++        model_tier_source: facts.tier_source.to_owned(),
++        model_path: facts.model_path.display().to_string(),
++        model_status: facts.model_status.describe(),
++        model_ok,
++        last_error: facts.last_error.or(facts.engine_note),
++    });
++}
++
+ fn voice_missing_finding(error: String) -> DiagnosticFinding {
+     DiagnosticFinding {
+         id: VOICE_NO_INPUT_DEVICE_ID,
+@@ -80,7 +118,7 @@ fn voice_missing_finding(error: String) -> DiagnosticFinding {
+         automatic_remediation: None,
+         note: Some(
+             "Connect or select a microphone in your system sound settings. On Linux, install a \
+-             supported audio recorder if none was found on PATH. Then run `/doctor` or `grok \
++             supported audio recorder if none was found on PATH. Then run `/doctor` or `workshop \
+              doctor` again. Doctor can't detect denied macOS microphone access when the system \
+              returns silence; follow the message shown when dictation fails."
+                 .to_owned(),
+@@ -229,7 +267,7 @@ pub(crate) fn collect_startup_warnings_from(
+             None,
+         );
+         warning.note = Some(
+-            "Grok also saves each copy to the backup file shown in the copy message. To copy \
++            "Workshop also saves each copy to the backup file shown in the copy message. To copy \
+              directly, run `grok wrap ssh <host>` on your local computer or use a terminal that \
+              supports OSC 52. You can also use `/copy <file>` or `/minimal`."
+                 .to_owned(),
+@@ -260,7 +298,7 @@ pub(crate) fn collect_startup_warnings_from(
+     {
+         let message = match fullscreen_active {
+             Some(true) => "Fullscreen may be unreliable in tmux control mode",
+-            Some(false) => "Grok is using inline mode because tmux control mode limits fullscreen",
++            Some(false) => "Workshop is using inline mode because tmux control mode limits fullscreen",
+             None => "Display may be limited in tmux control mode",
+         };
+         let mut warning = TerminalWarning::new(WarningCategory::ControlMode, message, None, None);
+@@ -354,7 +392,7 @@ pub(crate) fn wezterm_kitty_keyboard_warning_from(
+             None,
+         );
+         warning.note = Some(
+-            "For this session, type `\\` and then press Enter. Grok can't negotiate the Kitty \
++            "For this session, type `\\` and then press Enter. Workshop can't negotiate the Kitty \
+              keyboard protocol over SSH yet. `enable_kitty_keyboard = true` applies only to \
+              local WezTerm sessions."
+                 .to_string(),
+@@ -396,7 +434,7 @@ fn sandbox_profile_conflict_warning_from(conflicts: Vec<String>) -> Option<Termi
+         fix: None,
+         config_path: None,
+         note: Some(format!(
+-            "Grok is using the user profile. Compare `.grok/sandbox.toml` with {}, then rename \
++            "Workshop is using the user profile. Compare `.grok/sandbox.toml` with {}, then rename \
+              or remove the conflicting project profile. Project settings can add profile names \
+              but can't redefine a user profile.",
+             crate::util::display_user_grok_path(xai_grok_config::SANDBOX_CONFIG_FILENAME)
+@@ -526,7 +564,7 @@ pub(crate) fn collect_notification_warnings_with_method(
+     {
+         let mut warning = TerminalWarning::new(
+             WarningCategory::NotificationProtocolFallback,
+-            "Grok is using the terminal bell because the terminal was not recognized",
++            "Workshop is using the terminal bell because the terminal was not recognized",
+             None,
+             None,
+         );
+@@ -865,13 +903,13 @@ pub fn color_support_warning(
+             None,
+             None,
+         );
+-        warning.note = Some("Unset `NO_COLOR`, then restart Grok.".to_string());
++        warning.note = Some("Unset `NO_COLOR`, then restart Workshop.".to_string());
+         return Some(warning);
+     }
+ 
+-    // Checked before the detected level is consulted at all: the level says what Grok emits, which is a different question from what survives tmux
++    // Checked before the detected level is consulted at all: the level says what Workshop emits, which is a different question from what survives tmux
+     // A truecolor detection is not evidence that truecolor reaches the terminal
+-    // A session with no color evidence (piped `grok doctor`) still has a clamping client worth reporting
++    // A session with no color evidence (piped `workshop doctor`) still has a clamping client worth reporting
+     if color_passthrough == TmuxColorPassthrough::Reduced {
+         let mut warning = TerminalWarning::new(
+             WarningCategory::TmuxColorReduced,
+@@ -882,7 +920,7 @@ pub fn color_support_warning(
+         warning.note = Some(format!(
+             "Run `tmux source-file {tmux_config_path}`, then detach and reattach: the server \
+              reads the option only on reload, and a client fixes its color depth only at attach. \
+-             If Grok still reports less than truecolor afterwards, also add `set -g \
++             If Workshop still reports less than truecolor afterwards, also add `set -g \
+              default-terminal \"tmux-256color\"` and `export COLORTERM=truecolor` to your shell \
+              startup file."
+         ));
+@@ -921,7 +959,7 @@ pub fn color_support_warning(
+         warning.note = Some(format!(
+             "In the same tmux config, also add `set -g default-terminal \"tmux-256color\"`. Add \
+              `export COLORTERM=truecolor` to your shell startup file. Then reload tmux with \
+-             `tmux source-file {tmux_config_path}`, then detach and reattach, and restart Grok."
++             `tmux source-file {tmux_config_path}`, then detach and reattach, and restart Workshop."
+         ));
+         return Some(warning);
+     }
+@@ -934,7 +972,7 @@ pub fn color_support_warning(
+     );
+     warning.note = Some(
+         "Add this export to your shell startup file, such as `~/.zshrc` or `~/.bashrc`, then \
+-         restart Grok."
++         restart Workshop."
+             .to_string(),
+     );
+     Some(warning)
+@@ -2501,7 +2539,7 @@ mod tests {
+         assert!(finding.automatic_remediation.is_none());
+         assert!(finding.note.as_deref().is_some_and(|note| {
+             note.contains("install a supported audio recorder")
+-                && note.contains("grok doctor")
++                && note.contains("workshop doctor")
+                 && note.contains("can't detect denied macOS microphone access")
+         }));
+     }
+@@ -2983,7 +3021,7 @@ mod tests {
+         );
+     }
+ 
+-    /// Piped `grok doctor` has no color evidence, but the tmux client is still measurable, and `doctor fix` needs the finding to plan against.
++    /// Piped `workshop doctor` has no color evidence, but the tmux client is still measurable, and `doctor fix` needs the finding to plan against.
+     #[test]
+     fn color_support_warning_reports_tmux_clamp_without_color_evidence() {
+         let w = color_support_warning(
+diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/model.rs b/crates/codegen/xai-grok-pager/src/diagnostics/model.rs
+index 25294d16..f2c42d8d 100644
+--- a/crates/codegen/xai-grok-pager/src/diagnostics/model.rs
++++ b/crates/codegen/xai-grok-pager/src/diagnostics/model.rs
+@@ -95,6 +95,27 @@ pub struct DiagnosticFacts {
+     /// Passive mic enumeration when voice capture is available.
+     /// `None` omits the Voice section (no-audio builds, or TUI when voice mode is off).
+     pub voice: Option<VoiceFacts>,
++    /// Workshop overlay: the local speech-to-text engine and its model (`None` when voice is off).
++    pub voice_engine: Option<VoiceEngineFacts>,
++}
++
++/// Workshop overlay: `/doctor` facts for the local voice engine. Paths and statuses only.
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct VoiceEngineFacts {
++    /// `local` (default) or `xai` (opt-in).
++    pub provider: String,
++    /// Resolved `voice-engine` path, or `None` when it is not installed.
++    pub engine_path: Option<String>,
++    pub engine_version: Option<String>,
++    pub engine_error: Option<String>,
++    /// Selected model tier and where the selection came from.
++    pub model_tier: String,
++    pub model_tier_source: String,
++    pub model_path: String,
++    /// `ok`, `missing`, `wrong size (…)`, `checksum mismatch (…)`.
++    pub model_status: String,
++    pub model_ok: bool,
++    pub last_error: Option<String>,
+ }
+ 
+ /// Result of a passive input-device lookup (does not open a capture stream).
+@@ -122,7 +143,7 @@ pub struct TmuxFacts {
+ pub enum TmuxColorPassthrough {
+     /// The client advertises `RGB`, so truecolor SGR reaches the terminal.
+     Forwarded,
+-    /// tmux reduces 24-bit color to the client terminfo's palette, which is what makes themes look washed out even when Grok emits truecolor.
++    /// tmux reduces 24-bit color to the client terminfo's palette, which is what makes themes look washed out even when Workshop emits truecolor.
+     Reduced,
+     /// No usable evidence: tmux predates `terminal-features` (3.2), no client is attached, or the query failed. Never treated as a problem.
+     Unknown,
+diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/view.rs b/crates/codegen/xai-grok-pager/src/diagnostics/view.rs
+index 5522e60f..22f9673b 100644
+--- a/crates/codegen/xai-grok-pager/src/diagnostics/view.rs
++++ b/crates/codegen/xai-grok-pager/src/diagnostics/view.rs
+@@ -248,6 +248,7 @@ fn facts(
+             newline,
+             clipboard,
+             voice: None,
++            voice_engine: None,
+         },
+         clipboard_recovery,
+     )
+@@ -388,17 +389,17 @@ fn clipboard_findings(
+         ClipboardRecovery::UnverifiedSsh => findings.push(manual_finding(
+             crate::diagnostics::CLIPBOARD_DELIVERY_UNVERIFIED_ID,
+             FindingDisposition::Issue,
+-            "Grok can't verify this clipboard route across the remote boundary",
+-            "When you copy, Grok sends OSC 52 but can't confirm that the outer terminal accepted \
++            "Workshop can't verify this clipboard route across the remote boundary",
++            "When you copy, Workshop sends OSC 52 but can't confirm that the outer terminal accepted \
+              it. Each copy is also saved to a backup file; the copy message shows the path. If \
+              paste fails, run `grok wrap ssh <host>` on your local computer or use `/minimal`. \
+-             For repeated SSH sessions, run `grok doctor fix ssh-wrap` on your local computer.",
++             For repeated SSH sessions, run `workshop doctor fix ssh-wrap` on your local computer.",
+         )),
+         ClipboardRecovery::UnverifiedContainer => findings.push(manual_finding(
+             crate::diagnostics::CLIPBOARD_DELIVERY_UNVERIFIED_ID,
+             FindingDisposition::Issue,
+-            "Grok can't verify this clipboard route across the container boundary",
+-            "When you copy, Grok sends OSC 52 but can't confirm that the outer terminal accepted \
++            "Workshop can't verify this clipboard route across the container boundary",
++            "When you copy, Workshop sends OSC 52 but can't confirm that the outer terminal accepted \
+              it. Each copy is also saved to a backup file; the copy message shows the path. If \
+              paste fails, start the container command with local `grok wrap <command>`, or use \
+              `/minimal`.",
+@@ -406,7 +407,7 @@ fn clipboard_findings(
+         ClipboardRecovery::UnverifiedOther => findings.push(manual_finding(
+             crate::diagnostics::CLIPBOARD_DELIVERY_UNVERIFIED_ID,
+             FindingDisposition::Issue,
+-            "Grok can't verify this clipboard route",
++            "Workshop can't verify this clipboard route",
+             "Each copy is also saved to a backup file; the copy message shows the path. For a \
+              remote or container command, use local `grok wrap <command>`. You can also use \
+              `/minimal` to select text in the terminal.",
+@@ -415,16 +416,16 @@ fn clipboard_findings(
+             crate::diagnostics::CLIPBOARD_DELIVERY_UNAVAILABLE_ID,
+             FindingDisposition::Issue,
+             "This clipboard route can't reach the target clipboard",
+-            "When you copy, Grok saves the text to the backup file shown in the copy message. To \
++            "When you copy, Workshop saves the text to the backup file shown in the copy message. To \
+              copy directly, run `grok wrap ssh <host>` on your local computer. For repeated SSH \
+-             sessions, run `grok doctor fix ssh-wrap` there. You can also use `/copy <file>` or \
++             sessions, run `workshop doctor fix ssh-wrap` there. You can also use `/copy <file>` or \
+              `/minimal`.",
+         )),
+         ClipboardRecovery::UnavailableContainer => findings.push(manual_finding(
+             crate::diagnostics::CLIPBOARD_DELIVERY_UNAVAILABLE_ID,
+             FindingDisposition::Issue,
+             "This clipboard route can't reach the target clipboard",
+-            "When you copy, Grok saves the text to the backup file shown in the copy message. \
++            "When you copy, Workshop saves the text to the backup file shown in the copy message. \
+              Start the container command with local `grok wrap <command>`, use `/copy <file>`, or \
+              use `/minimal`.",
+         )),
+@@ -432,7 +433,7 @@ fn clipboard_findings(
+             crate::diagnostics::CLIPBOARD_DELIVERY_UNAVAILABLE_ID,
+             FindingDisposition::Issue,
+             "This clipboard route can't reach the target clipboard",
+-            "When you copy, Grok saves the text to the backup file shown in the copy message. Use \
++            "When you copy, Workshop saves the text to the backup file shown in the copy message. Use \
+              `/copy <file>` or `/minimal`, then check the native clipboard tool listed above.",
+         )),
+     }
+@@ -463,7 +464,7 @@ fn clipboard_findings(
+             FindingDisposition::Recommendation,
+             "iTerm2 may block OSC 52 clipboard access",
+             "In iTerm2, open Settings → General → Selection and turn on “Applications in \
+-             terminal may access clipboard.” Grok can't read this setting, so check it there if \
++             terminal may access clipboard.” Workshop can't read this setting, so check it there if \
+              copies don't paste.",
+         ));
+     }
+@@ -495,7 +496,7 @@ fn newline_finding(facts: &DiagnosticFacts) -> Option<DiagnosticFinding> {
+         NewlineFact::NoKittyKeyboardProtocol => (
+             "Shift+Enter can't insert a newline because the keyboard protocol is unavailable",
+             "Use Alt+Enter to insert a newline. If your terminal supports the Kitty keyboard \
+-             protocol, enable it and restart Grok."
++             protocol, enable it and restart Workshop."
+                 .to_owned(),
+         ),
+     };
+diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/view_tests.rs b/crates/codegen/xai-grok-pager/src/diagnostics/view_tests.rs
+index 96ddc4b0..88d14906 100644
+--- a/crates/codegen/xai-grok-pager/src/diagnostics/view_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/diagnostics/view_tests.rs
+@@ -268,15 +268,15 @@ fn all_tmux_finding_metadata_uses_stable_automatic_fix_ids_without_schema_change
+         [
+             (
+                 crate::diagnostics::TMUX_CLIPBOARD_ID,
+-                "grok doctor fix terminal.tmux-clipboard",
++                "workshop doctor fix terminal.tmux-clipboard",
+             ),
+             (
+                 crate::diagnostics::DCS_PASSTHROUGH_ID,
+-                "grok doctor fix terminal.dcs-passthrough",
++                "workshop doctor fix terminal.dcs-passthrough",
+             ),
+             (
+                 crate::diagnostics::TMUX_EXTENDED_KEYS_ID,
+-                "grok doctor fix terminal.tmux-extended-keys",
++                "workshop doctor fix terminal.tmux-extended-keys",
+             ),
+         ]
+     );
+diff --git a/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs b/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
+index 5cc76928..b1bebdfe 100644
+--- a/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
++++ b/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
+@@ -5,11 +5,11 @@ use crate::diagnostics::{
+ };
+ use crate::host::{DisplayServer, HostOs};
+ 
+-const LIVE_TUI_PROBE_CTA: &str = "Some checks only run in Grok. Start Grok and run /doctor.";
++const LIVE_TUI_PROBE_CTA: &str = "Some checks only run in Workshop. Start Workshop and run /doctor.";
+ 
+ pub(super) fn format(report: &DiagnosticReport) -> String {
+     let facts = &report.facts;
+-    let mut out = String::from("Grok Doctor\n\nEnvironment\n");
++    let mut out = String::from("Workshop Doctor\n\nEnvironment\n");
+ 
+     fact(&mut out, "terminal", &facts.terminal.to_string());
+     match &facts.xtversion {
+@@ -126,8 +126,10 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
+     };
+     fact(&mut out, "status", status);
+ 
+-    if let Some(voice) = &facts.voice {
++    if facts.voice.is_some() || facts.voice_engine.is_some() {
+         out.push_str("\nVoice\n");
++    }
++    if let Some(voice) = &facts.voice {
+         match voice {
+             VoiceFacts::Device { name, detail } => {
+                 fact(&mut out, "microphone", &format!("{name} ({detail})"));
+@@ -137,6 +139,40 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
+             }
+         }
+     }
++    if let Some(engine) = &facts.voice_engine {
++        fact(&mut out, "provider", &engine.provider);
++        match (&engine.engine_path, &engine.engine_version) {
++            (Some(path), Some(version)) => fact(&mut out, "engine", &format!("{path} ({version})")),
++            (Some(path), None) => fact(
++                &mut out,
++                "engine",
++                &format!(
++                    "{path} (not runnable: {})",
++                    engine.engine_error.as_deref().unwrap_or("unknown error")
++                ),
++            ),
++            (None, _) => fact(
++                &mut out,
++                "engine",
++                &format!(
++                    "not installed ({})",
++                    engine.engine_error.as_deref().unwrap_or("voice-engine missing")
++                ),
++            ),
++        }
++        fact(
++            &mut out,
++            "model",
++            &format!(
++                "{} ({}, {})",
++                engine.model_path, engine.model_tier, engine.model_tier_source
++            ),
++        );
++        fact(&mut out, "checksum", &engine.model_status);
++        if let Some(err) = &engine.last_error {
++            fact(&mut out, "last error", err);
++        }
++    }
+ 
+     if !report.findings.is_empty() {
+         out.push_str("\nFindings\n");
+diff --git a/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs b/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs
+index 3c4932bb..6feea87d 100644
+--- a/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs
++++ b/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs
+@@ -3,7 +3,7 @@ use serde::Serialize;
+ use crate::clipboard::{ClipboardDelivery, NativeClipboardPreflight, Osc52Capability};
+ use crate::diagnostics::{
+     DataControlFact, DiagnosticFinding, DiagnosticReport, FindingDisposition, NewlineFact,
+-    ProbeNote, ProbeStatus, RuntimeFact, VoiceFacts,
++    ProbeNote, ProbeStatus, RuntimeFact, VoiceEngineFacts, VoiceFacts,
+ };
+ use crate::host::HostOs;
+ use crate::terminal::{ByobuBackend, ModifierFate, MultiplexerKind, TerminalName};
+@@ -58,6 +58,9 @@ struct JsonFacts<'a> {
+     clipboard: JsonClipboardFacts<'a>,
+     #[serde(skip_serializing_if = "Option::is_none")]
+     voice: Option<JsonVoiceFacts<'a>>,
++    /// Workshop overlay: local speech-to-text engine and model facts.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    voice_engine: Option<JsonVoiceEngineFacts<'a>>,
+ }
+ 
+ impl<'a> From<&'a DiagnosticReport> for JsonFacts<'a> {
+@@ -91,6 +94,43 @@ impl<'a> From<&'a DiagnosticReport> for JsonFacts<'a> {
+             newline: facts.newline.as_ref().map(JsonNewlineFact::from),
+             clipboard: JsonClipboardFacts::from(&facts.clipboard),
+             voice: facts.voice.as_ref().map(JsonVoiceFacts::from),
++            voice_engine: facts.voice_engine.as_ref().map(JsonVoiceEngineFacts::from),
++        }
++    }
++}
++
++#[derive(Serialize)]
++#[serde(rename_all = "camelCase")]
++struct JsonVoiceEngineFacts<'a> {
++    provider: &'a str,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    engine_path: Option<&'a str>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    engine_version: Option<&'a str>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    engine_error: Option<&'a str>,
++    model_tier: &'a str,
++    model_tier_source: &'a str,
++    model_path: &'a str,
++    model_status: &'a str,
++    model_ok: bool,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    last_error: Option<&'a str>,
++}
++
++impl<'a> From<&'a VoiceEngineFacts> for JsonVoiceEngineFacts<'a> {
++    fn from(f: &'a VoiceEngineFacts) -> Self {
++        Self {
++            provider: &f.provider,
++            engine_path: f.engine_path.as_deref(),
++            engine_version: f.engine_version.as_deref(),
++            engine_error: f.engine_error.as_deref(),
++            model_tier: &f.model_tier,
++            model_tier_source: &f.model_tier_source,
++            model_path: &f.model_path,
++            model_status: &f.model_status,
++            model_ok: f.model_ok,
++            last_error: f.last_error.as_deref(),
+         }
+     }
+ }
+diff --git a/crates/codegen/xai-grok-pager/src/doctor_cmd/tests.rs b/crates/codegen/xai-grok-pager/src/doctor_cmd/tests.rs
+index 252cee35..ee39ea77 100644
+--- a/crates/codegen/xai-grok-pager/src/doctor_cmd/tests.rs
++++ b/crates/codegen/xai-grok-pager/src/doctor_cmd/tests.rs
+@@ -129,6 +129,7 @@ fn healthy_report() -> DiagnosticReport {
+                 fix: None,
+             },
+             voice: None,
++            voice_engine: None,
+         },
+         findings: Vec::new(),
+         probe_notes: Vec::new(),
+@@ -247,7 +248,15 @@ fn fake_standalone_facts_compose_through_shared_view() {
+     );
+     let report = collect_report_with(snapshot);
+ 
+-    assert_eq!(report.issue_count(), 1);
++    // Count only terminal-domain findings: `collect_report_with` also runs a live input-device
++    // probe (`apply_voice_probe`), which on a headless host / CI runner with no microphone adds an
++    // incidental `voice/no-input-device` finding. This test is about terminal/clipboard composition.
++    let terminal_issues = report
++        .findings
++        .iter()
++        .filter(|f| f.id.domain == "terminal")
++        .count();
++    assert_eq!(terminal_issues, 1);
+     assert!(
+         report
+             .findings
+@@ -347,7 +356,7 @@ fn human_wayland_error_includes_detail_once() {
+     assert_eq!(
+         human::format(&report),
+         concat!(
+-            "Grok Doctor\n",
++            "Workshop Doctor\n",
+             "\n",
+             "Environment\n",
+             "  · terminal                     Ghostty\n",
+@@ -456,7 +465,7 @@ fn human_healthy_fixture_is_exact() {
+     assert_eq!(
+         human::format(&healthy_report()),
+         concat!(
+-            "Grok Doctor\n",
++            "Workshop Doctor\n",
+             "\n",
+             "Environment\n",
+             "  · terminal                     Ghostty\n",
+@@ -483,7 +492,7 @@ fn human_mixed_fixture_is_exact() {
+     assert_eq!(
+         human::format(&mixed_report()),
+         concat!(
+-            "Grok Doctor\n",
++            "Workshop Doctor\n",
+             "\n",
+             "Environment\n",
+             "  · terminal                     Ghostty\n",
+@@ -505,11 +514,11 @@ fn human_mixed_fixture_is_exact() {
+             "\n",
+             "Findings\n",
+             "  ! terminal.tmux-clipboard      OSC 52 clipboard passthrough is disabled\n",
+-            "    → Automatic setup: `grok doctor fix tmux-clipboard`\n",
++            "    → Automatic setup: `workshop doctor fix tmux-clipboard`\n",
+             "    → Add `set -g set-clipboard on` to ~/.tmux.conf\n",
+             "      Reload tmux after editing.\n",
+             "  i terminal.ssh-wrap            Use local SSH wrapping\n",
+-            "    → Automatic setup: `grok doctor fix ssh-wrap`\n",
++            "    → Automatic setup: `workshop doctor fix ssh-wrap`\n",
+             "    → One-off: `grok wrap ssh <host>`\n",
+             "\n",
+             "Checks not completed\n",
+@@ -520,7 +529,7 @@ fn human_mixed_fixture_is_exact() {
+             "  ? tmux.control-mode            error: server unavailable\n",
+             "\n",
+             "Needs a running session\n",
+-            "  Some checks only run in Grok. Start Grok and run /doctor.\n",
++            "  Some checks only run in Workshop. Start Workshop and run /doctor.\n",
+             "\n",
+             "1 issue, 1 recommendation\n",
+         )
+@@ -544,7 +553,7 @@ fn fix_preview_contains_exact_change_and_caveats() {
+     assert!(preview.contains("File: "));
+     assert!(
+         preview.contains(
+-            "# >>> grok doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='grok wrap ssh'"
++            "# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='grok wrap ssh'"
+         )
+     );
+     assert!(preview.contains("To use once without changing config: `grok wrap ssh <host>`"));
+@@ -643,7 +652,7 @@ fn human_incomplete_fixture_is_exact_without_duplicate_probe_rows() {
+     assert_eq!(
+         human::format(&report),
+         concat!(
+-            "Grok Doctor\n",
++            "Workshop Doctor\n",
+             "\n",
+             "Environment\n",
+             "  · terminal                     Ghostty\n",
+@@ -661,7 +670,7 @@ fn human_incomplete_fixture_is_exact_without_duplicate_probe_rows() {
+             "  · status                       confirmed\n",
+             "\n",
+             "Needs a running session\n",
+-            "  Some checks only run in Grok. Start Grok and run /doctor.\n",
++            "  Some checks only run in Workshop. Start Workshop and run /doctor.\n",
+             "\n",
+             "0 issues, 0 recommendations\n",
+         )
+@@ -770,7 +779,7 @@ fn json_contract_is_structural_stable_ordered_and_ansi_free() {
+                     },
+                     "automaticRemediation": {
+                         "fixId": "terminal.tmux-clipboard",
+-                        "command": "grok doctor fix terminal.tmux-clipboard"
++                        "command": "workshop doctor fix terminal.tmux-clipboard"
+                     },
+                     "note": "Reload tmux after editing."
+                 },
+@@ -781,7 +790,7 @@ fn json_contract_is_structural_stable_ordered_and_ansi_free() {
+                     "remediation": {"fix": "grok wrap ssh <host>", "configPath": null},
+                     "automaticRemediation": {
+                         "fixId": "terminal.ssh-wrap",
+-                        "command": "grok doctor fix terminal.ssh-wrap"
++                        "command": "workshop doctor fix terminal.ssh-wrap"
+                     },
+                     "note": null
+                 }
+@@ -809,7 +818,7 @@ fn json_contract_is_structural_stable_ordered_and_ansi_free() {
+     assert!(issue < recommendation);
+     assert!(version < extended && extended < unsupported && unsupported < unavailable);
+     assert!(!text.contains("\u{1b}"));
+-    assert!(!text.contains("Grok Doctor"));
++    assert!(!text.contains("Workshop Doctor"));
+ }
+ 
+ #[test]
+diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
+index 084ceed3..27499245 100644
+--- a/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
++++ b/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
+@@ -2297,12 +2297,26 @@ fn paint_dispatch_config_badge(
+ /// Shared by the dispatch box and the peek panel that replaces it, so a capture started in either box shows the same indicator.
+ pub(super) fn paint_record_badge(buf: &mut Buffer, area: Rect, theme: &Theme, listening: bool) {
+     if listening && area.width >= 12 {
++        // Workshop overlay: the engine's progress line replaces "rec" while the model downloads/loads
++        let (label, fg) = match crate::voice::banner_status() {
++            Some(status) => (
++                format!(
++                    " \u{25CF} {} ",
++                    crate::render::line_utils::truncate_str(
++                        &status,
++                        (area.width as usize).saturating_sub(8)
++                    )
++                ),
++                theme.accent_running,
++            ),
++            None => (" \u{25CF} rec ".to_owned(), theme.accent_error),
++        };
+         buf.set_string(
+             area.x + 2,
+             area.y,
+-            " \u{25CF} rec ",
++            &label,
+             Style::default()
+-                .fg(theme.accent_error)
++                .fg(fg)
+                 .bg(theme.bg_base)
+                 .add_modifier(Modifier::BOLD),
+         );
+diff --git a/crates/codegen/xai-grok-pager/src/voice/handle.rs b/crates/codegen/xai-grok-pager/src/voice/handle.rs
+index 6b1daea6..42afcd9a 100644
+--- a/crates/codegen/xai-grok-pager/src/voice/handle.rs
++++ b/crates/codegen/xai-grok-pager/src/voice/handle.rs
+@@ -177,11 +177,18 @@ pub(crate) fn commit_interim_into_prompt(app: &mut AppView) -> Option<VoiceInter
+ /// Apply a voice event to app state. Returns whether the frame should redraw.
+ pub fn handle_voice_event(app: &mut AppView, event: VoiceEvent) -> bool {
+     match event {
++        // Workshop overlay: engine progress ("Downloading voice model… 42%") for the banner only
++        VoiceEvent::Status { text } => {
++            super::set_banner_status(&text);
++            true
++        }
+         VoiceEvent::InterimTranscript { text } => {
++            super::set_banner_status("");
+             // No-op unless recording, so a late interim after a stop can't repopulate the overlay
+             app.voice_set_interim(text)
+         }
+         VoiceEvent::UtteranceFinal { text } => {
++            super::set_banner_status("");
+             app.voice_clear_interim();
+             // The mic stays open across pauses; the user stops it explicitly, then presses Enter to send
+             // The bound target survives a stop (`Stopping`), so a trailing final after an explicit stop still lands
+@@ -191,6 +198,7 @@ pub fn handle_voice_event(app: &mut AppView, event: VoiceEvent) -> bool {
+             true
+         }
+         VoiceEvent::Error { message, hint } => {
++            super::set_banner_status("");
+             let target = app.voice_recording_target();
+             app.voice_reset();
+             app.show_toast(&format!("Voice: {message}"));
+diff --git a/crates/codegen/xai-grok-pager/src/voice/mod.rs b/crates/codegen/xai-grok-pager/src/voice/mod.rs
+index a3ab3969..09aabf80 100644
+--- a/crates/codegen/xai-grok-pager/src/voice/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/voice/mod.rs
+@@ -18,8 +18,27 @@
+ mod auth;
+ mod handle;
+ 
++use std::sync::Mutex;
++
+ pub use auth::build_voice_auth;
+ pub use handle::handle_voice_event;
++
++/// Workshop overlay: the one-line status the recording banner shows instead of "Recording" while
++/// the local engine gets ready (model download progress, model load). Set from
++/// [`xai_grok_voice::VoiceEvent::Status`], cleared by the next transcript or error. Process-global
++/// like the voice gates above so no `AppView` field or render plumbing changes.
++static BANNER_STATUS: Mutex<Option<String>> = Mutex::new(None);
++
++pub(crate) fn set_banner_status(text: &str) {
++    if let Ok(mut guard) = BANNER_STATUS.lock() {
++        *guard = Some(text.to_owned()).filter(|t| !t.trim().is_empty());
++    }
++}
++
++/// The banner text to paint: the engine's status line, or `None` for the plain "Recording" row.
++pub(crate) fn banner_status() -> Option<String> {
++    BANNER_STATUS.lock().ok().and_then(|g| g.clone())
++}
+ pub(crate) use handle::{
+     VoiceInterimCommit, commit_interim_into_prompt, merge_voice_fragment, prompt_blank_for_voice,
+     space_voice_fragment,
+diff --git a/crates/codegen/xai-grok-voice/Cargo.toml b/crates/codegen/xai-grok-voice/Cargo.toml
+index be26f22a..0e3f9cfe 100644
+--- a/crates/codegen/xai-grok-voice/Cargo.toml
++++ b/crates/codegen/xai-grok-voice/Cargo.toml
+@@ -21,6 +21,8 @@ toml = { workspace = true }
+ tracing = { workspace = true }
+ tracing-subscriber = { workspace = true }
+ url = { workspace = true }
++# Workshop overlay: the local speech-to-text provider (`voice-engine` helper, pinned model store).
++workshop-voice = { path = "../../workshop-voice" }
+ xai-dirs = { workspace = true }
+ xai-grok-extra-ca = { workspace = true }
+ # Sanctioned TTY detach for the capture subprocesses (Linux system recorders,
+@@ -28,6 +30,10 @@ xai-grok-extra-ca = { workspace = true }
+ # `std::process::Command`.
+ xai-tty-utils = { workspace = true }
+ 
++[dev-dependencies]
++# Workshop overlay: `tests/local_dictation.rs` (ignored; needs the helper and a model).
++hound = "3.5"
++
+ [features]
+ # `audio` = "microphone capture is compiled in". It's enabled on every OS for
+ # production builds: macOS/Windows link `cpal`; Linux shells out to a system
+diff --git a/crates/codegen/xai-grok-voice/src/config.rs b/crates/codegen/xai-grok-voice/src/config.rs
+index 8a7f7fb4..fd01a500 100644
+--- a/crates/codegen/xai-grok-voice/src/config.rs
++++ b/crates/codegen/xai-grok-voice/src/config.rs
+@@ -5,12 +5,33 @@ use crate::error::VoiceError;
+ /// Default STT capture rate (Hz). Shared with the `__mic-capture` helper's argv default so parent and child agree when `--rate` is omitted.
+ pub const DEFAULT_SAMPLE_RATE: u32 = 16_000;
+ 
+-/// Prefer https `api_base` (same shape as chat). [`Self::stt_ws_url`] derives `wss://`. When `[voice].api_base` is unset,
+-/// inherits `[endpoints].xai_api_base_url` so enterprise proxies need no second knob.
++/// Which speech-to-text engine `/voice` talks to.
++///
++/// Workshop overlay: the default is the local `voice-engine` helper (whisper.cpp, no account, no
++/// network after install). The inherited xAI WebSocket client is opt-in: `provider = "xai"` plus an
++/// explicit `api_base` and the user's own key; a normal install never constructs it.
++#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
++#[serde(rename_all = "lowercase")]
++pub enum VoiceProvider {
++    #[default]
++    Local,
++    Xai,
++}
++
++/// `[voice]` config. For `provider = "xai"`, prefer an https `api_base` (same shape as chat);
++/// [`Self::stt_ws_url`] derives `wss://` and, when `[voice].api_base` is unset, inherits
++/// `[endpoints].xai_api_base_url` so enterprise proxies need no second knob. The local provider
++/// ignores `api_base`.
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+ #[serde(default)]
+ pub struct VoiceConfig {
+-    /// HTTPS API root (or bare host).
++    pub provider: VoiceProvider,
++    /// Workshop overlay: force a Whisper model tier (`turbo` / `small` / `base`). Unset = chosen
++    /// per machine (voice-spec §9.6). Undocumented on purpose.
++    pub model: Option<String>,
++    /// Workshop overlay: path of the `voice-engine` helper; unset = beside the running binary.
++    pub engine_path: Option<String>,
++    /// HTTPS API root (or bare host) for `provider = "xai"`. Empty for a normal launch.
+     /// Bases may end in `/v1` or `/xai/v1`; the default STT path de-duplicates a leading `v1/` so both become `…/v1/stt`.
+     pub api_base: String,
+     pub stt_ws_path: String,
+@@ -30,7 +51,11 @@ pub struct VoiceConfig {
+ impl Default for VoiceConfig {
+     fn default() -> Self {
+         Self {
+-            api_base: "https://api.x.ai".into(),
++            provider: VoiceProvider::Local,
++            model: None,
++            engine_path: None,
++            // No hosted endpoint by default (gate:no-xai): the xAI provider requires an explicit base.
++            api_base: String::new(),
+             stt_ws_path: "/v1/stt".into(),
+             language: "en".into(),
+             sample_rate: DEFAULT_SAMPLE_RATE,
+@@ -48,7 +73,8 @@ impl VoiceConfig {
+         ws_url(&self.api_base, &self.stt_ws_path)
+     }
+ 
+-    /// `api_base`: non-empty `[voice].api_base`, else `[endpoints].xai_api_base_url` from `root`, else `resolved_endpoints_base`, else the default.
++    /// `api_base` for `provider = "xai"`: non-empty `[voice].api_base`, else `[endpoints].xai_api_base_url` from `root`,
++    /// else `resolved_endpoints_base`. The local provider keeps `api_base` empty: no hosted endpoint is ever derived.
+     ///
+     /// `resolved_endpoints_base` carries the caller's env/CLI overrides; it ranks below the raw table so config keeps beating env (shell precedence).
+     pub fn from_config_table(root: &toml::Table, resolved_endpoints_base: Option<&str>) -> Self {
+@@ -57,22 +83,26 @@ impl VoiceConfig {
+             .and_then(|t| toml::Value::Table(t.clone()).try_into().ok())
+             .unwrap_or_default();
+ 
+-        // Read `[voice].api_base` from the raw table, not `cfg`: serde default makes "unset" and an explicit `https://api.x.ai` indistinguishable
+-        cfg.api_base = non_empty_str(
++        // Read `[voice].api_base` from the raw table, not `cfg`: serde default makes "unset" and an explicit value indistinguishable
++        let explicit = non_empty_str(
+             voice_table
+                 .and_then(|t| t.get("api_base"))
+                 .and_then(|v| v.as_str()),
+-        )
+-        .or_else(|| {
+-            non_empty_str(
+-                root.get("endpoints")
+-                    .and_then(|e| e.get("xai_api_base_url"))
+-                    .and_then(|v| v.as_str()),
+-            )
+-        })
+-        .or_else(|| non_empty_str(resolved_endpoints_base))
+-        .map(|base| base.trim_end_matches('/').to_owned())
+-        .unwrap_or_else(|| Self::default().api_base);
++        );
++        cfg.api_base = match cfg.provider {
++            VoiceProvider::Xai => explicit
++                .or_else(|| {
++                    non_empty_str(
++                        root.get("endpoints")
++                            .and_then(|e| e.get("xai_api_base_url"))
++                            .and_then(|v| v.as_str()),
++                    )
++                })
++                .or_else(|| non_empty_str(resolved_endpoints_base))
++                .map(|base| base.trim_end_matches('/').to_owned())
++                .unwrap_or_default(),
++            VoiceProvider::Local => String::new(),
++        };
+         cfg
+     }
+ }
+@@ -92,6 +122,13 @@ fn strip_scheme<'a>(s: &'a str, scheme: &str) -> Option<&'a str> {
+ fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
+     let base = api_base.trim().trim_end_matches('/');
+     let path = path.trim().trim_start_matches('/');
++    if base.is_empty() {
++        return Err(VoiceError::Config(
++            "voice provider \"xai\" needs [voice].api_base (or [endpoints].xai_api_base_url); \
++             Workshop sets no hosted speech endpoint by default"
++                .into(),
++        ));
++    }
+     if strip_scheme(base, "http://").is_some() || strip_scheme(base, "ws://").is_some() {
+         return Err(VoiceError::Config(format!(
+             "insecure voice api_base {api_base:?}: voice requires a TLS endpoint \
+@@ -114,42 +151,59 @@ fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
+ mod tests {
+     use super::*;
+ 
++    /// Workshop overlay (gate:no-xai): a default launch has no hosted speech endpoint at all.
+     #[test]
+-    fn default_stt_ws_uses_wss() {
+-        assert_eq!(
+-            VoiceConfig::default().stt_ws_url().unwrap(),
+-            "wss://api.x.ai/v1/stt"
++    fn default_is_local_with_no_hosted_endpoint() {
++        let cfg = VoiceConfig::default();
++        assert_eq!(cfg.provider, VoiceProvider::Local);
++        assert!(cfg.api_base.is_empty());
++        assert!(cfg.model.is_none());
++        assert!(matches!(cfg.stt_ws_url(), Err(VoiceError::Config(_))));
++        let cfg =
++            VoiceConfig::from_config_table(&toml::Table::new(), Some("https://env.example.com"));
++        assert_eq!(cfg.provider, VoiceProvider::Local);
++        assert!(
++            cfg.api_base.is_empty(),
++            "local ignores every endpoint fallback"
+         );
+     }
+ 
++    fn xai(base: &str) -> VoiceConfig {
++        VoiceConfig {
++            provider: VoiceProvider::Xai,
++            api_base: base.into(),
++            ..VoiceConfig::default()
++        }
++    }
++
+     #[test]
+     fn scheme_less_and_wss_bases() {
+-        for base in ["api.x.ai", "wss://api.x.ai", "HTTPS://api.x.ai"] {
+-            let cfg = VoiceConfig {
+-                api_base: base.into(),
+-                ..VoiceConfig::default()
+-            };
+-            assert_eq!(cfg.stt_ws_url().unwrap(), "wss://api.x.ai/v1/stt");
++        for base in [
++            "stt.example.com",
++            "wss://stt.example.com",
++            "HTTPS://stt.example.com",
++        ] {
++            assert_eq!(
++                xai(base).stt_ws_url().unwrap(),
++                "wss://stt.example.com/v1/stt"
++            );
+         }
+     }
+ 
+     #[test]
+     fn v1_base_dedupes_default_path() {
+-        let cfg = VoiceConfig {
+-            api_base: "https://proxy.example.com/v1".into(),
+-            ..VoiceConfig::default()
+-        };
+-        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://proxy.example.com/v1/stt");
++        assert_eq!(
++            xai("https://proxy.example.com/v1").stt_ws_url().unwrap(),
++            "wss://proxy.example.com/v1/stt"
++        );
+     }
+ 
+     #[test]
+     fn xai_v1_base_preserves_prefix() {
+-        let cfg = VoiceConfig {
+-            api_base: "https://proxy.example.com/xai/v1".into(),
+-            ..VoiceConfig::default()
+-        };
+         assert_eq!(
+-            cfg.stt_ws_url().unwrap(),
++            xai("https://proxy.example.com/xai/v1")
++                .stt_ws_url()
++                .unwrap(),
+             "wss://proxy.example.com/xai/v1/stt"
+         );
+     }
+@@ -162,24 +216,23 @@ mod tests {
+             "HTTP://localhost:8080",
+             "Ws://localhost:8080",
+         ] {
+-            let cfg = VoiceConfig {
+-                api_base: base.into(),
+-                ..VoiceConfig::default()
+-            };
+-            assert!(matches!(cfg.stt_ws_url(), Err(VoiceError::Config(_))));
++            assert!(matches!(xai(base).stt_ws_url(), Err(VoiceError::Config(_))));
+         }
+     }
+ 
+     #[test]
+-    fn inherits_endpoints_when_voice_api_base_unset() {
++    fn xai_provider_inherits_endpoints_when_voice_api_base_unset() {
+         let table: toml::Table = toml::from_str(
+             r#"
+ [endpoints]
+ xai_api_base_url = "https://proxy.example.com/xai/v1"
++[voice]
++provider = "xai"
+ "#,
+         )
+         .unwrap();
+         let cfg = VoiceConfig::from_config_table(&table, None);
++        assert_eq!(cfg.provider, VoiceProvider::Xai);
+         assert_eq!(cfg.api_base, "https://proxy.example.com/xai/v1");
+         assert_eq!(
+             cfg.stt_ws_url().unwrap(),
+@@ -188,12 +241,30 @@ xai_api_base_url = "https://proxy.example.com/xai/v1"
+     }
+ 
+     #[test]
+-    fn empty_voice_api_base_still_inherits_endpoints() {
++    fn local_provider_never_inherits_endpoints() {
++        let table: toml::Table = toml::from_str(
++            r#"
++[endpoints]
++xai_api_base_url = "https://proxy.example.com/xai/v1"
++[voice]
++language = "fr"
++"#,
++        )
++        .unwrap();
++        let cfg = VoiceConfig::from_config_table(&table, Some("https://env.example.com"));
++        assert_eq!(cfg.provider, VoiceProvider::Local);
++        assert!(cfg.api_base.is_empty());
++        assert_eq!(cfg.language, "fr");
++    }
++
++    #[test]
++    fn xai_empty_voice_api_base_still_inherits_endpoints() {
+         let table: toml::Table = toml::from_str(
+             r#"
+ [endpoints]
+ xai_api_base_url = "https://proxy.example.com/xai/v1"
+ [voice]
++provider = "xai"
+ api_base = "  "
+ language = "fr"
+ "#,
+@@ -205,31 +276,30 @@ language = "fr"
+     }
+ 
+     #[test]
+-    fn whitespace_voice_api_base_without_endpoints_uses_default() {
++    fn xai_without_any_base_has_no_endpoint() {
+         let table: toml::Table = toml::from_str(
+             r#"
+ [voice]
++provider = "xai"
+ api_base = "  "
+ "#,
+         )
+         .unwrap();
+         let cfg = VoiceConfig::from_config_table(&table, None);
+-        assert_eq!(cfg.api_base, VoiceConfig::default().api_base);
+-        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://api.x.ai/v1/stt");
++        assert!(cfg.api_base.is_empty());
++        assert!(matches!(cfg.stt_ws_url(), Err(VoiceError::Config(_))));
+     }
+ 
+     #[test]
+-    fn resolved_endpoints_base_used_when_table_has_none() {
+-        let cfg = VoiceConfig::from_config_table(
+-            &toml::Table::new(),
+-            Some("https://proxy.example.com/v1/"),
+-        );
++    fn xai_resolved_endpoints_base_used_when_table_has_none() {
++        let table: toml::Table = toml::from_str("[voice]\nprovider = \"xai\"\n").unwrap();
++        let cfg = VoiceConfig::from_config_table(&table, Some("https://proxy.example.com/v1/"));
+         assert_eq!(cfg.api_base, "https://proxy.example.com/v1");
+         assert_eq!(cfg.stt_ws_url().unwrap(), "wss://proxy.example.com/v1/stt");
+ 
+-        // Whitespace-only resolved base falls through to the default.
+-        let cfg = VoiceConfig::from_config_table(&toml::Table::new(), Some("  "));
+-        assert_eq!(cfg.api_base, VoiceConfig::default().api_base);
++        // Whitespace-only resolved base leaves the endpoint empty.
++        let cfg = VoiceConfig::from_config_table(&table, Some("  "));
++        assert!(cfg.api_base.is_empty());
+     }
+ 
+     /// config.toml beats the env/CLI fallback, matching the shell's endpoints precedence.
+@@ -239,6 +309,8 @@ api_base = "  "
+             r#"
+ [endpoints]
+ xai_api_base_url = "https://config.example.com"
++[voice]
++provider = "xai"
+ "#,
+         )
+         .unwrap();
+@@ -253,19 +325,20 @@ xai_api_base_url = "https://config.example.com"
+ [endpoints]
+ xai_api_base_url = "https://proxy.example.com/xai/v1"
+ [voice]
+-api_base = "https://api.x.ai"
++provider = "xai"
++api_base = "https://stt.example.com"
+ language = "es"
+ "#,
+         )
+         .unwrap();
+         let cfg = VoiceConfig::from_config_table(&table, None);
+-        assert_eq!(cfg.api_base, "https://api.x.ai");
++        assert_eq!(cfg.api_base, "https://stt.example.com");
+         assert_eq!(cfg.language, "es");
+-        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://api.x.ai/v1/stt");
++        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://stt.example.com/v1/stt");
+     }
+ 
+     #[test]
+-    fn ignores_unknown_and_identity_fields() {
++    fn workshop_keys_parse_and_unknown_or_identity_fields_are_ignored() {
+         let table: toml::Table = toml::from_str(
+             r#"
+ [voice]
+@@ -273,11 +346,18 @@ enabled = false
+ client_identifier = "spoofed"
+ user_agent = "malicious/9.9"
+ language = "es"
++model = "small"
++engine_path = "/opt/workshop/voice-engine"
+ "#,
+         )
+         .unwrap();
+         let cfg = VoiceConfig::from_config_table(&table, None);
+         assert_eq!(cfg.language, "es");
++        assert_eq!(cfg.model.as_deref(), Some("small"));
++        assert_eq!(
++            cfg.engine_path.as_deref(),
++            Some("/opt/workshop/voice-engine")
++        );
+         assert!(cfg.client_identifier.is_empty());
+         assert!(cfg.user_agent.is_empty());
+     }
+diff --git a/crates/codegen/xai-grok-voice/src/event.rs b/crates/codegen/xai-grok-voice/src/event.rs
+index 1f795284..68735fa5 100644
+--- a/crates/codegen/xai-grok-voice/src/event.rs
++++ b/crates/codegen/xai-grok-voice/src/event.rs
+@@ -7,6 +7,11 @@ pub enum VoiceEvent {
+     /// Utterance complete (`speech_final` on streaming STT, or batch result).
+     UtteranceFinal { text: String },
+ 
++    /// Workshop overlay: one-line progress for the recording banner while the local engine is
++    /// getting ready ("Downloading voice model… 42%"). Empty text restores the plain banner.
++    /// Never inserted into the prompt.
++    Status { text: String },
++
+     /// Non-fatal or fatal error from capture or STT.
+     Error {
+         /// Short description for a one-line toast.
+diff --git a/crates/codegen/xai-grok-voice/src/lib.rs b/crates/codegen/xai-grok-voice/src/lib.rs
+index f12eba02..481ea527 100644
+--- a/crates/codegen/xai-grok-voice/src/lib.rs
++++ b/crates/codegen/xai-grok-voice/src/lib.rs
+@@ -20,6 +20,7 @@ pub mod stt;
+ 
+ pub use auth::{SharedVoiceAuth, StaticVoiceAuth, VoiceAuthProvider};
+ pub use config::VoiceConfig;
++pub use config::VoiceProvider;
+ pub use error::VoiceError;
+ pub use event::VoiceEvent;
+ pub use language::{
+diff --git a/crates/codegen/xai-grok-voice/src/pipeline.rs b/crates/codegen/xai-grok-voice/src/pipeline.rs
+index f48b9163..7737b274 100644
+--- a/crates/codegen/xai-grok-voice/src/pipeline.rs
++++ b/crates/codegen/xai-grok-voice/src/pipeline.rs
+@@ -12,10 +12,12 @@ use tokio::task::JoinHandle;
+ 
+ use crate::auth::SharedVoiceAuth;
+ use crate::config::VoiceConfig;
++#[cfg(feature = "audio")]
++use crate::config::VoiceProvider;
+ use crate::error::VoiceError;
+ use crate::event::VoiceEvent;
+ #[cfg(feature = "audio")]
+-use crate::stt::{StreamingSttEvent, StreamingSttSession};
++use crate::stt::{LocalSttSession, StreamingSttEvent, StreamingSttSession, SttSession};
+ 
+ /// Commands from the pager event loop (toggle start/stop, or F12 push-to-talk).
+ #[derive(Debug)]
+@@ -86,6 +88,8 @@ pub async fn run_voice_pipeline(
+     if let Some(session) = active {
+         session.reader.abort();
+     }
++    // Workshop overlay: the warm local engine holds the model weights; release them with the pipeline.
++    workshop_voice::engine::shutdown().await;
+ }
+ 
+ /// Open a capture session, emitting a `VoiceEvent::Error` (and returning `None`) on failure.
+@@ -199,9 +203,19 @@ async fn start_capture_session(
+     let (audio_tx_tx, audio_tx_rx) = tokio::sync::oneshot::channel::<mpsc::Sender<Vec<u8>>>();
+     tokio::spawn(forward_pcm(mic_rx, audio_tx_rx));
+ 
++    // Workshop overlay: the local engine is the default; the xAI socket (and its bearer) only when opted in
+     let connect = async {
+-        let bearer = crate::auth::require_bearer(auth).await?;
+-        StreamingSttSession::connect(config, &bearer).await
++        match config.provider {
++            VoiceProvider::Local => LocalSttSession::open(config, event_tx)
++                .await
++                .map(SttSession::Local),
++            VoiceProvider::Xai => {
++                let bearer = crate::auth::require_bearer(auth).await?;
++                StreamingSttSession::connect(config, &bearer)
++                    .await
++                    .map(SttSession::Xai)
++            }
++        }
+     };
+     let (connect_res, capture_res) = tokio::join!(connect, capture_task);
+ 
+diff --git a/crates/codegen/xai-grok-voice/src/stt/local.rs b/crates/codegen/xai-grok-voice/src/stt/local.rs
+new file mode 100644
+index 00000000..4e594ed3
+--- /dev/null
++++ b/crates/codegen/xai-grok-voice/src/stt/local.rs
+@@ -0,0 +1,112 @@
++//! Workshop overlay: the local `voice-engine` helper behind the same session surface as
++//! [`super::StreamingSttSession`], so `pipeline.rs` drives both the same way.
++//!
++//! Partials map to non-final interims (the preview), the helper's single full-utterance decode
++//! maps to `Done` (the only text the prompt commits). Getting the helper ready — locating it,
++//! verifying or downloading the pinned model, stepping down a model tier on a slow machine — is
++//! `workshop_voice::session::open`; its progress lines surface as [`VoiceEvent::Status`].
++
++use tokio::sync::mpsc;
++use workshop_voice::{EngineSession, SessionEvent};
++
++use super::{StreamingSttEvent, SttTranscriptPartial};
++use crate::config::VoiceConfig;
++use crate::error::VoiceError;
++use crate::event::VoiceEvent;
++
++pub struct LocalSttSession {
++    inner: EngineSession,
++}
++
++impl LocalSttSession {
++    /// Ready the helper (self-healing the model with progress on `event_tx`) and open an utterance.
++    pub async fn open(
++        config: &VoiceConfig,
++        event_tx: &mpsc::Sender<VoiceEvent>,
++    ) -> Result<Self, VoiceError> {
++        let opts = workshop_voice::OpenOptions {
++            voice_dir: None,
++            tier_override: config.model.clone(),
++            engine_path: config.engine_path.clone().map(std::path::PathBuf::from),
++            language: whisper_language(&config.language),
++        };
++        let status = |text: String| {
++            let _ = event_tx.try_send(VoiceEvent::Status { text });
++        };
++        let (inner, opened) = workshop_voice::open(&opts, &status).await.map_err(|e| {
++            workshop_voice::doctor::record_last_error(e.to_string());
++            match e {
++                workshop_voice::Error::EngineMissing | workshop_voice::Error::Config(_) => {
++                    VoiceError::Config(e.to_string())
++                }
++                other => VoiceError::Stt(other.to_string()),
++            }
++        })?;
++        tracing::info!(
++            tier = %opened.tier,
++            cold = opened.ready.cold,
++            load_ms = opened.ready.load_ms,
++            probe_ms = opened.ready.probe_ms,
++            downloaded = opened.downloaded,
++            stepped_down_from = ?opened.stepped_down_from,
++            "local voice session open"
++        );
++        Ok(Self { inner })
++    }
++
++    pub fn audio_sender(&self) -> Option<mpsc::Sender<Vec<u8>>> {
++        self.inner.audio_sender()
++    }
++
++    pub fn finish_audio(&mut self) {
++        self.inner.finish_audio();
++    }
++
++    pub async fn recv(&mut self) -> Option<StreamingSttEvent> {
++        Some(match self.inner.recv().await? {
++            SessionEvent::Partial { text, .. } => {
++                StreamingSttEvent::Partial(SttTranscriptPartial {
++                    text,
++                    is_final: false,
++                    speech_final: false,
++                })
++            }
++            SessionEvent::Final { text, .. } => StreamingSttEvent::Done { text },
++            SessionEvent::Error(message) => {
++                workshop_voice::doctor::record_last_error(message.clone());
++                StreamingSttEvent::Error { message }
++            }
++        })
++    }
++}
++
++/// Catalog / `auto` preference → Whisper language code. `auto` (and anything unknown) becomes
++/// `None`, which is whisper.cpp's detect-per-utterance; the literal `auto` never goes to the engine.
++pub fn whisper_language(stored: &str) -> Option<String> {
++    let canonical = crate::language::canonicalize_stt_language(Some(stored));
++    if canonical == crate::language::STT_LANGUAGE_AUTO {
++        return None;
++    }
++    // Whisper's table uses `tl` for Filipino/Tagalog; the catalog uses the ISO-639-2 `fil`.
++    let code = match canonical {
++        "fil" => "tl",
++        other => other,
++    };
++    Some(code.to_owned())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::whisper_language;
++
++    #[test]
++    fn auto_is_detection_and_catalog_codes_map_to_whisper() {
++        assert_eq!(whisper_language("auto"), None);
++        assert_eq!(whisper_language(" AUTO "), None);
++        assert_eq!(whisper_language("de"), Some("de".into()));
++        assert_eq!(whisper_language("fil"), Some("tl".into()));
++        assert_eq!(whisper_language("en-US"), Some("en".into()));
++        // Unknown codes fall back to the catalog default, never to the literal "auto"
++        assert_eq!(whisper_language("xx"), Some("en".into()));
++    }
++}
+diff --git a/crates/codegen/xai-grok-voice/src/stt/mod.rs b/crates/codegen/xai-grok-voice/src/stt/mod.rs
+index 628d59a8..dd098d89 100644
+--- a/crates/codegen/xai-grok-voice/src/stt/mod.rs
++++ b/crates/codegen/xai-grok-voice/src/stt/mod.rs
+@@ -1,7 +1,39 @@
+-//! xAI Speech-to-Text: streaming `wss://api.x.ai/v1/stt`.
++//! Speech-to-text sessions: the Workshop local engine (default) and the inherited xAI streaming
++//! client (`wss://…/v1/stt`, opt-in via `provider = "xai"`).
+ 
++mod local;
+ mod streaming;
+ mod types;
+ 
++pub use local::{LocalSttSession, whisper_language};
+ pub use streaming::{StreamingSttEvent, StreamingSttSession};
+ pub use types::{SttServerEvent, SttTranscriptPartial};
++
++/// The session `pipeline.rs` drives; both variants speak [`StreamingSttEvent`].
++pub enum SttSession {
++    Local(LocalSttSession),
++    Xai(StreamingSttSession),
++}
++
++impl SttSession {
++    pub fn audio_sender(&self) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
++        match self {
++            SttSession::Local(s) => s.audio_sender(),
++            SttSession::Xai(s) => s.audio_sender(),
++        }
++    }
++
++    pub fn finish_audio(&mut self) {
++        match self {
++            SttSession::Local(s) => s.finish_audio(),
++            SttSession::Xai(s) => s.finish_audio(),
++        }
++    }
++
++    pub async fn recv(&mut self) -> Option<StreamingSttEvent> {
++        match self {
++            SttSession::Local(s) => s.recv().await,
++            SttSession::Xai(s) => s.recv().await,
++        }
++    }
++}
+diff --git a/crates/codegen/xai-grok-voice/src/stt/streaming.rs b/crates/codegen/xai-grok-voice/src/stt/streaming.rs
+index b4486bdf..accf0e90 100644
+--- a/crates/codegen/xai-grok-voice/src/stt/streaming.rs
++++ b/crates/codegen/xai-grok-voice/src/stt/streaming.rs
+@@ -248,9 +248,18 @@ fn build_stt_ws_url(config: &VoiceConfig) -> Result<Url, VoiceError> {
+ mod tests {
+     use super::*;
+ 
++    /// The xAI client under test needs an explicit base: Workshop's default config has none.
++    fn xai_cfg() -> VoiceConfig {
++        VoiceConfig {
++            provider: crate::config::VoiceProvider::Xai,
++            api_base: "https://stt.example.com".into(),
++            ..VoiceConfig::default()
++        }
++    }
++
+     #[test]
+     fn stt_url_includes_query_params() {
+-        let cfg = VoiceConfig::default();
++        let cfg = xai_cfg();
+         let url = build_stt_ws_url(&cfg).unwrap();
+         let q = url.query().unwrap_or_default();
+         assert!(q.contains("sample_rate=16000"));
+@@ -262,7 +271,7 @@ mod tests {
+     fn stt_url_resolves_auto_to_concrete_language() {
+         let cfg = VoiceConfig {
+             language: "auto".into(),
+-            ..VoiceConfig::default()
++            ..xai_cfg()
+         };
+         let url = build_stt_ws_url(&cfg).unwrap();
+         let q = url.query().unwrap_or_default();
+@@ -289,7 +298,7 @@ mod tests {
+     fn stt_url_passes_through_catalog_language() {
+         let cfg = VoiceConfig {
+             language: "ja".into(),
+-            ..VoiceConfig::default()
++            ..xai_cfg()
+         };
+         let url = build_stt_ws_url(&cfg).unwrap();
+         assert!(url.query().unwrap_or_default().contains("language=ja"));
+diff --git a/crates/codegen/xai-grok-voice/tests/local_dictation.rs b/crates/codegen/xai-grok-voice/tests/local_dictation.rs
+new file mode 100644
+index 00000000..6c264324
+--- /dev/null
++++ b/crates/codegen/xai-grok-voice/tests/local_dictation.rs
+@@ -0,0 +1,150 @@
++//! Workshop overlay: end-to-end dictation through the real pipeline with the local engine.
++//!
++//! Upstream's Linux capture spawns a system recorder from `PATH`; the test puts a fake `arecord`
++//! there that streams a WAV at real-time pace, so `run_voice_pipeline` exercises the genuine
++//! path: recorder subprocess → PCM pipe → `voice-engine` helper → `VoiceEvent`s. Needs the helper
++//! and a model, so it is `#[ignore]`d:
++//!
++//! ```bash
++//! WORKSHOP_VOICE_ENGINE=voice/engine/target/release/voice-engine \
++//! WORKSHOP_VOICE_DIR=/tmp/workshop-home/voice \
++//! FAKE_MIC_BIN_DIR=/tmp/fakemic FAKE_MIC_WAV=crates/workshop-voice/tests/fixtures/jfk.wav \
++//! cargo test -p xai-grok-voice --test local_dictation -- --ignored --nocapture
++//! ```
++
++use std::time::{Duration, Instant};
++
++use xai_grok_voice::{StaticVoiceAuth, VoiceCommand, VoiceConfig, VoiceEvent, run_voice_pipeline};
++
++const JFK: &str = "And so, my fellow Americans, ask not what your country can do for you; ask what you can do for your country.";
++
++fn normalize(s: &str) -> Vec<String> {
++    s.split_whitespace()
++        .map(|w| {
++            w.chars()
++                .filter(|c| c.is_alphanumeric())
++                .flat_map(char::to_lowercase)
++                .collect()
++        })
++        .filter(|w: &String| !w.is_empty())
++        .collect()
++}
++
++fn wer(reference: &str, hypothesis: &str) -> f32 {
++    let r = normalize(reference);
++    let h = normalize(hypothesis);
++    let mut prev: Vec<usize> = (0..=h.len()).collect();
++    for (i, rw) in r.iter().enumerate() {
++        let mut cur = vec![i + 1];
++        for (j, hw) in h.iter().enumerate() {
++            let sub = prev[j] + usize::from(rw != hw);
++            cur.push(sub.min(prev[j + 1] + 1).min(cur[j] + 1));
++        }
++        prev = cur;
++    }
++    prev[h.len()] as f32 / r.len().max(1) as f32
++}
++
++#[tokio::test(flavor = "multi_thread")]
++#[ignore = "needs voice-engine, a model, and the fake recorder (see module docs)"]
++async fn jfk_dictation_through_the_real_pipeline() {
++    let _ = tracing_subscriber::fmt()
++        .with_env_filter("xai_grok_voice=debug,workshop_voice=info,voice_engine=info")
++        .with_writer(std::io::stderr)
++        .try_init();
++    let fake_dir = std::env::var("FAKE_MIC_BIN_DIR").expect("FAKE_MIC_BIN_DIR");
++    assert!(std::env::var("FAKE_MIC_WAV").is_ok(), "FAKE_MIC_WAV");
++    // The recorder is resolved from PATH by upstream's capture backend.
++    // SAFETY: single-threaded setup before any task reads the environment.
++    unsafe { std::env::set_var("PATH", fake_dir) };
++    let wav_secs = {
++        let r = hound::WavReader::open(std::env::var("FAKE_MIC_WAV").unwrap()).unwrap();
++        r.duration() as f32 / r.spec().sample_rate as f32
++    };
++
++    let config = VoiceConfig::default();
++    assert_eq!(config.provider, xai_grok_voice::VoiceProvider::Local);
++    let auth = StaticVoiceAuth::shared("unused-by-the-local-provider").unwrap();
++    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(32);
++    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(128);
++    let pipeline = tokio::spawn(run_voice_pipeline(config, auth, cmd_rx, event_tx));
++
++    let t0 = Instant::now();
++    cmd_tx.send(VoiceCommand::PttPress).await.unwrap();
++    // The recorder starts streaming at once while the engine gets ready (model verify, load,
++    // probe, possibly a tier step-down); upstream's pre-connect backlog keeps that audio. Release
++    // (Esc / Enter) once the session is ready and the clip has fully played out.
++    let mut events: Vec<(Duration, VoiceEvent)> = Vec::new();
++    let mut released_at: Option<Instant> = None;
++    let mut ready_at: Option<Instant> = None;
++    loop {
++        if released_at.is_none() {
++            let clip_done = t0.elapsed() >= Duration::from_secs_f32(0.5 + wav_secs + 1.0);
++            let session_ready = ready_at.is_some_and(|r| r.elapsed() >= Duration::from_secs(2));
++            if (clip_done && session_ready) || t0.elapsed() > Duration::from_secs(240) {
++                cmd_tx.send(VoiceCommand::PttRelease).await.unwrap();
++                released_at = Some(Instant::now());
++            }
++        }
++        match tokio::time::timeout(Duration::from_millis(200), event_rx.recv()).await {
++            Ok(Some(ev)) => {
++                let fatal = matches!(ev, VoiceEvent::Error { .. });
++                if matches!(&ev, VoiceEvent::Status { text } if text.is_empty()) {
++                    ready_at.get_or_insert(Instant::now());
++                }
++                events.push((t0.elapsed(), ev));
++                if fatal {
++                    break;
++                }
++            }
++            Ok(None) => break,
++            Err(_) => {}
++        }
++        if let Some(r) = released_at
++            && (events
++                .iter()
++                .any(|(_, e)| matches!(e, VoiceEvent::UtteranceFinal { .. }))
++                || r.elapsed() > Duration::from_secs(150))
++        {
++            break;
++        }
++    }
++    cmd_tx.send(VoiceCommand::Shutdown).await.unwrap();
++    let _ = tokio::time::timeout(Duration::from_secs(10), pipeline).await;
++
++    let mut first_interim = None;
++    let mut final_text = None;
++    let mut final_at = None;
++    let mut statuses = Vec::new();
++    for (t, ev) in &events {
++        eprintln!("{:>7.2}s {ev:?}", t.as_secs_f32());
++        match ev {
++            VoiceEvent::Status { text } => statuses.push(text.clone()),
++            VoiceEvent::InterimTranscript { .. } => {
++                first_interim.get_or_insert(*t);
++            }
++            VoiceEvent::UtteranceFinal { text } => {
++                final_text = Some(text.clone());
++                final_at = Some(*t);
++            }
++            VoiceEvent::Error { message, .. } => panic!("voice error: {message}"),
++        }
++    }
++    let final_text = final_text.expect("one committed utterance");
++    let release_at = released_at.unwrap() - t0;
++    let error_rate = wer(JFK, &final_text);
++    eprintln!(
++        "\nfirst interim at {:.2}s after press; final {:.2}s after release; WER {error_rate:.3}\nstatuses: {statuses:?}\nfinal: {final_text:?}",
++        first_interim.map(|d| d.as_secs_f32()).unwrap_or(f32::NAN),
++        (final_at.unwrap() - release_at).as_secs_f32()
++    );
++    assert!(first_interim.is_some(), "partials must show while speaking");
++    assert!(
++        statuses
++            .iter()
++            .any(|s| s.starts_with("Loading voice model"))
++            && statuses.last().is_some_and(String::is_empty),
++        "banner status must show the engine getting ready and then clear: {statuses:?}"
++    );
++    assert!(error_rate <= 0.15, "WER {error_rate:.3}: {final_text:?}");
++}

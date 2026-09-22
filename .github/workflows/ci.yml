@@ -1,0 +1,194 @@
+# Workshop CI (docs/workshop-production-plan.md sections 1, 2, 10).
+#
+# `no-xai` is the required check: it runs the compiled-default gates (cargo test -p workshop-gates),
+# the default-path source scan, builds the `workshop` binary, scans its strings against the reviewed
+# baseline, and runs a network-namespaced startup smoke that fails on any request to an xAI host.
+# A sync PR that "passes" by dropping a gate patch fails here. Release and upstream-sync workflows
+# live in their own files (release.yml, sync-upstream.yml); this file only carries the gate jobs.
+name: ci
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "voice/**"
+      - "patches/**"
+      - "scripts/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "upstream-lock.toml"
+      - ".github/workflows/ci.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Telemetry bake-in (GROK_TELEMETRY_BUILD_*) is forbidden here (ADR 0004); the source scan fails if it appears.
+
+jobs:
+  fmt-check:
+    name: fmt + check (overlay)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust from rust-toolchain.toml
+        # Use the repo's pinned toolchain (rust-toolchain.toml → 1.94.0) instead of a second,
+        # ignored version. rustup reads the channel + components from the file; the component add
+        # is a no-op belt-and-suspenders for the fmt/clippy steps.
+        run: |
+          rustup toolchain install
+          rustup component add rustfmt clippy
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "29.3"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workshop
+      - name: rustfmt (overlay crates)
+        run: cargo fmt -p workshop-auth -p workshop-gates -p workshop-providers -p workshop-detect -p workshop-adapters -p workshop-brand -p workshop-voice -- --check
+      - name: cargo check (overlay crates + pager-bin)
+        run: cargo check -p workshop-auth -p workshop-gates -p workshop-providers -p workshop-detect -p workshop-adapters -p workshop-brand -p workshop-voice -p xai-grok-pager-bin
+      - name: clippy (overlay crates, warnings denied)
+        run: cargo clippy -p workshop-auth -p workshop-gates -p workshop-providers -p workshop-detect -p workshop-adapters -p workshop-brand -p workshop-voice --all-targets -- -D warnings
+      - name: Installer and release scripts lint
+        run: |
+          shellcheck -s sh scripts/install.sh
+          shellcheck -x scripts/release/*.sh
+
+  voice-engine:
+    # The whisper.cpp helper is its own Cargo workspace (voice/engine); the TUI never links it.
+    # Builds it, runs its protocol tests, and proves `--version` / `--probe` on the smallest
+    # pinned model against voice/MODEL.lock.json (148 MB download, cached between runs).
+    name: voice-engine (helper build + probe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install
+      # No target cache here on purpose: whisper.cpp compiles with `-march=native`, so a `target/`
+      # cached on one runner's CPU can SIGILL when restored on another (illegal instruction at
+      # decode). The helper build is fast (~1 min); always compile it for the runner we probe on.
+      - name: Build and test the helper
+        run: |
+          cargo build --release --manifest-path voice/engine/Cargo.toml
+          cargo test --release --manifest-path voice/engine/Cargo.toml
+          voice/engine/target/release/voice-engine --version
+      - name: Cache the base model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/workshop-voice-models
+          key: voice-model-${{ hashFiles('voice/MODEL.lock.json') }}
+      - name: Fetch and verify the base tier against the lock file
+        run: scripts/release/fetch-voice-models.sh --dist target/voice-dist --tiers base --cache ~/.cache/workshop-voice-models
+      - name: Probe decode reports probe_ms
+        run: |
+          out=$(voice/engine/target/release/voice-engine --probe --no-gpu --probe-language en --model target/voice-dist/ggml-base.bin)
+          echo "$out"
+          echo "$out" | grep -q '"type":"ready"'
+      - name: Lock file matches the crate's compiled pins
+        run: cargo test -p workshop-voice
+
+  no-xai:
+    name: no-xai gates (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # Strip debug symbols from the many dev/test builds so the shared `target/` stays small
+      # enough for the hosted runner's disk (pairs with the reclaim step below).
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        # This job builds the whole workspace several times (gates, overlay + upstream tests, the
+        # pager lib suite, the binary) with a shared `target/`; the hosted runner's ~14 GB root fills
+        # up (`No space left on device`). Reclaim the preinstalled SDKs we never use (~25 GB).
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android \
+            /usr/local/graalvm /usr/local/share/powershell /usr/local/share/chromium \
+            /opt/hostedtoolcache/CodeQL /usr/lib/jvm "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune --all --force || true
+          df -h /
+      - name: Enable unprivileged user namespaces
+        # Ubuntu 24.04 runners restrict unprivileged user namespaces via AppArmor, so the
+        # network-namespaced gates (`unshare -rn` in no-egress-smoke.sh / no-theft-fs-audit.sh) fail
+        # with `write failed /proc/self/uid_map: Operation not permitted`. Re-enable them (root via
+        # passwordless sudo). Both toggles are best-effort so the step is a no-op on older images.
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          unshare -rn true && echo "unshare -rn works" || echo "WARNING: unshare -rn still restricted"
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "29.3"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workshop
+      - name: Source scan (gates 1-4 defaults, identity, telemetry, gate:no-theft)
+        run: scripts/no-xai-scan.sh --sources
+      - name: patches/ agree with the tree (quilt pushed state)
+        run: |
+          git fetch --no-tags origin "$(sed -n 's/^git_sha = "\(.*\)"/\1/p' upstream-lock.toml)" || true
+          scripts/regenerate-patches.sh --check
+      - name: Compiled-default gates
+        run: cargo test -p workshop-gates -- --nocapture
+      - name: Overlay unit tests
+        run: cargo test -p workshop-auth -p workshop-providers -p workshop-detect -p workshop-adapters -p workshop-brand -p workshop-voice -p xai-grok-voice
+      - name: Upstream unit tests touched by the gate patches
+        run: |
+          cargo test -p xai-grok-login --lib -- config:: manager::tests::auth_scope flow::tests::weblogin_cred flow::tests::oidc_cred flow::tests::external_cred flow::tests::run_auth_flow_falls_through
+          cargo test -p xai-grok-shell --lib -- agent::auth_method:: cached_token_fallthrough
+          cargo test -p xai-grok-update --lib
+          cargo test -p xai-dirs -p xai-grok-env
+      - name: Pager unit tests (picker + turn routing + overlay isolation)
+        # Full pager lib suite. Two upstream time-dependent flakes are `#[ignore]`d (paste ctime,
+        # history-daemon timing; see PR #13) so this stays deterministically green.
+        run: cargo test -p xai-grok-pager --lib
+      - name: Build the workshop binary
+        run: cargo build -p xai-grok-pager-bin --bin workshop
+      - name: Binary string scan against reviewed baseline
+        run: scripts/no-xai-scan.sh --binary target/debug/workshop
+      - name: Startup + Login smoke with zero xAI egress (network namespace)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq strace iproute2 python3
+          scripts/no-egress-smoke.sh target/debug/workshop
+      - name: gate:no-theft runtime — decoy foreign credentials are never opened (strace)
+        run: scripts/no-theft-fs-audit.sh target/debug/workshop target/no-egress/no-theft-fs-audit.log
+      - name: PTY smoke — Login opens the picker, never grok.com
+        env:
+          WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
+        run: cargo test -p workshop-gates --test pty_login_picker -- --nocapture --include-ignored
+      - name: PTY smoke — subscription rails route turns through the CLI adapters (fake CLIs, hermetic)
+        # P3: rails Ready → adapter turn renders → cancel; logged-out rails Sign in → Connect launches
+        # login. Fake claude/codex/cursor-agent (no network). The engine/Kilo cases in the same file
+        # need real network and stay `#[ignore]`d out of CI (only the `rails_` filter runs here).
+        env:
+          WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
+        run: cargo test -p workshop-gates --test live_tui_turns rails_ -- --nocapture --include-ignored
+      - name: Upload evidence
+        if: always()
+        # Evidence upload is diagnostic; an org artifact-storage quota must not fail the required gate.
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: no-xai-evidence
+          path: |
+            target/no-egress/
+            target/pty-evidence/
+          if-no-files-found: ignore

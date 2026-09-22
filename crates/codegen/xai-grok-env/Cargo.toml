@@ -3,11 +3,13 @@ license = "Apache-2.0"
 name = "xai-grok-env"
 version = "0.1.0"
 edition.workspace = true
-description = "Backend environment presets for the Grok CLI crate family: endpoint URL defaults and env-var test support."
+description = "Backend environment for the Grok CLI crate family: endpoint URL presets, shared GROK_*/XAI_* readers, the credentials-path resolver, and the first-party credential list."
 
 [features]
-# single shared rlib per crate, so downstream Bazel test targets need the
-default-bazel = []
+# Exposes `EnvVarGuard` (and its process-wide env lock) to downstream
+# crates' test targets.
+test-support = []
+default-bazel = ["test-support"]
 
 [dependencies]
 tracing = { workspace = true }

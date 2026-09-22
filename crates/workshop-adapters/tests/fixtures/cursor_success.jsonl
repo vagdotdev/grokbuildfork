@@ -1,0 +1,9 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work","session_id":"c0ffee00-1111-4222-8333-444455556666","model":"Claude 4 Sonnet","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"summarize README"}]},"session_id":"c0ffee00-1111-4222-8333-444455556666"}
+{"type":"thinking","subtype":"delta","text":"Reading the README first.","session_id":"c0ffee00-1111-4222-8333-444455556666","timestamp_ms":1758480000001}
+{"type":"thinking","subtype":"completed","session_id":"c0ffee00-1111-4222-8333-444455556666","timestamp_ms":1758480000002}
+{"type":"tool_call","subtype":"started","call_id":"call_1","tool_call":{"readToolCall":{"args":{"path":"README.md"}}},"model_call_id":"mc_1","session_id":"c0ffee00-1111-4222-8333-444455556666","timestamp_ms":1758480000003}
+{"type":"tool_call","subtype":"completed","call_id":"call_1","tool_call":{"readToolCall":{"args":{"path":"README.md"},"result":{"success":{"content":"# Demo\n","isEmpty":false}}}},"model_call_id":"mc_1","session_id":"c0ffee00-1111-4222-8333-444455556666","timestamp_ms":1758480000004}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The README "}]},"session_id":"c0ffee00-1111-4222-8333-444455556666","timestamp_ms":1758480000005}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"is a demo."}]},"session_id":"c0ffee00-1111-4222-8333-444455556666","timestamp_ms":1758480000006}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":3100,"duration_api_ms":3100,"result":"The README is a demo.","session_id":"c0ffee00-1111-4222-8333-444455556666","request_id":"req_1","usage":{"inputTokens":500,"outputTokens":20,"cacheReadTokens":300,"cacheWriteTokens":0}}

@@ -1,13 +1,14 @@
 [package]
 name = "xai-grok-pager-bin"
-version = "0.1.220-alpha.4"
+version = "1.0.32"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["xAI"]
 default-run = "workshop"
 
-# Composition-root binary for Workshop (Grok Build fork). This package exists so
-# the binary can link both the pager library and the optional
+# Composition-root binary for the Workshop TUI (Workshop overlay: the artifact
+# is named `workshop`; the package keeps its upstream name for sync). This
+# package exists so the binary can link both the pager library and the optional
 # `xai-grok-pager-minimal` render mode: `minimal` depends on `xai-grok-pager`,
 # so the pager library cannot depend back on it (cargo cycle). The binary
 # installs the minimal-mode IoC hooks at startup.
@@ -18,10 +19,13 @@ path = "src/main.rs"
 [dependencies]
 # The pager library (all application logic + the public API main.rs drives).
 xai-grok-pager = { path = "../xai-grok-pager" }
+# Workshop overlay: connection picker policy + text-mode picker for `workshop login`.
+workshop-auth = { path = "../../workshop-auth" }
 # Optional scrollback-native render mode, wired in via the fn-pointer seam.
 xai-grok-pager-minimal = { path = "../xai-grok-pager-minimal" }
 
 # Agent runtime + leader/stdio/headless entry points.
+xai-grok-login = { workspace = true }
 xai-grok-shell = { workspace = true }
 xai-grok-update = { path = "../xai-grok-update" }
 xai-grok-version = { workspace = true }
@@ -48,18 +52,17 @@ serde_json = { workspace = true }
 dunce = { workspace = true }
 semver = { workspace = true }
 xai-tty-utils = { workspace = true }
+# `collect_crashed()` for the startup crash notice.
+xai-grok-active-sessions = { workspace = true }
 xai-grok-config = { workspace = true }
 xai-grok-sandbox = { path = "../xai-grok-sandbox", default-features = false }
-rustls = { version = "0.23", default-features = false, features = [
-    "ring",
-    "logging",
-    "std",
-    "tls12",
-] }
+xai-grok-extra-ca = { workspace = true }
 
 # Binary hardening: compile-time string + control-flow obfuscation.
 obfstr = { workspace = true }
 cryptify = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -90,8 +93,12 @@ default = [
 default-bazel = [
     "jemalloc",
     "sandbox-enforce",
+    "local-workspace",
     ]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]
-# Forward the sandbox-enforcement feature to the library.
-sandbox-enforce = ["xai-grok-pager/sandbox-enforce"]
-release-dist = ["xai-grok-pager/release-dist"]
+# xai-grok-workspace no longer enables sandbox-enforce by default, so enable it here.
+sandbox-enforce = ["xai-grok-pager/sandbox-enforce", "xai-grok-workspace/sandbox-enforce"]
+local-workspace = ["xai-grok-pager/local-workspace"]
+release-dist = [
+    "xai-grok-pager/release-dist",
+    ]

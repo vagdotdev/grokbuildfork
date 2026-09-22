@@ -1,0 +1,4 @@
+#!/bin/sh
+# An opencode binary that hangs (simulates a wedged CLI). Detection must time out, not block.
+sleep 30
+echo "1.18.31"

@@ -20,6 +20,8 @@ ignored = ["xai-ratatui-inline"]
 # crate via the `xai_grok_pager::minimal_hook` fn-pointer seam, installed by the
 # composition-root binary; see `install()`.
 xai-grok-pager = { path = "../xai-grok-pager" }
+# Workshop brand overlay (welcome card title).
+workshop-brand = { path = "../../workshop-brand" }
 
 # Rendering primitives (must match the pager's versions).
 ratatui = { workspace = true, features = ["crossterm", "unstable-widget-ref"] }
@@ -33,6 +35,12 @@ tracing = { workspace = true }
 # `[package.metadata.cargo-shear]` note above.
 xai-ratatui-inline = { workspace = true }
 
+# `DiffLine` hunk fixtures for the committed-edit render tests. A normal (not
+# dev) dependency because gazelle lists `src/commit_tests.rs` in the library
+# `srcs` and so attributes its imports to the library target; a
+# `[dev-dependencies]` entry here would fail `just gazelle --check`.
+xai-grok-pager-diff = { path = "../xai-grok-pager-diff" }
+
 # Misc used by the commit/live/full-view paths.
 chrono = { workspace = true }
 similar = { workspace = true }
@@ -44,6 +52,9 @@ xai-token-estimation = { workspace = true }
 # The unit tests reuse the pager's test-only view-model constructors
 # (`test_agent_view`, yolo/auto setters), gated behind its test-only
 # helpers.
-xai-grok-pager = { path = "../xai-grok-pager", features = [] }
+xai-grok-pager = { path = "../xai-grok-pager", features = ["test-support"] }
+# The feedback-form render tests flip the pager's process-global embedded
+# modal flag and must not interleave.
+serial_test = { workspace = true }
 
 [features]

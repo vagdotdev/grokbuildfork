@@ -7,6 +7,16 @@ pub enum VoiceEvent {
     /// Utterance complete (`speech_final` on streaming STT, or batch result).
     UtteranceFinal { text: String },
 
-    /// Non-fatal or fatal error from STT.
-    Error { message: String },
+    /// Workshop overlay: one-line progress for the recording banner while the local engine is
+    /// getting ready ("Downloading voice model… 42%"). Empty text restores the plain banner.
+    /// Never inserted into the prompt.
+    Status { text: String },
+
+    /// Non-fatal or fatal error from capture or STT.
+    Error {
+        /// Short description for a one-line toast.
+        message: String,
+        /// Optional longer fix steps, shown where more than one line fits.
+        hint: Option<String>,
+    },
 }

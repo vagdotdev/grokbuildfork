@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+/// Content-block `_meta` key for per-prompt display texts when several
+/// follow-ups were combined (length ≥ 2). Empty / absent = not combined.
+pub const COMBINED_DISPLAY_TEXTS_META: &str = "combinedDisplayTexts";
+
 /// Per-item queue metadata the session actor attaches to user-originated inputs; synthetic
 /// inputs (auto-wake, nudges) carry none and never appear in the visible queue. Held in
 /// actor state, never serialized itself.
@@ -17,6 +21,8 @@ pub struct QueueEntryMeta {
     pub kind: String,
     /// Plain prompt text for the shared queue display.
     pub text: String,
+    /// Per-prompt display texts when combine merged several follow-ups (len ≥ 2).
+    pub combined_texts: Option<Vec<String>>,
 }
 
 /// One queue row on the wire.
@@ -36,6 +42,9 @@ pub struct QueueEntryWire {
     pub kind: String,
     #[serde(default)]
     pub text: String,
+    /// See [`QueueEntryMeta::combined_texts`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combined_texts: Option<Vec<String>>,
     /// 0-based position among queued, not-yet-running prompts.
     #[serde(default)]
     pub position: usize,
@@ -53,6 +62,17 @@ pub struct QueueChanged {
     /// signal a subscriber uses to adopt `current_prompt_id` for notification routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub running_prompt_id: Option<String>,
+    /// Display text for the running prompt. Carried explicitly because the
+    /// running row is omitted from [`Self::entries`]; clients use this for the
+    /// turn-start user block without relying on a stale local mirror.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_text: Option<String>,
+    /// Kind for the running prompt (`"prompt"` / `"bash"` / …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_kind: Option<String>,
+    /// Per-prompt display texts when the running turn was combined (len ≥ 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_combined_texts: Option<Vec<String>>,
 }
 
 #[cfg(test)]
@@ -72,6 +92,7 @@ mod tests {
                     kind: "prompt".into(),
                     text: "fix the bug".into(),
                     position: 0,
+                    combined_texts: None,
                 },
                 QueueEntryWire {
                     id: "p2".into(),
@@ -81,16 +102,39 @@ mod tests {
                     kind: "bash".into(),
                     text: "ls -la".into(),
                     position: 1,
+                    combined_texts: None,
                 },
             ],
             running_prompt_id: Some("p0".into()),
+
+            running_text: None,
+            running_kind: None,
+            running_combined_texts: None,
         };
         let json = serde_json::to_value(&original).unwrap();
-        assert_eq!(json["sessionId"], "sess-42");
-        assert_eq!(json["entries"][0]["lastEditor"], "bob");
-        assert_eq!(json["runningPromptId"], "p0");
-        assert!(json["entries"][1].get("owner").is_none());
-        assert!(json["entries"][1].get("lastEditor").is_none());
+        assert_eq!(
+            json.get("sessionId").and_then(|v| v.as_str()),
+            Some("sess-42")
+        );
+        let Some(entries) = json.get("entries").and_then(|v| v.as_array()) else {
+            panic!("expected entries array: {json}");
+        };
+        let Some(first) = entries.first() else {
+            panic!("expected first entry: {entries:?}");
+        };
+        assert_eq!(
+            first.get("lastEditor").and_then(|v| v.as_str()),
+            Some("bob")
+        );
+        assert_eq!(
+            json.get("runningPromptId").and_then(|v| v.as_str()),
+            Some("p0")
+        );
+        let Some(second) = entries.get(1) else {
+            panic!("expected second entry: {entries:?}");
+        };
+        assert!(second.get("owner").is_none());
+        assert!(second.get("lastEditor").is_none());
         let round: QueueChanged = serde_json::from_value(json).unwrap();
         assert_eq!(round, original);
     }
@@ -108,8 +152,13 @@ mod tests {
                 kind: "prompt".into(),
                 text: "hi".into(),
                 position: 0,
+                combined_texts: None,
             }],
             running_prompt_id: Some("p0".into()),
+
+            running_text: None,
+            running_kind: None,
+            running_combined_texts: None,
         };
         let expected = serde_json::json!({
             "sessionId": "s1",
@@ -141,11 +190,14 @@ mod tests {
             "entries": [{"id": "p1"}]
         });
         let parsed: QueueChanged = serde_json::from_value(sparse).unwrap();
-        assert_eq!(parsed.entries[0].version, 0);
-        assert_eq!(parsed.entries[0].kind, "");
-        assert_eq!(parsed.entries[0].text, "");
-        assert_eq!(parsed.entries[0].position, 0);
-        assert!(parsed.entries[0].owner.is_none());
+        let Some(entry) = parsed.entries.first() else {
+            panic!("expected one entry: {:?}", parsed.entries);
+        };
+        assert_eq!(entry.version, 0);
+        assert_eq!(entry.kind, "");
+        assert_eq!(entry.text, "");
+        assert_eq!(entry.position, 0);
+        assert!(entry.owner.is_none());
         assert!(parsed.running_prompt_id.is_none());
     }
 
@@ -162,10 +214,21 @@ mod tests {
     }
 
     #[test]
-    fn queue_changed_derives_default() {
-        let d = QueueChanged::default();
-        assert_eq!(d.session_id, "");
-        assert!(d.entries.is_empty());
-        assert!(d.running_prompt_id.is_none());
+    fn running_combined_texts_round_trip() {
+        let original = QueueChanged {
+            session_id: "s1".into(),
+            entries: vec![],
+            running_prompt_id: Some("p0".into()),
+            running_text: Some("a\n\nb".into()),
+            running_kind: Some("prompt".into()),
+            running_combined_texts: Some(vec!["a".into(), "b".into()]),
+        };
+        let json = serde_json::to_value(&original).unwrap();
+        assert_eq!(
+            json.get("runningCombinedTexts"),
+            Some(&serde_json::json!(["a", "b"]))
+        );
+        let round: QueueChanged = serde_json::from_value(json).unwrap();
+        assert_eq!(round, original);
     }
 }

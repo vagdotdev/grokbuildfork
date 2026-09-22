@@ -1,0 +1,217 @@
+diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
+index 6aeb988a..5faa1b48 100644
+--- a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
+@@ -739,6 +739,13 @@ pub struct AgentView {
+     pub(crate) session_binding_epoch: u32,
+     pub scrollback: ScrollbackState,
+     pub prompt: PromptWidget,
++    /// Workshop: composer label for an Engine/Adapter connection (`Big Pickle · OpenCode`,
++    /// `Claude · {model}`); `None` for Shell (Direct/Local), which shows the shell model name.
++    pub(crate) workshop_model_label: Option<String>,
++    /// Workshop: a streaming Engine/Adapter turn is in flight for this agent. Mirrors the app-level
++    /// flag so the per-agent input layer treats Ctrl+C as a cancellable activity (there is no ACP
++    /// turn to detect). Cleared when the turn ends.
++    pub(crate) workshop_turn_active: bool,
+     /// Sticky: once the user types in the prompt, hide the tip for the session.
+     pub tip_typing_dismissed: bool,
+     pub todo: TodoPane,
+diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
+index 78db8552..23ec102e 100644
+--- a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
++++ b/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
+@@ -133,6 +133,8 @@ impl AgentView {
+             session_binding_epoch: 0,
+             scrollback,
+             prompt,
++            workshop_model_label: None,
++            workshop_turn_active: false,
+             tip_typing_dismissed: false,
+             todo: TodoPane::new(),
+             tasks: TasksPane::new(),
+@@ -860,6 +862,7 @@ impl AgentView {
+         self.session.state.is_turn_running()
+             || self.session.state.is_compact_running()
+             || (self.wake_turn_active() && !self.wake_turn_cancelling())
++            || self.workshop_turn_active
+     }
+     /// Whether a local or wake cancel is still in flight.
+     pub(crate) fn any_cancel_pending(&self) -> bool {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
+index 3006f1f0..aa1edca2 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
+@@ -614,6 +614,79 @@ pub(super) fn dispatch_send_prompt_inner(
+     dispatch_send_prompt_submission(app, text, None, consume_input, literal, is_follow_up)
+ }
+ 
++/// gate:overlay-isolation — a prompt leaves the ACP path only for a live Engine/Adapter connection
++/// and only for real prompt text. `Shell` (Direct/Local), literal sends, slash commands, and empty
++/// input always stay on the byte-identical upstream ACP path. Pure so a gate test can pin it.
++pub(super) fn routes_off_acp_path(
++    conn: &crate::app::workshop::WorkshopConnection,
++    literal: bool,
++    text: &str,
++) -> bool {
++    !conn.is_shell() && !literal && !text.trim().is_empty() && !text.trim().starts_with('/')
++}
++
++/// Route one prompt to the OpenCode engine (`Engine`) or a vendor CLI adapter (`Adapter`): echo the
++/// user bubble, mark the turn active, clear the composer, and spawn the streaming task whose events
++/// the event loop's Workshop `select!` arm renders. Never touches the ACP path.
++fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<Effect> {
++    use crate::app::workshop::{self, WorkshopConnection, WorkshopTurnKind, WorkshopTurnSpec};
++
++    if app.workshop_turn_active {
++        app.show_toast("A model turn is already running (Esc to cancel).");
++        return vec![];
++    }
++    let Some(tx) = app.workshop_turn_tx.clone() else {
++        // No interactive loop channel (headless / tests): nothing to stream into.
++        return vec![];
++    };
++    let Some(agent) = app.agents.get(&id) else {
++        return vec![];
++    };
++    let cwd = agent.session.cwd.clone();
++    let always_approve = agent.session.is_yolo();
++
++    let kind = match &app.workshop_connection {
++        WorkshopConnection::Shell => return vec![],
++        WorkshopConnection::Engine { model } => WorkshopTurnKind::Engine {
++            engine: app.workshop_engine.clone(),
++            session: app
++                .workshop_engine_session
++                .clone()
++                .or_else(|| workshop::load_resume_id("opencode", &cwd)),
++            model_ref: model.model_ref.clone(),
++        },
++        WorkshopConnection::Adapter { rail, model } => WorkshopTurnKind::Adapter {
++            adapter_id: workshop::rail_adapter_id(*rail),
++            resume: workshop::load_resume_id(rail.vendor().id(), &cwd),
++            model: Some(model.model.clone()),
++        },
++    };
++    let spec = WorkshopTurnSpec {
++        kind,
++        cwd,
++        text: text.clone(),
++        always_approve,
++    };
++
++    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
++    app.workshop_turn_cancel = Some(cancel_tx);
++    app.workshop_turn_active = true;
++    app.workshop_turn_agent = Some(id);
++    app.workshop_turn_stream_entry = None;
++
++    if let Some(agent) = app.agents.get_mut(&id) {
++        agent.record_prompt_in_history(text.trim());
++        agent
++            .scrollback
++            .push_block(RenderBlock::user_prompt(text.as_str()));
++        agent.prompt.set_text("");
++        agent.workshop_turn_active = true;
++    }
++
++    tokio::spawn(workshop::run_workshop_turn(spec, tx, cancel_rx));
++    vec![]
++}
++
+ pub(super) fn dispatch_send_prompt_submission(
+     app: &mut AppView,
+     text: String,
+@@ -689,6 +762,16 @@ pub(super) fn dispatch_send_prompt_submission(
+         text
+     };
+ 
++    // Workshop: an `Engine` (OpenCode free tier) or `Adapter` (Claude/Codex/Cursor CLI) connection
++    // does not use the shell's ACP session — route the turn through workshop-adapters and stream it
++    // into the scrollback. Pure slash commands already returned above; only real prompt text
++    // reaches here. Direct/Local (`Shell`) connections fall through to the ACP path unchanged.
++    if routes_off_acp_path(&app.workshop_connection, literal, &text) {
++        let mut effects = prelude;
++        effects.extend(dispatch_workshop_turn(app, id, text));
++        return effects;
++    }
++
+     // Capture app-level fields before the mut-borrow on `agent`.
+     let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
+     let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
+index e792108a..ef3c6be4 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
+@@ -736,9 +736,13 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
+     let announcements = app.active_announcements.clone();
+     let restricted = app.tier_restricted_commands.clone();
+     let plugins_visible = !app.appearance.disable_plugins;
++    // Workshop: a new/revealed agent shows the active connection's composer label (`Big Pickle ·
++    // OpenCode`, `Claude · {model}`); `None` for Direct/Local (Shell) → the shell model name shows.
++    let workshop_label = app.workshop_connection.composer_label();
+     let Some(agent) = app.agents.get_mut(&agent_id) else {
+         return;
+     };
++    agent.workshop_model_label = workshop_label;
+     agent.prompt.set_compact(compact);
+     agent.prompt.adopt_slash_mru(slash_mru);
+     agent.prompt.adopt_command_tags(command_tags);
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs
+index e9666d35..17db253d 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs
+@@ -5947,3 +5947,35 @@ mod prompt_stash_dispatch_tests {
+         assert!(agent.prompt_stash.is_some());
+     }
+ }
++
++// gate:overlay-isolation — the Workshop adapter/engine routing must not perturb the ACP path for
++// Direct/Local (`Shell`) connections. If these fail, an overlay change leaked into upstream turn flow.
++#[test]
++fn gate_acp_path_only_diverts_for_a_live_adapter_connection() {
++    use crate::app::dispatch::prompt::routes_off_acp_path;
++    use crate::app::workshop::WorkshopConnection;
++
++    let shell = WorkshopConnection::Shell;
++    let engine = WorkshopConnection::Engine {
++        model: workshop_auth::EngineModel::big_pickle_seed(),
++    };
++    // Shell (Direct/Local) always stays on the byte-identical upstream ACP path.
++    assert!(!routes_off_acp_path(&shell, false, "hello"));
++    assert!(!routes_off_acp_path(&shell, false, "/model gpt"));
++    assert!(!routes_off_acp_path(&shell, true, "hello"));
++    // A live adapter/engine connection diverts, but only for real prompt text.
++    assert!(routes_off_acp_path(&engine, false, "hello"));
++    assert!(!routes_off_acp_path(&engine, false, "   "), "empty text stays on ACP");
++    assert!(!routes_off_acp_path(&engine, false, "/login"), "slash stays on ACP");
++    assert!(!routes_off_acp_path(&engine, true, "hello"), "literal send stays on ACP");
++}
++
++#[test]
++fn gate_shell_submit_leaves_workshop_turn_state_untouched() {
++    let mut app = test_app_with_agent();
++    assert!(app.workshop_connection.is_shell(), "default is Shell");
++    let _ = dispatch_send_prompt_inner(&mut app, "a real prompt".into(), true, false, false);
++    assert!(!app.workshop_turn_active, "Shell submit must not start a workshop turn");
++    assert!(app.workshop_turn_cancel.is_none());
++    assert!(app.workshop_turn_stream_entry.is_none());
++}
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs
+index 5de539de..77fee083 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs
+@@ -53,6 +53,14 @@ pub(super) fn apply_cancel_subagents_preference_global(app: &mut AppView, stop:
+ }
+ 
+ pub(super) fn dispatch_cancel_turn(app: &mut AppView) -> Vec<Effect> {
++    // Workshop: cancel an in-flight Engine/Adapter turn (Esc / Ctrl-C → abort the OpenCode turn or
++    // SIGINT the vendor CLI). Handled before the ACP path, which owns `Shell` connections only.
++    if app.workshop_turn_active {
++        if let Some(cancel) = &app.workshop_turn_cancel {
++            let _ = cancel.send(true);
++        }
++        return vec![];
++    }
+     let ActiveView::Agent(id) = app.active_view else {
+         return vec![];
+     };

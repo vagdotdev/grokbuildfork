@@ -1,5 +1,4 @@
-//! Link affordances in scrollback: highlight cycling, hover tracking, the
-//! macOS modifier poll, and painting link highlight styles.
+//! Scrollback link handling: highlight cycling, hover tracking, the macOS modifier poll, and painting link highlight styles.
 #[cfg(test)]
 use super::app_should_open_link_on_click_with;
 #[cfg(target_os = "macos")]
@@ -29,9 +28,7 @@ use ratatui::style::Style;
 #[cfg(test)]
 use std::time::Instant;
 impl AgentView {
-    /// Cycle the highlighted link index forward or backward through visible links.
-    ///
-    /// When `forward` is true, advances to the next link (wrapping around).
+    /// When `forward` is true, advances to the next visible link (wrapping around).
     /// When no link is highlighted, selects the first (forward) or last (backward).
     pub fn cycle_highlighted_link(&mut self, forward: bool) {
         let count = self.visible_link_map.links().len();
@@ -56,34 +53,32 @@ impl AgentView {
             }
         });
     }
-    /// Return the URL of the currently highlighted link, if any.
-    pub fn highlighted_link_url(&self) -> Option<&str> {
+    pub fn highlighted_link_target(&self) -> Option<&crate::render::osc8::LinkTarget> {
         self.highlighted_link_idx
             .and_then(|idx| self.visible_link_map.links().get(idx))
-            .map(|link| &*link.url)
+            .map(|link| &link.target)
     }
-    /// True when `(x, y)` lies inside an overlay drawn over the scrollback this
-    /// frame (dropdown, goal detail). Such positions belong to the overlay, not
-    /// to any scrollback link beneath it, so link hover/click must ignore them.
+    /// Return the current OSC 8 URL for the highlighted link preview.
+    pub fn highlighted_link_url(&self) -> Option<std::sync::Arc<str>> {
+        self.highlighted_link_target()
+            .and_then(crate::render::osc8::resolve_link_target)
+            .and_then(|resolved| resolved.osc8_url)
+    }
+    /// True when `(x, y)` lies inside an overlay drawn over the scrollback this frame (dropdown, goal detail).
+    /// Such positions belong to the overlay rather than any scrollback link beneath it, so link hover/click must ignore them.
     pub(in crate::app) fn pos_occluded(&self, x: u16, y: u16) -> bool {
         let pos = ratatui::layout::Position { x, y };
         self.frame_occluder_rects.iter().any(|r| r.contains(pos))
     }
-    /// Rect form of [`Self::pos_occluded`]: any overlay intersecting `rect`
-    /// counts as covering it — the conservative drop-whole rule shared by the
-    /// CTA OSC 8 spans and the impression funnel (overlap ⇒ not counted).
+    /// Rect form of [`Self::pos_occluded`]: any overlay intersecting `rect` counts as covering it whole.
+    /// The CTA OSC 8 spans and the impression funnel share this conservative rule, dropping an overlapped rect entirely rather than clipping it.
     pub(in crate::app) fn rect_occluded(&self, rect: ratatui::layout::Rect) -> bool {
         self.frame_occluder_rects
             .iter()
             .any(|r| rect.intersects(*r))
     }
-    /// Append the promo banner [label] button's OSC 8 span when one should be
-    /// emitted this frame: an armed CTA rect (draw already suppressed it under
-    /// prompt dropdowns), no frame occluder covering it (same drop-whole rule
-    /// as the scrollback spans — e.g. the goal-detail overlay can reach the
-    /// banner row on short terminals), and a usable CTA target. Split from
-    /// `draw`'s emit-gated block so the guard set is unit-testable; the caller
-    /// owns the `hyperlink_route().emit_osc8` check.
+    /// Append the promo banner [label] button's OSC 8 span when the CTA rect is armed, no frame occluder covers it, and a CTA target resolves.
+    /// Split from `draw`'s emit-gated block so the guards are unit-testable; the caller owns the `hyperlink_route().emit_osc8` check.
     pub(super) fn push_promo_cta_link_span(
         &self,
         link_spans_out: &mut Vec<xai_ratatui_inline::LinkSpan>,
@@ -97,9 +92,8 @@ impl AgentView {
             self.push_cta_link_span(link_spans_out, self.hit_announcement_cta.rect, url);
         }
     }
-    /// OSC 8 twin for the in-session header upgrade CTA (`hit_upgrade_cta`),
-    /// sharing the same slot-gated url + occluder drop-whole rule as the banner
-    /// CTA so hyperlink-capable terminals can open the promo from the header.
+    /// OSC 8 twin for the in-session header upgrade CTA (`hit_upgrade_cta`), so hyperlink-capable terminals can open the promo from the header.
+    /// It shares the banner CTA's url resolution and occluder rule.
     pub(super) fn push_upgrade_cta_link_span(
         &self,
         link_spans_out: &mut Vec<xai_ratatui_inline::LinkSpan>,
@@ -113,10 +107,44 @@ impl AgentView {
             self.push_cta_link_span(link_spans_out, self.hit_upgrade_cta.rect, url);
         }
     }
-    /// Emit an OSC 8 hyperlink span over a CTA button `rect` when armed (draw
-    /// already suppressed it under prompt dropdowns) and no frame occluder
-    /// covers it (same drop-whole rule as the scrollback spans — e.g. the
-    /// goal-detail overlay can reach the top/bottom rows on short terminals).
+    /// Append one OSC 8 span per painted row of the connectors URL inside the extensions modal's wait
+    /// overlay. The overlay is the topmost paint in that frame, so no occluder check applies; the
+    /// active-wait accessor already withholds rects while a message or pending action covers it.
+    pub(super) fn push_managed_connectors_wait_link_spans(
+        link_spans_out: &mut Vec<xai_ratatui_inline::LinkSpan>,
+        modal_state: &crate::views::extensions_modal::ExtensionsModalState,
+    ) {
+        let Some(wait) = modal_state.active_managed_connectors_wait() else {
+            return;
+        };
+        link_spans_out.extend(
+            wait.url_rects
+                .iter()
+                .map(|rect| xai_ratatui_inline::LinkSpan {
+                    row: rect.y,
+                    col_start: rect.x,
+                    col_end: rect.x.saturating_add(rect.width),
+                    url: std::sync::Arc::clone(&wait.url),
+                    id: None,
+                }),
+        );
+    }
+    /// Append the OSC 8 spans a `command` status row opened, in the screen columns the row was painted at, under the same occluder rule as the CTAs.
+    pub(super) fn push_status_line_link_spans(
+        &self,
+        link_spans_out: &mut Vec<xai_ratatui_inline::LinkSpan>,
+        status_line_spans: Vec<xai_ratatui_inline::LinkSpan>,
+    ) {
+        for span in status_line_spans {
+            let width = span.col_end.saturating_sub(span.col_start);
+            let row = ratatui::layout::Rect::new(span.col_start, span.row, width, 1);
+            if !self.rect_occluded(row) {
+                link_spans_out.push(span);
+            }
+        }
+    }
+    /// Emit an OSC 8 hyperlink span over a CTA button `rect` when it is armed and no frame occluder covers it.
+    /// Draw already suppressed the rect under prompt dropdowns; the goal-detail overlay can reach the top/bottom rows on short terminals.
     fn push_cta_link_span(
         &self,
         link_spans_out: &mut Vec<xai_ratatui_inline::LinkSpan>,
@@ -135,8 +163,21 @@ impl AgentView {
             });
         }
     }
-    /// Re-evaluate which link (if any) is under the cursor for the given
-    /// modifier state.  Returns `true` when `hovered_link_idx` changed.
+    /// Hit-test `(col, row)` and arm [`Self::pending_link_click`] when the app opens links itself.
+    /// Returns `true` when a link was hit so the caller can skip text-drag even when the terminal opens links (pending stays unset).
+    pub(in crate::app) fn try_arm_link_click(&mut self, col: u16, row: u16) -> bool {
+        if has_native_link_hover() || self.pos_occluded(col, row) {
+            return false;
+        }
+        let Some(link) = self.visible_link_map.link_at(col, row) else {
+            return false;
+        };
+        self.pending_link_click =
+            app_should_open_link_on_click(link).then(|| (col, row, link.target.clone()));
+        true
+    }
+    /// Re-evaluate which link (if any) is under the cursor for the given modifier state.
+    /// Returns `true` when `hovered_link_idx` changed.
     pub(in crate::app) fn update_hovered_link(&mut self, modifier_held: bool) -> bool {
         if !modifier_held && self.hovered_link_idx.is_none() {
             return false;
@@ -164,28 +205,14 @@ impl AgentView {
             false
         }
     }
-    /// How long after the last pointer movement the Cmd link-hover poll stays
-    /// armed. Within this window a Cmd press underlines the hovered link at
-    /// tick latency; after it, the poll (and with it the animation tick loop)
-    /// parks so a pointer merely resting over the window costs zero CPU.
-    /// Any pointer movement — including the reflexive nudge people make
-    /// before Cmd+clicking — re-arms it instantly via the mouse event.
+    /// How long after the last pointer movement the Cmd link-hover poll keeps running.
+    /// After the window the poll (and the animation tick loop it holds) parks, so a pointer merely resting over the window costs zero CPU.
+    /// Any pointer movement, including the reflexive nudge people make before Cmd+clicking, restarts the window via the mouse event.
     #[cfg(target_os = "macos")]
     const LINK_MODIFIER_POLL_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
-    /// Whether macOS should keep ticking / polling Cmd for link hover.
-    ///
-    /// Covers scrollback (`hovered_entry`) **and** `/btw` panel links (map
-    /// entries under `last_btw_area` / existing hover index) — poll must not
-    /// require scrollback-only `hovered_entry` or Cmd release over the panel
-    /// leaves a stuck highlight.
-    ///
-    /// The poll is bounded by recent pointer activity: `hovered_entry` is set
-    /// whenever the pointer rests anywhere over content, so an unbounded gate
-    /// would hold the ~30fps animation tick (each tick running a CoreGraphics
-    /// modifier query) alive for as long as the mouse happens to sit over the
-    /// window — i.e. approximately always. An active link highlight
-    /// (`hovered_link_idx`) keeps polling regardless of the window so a held
-    /// Cmd never strands a stuck underline.
+    /// Covers scrollback (`hovered_entry`) and `/btw` panel links: releasing Cmd over the panel must not leave a stuck highlight.
+    /// `hovered_entry` is set whenever the pointer rests over content, so gating on it alone would poll as long as the mouse sits over the window.
+    /// An active link highlight (`hovered_link_idx`) keeps polling past the window so a held Cmd never strands a stuck underline.
     pub fn needs_link_modifier_poll(&self) -> bool {
         if has_native_link_hover() || self.visible_link_map.is_empty() {
             return false;
@@ -210,15 +237,9 @@ impl AgentView {
                 .last_btw_area
                 .contains((self.last_mouse_pos.0, self.last_mouse_pos.1).into())
     }
-    /// Poll macOS modifier state for link hover. Returns `true` when
-    /// `hovered_link_idx` changed and a redraw is needed.
-    ///
-    /// On macOS, crossterm's Kitty protocol does not report modifier-only
-    /// key events, so bare Cmd press/release is invisible to the input
-    /// handler. This method polls CoreGraphics directly and is meant to
-    /// be called from the animation tick loop.
-    ///
-    /// No-op on non-macOS (Ctrl key events are reported normally).
+    /// Poll macOS modifier state for link hover; returns `true` when `hovered_link_idx` changed and a redraw is needed.
+    /// Crossterm's Kitty protocol does not report modifier-only key events, so a bare Cmd press or release never reaches the input handler.
+    /// The animation tick loop calls this to poll CoreGraphics directly; on non-macOS it is a no-op (Ctrl key events are reported normally).
     pub fn poll_link_modifier(&mut self) -> bool {
         #[cfg(target_os = "macos")]
         if self.needs_link_modifier_poll() {
@@ -228,10 +249,7 @@ impl AgentView {
     }
     /// Paint keyboard/hover active style for links whose index is in `index_range`.
     /// Shared by the scrollback and `/btw` highlight passes (z-order split).
-    ///
-    /// When `highlighted_link_idx == hovered_link_idx` the rects are painted
-    /// once (the style is idempotent, but de-duping reads more clearly and
-    /// avoids redundant buffer writes).
+    /// When `highlighted_link_idx == hovered_link_idx` the rects are painted once (the style is idempotent, but de-duping avoids redundant writes).
     pub(super) fn paint_link_highlights(
         &self,
         buf: &mut ratatui::buffer::Buffer,
@@ -275,16 +293,32 @@ mod link_click_tests {
         agent.active_pane = AgentPane::Scrollback;
     }
     /// Add a link to the visible_link_map covering (col_start..col_end, row).
-    fn add_visible_link(agent: &mut AgentView, row: u16, col_start: u16, col_end: u16, url: &str) {
+    fn add_visible_target(
+        agent: &mut AgentView,
+        row: u16,
+        col_start: u16,
+        col_end: u16,
+        target: crate::render::osc8::LinkTarget,
+    ) {
         let mut overlay = LinkOverlay::new();
         overlay.push(OverlayLink {
             screen_row: row,
             col_start,
             col_end,
-            url: Arc::from(url),
+            target,
+            presentation: crate::render::osc8::LinkPresentation::Opaque,
             id: Some(1),
         });
         agent.visible_link_map.rebuild(1, &overlay, vec![]);
+    }
+    fn add_visible_link(agent: &mut AgentView, row: u16, col_start: u16, col_end: u16, url: &str) {
+        add_visible_target(
+            agent,
+            row,
+            col_start,
+            col_end,
+            crate::render::osc8::LinkTarget::Url(Arc::from(url)),
+        );
     }
     fn mouse_down(col: u16, row: u16) -> MouseEvent {
         MouseEvent {
@@ -318,10 +352,8 @@ mod link_click_tests {
             modifiers: crossterm::event::KeyModifiers::empty(),
         }
     }
-    /// Drive a real `Down`→`Drag` through `handle_input` on a selectable
-    /// scrollback line so `drag_selection` is genuinely promoted, then leave the
-    /// button held with no `Up` — the latched state the recovery guard targets.
-    fn latch_real_scrollback_drag(agent: &mut AgentView, reg: &ActionRegistry) {
+    /// One selectable line on screen row 5, cols 0..40, in an 80x24 scrollback pane, shared by the drag-latch tests.
+    fn install_selectable_line(agent: &mut AgentView) {
         setup_scrollback_area(agent, Rect::new(0, 0, 80, 24));
         let mut model = ResolvedSelectionModel::default();
         model.push_line(crate::scrollback::text_selection::ResolvedSelectableLine {
@@ -332,9 +364,15 @@ mod link_click_tests {
             screen_x: 0,
             selectable_cols: 0..40,
             text: "selectable scrollback line for drag selection".into(),
+            painted_region: None,
             joiner_to_previous: None,
         });
         agent.update_scrollback_selection_state(model, Default::default());
+    }
+    /// Drive a real `Down` then `Drag` through `handle_input` on a selectable scrollback line so `drag_selection` is genuinely promoted.
+    /// Leaving the button held with no `Up` is the latched state the recovery guard targets.
+    fn latch_real_scrollback_drag(agent: &mut AgentView, reg: &ActionRegistry) {
+        install_selectable_line(agent);
         let _ = agent.handle_input(&Event::Mouse(mouse_down(2, 5)), reg);
         let _ = agent.handle_input(&Event::Mouse(mouse_drag(10, 5)), reg);
         assert!(
@@ -342,6 +380,14 @@ mod link_click_tests {
             "setup: Down→Drag on a selectable line must promote drag_selection"
         );
         assert!(agent.left_mouse_down, "setup: button must still be held");
+    }
+    fn mouse_button_event(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        }
     }
     #[test]
     fn esc_unsticks_latched_drag() {
@@ -362,7 +408,50 @@ mod link_click_tests {
         assert!(agent.drag_selection.is_none());
     }
     #[test]
-    fn fresh_mouse_down_clears_prior_latch() {
+    fn live_drag_events_not_interrupted() {
+        let mut agent = make_agent();
+        let reg = ActionRegistry::defaults();
+        latch_real_scrollback_drag(&mut agent, &reg);
+        let _ = agent.handle_input(&Event::Mouse(mouse_drag(20, 5)), &reg);
+        assert!(agent.drag_selection.is_some());
+    }
+    /// A bare `Moved` while the latch is held means the release was lost.
+    /// The drag finishes as the Up would have (copy delivered, highlight persisted) instead of extending on every hover forever.
+    #[test]
+    fn bare_moved_finishes_lost_up_drag() {
+        let mut agent = make_agent();
+        let reg = ActionRegistry::defaults();
+        latch_real_scrollback_drag(&mut agent, &reg);
+        let outcome = agent.handle_input(&Event::Mouse(mouse_moved(30, 5)), &reg);
+        assert!(matches!(outcome, InputOutcome::Changed));
+        assert!(!agent.left_mouse_down);
+        assert!(agent.drag_selection.is_none(), "finished, not extended");
+        assert!(
+            agent.persistent_text_selection.is_some(),
+            "the finished drag delivered its copy and persisted the highlight"
+        );
+        let _ = agent.handle_input(&Event::Mouse(mouse_moved(40, 5)), &reg);
+        assert!(agent.drag_selection.is_none());
+    }
+    /// A press whose release is lost before any drag motion: the first bare `Moved` drops the latch without promoting a selection or copying.
+    #[test]
+    fn bare_moved_after_plain_press_drops_latch_without_promoting() {
+        let mut agent = make_agent();
+        let reg = ActionRegistry::defaults();
+        install_selectable_line(&mut agent);
+        let _ = agent.handle_input(&Event::Mouse(mouse_down(2, 5)), &reg);
+        assert!(agent.pending_text_drag.is_some(), "setup: press armed");
+        let _ = agent.handle_input(&Event::Mouse(mouse_moved(10, 5)), &reg);
+        assert!(!agent.left_mouse_down);
+        assert!(agent.pending_text_drag.is_none(), "latch dropped");
+        assert!(agent.drag_selection.is_none(), "hover must not select");
+        assert!(agent.persistent_text_selection.is_none(), "nothing copied");
+        let _ = agent.handle_input(&Event::Mouse(mouse_moved(20, 5)), &reg);
+        assert!(agent.drag_selection.is_none());
+    }
+    /// A press following a lost release finishes the interrupted gesture (delivering its copy) before starting the next one.
+    #[test]
+    fn fresh_mouse_down_finishes_prior_latched_drag() {
         let mut agent = make_agent();
         let reg = ActionRegistry::defaults();
         latch_real_scrollback_drag(&mut agent, &reg);
@@ -371,16 +460,102 @@ mod link_click_tests {
             agent.drag_selection.is_none(),
             "the stale promoted selection must not survive into the fresh press"
         );
+        assert!(agent.left_mouse_down, "the new press owns the button latch");
     }
+    /// Replay of a VS Code context-menu gesture captured live: the press landed on the menu and was never reported.
+    /// The pager sees `Down(Right)`, repeated `Drag(Left)`, then `Up(Left)`, with no `Down(Left)` anywhere.
+    /// With no left gesture in progress it must stay inert.
     #[test]
-    fn live_drag_events_not_interrupted() {
+    fn vscode_menu_gesture_right_press_left_drags_left_release_is_inert() {
+        let mut agent = make_agent();
+        let reg = ActionRegistry::defaults();
+        install_selectable_line(&mut agent);
+        let _ = agent.handle_input(
+            &Event::Mouse(mouse_button_event(
+                MouseEventKind::Down(MouseButton::Right),
+                2,
+                5,
+            )),
+            &reg,
+        );
+        for col in [4u16, 8, 12, 16] {
+            let _ = agent.handle_input(&Event::Mouse(mouse_drag(col, 5)), &reg);
+        }
+        let _ = agent.handle_input(&Event::Mouse(mouse_up(16, 5)), &reg);
+        let _ = agent.handle_input(&Event::Mouse(mouse_moved(25, 5)), &reg);
+        let _ = agent.handle_input(&Event::Mouse(mouse_moved(30, 5)), &reg);
+        assert!(!agent.left_mouse_down);
+        assert!(agent.drag_selection.is_none());
+        assert!(agent.pending_text_drag.is_none());
+        assert!(agent.persistent_text_selection.is_none());
+        assert!(!agent.scrollback_drag_latched());
+    }
+    /// An unpaired right release while the left latch is held still means the gesture ended: the drag finishes with its copy.
+    #[test]
+    fn unpaired_right_release_finishes_left_drag() {
         let mut agent = make_agent();
         let reg = ActionRegistry::defaults();
         latch_real_scrollback_drag(&mut agent, &reg);
-        let _ = agent.handle_input(&Event::Mouse(mouse_drag(20, 5)), &reg);
-        assert!(agent.drag_selection.is_some());
-        let _ = agent.handle_input(&Event::Mouse(mouse_moved(25, 5)), &reg);
-        assert!(agent.drag_selection.is_some());
+        let outcome = agent.handle_input(
+            &Event::Mouse(mouse_button_event(
+                MouseEventKind::Up(MouseButton::Right),
+                10,
+                5,
+            )),
+            &reg,
+        );
+        assert!(matches!(outcome, InputOutcome::Changed));
+        assert!(!agent.left_mouse_down);
+        assert!(agent.drag_selection.is_none(), "finished, not stuck");
+        assert!(
+            agent.persistent_text_selection.is_some(),
+            "the finished drag delivered its copy and persisted the highlight"
+        );
+    }
+    /// Replay of the wedged VS Code state captured live: `Down(Left)` per click, never `Up(Left)` or `Drag(Left)`, only bare `Moved`.
+    /// Each click must stay inert instead of growing a runaway selection.
+    #[test]
+    fn wedged_terminal_clicks_without_releases_stay_inert() {
+        let mut agent = make_agent();
+        let reg = ActionRegistry::defaults();
+        install_selectable_line(&mut agent);
+        for (i, col) in [4u16, 12, 20, 28].iter().enumerate() {
+            let _ = agent.handle_input(&Event::Mouse(mouse_down(*col, 5)), &reg);
+            let _ = agent.handle_input(&Event::Mouse(mouse_moved(col + 3, 5)), &reg);
+            let _ = agent.handle_input(&Event::Mouse(mouse_moved(col + 6, 5)), &reg);
+            assert!(
+                agent.drag_selection.is_none(),
+                "click {i}: bare Moved must not grow a selection"
+            );
+            assert!(
+                agent.persistent_text_selection.is_none(),
+                "click {i}: nothing was selected, so nothing may persist"
+            );
+            assert!(!agent.left_mouse_down, "click {i}: latch dropped");
+        }
+    }
+    /// An unpaired right drag while the left latch is held counts as motion with the button still held.
+    /// The latch survives and the left release finishes normally.
+    #[test]
+    fn unpaired_right_drag_keeps_left_latch() {
+        let mut agent = make_agent();
+        let reg = ActionRegistry::defaults();
+        latch_real_scrollback_drag(&mut agent, &reg);
+        let _ = agent.handle_input(
+            &Event::Mouse(mouse_button_event(
+                MouseEventKind::Drag(MouseButton::Right),
+                12,
+                5,
+            )),
+            &reg,
+        );
+        assert!(
+            agent.drag_selection.is_some(),
+            "mis-encoded drag must not drop the live gesture"
+        );
+        let _ = agent.handle_input(&Event::Mouse(mouse_up(14, 5)), &reg);
+        assert!(agent.drag_selection.is_none());
+        assert!(agent.persistent_text_selection.is_some(), "copy delivered");
     }
     #[test]
     fn non_esc_key_clears_latch() {
@@ -398,8 +573,7 @@ mod link_click_tests {
         assert!(agent.block_drag_selection.is_none());
         assert!(!agent.scrollbar_dragging);
     }
-    /// Clicking the banner's [hide] button dispatches the same action as
-    /// `/announcements hide`; clicks outside the cached rect do not.
+    /// Clicking the banner's [hide] button dispatches the same action as `/announcements hide`; clicks outside the cached rect do not.
     #[test]
     fn click_on_announcement_hide_button_dispatches_hide_action() {
         let mut agent = make_agent();
@@ -424,9 +598,8 @@ mod link_click_tests {
             InputOutcome::Action(Action::AnnouncementsHide)
         ));
     }
-    /// Clicking the promo banner's [label] CTA button dispatches the open
-    /// action (URL resolved at dispatch time); clicks outside the cached
-    /// rect (or on a collapsed banner) do not.
+    /// Clicking the promo banner's [label] CTA button dispatches the open action (URL resolved at dispatch time).
+    /// Clicks outside the cached rect (or on a collapsed banner) do not.
     #[test]
     fn click_on_announcement_cta_button_dispatches_open_action() {
         let mut agent = make_agent();
@@ -452,9 +625,8 @@ mod link_click_tests {
             InputOutcome::Action(Action::AnnouncementsOpenCta(_))
         ));
     }
-    /// Draw one 80x30 frame with `announcements` in the banner slot — shared
-    /// fixture for the banner dropdown-suppression tests so `draw`'s long
-    /// positional signature is spelled once.
+    /// Draw one 80x30 frame with `announcements` in the banner slot.
+    /// Shared fixture for the banner dropdown-suppression tests so `draw`'s long positional signature is spelled once.
     fn draw_banner_frame(
         agent: &mut AgentView,
         reg: &ActionRegistry,
@@ -470,6 +642,16 @@ mod link_click_tests {
         banner_height: u16,
         cols: u16,
     ) -> Buffer {
+        draw_frame_privacy(agent, reg, announcements, banner_height, cols, false)
+    }
+    fn draw_frame_privacy(
+        agent: &mut AgentView,
+        reg: &ActionRegistry,
+        announcements: &[xai_grok_announcements::RemoteAnnouncement],
+        banner_height: u16,
+        cols: u16,
+        privacy_banner: bool,
+    ) -> Buffer {
         let area = Rect::new(0, 0, cols, 30);
         let bundle = crate::app::bundle::BundleState::default();
         let mut buf = Buffer::empty(area);
@@ -481,23 +663,23 @@ mod link_click_tests {
             &mut scratch,
             None,
             false,
-            banner_height,
-            announcements,
-            &std::collections::BTreeSet::new(),
-            None,
+            crate::app::agent_view::BannerSlotParams {
+                height: banner_height,
+                announcements,
+                hidden_ids: &std::collections::BTreeSet::new(),
+                privacy_banner,
+                mouse_pos: None,
+                tip: None,
+            },
             &bundle,
             false,
             &mut Vec::new(),
-            false,
-            false,
-            None,
+            crate::app::agent_view::AppRenderParams::default(),
         );
         buf
     }
-    /// Draw-path: prompt dropdowns Clear-and-paint over the banner rows after
-    /// `render_banner` runs, so the same frame's rect refresh must suppress the
-    /// [hide] click target — otherwise a click on a dropdown row would silently
-    /// hide + persist a critical from a button that is no longer on screen.
+    /// Prompt dropdowns paint over the banner rows after `render_banner` runs, so the same frame's rect refresh must drop the [hide] click target.
+    /// Otherwise a click on a dropdown row would silently hide and persist a critical announcement from a button that is no longer on screen.
     #[test]
     fn open_prompt_dropdown_suppresses_announcement_hide_click_target() {
         let reg = ActionRegistry::defaults();
@@ -536,9 +718,88 @@ mod link_click_tests {
             "click where [hide] used to be must not hide-and-persist under a dropdown"
         );
     }
-    /// Promo twin of the [hide] suppression test: the [label] CTA rect must
-    /// also drop under an open dropdown so a dropdown click cannot open a URL
-    /// from a button that is no longer on screen.
+    /// When the caller passes `privacy_banner: true`, the render layer gives the privacy upsell banner the slot even over an announcement.
+    /// (The ranking lives in `AppView::draw`, which never passes `true` while a critical announcement is live.)
+    /// The draw arms the banner's rects and clicks dispatch the banner actions; turning it off clears the rects.
+    #[test]
+    fn privacy_banner_owns_slot_and_clicks_dispatch() {
+        let reg = ActionRegistry::defaults();
+        let mut agent = make_agent();
+        agent.last_terminal_size = (80, 30);
+        let critical = [xai_grok_announcements::RemoteAnnouncement {
+            severity: Some("critical".into()),
+            title: Some("ZZCRIT".into()),
+            message: Some("outage".into()),
+            ..Default::default()
+        }];
+        let buf = draw_frame_privacy(&mut agent, &reg, &critical, 2, 80, true);
+        let text: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                    .collect::<String>()
+            })
+            .collect();
+        assert!(text.contains("Help improve Grok"), "banner copy painted");
+        assert!(
+            !text.contains("ZZCRIT"),
+            "critical announcement yields the slot to the privacy banner"
+        );
+        assert!(
+            agent.hit_announcement_hide.rect.is_none(),
+            "announcement [hide] must not be clickable under the privacy banner"
+        );
+        let rect = agent
+            .privacy_banner
+            .hit_opt_in
+            .rect
+            .expect("accept rect armed");
+        let outcome = agent.handle_input(&Event::Mouse(mouse_down(rect.x + 1, rect.y)), &reg);
+        assert!(matches!(
+            outcome,
+            InputOutcome::Action(Action::PrivacyBannerOptIn)
+        ));
+        let rect = agent
+            .privacy_banner
+            .hit_opt_out
+            .rect
+            .expect("customize rect armed");
+        let outcome = agent.handle_input(&Event::Mouse(mouse_down(rect.x + 1, rect.y)), &reg);
+        assert!(matches!(
+            outcome,
+            InputOutcome::Action(Action::PrivacyBannerOptOut)
+        ));
+        let rect = agent
+            .privacy_banner
+            .hit_terms
+            .rect
+            .expect("terms rect armed");
+        let outcome = agent.handle_input(&Event::Mouse(mouse_down(rect.x + 1, rect.y)), &reg);
+        assert!(matches!(
+            outcome,
+            InputOutcome::Action(Action::OpenUrl(ref url))
+                if url == crate::views::privacy_banner::PRIVACY_BANNER_TERMS_URL
+        ));
+        let rect = agent
+            .privacy_banner
+            .hit_policy
+            .rect
+            .expect("privacy policy rect armed");
+        let outcome = agent.handle_input(&Event::Mouse(mouse_down(rect.x + 1, rect.y)), &reg);
+        assert!(matches!(
+            outcome,
+            InputOutcome::Action(Action::OpenUrl(ref url))
+                if url == crate::views::privacy_banner::PRIVACY_BANNER_POLICY_URL
+        ));
+        draw_frame_privacy(&mut agent, &reg, &critical, 2, 80, false);
+        assert!(agent.privacy_banner.hit_opt_in.rect.is_none());
+        assert!(agent.privacy_banner.hit_opt_out.rect.is_none());
+        assert!(agent.privacy_banner.hit_terms.rect.is_none());
+        assert!(agent.privacy_banner.hit_policy.rect.is_none());
+        assert!(agent.hit_announcement_hide.rect.is_some());
+    }
+    /// Promo twin of the [hide] suppression test: the [label] CTA rect must also drop under an open dropdown.
+    /// A dropdown click must not open a URL from a button that is no longer on screen.
     #[test]
     fn open_prompt_dropdown_suppresses_announcement_cta_click_target() {
         let reg = ActionRegistry::defaults();
@@ -592,9 +853,8 @@ mod link_click_tests {
             "click where [label] used to be must not open a URL under a dropdown"
         );
     }
-    /// Turn-status twin of the banner suppression tests: dropdowns paint over
-    /// the stop button's row, so its rect must drop while one is open — a
-    /// click on dropdown chrome must never cancel the running turn.
+    /// Turn-status twin of the banner suppression tests: dropdowns paint over the stop button's row, so its rect must drop while one is open.
+    /// A click on dropdown chrome must never cancel the running turn.
     #[test]
     fn open_prompt_dropdown_suppresses_stop_button_click_target() {
         let reg = ActionRegistry::defaults();
@@ -628,9 +888,39 @@ mod link_click_tests {
             "click where stop used to be must not cancel the turn under a dropdown"
         );
     }
-    /// Bg twin: the `[↓]` demote button rides the same turn-status row, so its
-    /// rect must drop under an open dropdown too — a dropdown click must never
-    /// background the running execute tool.
+    /// Clicking the still-running watcher cue toggles the tasks pane like Ctrl+G.
+    /// Only the first click that reveals the pane shows the one-time shortcut toast.
+    #[test]
+    fn watching_cue_click_opens_tasks_pane_with_one_time_shortcut_toast() {
+        let reg = ActionRegistry::defaults();
+        let mut agent = make_agent();
+        agent.last_terminal_size = (80, 30);
+        super::test_fixtures::add_running_bg_task(&mut agent);
+        draw_banner_frame(&mut agent, &reg, &[], 0);
+        let rect = agent.hit_watching_cue.rect.expect("cue rect must be armed");
+        let click = Event::Mouse(mouse_down(rect.x + 1, rect.y));
+        let _ = agent.handle_input(&click, &reg);
+        assert!(agent.tasks.overlay.focused);
+        assert!(agent.toast.is_none(), "focus-only click must not toast");
+        agent.tasks.overlay.hide();
+        agent.tasks.on_state_change();
+        draw_banner_frame(&mut agent, &reg, &[], 0);
+        let _ = agent.handle_input(&click, &reg);
+        assert!(agent.tasks.overlay.visible && agent.tasks.overlay.focused);
+        assert_eq!(agent.active_pane, AgentPane::Tasks);
+        let toast = agent.toast.clone().map(|(msg, _)| msg);
+        assert_eq!(toast.as_deref(), Some("Tip: Ctrl+G toggles the tasks pane"));
+        agent.toast = None;
+        draw_banner_frame(&mut agent, &reg, &[], 0);
+        let _ = agent.handle_input(&click, &reg);
+        assert!(!agent.tasks.overlay.visible);
+        draw_banner_frame(&mut agent, &reg, &[], 0);
+        let _ = agent.handle_input(&click, &reg);
+        assert!(agent.tasks.overlay.visible);
+        assert!(agent.toast.is_none(), "toast fires only once per session");
+    }
+    /// Bg twin: the `[↓]` demote button sits on the same turn-status row, so its rect must drop under an open dropdown too.
+    /// A dropdown click must never background the running execute tool.
     #[test]
     fn open_prompt_dropdown_suppresses_bg_button_click_target() {
         use crate::acp::meta::NotificationMeta;
@@ -677,9 +967,30 @@ mod link_click_tests {
             "click where the bg button used to be must not demote under a dropdown"
         );
     }
-    /// Header twin: the top-header upgrade CTA rect must drop under an open
-    /// dropdown too — the only suppression consumer previously without a
-    /// dropdown pin (its occluder-class twin lives below).
+    #[test]
+    fn subagent_view_suppresses_background_button() {
+        let reg = ActionRegistry::defaults();
+        let mut parent = make_agent();
+        let mut child = make_agent();
+        super::test_fixtures::add_running_execute(&mut child);
+        parent.insert_test_child("child-sid".into(), Box::new(child));
+        assert_eq!(
+            crate::app::agent_view::ViewSurface::ChildTakeover,
+            parent
+                .subagent_views
+                .get("child-sid")
+                .unwrap_or_else(|| panic!("missing map entry"))
+                .surface()
+        );
+        parent.open_subagent_fullscreen("child-sid".into());
+        let child = parent.subagent_views.get_mut("child-sid").unwrap();
+        draw_banner_frame(child, &reg, &[], 0);
+        assert!(
+            child.hit_bg_button.rect.is_none(),
+            "read-only child view must not advertise a background button"
+        );
+    }
+    /// Header twin: the top-header upgrade CTA rect must drop under an open dropdown too (the occluder variant of this test lives below).
     #[test]
     fn open_prompt_dropdown_suppresses_header_upgrade_cta_click_target() {
         let reg = ActionRegistry::defaults();
@@ -730,10 +1041,9 @@ mod link_click_tests {
             "click where the header CTA used to be must not open under a dropdown"
         );
     }
-    /// Second suppression layer for the turn-status row: a frame occluder
-    /// (the goal-detail class — NOT a dropdown, so the rects stay armed)
-    /// covering the [stop] + bg buttons must swallow both clicks at dispatch
-    /// time — a click on overlay text must never cancel or demote the turn.
+    /// Second suppression layer for the turn-status row: an occluder covering the [stop] and bg buttons must swallow both clicks at dispatch time.
+    /// (Goal-detail overlays register as occluders, not dropdowns, so the rects stay armed.)
+    /// A click on overlay text must never cancel or demote the turn.
     #[test]
     fn frame_occluder_over_stop_and_bg_buttons_swallows_clicks() {
         use crate::acp::meta::NotificationMeta;
@@ -793,9 +1103,8 @@ mod link_click_tests {
             "overlay-free [stop] click must dispatch again"
         );
     }
-    /// Subagent fullscreen takeover: the parent's banner/header chrome is not
-    /// painted, so the takeover draw must drop the armed [hide]/[label]/header
-    /// CTA rects — a stale rect would fake post-draw impressions and clicks.
+    /// Subagent fullscreen takeover paints no parent banner/header chrome, so the draw must drop the armed [hide]/[label]/header CTA rects.
+    /// A stale rect would fake post-draw impressions and clicks.
     #[test]
     fn subagent_fullscreen_clears_announcement_and_header_cta_rects() {
         let reg = ActionRegistry::defaults();
@@ -825,10 +1134,8 @@ mod link_click_tests {
         assert!(agent.hit_announcement_hide.rect.is_none());
         assert!(agent.hit_upgrade_cta.rect.is_none());
     }
-    /// In-session header upgrade CTA: a promo owning the slot arms
-    /// `hit_upgrade_cta` (clickable → `AnnouncementsOpenCta(Header)`), and the
-    /// draw caches `pinned_upgrade_cta_live` so the `Ctrl+O` arm can override
-    /// YOLO — but ONLY for a pinned (non-dismissible) promo.
+    /// In-session header upgrade CTA: a promo owning the slot arms `hit_upgrade_cta`, whose click dispatches `AnnouncementsOpenCta(Header)`.
+    /// The draw caches `pinned_upgrade_cta_live` so `Ctrl+O` can override YOLO, but only for a pinned (non-dismissible) promo.
     #[test]
     fn header_upgrade_cta_rect_and_ctrl_o_override() {
         use crate::actions::ActionId;
@@ -926,8 +1233,40 @@ mod link_click_tests {
             InputOutcome::Action(Action::SetYoloMode(_))
         ));
     }
-    /// A non-dismissible promo draws with the CTA armed but NO [hide] click
-    /// target (`BannerHits.hide` is None, so the mouse hide path is dead).
+    /// The header reserves the CTA's columns before the location is truncated, so a path that would fill the row still
+    /// leaves the button painted: the path gives way, not the CTA.
+    #[test]
+    fn header_upgrade_cta_survives_a_long_path() {
+        let reg = ActionRegistry::defaults();
+        let mut agent = make_agent();
+        agent.last_terminal_size = (80, 30);
+        agent.session.cwd = std::path::PathBuf::from(format!("/{}", "x".repeat(200)));
+        let promo = [xai_grok_announcements::RemoteAnnouncement {
+            id: Some("promo-long".into()),
+            severity: Some("promo".into()),
+            message: Some("ZZPROMO".into()),
+            cta: Some(xai_grok_announcements::AnnouncementCta {
+                label: Some("Upgrade Account".into()),
+                url: Some("https://x.ai/promo".into()),
+                caption: None,
+            }),
+            ..Default::default()
+        }];
+        let buf = draw_frame_sized(&mut agent, &reg, &promo, 1, 80);
+        let rect = agent
+            .hit_upgrade_cta
+            .rect
+            .expect("the reserved columns must hold the CTA when the path overflows");
+        let row: String = (0..80)
+            .filter_map(|x| buf.cell((x, rect.y)).map(|c| c.symbol().to_string()))
+            .collect();
+        assert!(row.contains("[Upgrade Account]"), "row={row:?}");
+        assert!(
+            row.contains('…'),
+            "the path is the part that truncates; row={row:?}"
+        );
+    }
+    /// A non-dismissible promo draws with the CTA armed but NO [hide] click target (`BannerHits.hide` is None, so the mouse hide path is dead).
     #[test]
     fn non_dismissible_promo_arms_cta_but_no_hide_rect() {
         let reg = ActionRegistry::defaults();
@@ -955,14 +1294,9 @@ mod link_click_tests {
             "pinned promo must arm no [hide] target"
         );
     }
-    /// Second suppression layer: a frame occluder (the goal-detail overlay
-    /// class — registered in `frame_occluder_rects`, NOT a dropdown, so the
-    /// banner rects stay armed) covering the banner row must swallow both
-    /// button clicks (`pos_occluded` guard) AND drop the promo OSC 8 span
-    /// whole; the next overlay-free frame re-enables all three. The span half
-    /// pins `push_promo_cta_link_span` directly — `draw` only calls it behind
-    /// the process-global `hyperlink_route().emit_osc8` gate, which is
-    /// brand-dependent and unforceable per-test.
+    /// Second suppression layer: a frame occluder covering the banner row must swallow both button clicks and drop the promo OSC 8 span whole.
+    /// (Goal-detail overlays register in `frame_occluder_rects`, not as dropdowns, so the banner rects stay armed.)
+    /// `draw` only reaches it behind the process-global `hyperlink_route().emit_osc8` gate, which is brand-dependent and unforceable per-test.
     #[test]
     fn frame_occluder_over_banner_swallows_clicks_and_drops_cta_link_span() {
         let reg = ActionRegistry::defaults();
@@ -1008,11 +1342,24 @@ mod link_click_tests {
         agent.push_promo_cta_link_span(&mut spans, &promo, &no_hidden);
         assert_eq!(spans.len(), 1, "overlay-free frame must emit the span");
         assert_eq!(
-            (spans[0].row, spans[0].col_start, spans[0].col_end),
+            (
+                spans.first().unwrap_or_else(|| panic!("missing index")).row,
+                spans
+                    .first()
+                    .unwrap_or_else(|| panic!("missing index"))
+                    .col_start,
+                spans
+                    .first()
+                    .unwrap_or_else(|| panic!("missing index"))
+                    .col_end
+            ),
             (cta.y, cta.x, cta.x + cta.width),
             "span must cover exactly the [label] button cells"
         );
-        assert_eq!(&*spans[0].url, "https://x.ai/promo");
+        assert_eq!(
+            &*spans.first().unwrap_or_else(|| panic!("missing index")).url,
+            "https://x.ai/promo"
+        );
         let outcome = agent.handle_input(&Event::Mouse(mouse_down(cta.x + 1, cta.y)), &reg);
         assert!(
             matches!(
@@ -1032,7 +1379,11 @@ mod link_click_tests {
         let mut agent = make_agent();
         let area = Rect::new(0, 0, 80, 24);
         setup_scrollback_area(&mut agent, area);
-        agent.pending_link_click = Some((15, 5, "https://example.com".into()));
+        agent.pending_link_click = Some((
+            15,
+            5,
+            crate::render::osc8::LinkTarget::Url("https://example.com".into()),
+        ));
         agent.left_mouse_down = true;
         let outcome = agent.handle_mouse(&mouse_drag(16, 5));
         assert!(matches!(
@@ -1042,44 +1393,70 @@ mod link_click_tests {
         assert!(agent.pending_link_click.is_none());
     }
     #[test]
-    fn up_at_same_position_returns_open_url_action() {
+    fn up_at_same_position_returns_open_link_action() {
         let mut agent = make_agent();
         let area = Rect::new(0, 0, 80, 24);
         setup_scrollback_area(&mut agent, area);
-        agent.pending_link_click = Some((15, 5, "https://example.com".into()));
+        agent.pending_link_click = Some((
+            15,
+            5,
+            crate::render::osc8::LinkTarget::Url("https://example.com".into()),
+        ));
         agent.left_mouse_down = true;
         let outcome = agent.handle_mouse(&mouse_up(15, 5));
         match outcome {
-            InputOutcome::Action(Action::OpenUrl(url)) => {
-                assert_eq!(url, "https://example.com");
+            InputOutcome::Action(Action::OpenLink(target)) => {
+                assert_eq!(
+                    target,
+                    crate::render::osc8::LinkTarget::Url("https://example.com".into())
+                );
             }
-            other => panic!("expected Action::OpenUrl, got {other:?}"),
+            other => panic!("expected Action::OpenLink, got {other:?}"),
         }
     }
-    /// A modifier+click on a `file://` link dispatches `OpenUrl` (Ctrl on
-    /// Linux/Windows; macOS polls CoreGraphics so the Down step isn't
-    /// reproducible in a unit test).
+    /// A modifier+click on a file link opens via our handler with the filesystem target intact.
+    /// (Ctrl on Linux/Windows; macOS polls CoreGraphics, so the Down step is not reproducible in a unit test.)
     #[test]
     #[cfg(not(target_os = "macos"))]
     fn modifier_click_on_file_link_opens_via_our_handler() {
         let mut agent = make_agent();
         let area = Rect::new(0, 0, 80, 24);
         setup_scrollback_area(&mut agent, area);
-        add_visible_link(&mut agent, 5, 10, 30, "file:///tmp/session/images/1.png");
+        add_visible_target(
+            &mut agent,
+            5,
+            10,
+            30,
+            crate::render::osc8::LinkTarget::File(Arc::from(std::path::Path::new(
+                "/tmp/session/images/1.png",
+            ))),
+        );
         let mut down = mouse_down(15, 5);
         down.modifiers = crossterm::event::KeyModifiers::CONTROL;
         assert!(matches!(agent.handle_mouse(&down), InputOutcome::Changed));
         match agent.handle_mouse(&mouse_up(15, 5)) {
-            InputOutcome::Action(Action::OpenUrl(url)) => {
-                assert_eq!(url, "file:///tmp/session/images/1.png");
+            InputOutcome::Action(Action::OpenLink(target)) => {
+                assert_eq!(
+                    target,
+                    crate::render::osc8::LinkTarget::File(Arc::from(std::path::Path::new(
+                        "/tmp/session/images/1.png",
+                    )))
+                );
             }
-            other => panic!("expected Action::OpenUrl(file://…), got {other:?}"),
+            other => panic!("expected Action::OpenLink(file), got {other:?}"),
         }
     }
     fn test_link(url: &str, painted_w: u16) -> crate::scrollback::VisibleLink {
         crate::scrollback::VisibleLink {
             rects: vec![Rect::new(0, 0, painted_w, 1)],
-            url: std::sync::Arc::from(url),
+            target: crate::render::osc8::LinkTarget::Url(std::sync::Arc::from(url)),
+            id: None,
+        }
+    }
+    fn test_file_link(path: &std::path::Path, painted_w: u16) -> crate::scrollback::VisibleLink {
+        crate::scrollback::VisibleLink {
+            rects: vec![Rect::new(0, 0, painted_w, 1)],
+            target: crate::render::osc8::LinkTarget::File(Arc::from(path)),
             id: None,
         }
     }
@@ -1115,20 +1492,19 @@ mod link_click_tests {
             true,
             &test_link(bare, bare_w.saturating_add(40))
         ));
+        let file_path = std::path::Path::new("/tmp/session/images/1.png");
         assert!(app_should_open_link_on_click_with(
             true,
-            &test_link(file, file_w)
+            &test_file_link(file_path, file_w)
         ));
         assert!(app_should_open_link_on_click_with(
             true,
-            &test_link(file, 8)
+            &test_file_link(file_path, 8)
         ));
     }
-    /// Regression: while the plan preview (line viewer) is open and the
-    /// feedback prompt is focused, a left-drag that starts in the prompt
-    /// must keep routing Drag/Up to the prompt so text selection works in
-    /// the input — even when the pointer wanders up into the plan area. It
-    /// must NOT be swallowed by the line viewer's plan-line gutter drag.
+    /// Regression: with the plan preview (line viewer) open and the feedback prompt focused, a left-drag that starts in the prompt stays with it.
+    /// Drag/Up keep routing to the prompt even when the pointer wanders up into the plan area, so text selection works in the input.
+    /// The line viewer's plan-line gutter drag must NOT swallow it.
     #[test]
     fn plan_feedback_drag_routes_to_prompt_not_line_viewer() {
         let mut agent = make_agent();
@@ -1192,10 +1568,17 @@ mod link_click_tests {
         let mut agent = make_agent();
         let area = Rect::new(0, 0, 80, 24);
         setup_scrollback_area(&mut agent, area);
-        agent.pending_link_click = Some((15, 5, "https://example.com".into()));
+        agent.pending_link_click = Some((
+            15,
+            5,
+            crate::render::osc8::LinkTarget::Url("https://example.com".into()),
+        ));
         agent.left_mouse_down = true;
         let outcome = agent.handle_mouse(&mouse_up(16, 5));
-        assert!(!matches!(outcome, InputOutcome::Action(Action::OpenUrl(_))));
+        assert!(!matches!(
+            outcome,
+            InputOutcome::Action(Action::OpenLink(_))
+        ));
         assert!(agent.pending_link_click.is_none());
     }
     #[test]
@@ -1204,17 +1587,27 @@ mod link_click_tests {
         let area = Rect::new(0, 0, 80, 24);
         setup_scrollback_area(&mut agent, area);
         add_visible_link(&mut agent, 5, 10, 30, "https://example.com");
-        agent.pending_link_click = Some((15, 5, "https://example.com".into()));
+        agent.pending_link_click = Some((
+            15,
+            5,
+            crate::render::osc8::LinkTarget::Url("https://example.com".into()),
+        ));
         let outcome = agent.handle_mouse(&mouse_down(5, 3));
         assert!(matches!(outcome, InputOutcome::Changed));
         assert!(agent.pending_link_click.is_none());
     }
+    /// Finishing a press whose release was lost drops its pending link click, so a later unrelated Up cannot fire it.
     #[test]
-    fn moved_with_left_mouse_down_clears_pending_link_click() {
+    fn moved_with_left_mouse_down_finishes_press_and_drops_link_arm() {
         let mut agent = make_agent();
+        let reg = ActionRegistry::defaults();
         let area = Rect::new(0, 0, 80, 24);
         setup_scrollback_area(&mut agent, area);
-        agent.pending_link_click = Some((15, 5, "https://example.com".into()));
+        agent.pending_link_click = Some((
+            15,
+            5,
+            crate::render::osc8::LinkTarget::Url("https://example.com".into()),
+        ));
         agent.left_mouse_down = true;
         agent.pending_text_drag = Some(PendingTextDrag {
             start_col: 15,
@@ -1227,10 +1620,13 @@ mod link_click_tests {
             },
             anchor_content_width: None,
         });
-        let _outcome = agent.handle_mouse(&mouse_moved(16, 5));
+        let outcome = agent.handle_input(&Event::Mouse(mouse_moved(16, 5)), &reg);
+        assert!(matches!(outcome, InputOutcome::Changed));
+        assert!(!agent.left_mouse_down, "lost release finished the press");
+        assert!(agent.pending_text_drag.is_none());
         assert!(
             agent.pending_link_click.is_none(),
-            "Moved with left_mouse_down should clear pending_link_click"
+            "the finished press must not leave its link arm dangling"
         );
     }
     #[test]
@@ -1238,19 +1634,25 @@ mod link_click_tests {
         let mut agent = make_agent();
         setup_scrollback_area(&mut agent, Rect::new(0, 0, 80, 20));
         agent.active_pane = AgentPane::Prompt;
-        agent.pending_link_click = Some((15, 5, "https://example.com".into()));
+        agent.pending_link_click = Some((
+            15,
+            5,
+            crate::render::osc8::LinkTarget::Url("https://example.com".into()),
+        ));
         agent.left_mouse_down = true;
         let outcome = agent.handle_mouse(&mouse_up(15, 5));
         match outcome {
-            InputOutcome::Action(Action::OpenUrl(url)) => {
-                assert_eq!(url, "https://example.com");
+            InputOutcome::Action(Action::OpenLink(target)) => {
+                assert_eq!(
+                    target,
+                    crate::render::osc8::LinkTarget::Url("https://example.com".into())
+                );
             }
-            other => panic!("expected Action::OpenUrl, got {other:?}"),
+            other => panic!("expected Action::OpenLink, got {other:?}"),
         }
     }
-    /// `/btw` panel links share the pane-agnostic Up path: once Down records
-    /// `pending_link_click` (mouse-fallback terminals, Cmd/Ctrl held), Up over
-    /// the panel opens the URL even though active_pane is Prompt.
+    /// `/btw` panel links share the pane-agnostic Up path.
+    /// Once Down records `pending_link_click` (mouse-fallback terminals, Cmd/Ctrl held), Up over the panel opens the URL with active_pane on Prompt.
     #[test]
     fn btw_panel_pending_link_click_opens_on_up() {
         let mut agent = make_agent();
@@ -1258,18 +1660,24 @@ mod link_click_tests {
         agent.active_pane = AgentPane::Prompt;
         agent.btw_focused = true;
         add_visible_link(&mut agent, 20, 4, 40, "https://example.com/btw");
-        agent.pending_link_click = Some((10, 20, "https://example.com/btw".into()));
+        agent.pending_link_click = Some((
+            10,
+            20,
+            crate::render::osc8::LinkTarget::Url("https://example.com/btw".into()),
+        ));
         agent.left_mouse_down = true;
         let outcome = agent.handle_mouse(&mouse_up(10, 20));
         match outcome {
-            InputOutcome::Action(Action::OpenUrl(url)) => {
-                assert_eq!(url, "https://example.com/btw");
+            InputOutcome::Action(Action::OpenLink(target)) => {
+                assert_eq!(
+                    target,
+                    crate::render::osc8::LinkTarget::Url("https://example.com/btw".into())
+                );
             }
-            other => panic!("expected Action::OpenUrl for btw link, got {other:?}"),
+            other => panic!("expected Action::OpenLink for btw link, got {other:?}"),
         }
     }
-    /// On mouse-fallback terminals, Down on a `/btw` link with the link
-    /// modifier records `pending_link_click` instead of starting text drag.
+    /// On mouse-fallback terminals, Down on a `/btw` link with the link modifier records `pending_link_click` instead of starting text drag.
     #[test]
     fn btw_panel_down_on_link_sets_pending_when_mouse_fallback() {
         if has_native_link_hover() {
@@ -1292,11 +1700,12 @@ mod link_click_tests {
             let outcome = agent.handle_mouse(&down);
             assert!(matches!(outcome, InputOutcome::Changed));
             assert_eq!(
-                agent
-                    .pending_link_click
-                    .as_ref()
-                    .map(|(c, r, u)| (*c, *r, u.as_str())),
-                Some((10, 20, "https://example.com/btw"))
+                agent.pending_link_click.as_ref(),
+                Some(&(
+                    10,
+                    20,
+                    crate::render::osc8::LinkTarget::Url("https://example.com/btw".into())
+                ))
             );
         }
     }
@@ -1311,7 +1720,10 @@ mod link_click_tests {
                     screen_row: 20,
                     col_start: 4,
                     col_end: 40,
-                    url: Arc::from("https://example.com/btw"),
+                    target: crate::render::osc8::LinkTarget::Url(Arc::from(
+                        "https://example.com/btw",
+                    )),
+                    presentation: crate::render::osc8::LinkPresentation::Opaque,
                     id: Some(1),
                 });
                 o
@@ -1328,11 +1740,9 @@ mod link_click_tests {
             assert!(agent.needs_link_modifier_poll());
         }
     }
-    /// The Cmd link-hover poll is bounded by pointer activity: a pointer
-    /// merely resting over content (hovered_entry set, no recent movement)
-    /// must not demand ticks forever — that held a permanent ~30fps loop
-    /// with a CoreGraphics query per tick on macOS. An active link
-    /// highlight keeps polling regardless (so Cmd release is observed).
+    /// The Cmd link-hover poll is bounded by pointer activity.
+    /// A pointer merely resting over content (hovered_entry set, no recent movement) must not demand ticks forever.
+    /// It used to hold a permanent ~30fps loop with a CoreGraphics query per tick on macOS.
     #[test]
     #[cfg(target_os = "macos")]
     fn needs_link_modifier_poll_expires_without_recent_mouse_movement() {
@@ -1362,8 +1772,30 @@ mod link_click_tests {
                 screen_row: i as u16,
                 col_start: 0,
                 col_end: 10,
-                url: Arc::from(*url),
+                target: crate::render::osc8::LinkTarget::Url(Arc::from(*url)),
+                presentation: crate::render::osc8::LinkPresentation::Opaque,
                 id: Some(i as u32),
+            });
+        }
+        agent.visible_link_map.rebuild(1, &overlay, vec![]);
+    }
+    fn add_colliding_id_links(agent: &mut AgentView) {
+        let mut overlay = LinkOverlay::new();
+        for (i, url) in [
+            "https://first.com",
+            "https://second.com",
+            "https://third.com",
+        ]
+        .iter()
+        .enumerate()
+        {
+            overlay.push(OverlayLink {
+                screen_row: (i as u16) + 3,
+                col_start: 0,
+                col_end: 10,
+                target: crate::render::osc8::LinkTarget::Url(Arc::from(*url)),
+                presentation: crate::render::osc8::LinkPresentation::Opaque,
+                id: Some(0),
             });
         }
         agent.visible_link_map.rebuild(1, &overlay, vec![]);
@@ -1374,7 +1806,10 @@ mod link_click_tests {
         add_multiple_links(&mut agent);
         agent.cycle_highlighted_link(true);
         assert_eq!(agent.highlighted_link_idx, Some(0));
-        assert_eq!(agent.highlighted_link_url(), Some("https://a.com"));
+        assert_eq!(
+            agent.highlighted_link_url().as_deref(),
+            Some("https://a.com")
+        );
     }
     #[test]
     fn cycle_backward_from_none_selects_last() {
@@ -1382,7 +1817,10 @@ mod link_click_tests {
         add_multiple_links(&mut agent);
         agent.cycle_highlighted_link(false);
         assert_eq!(agent.highlighted_link_idx, Some(2));
-        assert_eq!(agent.highlighted_link_url(), Some("https://c.com"));
+        assert_eq!(
+            agent.highlighted_link_url().as_deref(),
+            Some("https://c.com")
+        );
     }
     #[test]
     fn cycle_forward_wraps_around() {
@@ -1408,6 +1846,73 @@ mod link_click_tests {
         assert_eq!(agent.highlighted_link_idx, None);
     }
     #[test]
+    fn colliding_ids_hover_paints_only_the_hit_link() {
+        let mut agent = make_agent();
+        setup_scrollback_area(&mut agent, Rect::new(0, 0, 80, 24));
+        add_colliding_id_links(&mut agent);
+        assert_eq!(agent.visible_link_map.len(), 3);
+        assert_eq!(
+            agent.visible_link_map.link_at(5, 4).map(|l| &l.target),
+            Some(&crate::render::osc8::LinkTarget::Url(Arc::from(
+                "https://second.com"
+            )))
+        );
+        agent.last_mouse_pos = (5, 4);
+        if !has_native_link_hover() {
+            assert!(agent.update_hovered_link(true));
+            assert_eq!(agent.hovered_link_idx, Some(1));
+        } else {
+            agent.hovered_link_idx = Some(1);
+        }
+        let style = Style::default().add_modifier(ratatui::style::Modifier::UNDERLINED);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 8));
+        agent.paint_link_highlights(&mut buf, style, 0..agent.visible_link_map.len());
+        assert!(buf.cell((5, 4)).is_some_and(|c| {
+            c.style()
+                .add_modifier
+                .contains(ratatui::style::Modifier::UNDERLINED)
+        }));
+        assert!(!buf.cell((5, 3)).is_some_and(|c| {
+            c.style()
+                .add_modifier
+                .contains(ratatui::style::Modifier::UNDERLINED)
+        }));
+        assert!(!buf.cell((5, 5)).is_some_and(|c| {
+            c.style()
+                .add_modifier
+                .contains(ratatui::style::Modifier::UNDERLINED)
+        }));
+    }
+    #[test]
+    fn colliding_ids_modifier_click_opens_hit_url() {
+        if has_native_link_hover() {
+            return;
+        }
+        let mut agent = make_agent();
+        setup_scrollback_area(&mut agent, Rect::new(0, 0, 80, 24));
+        add_colliding_id_links(&mut agent);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut down = mouse_down(5, 5);
+            down.modifiers = crossterm::event::KeyModifiers::CONTROL;
+            assert!(matches!(agent.handle_mouse(&down), InputOutcome::Changed));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert!(agent.try_arm_link_click(5, 5));
+            agent.left_mouse_down = true;
+        }
+        match agent.handle_mouse(&mouse_up(5, 5)) {
+            InputOutcome::Action(Action::OpenLink(target)) => {
+                assert_eq!(
+                    target,
+                    crate::render::osc8::LinkTarget::Url(Arc::from("https://third.com"))
+                );
+            }
+            other => panic!("expected Action::OpenLink(third), got {other:?}"),
+        }
+    }
+    #[test]
     fn enter_opens_highlighted_link() {
         let mut agent = make_agent();
         setup_scrollback_area(&mut agent, Rect::new(0, 0, 80, 24));
@@ -1417,10 +1922,13 @@ mod link_click_tests {
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let outcome = agent.handle_scrollback_key(&enter, &registry);
         match outcome {
-            InputOutcome::Action(Action::OpenUrl(url)) => {
-                assert_eq!(url, "https://b.com");
+            InputOutcome::Action(Action::OpenLink(target)) => {
+                assert_eq!(
+                    target,
+                    crate::render::osc8::LinkTarget::Url("https://b.com".into())
+                );
             }
-            other => panic!("expected Action::OpenUrl, got {other:?}"),
+            other => panic!("expected Action::OpenLink, got {other:?}"),
         }
         assert_eq!(agent.highlighted_link_idx, None);
     }
@@ -1433,10 +1941,12 @@ mod link_click_tests {
         let registry = ActionRegistry::defaults();
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let outcome = agent.handle_scrollback_key(&enter, &registry);
-        assert!(!matches!(outcome, InputOutcome::Action(Action::OpenUrl(_))));
+        assert!(!matches!(
+            outcome,
+            InputOutcome::Action(Action::OpenLink(_))
+        ));
     }
-    /// Enter with a previous user prompt selected enters inline edit mode
-    /// (edit-and-resubmit) instead of falling through to OpenBlockViewer.
+    /// Enter with a previous user prompt selected enters inline edit mode (edit-and-resubmit) instead of falling through to OpenBlockViewer.
     #[test]
     fn enter_on_selected_user_prompt_enters_inline_edit() {
         let mut agent = make_agent();
@@ -1453,11 +1963,18 @@ mod link_click_tests {
         let registry = ActionRegistry::defaults();
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let outcome = agent.handle_scrollback_key(&enter, &registry);
-        assert!(matches!(outcome, InputOutcome::Changed), "got {outcome:?}");
-        assert!(agent.inline_edit.is_some(), "Enter must start inline edit");
+        if crate::app::inline_edit::INLINE_EDIT_ENABLED {
+            assert!(matches!(outcome, InputOutcome::Changed), "got {outcome:?}");
+            assert!(agent.inline_edit.is_some(), "Enter must start inline edit");
+        } else {
+            assert!(agent.inline_edit.is_none(), "feature gated off: no edit");
+            assert!(
+                matches!(outcome, InputOutcome::Action(Action::OpenBlockViewer)),
+                "gated off: Enter must fall through to OpenBlockViewer, got {outcome:?}"
+            );
+        }
     }
-    /// Bash prompts are not inline-editable: Enter falls through to the
-    /// registry (OpenBlockViewer) exactly as before.
+    /// Bash prompts are not inline-editable: Enter falls through to the registry (OpenBlockViewer).
     #[test]
     fn enter_on_selected_bash_prompt_falls_through() {
         let mut agent = make_agent();
@@ -1475,8 +1992,9 @@ mod link_click_tests {
             "expected fall-through to OpenBlockViewer, got {outcome:?}"
         );
     }
-    /// Double-click on a user prompt enters inline edit mode (replacing the
-    /// old fold-toggle for editable prompts).
+    /// Double-click on a user prompt enters inline edit when the feature is enabled.
+    /// While gated off it does NOT edit (falls through to the fold arm), leaving the prompt free for text selection.
+    /// Written for both flag states so it stays valid when INLINE_EDIT_ENABLED is flipped back on.
     #[test]
     fn double_click_on_user_prompt_enters_inline_edit() {
         let mut agent = make_agent();
@@ -1492,10 +2010,17 @@ mod link_click_tests {
         let now = std::time::Instant::now();
         (agent.last_click, _) = agent.handle_scrollback_click(now, 0, false);
         let _ = agent.handle_scrollback_click(now + std::time::Duration::from_millis(10), 0, false);
-        assert!(
-            agent.inline_edit.is_some(),
-            "double-click must start inline edit"
-        );
+        if crate::app::inline_edit::INLINE_EDIT_ENABLED {
+            assert!(
+                agent.inline_edit.is_some(),
+                "double-click must start inline edit"
+            );
+        } else {
+            assert!(
+                agent.inline_edit.is_none(),
+                "feature gated off: double-click must not edit"
+            );
+        }
     }
     #[test]
     fn enter_on_subagent_group_header_falls_through_to_group_toggle() {
@@ -1530,9 +2055,7 @@ mod link_click_tests {
                 e.display_mode = crate::scrollback::types::DisplayMode::Collapsed;
             }
         }
-        agent
-            .subagent_views
-            .insert("child-sid".into(), Box::new(make_agent()));
+        agent.insert_test_child("child-sid".into(), Box::new(make_agent()));
         agent.scrollback.prepare_layout(80, 40);
         agent.scrollback.set_selected(Some(0));
         assert!(agent.scrollback.is_selected_group_header());
@@ -1603,7 +2126,7 @@ mod link_click_tests {
         let mut agent = make_agent();
         add_multiple_links(&mut agent);
         agent.highlighted_link_idx = Some(99);
-        assert_eq!(agent.highlighted_link_url(), None);
+        assert!(agent.highlighted_link_url().is_none());
     }
     fn make_search_agent() -> (AgentView, ActionRegistry) {
         use crate::scrollback::block::RenderBlock;
@@ -1636,11 +2159,8 @@ mod link_click_tests {
         }
     }
     /// Wait for the daemon to publish the result of the most recent keystroke.
-    ///
-    /// One keystroke is one atomic `Update`, so it yields exactly one snapshot
-    /// bump; break on the first `poll` that observes it. Panics if the daemon
-    /// never responds so a wedged daemon surfaces here, not as a confusing
-    /// downstream assertion.
+    /// One keystroke is one atomic `Update`, so it bumps the snapshot exactly once; break on the first `poll` that observes it.
+    /// Panics if the daemon never responds so a wedged daemon fails here rather than in a confusing downstream assertion.
     fn settle_search(agent: &mut AgentView) {
         for _ in 0..1000 {
             if agent.poll_scrollback_search() {
@@ -1650,10 +2170,9 @@ mod link_click_tests {
         }
         panic!("scrollback search daemon did not publish a result");
     }
-    /// Type a query one keystroke at a time, settling after each so the daemon
-    /// processes one query per bump. Settling between keystrokes keeps each
-    /// `poll` aligned to a single keystroke (no cross-keystroke coalescing), so
-    /// the final assertions see the result for the complete query.
+    /// Type a query one keystroke at a time, settling after each so the daemon processes one query per bump.
+    /// Settling keeps each `poll` aligned to a single keystroke, with no coalescing across keystrokes.
+    /// The final assertions then see the result for the complete query.
     fn type_query_and_settle(agent: &mut AgentView, reg: &ActionRegistry, query: &str) {
         for c in query.chars() {
             press(agent, reg, KeyCode::Char(c));
@@ -1670,8 +2189,7 @@ mod link_click_tests {
         assert!(search.is_composing());
         assert_eq!(search.query(), "");
     }
-    /// Vim `/` on an empty scrollback (new session) must focus the prompt and
-    /// forward `/` like non-vim mode rather than open an empty search.
+    /// Vim `/` on an empty scrollback (new session) must focus the prompt and forward `/` like non-vim mode rather than open an empty search.
     #[test]
     fn vim_slash_empty_scrollback_focuses_prompt() {
         let (mut agent, reg) = make_empty_vim_agent();
@@ -1689,8 +2207,7 @@ mod link_click_tests {
         press(&mut agent, &reg, KeyCode::Char('/'));
         assert!(agent.scrollback_search.is_none());
     }
-    /// Regression (user report): non-vim '/' from scrollback must
-    /// focus-forward into the prompt like letters do.
+    /// Regression: non-vim '/' from scrollback must focus the prompt and forward, like letters do.
     #[test]
     fn non_vim_slash_focuses_prompt_and_forwards() {
         let (mut agent, reg) = make_search_agent();
@@ -1702,7 +2219,7 @@ mod link_click_tests {
         );
         assert!(agent.scrollback_search.is_none());
     }
-    /// '?' must bubble past the pane handler (agent-level palette alt key).
+    /// '?' must bubble past the pane handler; the palette binding lives at agent level.
     #[test]
     fn non_vim_question_mark_still_bubbles_to_palette() {
         let (mut agent, reg) = make_search_agent();
@@ -1713,8 +2230,7 @@ mod link_click_tests {
             "'?' must bubble (palette binding lives at agent level), got {out:?}"
         );
     }
-    /// Drive the FULL input router with an unmodified `/` so the overlay
-    /// intercepts ahead of `handle_scrollback_key` are exercised.
+    /// Drive the FULL input router with an unmodified `/` so the overlay intercepts ahead of `handle_scrollback_key` are exercised.
     fn route_slash(agent: &mut AgentView, reg: &ActionRegistry) -> InputOutcome {
         agent.handle_input(
             &Event::Key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)),
@@ -1743,14 +2259,14 @@ mod link_click_tests {
         let (mut agent, reg) = make_search_agent();
         agent
             .permission_queue
-            .push_back(super::paste_key_tests::make_followup_permission_state());
+            .push_back(super::test_fixtures::make_followup_permission_state());
         route_slash(&mut agent, &reg);
         assert!(agent.scrollback_search.is_none());
     }
     #[test]
     fn router_slash_blocked_while_plan_approval_pending() {
         let (mut agent, reg) = make_search_agent();
-        agent.plan_approval_view = Some(super::paste_key_tests::make_plan_approval_view_state());
+        agent.plan_approval_view = Some(super::test_fixtures::make_plan_approval_view_state());
         route_slash(&mut agent, &reg);
         assert!(agent.scrollback_search.is_none());
     }
@@ -1964,9 +2480,8 @@ mod link_click_tests {
             "the blocked switch must not arm an invisible EditConfirm modal"
         );
     }
-    /// Render `agent` into a fresh buffer of `area` and return it. Centralizes
-    /// the `draw` boilerplate (including the dev-only tracing arg) so render
-    /// tests stay readable.
+    /// Render `agent` into a fresh buffer of `area` and return it.
+    /// Centralizes the `draw` boilerplate (including the dev-only tracing arg) so render tests stay readable.
     fn render_agent(agent: &mut AgentView, area: Rect, reg: &ActionRegistry) -> Buffer {
         let mut buf = Buffer::empty(area);
         let mut scratch = ScratchBuffer::new();
@@ -1987,16 +2502,11 @@ mod link_click_tests {
             &mut scratch,
             None,
             false,
-            0,
-            &[],
-            &std::collections::BTreeSet::new(),
-            None,
+            crate::app::agent_view::BannerSlotParams::none(),
             &bundle,
             false,
             &mut Vec::new(),
-            false,
-            false,
-            None,
+            crate::app::agent_view::AppRenderParams::default(),
         );
         buf
     }
@@ -2006,10 +2516,9 @@ mod link_click_tests {
             .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
             .collect()
     }
-    /// Draw-path integration: an active ephemeral tip paints into the banner
-    /// row on a tall, unoccluded terminal; the draw-path height gate suppresses
-    /// it when the area is too short; and a co-occurring mode-switch banner
-    /// wins the slot while the tip merely yields (its TTL keeps ticking).
+    /// Draw-path integration: an active ephemeral tip paints into the banner row on a tall, unoccluded terminal.
+    /// The draw-path height gate suppresses it when the area is too short.
+    /// A co-occurring mode-switch banner wins the slot while the tip merely yields (its TTL keeps ticking).
     #[test]
     fn ephemeral_tip_draw_path_reserve_paint_and_precedence() {
         use std::collections::HashMap;
@@ -2054,12 +2563,7 @@ mod link_click_tests {
             "tip is only hidden by precedence, not cleared"
         );
     }
-    /// Regression (#send-now bold leak): an ephemeral tip that reserved the
-    /// banner row must render with its own styling even when a session tip is
-    /// (wrongly or historically) handed to `draw` at the same time. The
-    /// session tip's bold `Tip: ` prefix used to underpaint the row and —
-    /// because `Cell::set_style` merges modifiers — leak BOLD into the first
-    /// five cells of the ephemeral tip ("**Queue**d · Enter to send now").
+    /// `Cell::set_style` merges modifiers, so session-tip underpainting must not leak BOLD into ephemeral tips.
     #[test]
     fn ephemeral_tip_not_bolded_by_session_tip_underpaint() {
         use ratatui::style::Modifier;
@@ -2068,8 +2572,31 @@ mod link_click_tests {
         let tall = Rect::new(0, 0, 80, 30);
         let mut agent = make_agent();
         agent.last_terminal_size = (80, 30);
-        let _ =
-            agent.show_ephemeral_tip(crate::tips::send_now::send_now_tip(), &mut HashMap::new());
+        let theme = crate::theme::Theme::current();
+        let prefix = "Status · ";
+        let chord = "Enter";
+        let _ = agent.show_ephemeral_tip(
+            crate::tips::EphemeralTip::new(
+                "styled-tip",
+                ratatui::text::Line::from(vec![
+                    ratatui::text::Span::styled(
+                        prefix,
+                        ratatui::style::Style::default().fg(theme.gray),
+                    ),
+                    ratatui::text::Span::styled(
+                        chord,
+                        ratatui::style::Style::default()
+                            .fg(theme.text_secondary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    ratatui::text::Span::styled(
+                        " to continue",
+                        ratatui::style::Style::default().fg(theme.gray),
+                    ),
+                ]),
+            ),
+            &mut HashMap::new(),
+        );
         assert!(agent.ephemeral_tip.is_active());
         let mut buf = Buffer::empty(tall);
         let mut scratch = ScratchBuffer::new();
@@ -2090,26 +2617,29 @@ mod link_click_tests {
             &mut scratch,
             None,
             false,
-            0,
-            &[],
-            &std::collections::BTreeSet::new(),
-            Some("ZZSESSIONTIPZZ never shown in agent view"),
+            crate::app::agent_view::BannerSlotParams {
+                tip: Some("ZZSESSIONTIPZZ never shown in agent view"),
+                ..crate::app::agent_view::BannerSlotParams::none()
+            },
             &bundle,
             false,
             &mut Vec::new(),
-            false,
-            false,
-            None,
+            crate::app::agent_view::AppRenderParams::default(),
         );
         let tip_y = (0..tall.height)
-            .find(|&y| buffer_row(&buf, tall.width, y).contains("Queued"))
+            .find(|&y| buffer_row(&buf, tall.width, y).contains("Status"))
             .expect("ephemeral tip must paint into the banner row");
         let row = buffer_row(&buf, tall.width, tip_y);
         assert!(
             !(0..tall.height).any(|y| buffer_row(&buf, tall.width, y).contains("ZZSESSIONTIPZZ")),
             "session tip must not remain visible in the agent view"
         );
-        let start = row[..row.find("Queued").expect("tip text")].chars().count() as u16;
+        let start = row
+            .find("Status")
+            .and_then(|i| row.get(..i))
+            .expect("tip text")
+            .chars()
+            .count() as u16;
         let bold_cols: Vec<u16> = (0..tall.width)
             .filter(|&x| {
                 buf.cell((x, tip_y))
@@ -2118,13 +2648,14 @@ mod link_click_tests {
                     .contains(Modifier::BOLD)
             })
             .collect();
+        let chord_start = start + prefix.chars().count() as u16;
         assert_eq!(
             bold_cols,
-            (start + 9..start + 14).collect::<Vec<u16>>(),
+            (chord_start..chord_start + chord.chars().count() as u16).collect::<Vec<u16>>(),
             "only the Enter chord may be bold, got row {row:?}"
         );
     }
-    /// Critical banner yields over an active ephemeral tip and occludes new shows.
+    /// A critical banner takes the slot over an active ephemeral tip and occludes new shows.
     #[test]
     fn critical_banner_draw_path_yields_and_occludes_ephemeral_tip() {
         use std::collections::HashMap;
@@ -2166,16 +2697,18 @@ mod link_click_tests {
             &mut scratch,
             None,
             false,
-            2,
-            &critical,
-            &std::collections::BTreeSet::new(),
-            Some(long_tip.as_str()),
+            crate::app::agent_view::BannerSlotParams {
+                height: 2,
+                announcements: &critical,
+                hidden_ids: &std::collections::BTreeSet::new(),
+                privacy_banner: false,
+                mouse_pos: None,
+                tip: Some(long_tip.as_str()),
+            },
             &bundle,
             false,
             &mut Vec::new(),
-            false,
-            false,
-            None,
+            crate::app::agent_view::AppRenderParams::default(),
         );
         let frame: String = (0..tall.height)
             .map(|y| buffer_row(&buf, tall.width, y))
@@ -2349,9 +2882,7 @@ mod link_click_tests {
         type_query(&mut child, &reg, "foo");
         assert!(child.scrollback_search.is_some());
         let child_sid = "child-sid".to_string();
-        parent
-            .subagent_views
-            .insert(child_sid.clone(), Box::new(child));
+        parent.insert_test_child(child_sid.clone(), Box::new(child));
         parent.active_subagent = Some(child_sid.clone());
         let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         parent.handle_input(&esc, &reg);
@@ -2360,7 +2891,10 @@ mod link_click_tests {
             "view stays open while the child's search is cancelled"
         );
         assert!(
-            parent.subagent_views[&child_sid]
+            parent
+                .subagent_views
+                .get(&child_sid)
+                .unwrap_or_else(|| panic!("missing map entry"))
                 .scrollback_search
                 .is_none(),
             "the forwarded Esc cancels the child's search"
@@ -2380,9 +2914,7 @@ mod link_click_tests {
         type_query(&mut child, &reg, "fo");
         assert!(child.scrollback_search.as_ref().unwrap().is_composing());
         let child_sid = "child-sid".to_string();
-        parent
-            .subagent_views
-            .insert(child_sid.clone(), Box::new(child));
+        parent.insert_test_child(child_sid.clone(), Box::new(child));
         parent.active_subagent = Some(child_sid.clone());
         let q = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         parent.handle_input(&q, &reg);
@@ -2391,7 +2923,10 @@ mod link_click_tests {
             "view stays open while a search is composing"
         );
         assert_eq!(
-            parent.subagent_views[&child_sid]
+            parent
+                .subagent_views
+                .get(&child_sid)
+                .unwrap_or_else(|| panic!("missing map entry"))
                 .scrollback_search
                 .as_ref()
                 .unwrap()
@@ -2408,9 +2943,7 @@ mod link_click_tests {
         press(&mut child, &reg, KeyCode::Char('/'));
         assert!(child.scrollback_search.is_some());
         let child_sid = "child-sid".to_string();
-        parent
-            .subagent_views
-            .insert(child_sid.clone(), Box::new(child));
+        parent.insert_test_child(child_sid.clone(), Box::new(child));
         parent.active_subagent = Some(child_sid.clone());
         for c in "foo".chars() {
             parent.handle_input(
@@ -2432,7 +2965,10 @@ mod link_click_tests {
             }
             assert!(delivered, "child search daemon did not publish a result");
         }
-        let search = parent.subagent_views[&child_sid]
+        let search = parent
+            .subagent_views
+            .get(&child_sid)
+            .unwrap_or_else(|| panic!("missing map entry"))
             .scrollback_search
             .as_ref()
             .unwrap();
@@ -2471,7 +3007,12 @@ mod link_click_tests {
         use crate::app::app_view::AppView;
         use crate::app::dispatch::{SwitchCause, dispatch, switch_to_agent};
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = AppView::new(tx.clone(), ModelState::default(), Vec::new());
+        let mut app = AppView::new(
+            tx.clone(),
+            ModelState::default(),
+            Vec::new(),
+            crate::render::draw::EscapeWriter::disconnected(),
+        );
         let id = AgentId(0);
         let mut agent = make_agent();
         add_multiple_links(&mut agent);

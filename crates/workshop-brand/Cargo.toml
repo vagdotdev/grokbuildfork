@@ -1,0 +1,15 @@
+[package]
+name = "workshop-brand"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+description = "Workshop brand overlay for the Grok Build TUI: welcome-hero portrait art and title."
+publish = false
+
+# Fork-only crate. It carries every Workshop-specific string and glyph grid so the
+# upstream-owned pager modules change by one line each and stay mergeable on sync.
+
+[dependencies]
+
+[lints]
+workspace = true

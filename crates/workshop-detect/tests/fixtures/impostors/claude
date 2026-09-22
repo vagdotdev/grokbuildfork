@@ -1,0 +1,6 @@
+#!/bin/sh
+# An unrelated program called `claude` (for example a shell wrapper) that is not Claude Code.
+case "$1" in
+  --version|-v) echo "claude-wrapper 0.3"; exit 0 ;;
+esac
+exit 0
