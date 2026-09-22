@@ -5,7 +5,9 @@
 # same build/checksum/smoke pipeline as a dry run and publishes nothing.
 #
 # Outputs: a GitHub Release on $WORKSHOP_RELEASE_REPO with
-#   workshop-<version>-<platform>.tar.gz  (linux/macos x86_64/aarch64; windows best-effort)
+#   workshop-<version>-<platform>.tar.gz      (linux/macos x86_64/aarch64; windows best-effort)
+#   voice-engine-<version>-<platform>.tar.gz  (whisper.cpp dictation helper, same platforms)
+#   ggml-*.bin + MODEL.lock.json              (Whisper model mirror pinned by voice/MODEL.lock.json)
 #   SHA256SUMS
 #   GitHub artifact attestations (SLSA provenance) when the repo is public
 # and an updated channel manifest on the `release-channel` branch, consumed by
@@ -165,6 +167,27 @@ jobs:
             --target-dir "target/${{ matrix.target }}/release-dist" \
             --out dist
 
+      # The dictation helper: its own workspace (voice/engine) so whisper.cpp never enters the TUI
+      # build. Metal is compiled in on Apple Silicon via the crate's target-specific dependency.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: voice/engine
+          key: voice-engine-${{ matrix.platform }}
+      - name: Build voice-engine
+        shell: bash
+        run: cargo build --release --manifest-path voice/engine/Cargo.toml --target ${{ matrix.target }}
+      - name: voice-engine --version
+        shell: bash
+        run: voice/engine/target/${{ matrix.target }}/release/voice-engine${{ runner.os == 'Windows' && '.exe' || '' }} --version
+      - name: Package voice-engine
+        shell: bash
+        run: |
+          scripts/release/package-engine.sh \
+            --version "${{ needs.meta.outputs.version }}" \
+            --platform "${{ matrix.platform }}" \
+            --target-dir "voice/engine/target/${{ matrix.target }}/release" \
+            --out dist
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.platform }}
@@ -172,9 +195,30 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  voice-models:
+    # Mirror the Whisper models pinned in voice/MODEL.lock.json next to the CLI assets so the
+    # installer and the app's self-heal never depend on Hugging Face being up.
+    name: Voice model mirror
+    needs: [meta, lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/workshop-voice-models
+          key: voice-models-${{ hashFiles('voice/MODEL.lock.json') }}
+      - name: Fetch and verify every pinned tier
+        run: scripts/release/fetch-voice-models.sh --dist dist --cache ~/.cache/workshop-voice-models
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-voice-models
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
   checksums:
     name: Checksums and attestations
-    needs: [meta, build]
+    needs: [meta, build, voice-models]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -203,6 +247,8 @@ jobs:
         with:
           subject-path: |
             dist/workshop-*.tar.gz
+            dist/voice-engine-*.tar.gz
+            dist/MODEL.lock.json
             dist/SHA256SUMS
       - id: attested
         run: |
@@ -234,7 +280,7 @@ jobs:
         with:
           name: release-assets
           path: dist
-      - name: install.sh against a local mirror of the release assets
+      - name: install.sh against a local mirror of the release assets (CLI + voice helper + model)
         run: |
           scripts/release/smoke-install.sh \
             --dist dist \

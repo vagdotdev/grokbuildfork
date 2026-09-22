@@ -40,7 +40,8 @@ is_repo_slug "$repo" || die "--repo must be OWNER/NAME"
 need_cmd gh
 
 shopt -s nullglob
-assets=("$dist"/"$PRODUCT_BIN"-*.tar.gz "$dist"/SHA256SUMS)
+# CLI archives, the voice helper archives, the Whisper model mirror files and their lock, then SHA256SUMS.
+assets=("$dist"/"$PRODUCT_BIN"-*.tar.gz "$dist"/voice-engine-*.tar.gz "$dist"/ggml-*.bin "$dist"/MODEL.lock.json "$dist"/SHA256SUMS)
 ((${#assets[@]} > 1)) || die "no assets to upload in $dist"
 
 run() {

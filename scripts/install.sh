@@ -9,10 +9,17 @@
 #   3. download the archive, verify its SHA-256, extract `workshop`
 #   4. install $WORKSHOP_HOME/downloads/workshop-<version>-<platform>
 #      and point the symlink $WORKSHOP_HOME/bin/workshop at it
-#   5. macOS: clear the quarantine attribute; run `workshop --version`; print a PATH hint
+#   5. macOS: clear the quarantine attribute; run `workshop --version`
+#   6. voice dictation (no prompt, no flag): install the `voice-engine` helper beside the
+#      CLI, pick the Whisper model tier for this machine (Apple Silicon -> turbo; otherwise a
+#      timed probe decode on `base` decides between turbo/small/base), download that model into
+#      $WORKSHOP_HOME/voice with resume + SHA-256 verification (three attempts, project mirror
+#      first, then Hugging Face), and record the choice. A matching file is never downloaded again.
+#   7. print a PATH hint
 #
-# Network: exactly two requests (manifest + archive; or archive + SHA256SUMS when
-# WORKSHOP_VERSION pins a version), both to the release repo. No telemetry.
+# Network: manifest (or SHA256SUMS when WORKSHOP_VERSION pins a version), the CLI archive,
+# SHA256SUMS, MODEL.lock.json, the helper archive and the model file(s), all from the release
+# repo (models fall back to huggingface.co). No telemetry.
 #
 # Environment:
 #   WORKSHOP_CHANNEL        stable (default) or alpha
@@ -103,6 +110,262 @@ detect_platform() {
   PLATFORM="$os-$arch"
 }
 
+# ---------------------------------------------------------------------------
+# Voice dictation: helper + model (voice/MODEL.lock.json in the source tree is the pin; the
+# release ships it as the MODEL.lock.json asset so both installer and app read one file).
+#
+# Undocumented CI escape hatches (never needed by users; never printed):
+#   WORKSHOP_VOICE_SKIP=1            skip helper + model entirely (machines with no mirror access)
+#   WORKSHOP_VOICE_TIER=turbo|small|base   force the tier, skip the hardware probe
+#   WORKSHOP_VOICE_MODEL_BASE=URL    base URL for the model mirror (default: the release assets)
+#   WORKSHOP_VOICE_UPSTREAM_BASE=URL base URL replacing https://huggingface.co/... upstream files
+# ---------------------------------------------------------------------------
+VOICE_ENGINE_BIN="voice-engine"
+
+# Number under `"KEY": 123` inside a JSON block.
+block_num() {
+  printf '%s' "$1" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([0-9][0-9.]*\).*/\1/p"
+}
+
+file_size_of() {
+  if stat -c %s "$1" >/dev/null 2>&1; then stat -c %s "$1"; else stat -f %z "$1"; fi
+}
+
+# Resumable download: continues an existing $2 when the server supports ranges, restarts otherwise.
+fetch_resume() {
+  check_url "$1"
+  if command -v curl >/dev/null 2>&1; then
+    if [ -t 2 ]; then progress="--progress-bar"; else progress="-s"; fi
+    rc=0
+    curl -fSL "$progress" --proto '=https,http' --proto-redir '=https' --retry 2 -C - -o "$2" "$1" || rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    # 33: the server ignored the range (or the partial is already complete). Start over once.
+    if [ "$rc" -eq 33 ]; then
+      rm -f "$2"
+      rc=0
+      curl -fSL "$progress" --proto '=https,http' --proto-redir '=https' --retry 2 -o "$2" "$1" || rc=$?
+    fi
+    return "$rc"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -c -O "$2" "$1"
+  else
+    die "need curl or wget"
+  fi
+}
+
+# Size of a regular file in bytes; 0 when it does not exist.
+partial_size() {
+  if [ -f "$1" ]; then file_size_of "$1"; else echo 0; fi
+}
+
+# Available KiB on the volume holding $1 (or its nearest existing parent).
+avail_kib() {
+  d=$1
+  while [ ! -d "$d" ]; do d=$(dirname "$d"); done
+  df -Pk "$d" | awk 'NR==2 {print $4}'
+}
+
+# Total RAM in bytes, or empty when unknown.
+total_ram_bytes() {
+  if [ -r /proc/meminfo ]; then
+    awk '/^MemTotal:/ {print $2 * 1024; exit}' /proc/meminfo
+  elif command -v sysctl >/dev/null 2>&1; then
+    sysctl -n hw.memsize 2>/dev/null || true
+  fi
+}
+
+# voice_model_pins TIER -> sets VM_FILE VM_SIZE VM_SHA VM_UPSTREAM from the lock file ($VOICE_LOCK).
+voice_model_pins() {
+  block=$(json_block "$VOICE_LOCK" "$1")
+  [ -n "$block" ] || die "MODEL.lock.json has no model tier '$1'"
+  VM_FILE=$(block_str "$block" file)
+  VM_SIZE=$(block_num "$block" size)
+  VM_SHA=$(block_str "$block" sha256)
+  VM_UPSTREAM=$(block_str "$block" upstream_url)
+  if [ -z "$VM_FILE" ] || [ -z "$VM_SIZE" ] || ! is_sha256 "$VM_SHA" || [ -z "$VM_UPSTREAM" ]; then
+    die "MODEL.lock.json tier '$1' is incomplete (file/size/sha256/upstream_url)"
+  fi
+  if [ -n "${WORKSHOP_VOICE_UPSTREAM_BASE:-}" ]; then
+    VM_UPSTREAM="${WORKSHOP_VOICE_UPSTREAM_BASE%/}/$VM_FILE"
+  fi
+}
+
+# voice_model_verified TIER DEST_DIR -> 0 when DEST_DIR/<file> exists with the pinned size and SHA-256.
+voice_model_verified() {
+  voice_model_pins "$1"
+  f="$2/$VM_FILE"
+  [ -f "$f" ] && [ "$(file_size_of "$f")" = "$VM_SIZE" ] && [ "$(sha256_of "$f")" = "$VM_SHA" ]
+}
+
+# voice_fetch_model TIER DEST_DIR MIRROR_BASE
+# Makes DEST_DIR/<file> present with the pinned SHA-256. Prints one line; exits non-zero on failure.
+voice_fetch_model() {
+  voice_model_pins "$1"
+  dest="$2/$VM_FILE"
+  partial="$dest.partial"
+  mkdir -p "$2"
+  if [ -f "$dest" ]; then
+    if [ "$(file_size_of "$dest")" = "$VM_SIZE" ] && [ "$(sha256_of "$dest")" = "$VM_SHA" ]; then
+      say "Voice model already present."
+      return 0
+    fi
+    say "voice model $VM_FILE failed verification; replacing it"
+    rm -f "$dest"
+  fi
+  have=0
+  [ -f "$partial" ] && have=$(file_size_of "$partial")
+  if [ "$have" -ge "$VM_SIZE" ]; then rm -f "$partial"; have=0; fi
+  need_kib=$(( (VM_SIZE - have) / 1024 + 65536 ))
+  if [ "$(avail_kib "$2")" -lt "$need_kib" ]; then
+    die "not enough disk space in $2 for the voice model ($(( VM_SIZE / 1048576 )) MiB needed); free some space and re-run this command"
+  fi
+  say "Downloading voice model..."
+  mirror="${3%/}/$VM_FILE"
+  attempt=1
+  while [ "$attempt" -le 3 ]; do
+    # Mirror first, then upstream, then the mirror again.
+    if [ $((attempt % 2)) -eq 1 ]; then url=$mirror; else url=$VM_UPSTREAM; fi
+    if fetch_resume "$url" "$partial" 2>"$partial.err"; then
+      got=$(partial_size "$partial")
+      if [ "$got" = "$VM_SIZE" ]; then
+        actual=$(sha256_of "$partial")
+        if [ "$actual" = "$VM_SHA" ]; then
+          rm -f "$partial.err"
+          mv -f "$partial" "$dest"
+          say "Voice model ready."
+          return 0
+        fi
+        say "voice model checksum mismatch from $url (attempt $attempt): expected $VM_SHA, got $actual"
+        rm -f "$partial"
+      else
+        say "voice model download incomplete from $url (attempt $attempt): $got of $VM_SIZE bytes; will resume"
+      fi
+    else
+      say "voice model download failed from $url (attempt $attempt): $(tr -d '\r' <"$partial.err" | tail -n 1)"
+    fi
+    attempt=$((attempt + 1))
+  done
+  rm -f "$partial.err"
+  die "could not download the voice model after 3 attempts. Check your network and re-run the same install command; it resumes where it stopped."
+}
+
+# voice_probe_ms MODEL_PATH -> prints the helper's one-second probe decode time in ms.
+voice_probe_ms() {
+  out=$("$VOICE_ENGINE_PATH" --probe --probe-language en --model "$1" 2>/dev/null) || return 1
+  printf '%s' "$out" | tr -d '\n\r' | sed -n 's/.*"probe_ms"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p'
+}
+
+# Silent per-machine model tier (voice-spec §9.6). Sets VOICE_TIER; may download `base` as the probe yardstick.
+voice_pick_tier() {
+  sel=$(json_block "$VOICE_LOCK" selection)
+  budget=$(block_num "$sel" interim_budget_ms)
+  min_ram=$(block_num "$sel" min_ram_bytes_for_probe)
+  ratio_small=$(block_num "$sel" probe_ratio_small_over_base)
+  ratio_turbo=$(block_num "$sel" probe_ratio_turbo_over_base)
+  [ -n "$budget" ] || budget=1000
+  [ -n "$ratio_small" ] || ratio_small=3.9
+  [ -n "$ratio_turbo" ] || ratio_turbo=19.5
+
+  VOICE_TIER_READY=0
+  if [ -n "${WORKSHOP_VOICE_TIER:-}" ]; then
+    case "$WORKSHOP_VOICE_TIER" in turbo | small | base) VOICE_TIER=$WORKSHOP_VOICE_TIER; return 0 ;; esac
+    die "WORKSHOP_VOICE_TIER must be turbo, small or base"
+  fi
+  if [ "$PLATFORM" = macos-aarch64 ]; then
+    VOICE_TIER=turbo # Metal
+    return 0
+  fi
+  ram=$(total_ram_bytes)
+  if [ -n "$ram" ] && [ -n "$min_ram" ] && [ "$ram" -lt "${min_ram%.*}" ]; then
+    VOICE_TIER=base
+    return 0
+  fi
+  # CPU machine: install the smallest tier (every machine can run it; it is also the step-down floor),
+  # time one interim decode on it, and predict the bigger tiers from the lock file's ratios.
+  voice_fetch_model base "$VOICE_DIR" "$VOICE_MODEL_BASE"
+  base_file="$VOICE_DIR/$VM_FILE"
+  base_ms=$(voice_probe_ms "$base_file") || base_ms=""
+  VOICE_TIER=base
+  VOICE_TIER_READY=1
+  if [ -z "$base_ms" ]; then
+    return 0
+  fi
+  predicted=$(awk -v b="$base_ms" -v s="$ratio_small" -v t="$ratio_turbo" -v budget="$budget" \
+    'BEGIN { if (b * t <= budget) print "turbo"; else if (b * s <= budget) print "small"; else print "base" }')
+  [ "$predicted" = base ] && return 0
+  voice_fetch_model "$predicted" "$VOICE_DIR" "$VOICE_MODEL_BASE"
+  tier_ms=$(voice_probe_ms "$VOICE_DIR/$VM_FILE") || tier_ms=""
+  if [ -n "$tier_ms" ] && [ "$tier_ms" -le "$budget" ]; then
+    VOICE_TIER=$predicted
+  else
+    # Prediction was optimistic: keep base, drop the file that cannot keep up here.
+    rm -f "$VOICE_DIR/$VM_FILE"
+  fi
+}
+
+# install_voice VERSION PLATFORM ASSET_BASE SHA256SUMS_PATH
+install_voice() {
+  [ "${WORKSHOP_VOICE_SKIP:-0}" = 1 ] && return 0
+  v_version=$1
+  v_platform=$2
+  v_base=${3%/}
+  v_sums=$4
+  VOICE_DIR="$home/voice"
+  VOICE_MODEL_BASE="${WORKSHOP_VOICE_MODEL_BASE:-$v_base}"
+
+  # 1. helper beside the CLI (same downloads/ + bin/ symlink layout as workshop itself)
+  asset="$VOICE_ENGINE_BIN-$v_version-$v_platform.tar.gz"
+  sha=$(awk -v n="$asset" '$2 == n {print $1}' "$v_sums")
+  is_sha256 "$sha" || die "release $v_version has no voice helper for $v_platform (SHA256SUMS lists no $asset); /voice cannot work without it"
+  fetch "$v_base/$asset" "$tmp/$asset"
+  actual=$(sha256_of "$tmp/$asset")
+  [ "$actual" = "$sha" ] || die "checksum mismatch for $asset
+  expected: $sha
+  actual:   $actual"
+  mkdir -p "$tmp/ve"
+  tar -xzf "$tmp/$asset" -C "$tmp/ve"
+  [ -f "$tmp/ve/$VOICE_ENGINE_BIN" ] || die "archive does not contain a $VOICE_ENGINE_BIN binary"
+  vname="$VOICE_ENGINE_BIN-$v_version-$v_platform"
+  chmod 755 "$tmp/ve/$VOICE_ENGINE_BIN"
+  mv -f "$tmp/ve/$VOICE_ENGINE_BIN" "$downloads/$vname.tmp.$$"
+  mv -f "$downloads/$vname.tmp.$$" "$downloads/$vname"
+  if [ "$OS" = macos ] && command -v xattr >/dev/null 2>&1; then
+    xattr -d com.apple.quarantine "$downloads/$vname" 2>/dev/null || true
+  fi
+  ln -s "../downloads/$vname" "$bindir/.$VOICE_ENGINE_BIN.tmp.$$"
+  mv -f "$bindir/.$VOICE_ENGINE_BIN.tmp.$$" "$bindir/$VOICE_ENGINE_BIN"
+  VOICE_ENGINE_PATH="$bindir/$VOICE_ENGINE_BIN"
+  if ! ve_version=$("$VOICE_ENGINE_PATH" --version 2>&1); then
+    die "$VOICE_ENGINE_PATH --version failed:
+$ve_version"
+  fi
+  say "$ve_version"
+
+  # 2. model pins
+  VOICE_LOCK="$tmp/MODEL.lock.json"
+  fetch "$v_base/MODEL.lock.json" "$VOICE_LOCK"
+  [ -n "$(json_block "$VOICE_LOCK" base)" ] || die "release $v_version ships no MODEL.lock.json with model pins"
+
+  # 3. an earlier install (or the app) already chose a tier and its file verifies: nothing to download
+  if [ -z "${WORKSHOP_VOICE_TIER:-}" ] && [ -f "$VOICE_DIR/model.selected" ]; then
+    selected=$(tr -d '\n\r ' <"$VOICE_DIR/model.selected")
+    case "$selected" in
+      turbo | small | base)
+        if voice_model_verified "$selected" "$VOICE_DIR"; then
+          say "Voice model already present."
+          return 0
+        fi
+        ;;
+    esac
+  fi
+
+  # 4. pick the tier for this machine, make its file present and verified, remember the choice
+  voice_pick_tier
+  [ "$VOICE_TIER_READY" = 1 ] || voice_fetch_model "$VOICE_TIER" "$VOICE_DIR" "$VOICE_MODEL_BASE"
+  printf '%s\n' "$VOICE_TIER" >"$VOICE_DIR/.model.selected.tmp.$$"
+  mv -f "$VOICE_DIR/.model.selected.tmp.$$" "$VOICE_DIR/model.selected"
+}
+
 main() {
   need uname
   need tar
@@ -144,6 +407,11 @@ main() {
   fi
   is_sha256 "$sha" || die "manifest has no valid sha256 for $PLATFORM"
   case "$asset" in *.tar.gz) ;; *) die "unexpected asset name: $asset" ;; esac
+  # Every release asset (CLI, voice helper, model mirror) lives next to the CLI archive.
+  asset_base=${url%/*}
+  if [ ! -f "$tmp/SHA256SUMS" ] && [ "${WORKSHOP_VOICE_SKIP:-0}" != 1 ]; then
+    fetch "$asset_base/SHA256SUMS" "$tmp/SHA256SUMS"
+  fi
 
   say "downloading $BIN $version for $PLATFORM"
   fetch "$url" "$tmp/$asset"
@@ -188,6 +456,9 @@ $reported"
   if [ "$OS" = macos ]; then
     say "macOS note: this build is not Apple-notarized. If it is ever blocked, run: xattr -d com.apple.quarantine $bindir/$BIN"
   fi
+
+  # Voice dictation is part of the install, not a follow-up step (voice-spec §6.3).
+  install_voice "$version" "$PLATFORM" "$asset_base" "$tmp/SHA256SUMS"
 
   case ":$PATH:" in
     *":$bindir:"*) say "run: $BIN" ;;

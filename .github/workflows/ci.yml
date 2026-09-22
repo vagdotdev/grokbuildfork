@@ -11,6 +11,7 @@ on:
   pull_request:
     paths:
       - "crates/**"
+      - "voice/**"
       - "patches/**"
       - "scripts/**"
       - "Cargo.toml"
@@ -54,10 +55,50 @@ jobs:
       - name: rustfmt (overlay crates)
         run: cargo fmt -p workshop-auth -p workshop-gates -p workshop-providers -p workshop-detect -p workshop-adapters -p workshop-brand -p workshop-voice -- --check
       - name: cargo check (overlay crates + pager-bin)
-        run: cargo check -p workshop-auth -p workshop-gates -p workshop-providers -p workshop-detect -p workshop-adapters -p workshop-brand -p xai-grok-pager-bin
+        run: cargo check -p workshop-auth -p workshop-gates -p workshop-providers -p workshop-detect -p workshop-adapters -p workshop-brand -p workshop-voice -p xai-grok-pager-bin
       - name: clippy (overlay crates, warnings denied)
-        # workshop-voice (whisper.cpp via cmake) joins check/clippy when the voice patch is wired.
-        run: cargo clippy -p workshop-auth -p workshop-gates -p workshop-providers -p workshop-detect -p workshop-adapters -p workshop-brand -- -D warnings
+        run: cargo clippy -p workshop-auth -p workshop-gates -p workshop-providers -p workshop-detect -p workshop-adapters -p workshop-brand -p workshop-voice --all-targets -- -D warnings
+      - name: Installer and release scripts lint
+        run: |
+          shellcheck -s sh scripts/install.sh
+          shellcheck -x scripts/release/*.sh
+
+  voice-engine:
+    # The whisper.cpp helper is its own Cargo workspace (voice/engine); the TUI never links it.
+    # Builds it, runs its protocol tests, and proves `--version` / `--probe` on the smallest
+    # pinned model against voice/MODEL.lock.json (148 MB download, cached between runs).
+    name: voice-engine (helper build + probe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: voice/engine
+          shared-key: voice-engine
+      - name: Build and test the helper
+        run: |
+          cargo build --release --manifest-path voice/engine/Cargo.toml
+          cargo test --release --manifest-path voice/engine/Cargo.toml
+          voice/engine/target/release/voice-engine --version
+      - name: Cache the base model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/workshop-voice-models
+          key: voice-model-${{ hashFiles('voice/MODEL.lock.json') }}
+      - name: Fetch and verify the base tier against the lock file
+        run: scripts/release/fetch-voice-models.sh --dist target/voice-dist --tiers base --cache ~/.cache/workshop-voice-models
+      - name: Probe decode reports probe_ms
+        run: |
+          out=$(voice/engine/target/release/voice-engine --probe --no-gpu --probe-language en --model target/voice-dist/ggml-base.bin)
+          echo "$out"
+          echo "$out" | grep -q '"type":"ready"'
+      - name: Lock file matches the crate's compiled pins
+        run: cargo test -p workshop-voice
 
   no-xai:
     name: no-xai gates (required)
@@ -84,7 +125,7 @@ jobs:
       - name: Compiled-default gates
         run: cargo test -p workshop-gates -- --nocapture
       - name: Overlay unit tests
-        run: cargo test -p workshop-auth -p workshop-providers -p workshop-detect -p workshop-adapters -p workshop-brand
+        run: cargo test -p workshop-auth -p workshop-providers -p workshop-detect -p workshop-adapters -p workshop-brand -p workshop-voice -p xai-grok-voice
       - name: Upstream unit tests touched by the gate patches
         run: |
           cargo test -p xai-grok-login --lib -- config:: manager::tests::auth_scope flow::tests::weblogin_cred flow::tests::oidc_cred flow::tests::external_cred flow::tests::run_auth_flow_falls_through

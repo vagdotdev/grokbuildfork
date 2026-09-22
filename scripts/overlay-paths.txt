@@ -9,3 +9,4 @@ docs/workshop*
 docs/upstream-sync.md
 upstream-lock.toml
 README-Workshop.md
+voice
