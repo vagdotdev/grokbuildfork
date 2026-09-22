@@ -6708,3 +6708,35 @@ fn send_now_from_dashboard_view_still_flushes_image_notice() {
     );
     assert!(toast_text(&app, AgentId(0)).is_none());
 }
+
+// gate:overlay-isolation — the Workshop adapter/engine routing must not perturb the ACP path for
+// Direct/Local (`Shell`) connections. If these fail, an overlay change leaked into upstream turn flow.
+#[test]
+fn gate_acp_path_only_diverts_for_a_live_adapter_connection() {
+    use crate::app::dispatch::prompt::routes_off_acp_path;
+    use crate::app::workshop::WorkshopConnection;
+
+    let shell = WorkshopConnection::Shell;
+    let engine = WorkshopConnection::Engine {
+        model: workshop_auth::EngineModel::big_pickle_seed(),
+    };
+    // Shell (Direct/Local) always stays on the byte-identical upstream ACP path.
+    assert!(!routes_off_acp_path(&shell, false, "hello"));
+    assert!(!routes_off_acp_path(&shell, false, "/model gpt"));
+    assert!(!routes_off_acp_path(&shell, true, "hello"));
+    // A live adapter/engine connection diverts, but only for real prompt text.
+    assert!(routes_off_acp_path(&engine, false, "hello"));
+    assert!(!routes_off_acp_path(&engine, false, "   "), "empty text stays on ACP");
+    assert!(!routes_off_acp_path(&engine, false, "/login"), "slash stays on ACP");
+    assert!(!routes_off_acp_path(&engine, true, "hello"), "literal send stays on ACP");
+}
+
+#[test]
+fn gate_shell_submit_leaves_workshop_turn_state_untouched() {
+    let mut app = test_app_with_agent();
+    assert!(app.workshop_connection.is_shell(), "default is Shell");
+    let _ = dispatch_send_prompt_inner(&mut app, "a real prompt".into(), true, false, false);
+    assert!(!app.workshop_turn_active, "Shell submit must not start a workshop turn");
+    assert!(app.workshop_turn_cancel.is_none());
+    assert!(app.workshop_turn_stream_entry.is_none());
+}
