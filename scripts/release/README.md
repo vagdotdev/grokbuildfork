@@ -33,28 +33,40 @@ The version is stamped into the binary at build time (`GROK_VERSION`, later
 `WORKSHOP_VERSION`), so `workshop --version` and the updater compare against exactly
 the tag version.
 
-Pipeline (`release.yml`):
+Pipeline (`release.yml`). Jobs never exchange Actions artifacts (that storage is metered
+and ran out): `meta` opens a **draft** GitHub Release for the tag and every job uploads
+to / downloads from it with `gh release ...`. A draft owns no git tag, so the dry run's
+draft vanishes without trace when `cleanup` deletes it.
 
-1. `meta` — `tag-info.sh` derives version/channel.
+1. `meta` — `tag-info.sh` derives version/channel; creates the draft release (reused on
+   re-runs); fails fast when a cross-repo release lacks `WORKSHOP_RELEASE_TOKEN`.
 2. `lint` — shellcheck, forbidden-URL scan, schema is valid JSON.
 3. `build` — matrix: `linux-x86_64` (ubuntu-22.04 for wide glibc), `linux-aarch64`
    (ubuntu-22.04-arm), `macos-aarch64` (macos-15), `macos-x86_64` (macos-15-intel),
    `windows-x86_64` (best-effort, `continue-on-error`). `cargo build --locked --profile
    release-dist -p xai-grok-pager-bin`, stripped via `CARGO_PROFILE_RELEASE_DIST_STRIP`.
    `package.sh` stages the binary as `workshop` (falls back to upstream's
-   `xai-grok-pager` name until the branding patch renames the `[[bin]]`).
-4. `checksums` — `SHA256SUMS`; GitHub artifact attestations (`actions/attest`) when the
-   repo is public. Private repos cannot attest without Enterprise Cloud, so the step is
-   skipped and `attested: false` is recorded in the manifest and release notes.
-5. `smoke` — `smoke-install.sh` on ubuntu + macos-15: serves the freshly built assets
-   from a loopback HTTP server and runs the real `install.sh` through manifest → download
-   → checksum → install → `workshop --version`, plus tampered-checksum and non-https
+   `xai-grok-pager` name until the branding patch renames the `[[bin]]`). Each job
+   writes a `<asset>.tar.gz.sha256` sidecar for what it built and uploads both to the
+   draft (`gh release upload --clobber`); `voice-models` does the same for the model mirror.
+4. `assemble` — downloads the draft's assets, verifies every sidecar, checks the four
+   required platforms are present, writes `SHA256SUMS` (assets only, not sidecars) and
+   uploads it; GitHub artifact attestations (`actions/attest`) when the repo is public.
+   Private repos cannot attest without Enterprise Cloud, so the step is skipped and
+   `attested: false` is recorded in the manifest and release notes.
+5. `smoke` — `smoke-install.sh` on ubuntu + macos-15: serves the downloaded assets from a
+   loopback HTTP server and runs the real `install.sh` through manifest → download →
+   checksum → install → `workshop --version`, plus tampered-checksum and non-https
    rejection cases.
-6. `publish` — `release-notes.sh` + `publish-release.sh` (`gh release create`, idempotent).
+6. `publish` — `release-notes.sh` + `publish-release.sh --skip-upload` (sets title/notes,
+   takes the release out of draft; idempotent).
 7. `channel` — `publish-channel.sh` regenerates the manifest(s) and pushes the
    `release-channel` branch.
+8. `cleanup` — dry runs only: deletes the draft.
 
-`workflow_dispatch` runs steps 1–5 as a dry run and publishes nothing.
+`workflow_dispatch` runs steps 1–5 and 8 as a dry run and publishes nothing. A failed tag
+release keeps its draft (with whatever was uploaded) for inspection; re-running the
+workflow reuses it.
 
 Build prerequisites on runners: a C/C++ toolchain, `cmake` (aws-lc-sys), `protoc` 29.3
 (installed by the workflow to match `bin/protoc`'s DotSlash pin), NASM on Windows.

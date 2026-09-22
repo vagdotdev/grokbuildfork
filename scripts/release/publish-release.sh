@@ -10,14 +10,19 @@
 #                  by GitHub on that repo's default branch, so the release is a pure
 #                  artifact drop there. Needs GH_TOKEN with contents:write on --repo
 #                  (secret WORKSHOP_RELEASE_TOKEN in the workflow).
+#   --skip-upload  the assets are already on the release (the workflow's build jobs
+#                  upload straight to a draft); only set the notes/title and publish.
 #   --dry-run      print the gh commands instead of running them.
+#
+# An existing release (the workflow's draft, or a re-run) is refreshed in place and
+# taken out of draft; a missing one is created published.
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib.sh
 . "$here/lib.sh"
 
-tag='' version='' channel='' repo='' dist='' notes='' source_repo='' dry_run=false
+tag='' version='' channel='' repo='' dist='' notes='' source_repo='' skip_upload=false dry_run=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag) tag=$2; shift 2 ;;
@@ -27,6 +32,7 @@ while [[ $# -gt 0 ]]; do
     --dist) dist=$2; shift 2 ;;
     --notes) notes=$2; shift 2 ;;
     --source-repo) source_repo=$2; shift 2 ;;
+    --skip-upload) skip_upload=true; shift ;;
     --dry-run) dry_run=true; shift ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -55,9 +61,12 @@ run() {
 }
 
 if ! $dry_run && gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-  log "release $tag already exists on $repo; refreshing assets and notes"
-  run gh release upload "$tag" "${assets[@]}" --repo "$repo" --clobber
-  run gh release edit "$tag" --repo "$repo" --notes-file "$notes"
+  log "release $tag already exists on $repo; refreshing notes and publishing"
+  $skip_upload || run gh release upload "$tag" "${assets[@]}" --repo "$repo" --clobber
+  edit=(gh release edit "$tag" --repo "$repo" --title "Workshop $version" --notes-file "$notes" --draft=false)
+  if [[ "$channel" == alpha ]]; then edit+=(--prerelease); else edit+=(--prerelease=false); fi
+  run "${edit[@]}"
+  log "published $(release_url "$repo" "$tag")"
   exit 0
 fi
 
