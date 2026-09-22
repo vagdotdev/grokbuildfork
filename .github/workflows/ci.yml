@@ -109,6 +109,13 @@ jobs:
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test pty_login_picker -- --nocapture --include-ignored
+      - name: PTY smoke — subscription rails route turns through the CLI adapters (fake CLIs, hermetic)
+        # P3: rails Ready → adapter turn renders → cancel; logged-out rails Sign in → Connect launches
+        # login. Fake claude/codex/cursor-agent (no network). The engine/Kilo cases in the same file
+        # need real network and stay `#[ignore]`d out of CI (only the `rails_` filter runs here).
+        env:
+          WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
+        run: cargo test -p workshop-gates --test live_tui_turns rails_ -- --nocapture --include-ignored
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
