@@ -24,11 +24,19 @@ use std::sync::OnceLock;
 /// environment at the asking site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GrokHomeSource {
-    /// A non-empty `$GROK_HOME` override.
+    /// A non-empty `$WORKSHOP_HOME` override (or the `$GROK_HOME` compatibility alias).
     EnvOverride,
-    /// `<home>/.grok` derived from the home directory.
+    /// `<home>/.workshop` derived from the home directory.
     HomeDefault,
 }
+
+/// Workshop overlay: the product home directory name under `$HOME`.
+pub const WORKSHOP_HOME_DIR_NAME: &str = ".workshop";
+/// Workshop overlay: the primary home override variable.
+pub const WORKSHOP_HOME_ENV: &str = "WORKSHOP_HOME";
+/// Upstream home override variable, accepted as a compatibility alias (with a warning) for at most
+/// two pre-GA releases so existing `GROK_HOME` deployments keep working during migration.
+pub const LEGACY_HOME_ENV: &str = "GROK_HOME";
 
 /// The user's home directory via [`std::env::home_dir`]: `HOME` on Unix, `USERPROFILE` on Windows.
 /// Not `dirs::home_dir()`: on Windows `dirs` ignores a redirected `USERPROFILE`.
@@ -38,15 +46,15 @@ pub fn home_dir() -> Option<PathBuf> {
     std::env::home_dir()
 }
 
-/// `<home>/.grok`, canonicalized via `dunce` (not `std::fs::canonicalize`,
+/// `<home>/.workshop`, canonicalized via `dunce` (not `std::fs::canonicalize`,
 /// which yields Windows `\\?\` verbatim paths).
 fn grok_home_in(home: &Path) -> PathBuf {
     dunce::canonicalize(home)
         .unwrap_or_else(|_| home.to_path_buf())
-        .join(".grok")
+        .join(WORKSHOP_HOME_DIR_NAME)
 }
 
-/// `$GROK_HOME` verbatim when non-empty, else `<home>/.grok`.
+/// `$WORKSHOP_HOME` verbatim when non-empty, else the `$GROK_HOME` alias, else `<home>/.workshop`.
 /// Used as-is (not canonicalized) so literal prefix checks and symlink guards still see original components.
 fn resolve_grok_home_from(
     grok_home_env: Option<&OsStr>,
@@ -58,6 +66,21 @@ fn resolve_grok_home_from(
     os_home.map(|home| (grok_home_in(home), GrokHomeSource::HomeDefault))
 }
 
+/// The effective home override: `$WORKSHOP_HOME`, else the legacy `$GROK_HOME` alias (warned once).
+fn home_env_override() -> Option<std::ffi::OsString> {
+    if let Some(v) = std::env::var_os(WORKSHOP_HOME_ENV).filter(|v| !v.is_empty()) {
+        return Some(v);
+    }
+    let legacy = std::env::var_os(LEGACY_HOME_ENV).filter(|v| !v.is_empty())?;
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            "{LEGACY_HOME_ENV} is deprecated; set {WORKSHOP_HOME_ENV} instead (alias honored for now)"
+        );
+    });
+    Some(legacy)
+}
+
 /// Resolve the grok home from the environment (fresh, no cache); `None` if neither resolves.
 pub fn resolve_grok_home() -> Option<PathBuf> {
     resolve_grok_home_with_source().map(|(home, _)| home)
@@ -65,13 +88,10 @@ pub fn resolve_grok_home() -> Option<PathBuf> {
 
 /// [`resolve_grok_home`] plus the [`GrokHomeSource`] the path came from.
 pub fn resolve_grok_home_with_source() -> Option<(PathBuf, GrokHomeSource)> {
-    resolve_grok_home_from(
-        std::env::var_os("GROK_HOME").as_deref(),
-        home_dir().as_deref(),
-    )
+    resolve_grok_home_from(home_env_override().as_deref(), home_dir().as_deref())
 }
 
-/// The default `<home>/.grok`, used when `$GROK_HOME` is unset.
+/// The default `<home>/.workshop`, used when neither `$WORKSHOP_HOME` nor `$GROK_HOME` is set.
 pub fn default_grok_home() -> PathBuf {
     grok_home_in(&home_dir().unwrap_or_else(|| PathBuf::from(".")))
 }
@@ -131,7 +151,7 @@ mod tests {
         assert_eq!(
             resolved,
             Some((
-                dunce::canonicalize(tmp.path()).unwrap().join(".grok"),
+                dunce::canonicalize(tmp.path()).unwrap().join(".workshop"),
                 GrokHomeSource::HomeDefault
             ))
         );
@@ -144,7 +164,7 @@ mod tests {
         // comparisons. No-op assertion on Unix.
         let home = default_grok_home();
         assert!(!home.to_string_lossy().starts_with(r"\\?\"));
-        assert!(home.ends_with(".grok"));
+        assert!(home.ends_with(".workshop"));
     }
 
     #[test]

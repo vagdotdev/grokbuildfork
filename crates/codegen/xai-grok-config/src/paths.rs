@@ -8,14 +8,20 @@ const CLAUDE_MANAGED_SETTINGS_PATH: &str =
 #[cfg(target_os = "linux")]
 const CLAUDE_MANAGED_SETTINGS_PATH: &str = "/etc/claude-code/managed-settings.json";
 
-/// Canonical grok application path: `$GROK_HOME/bin/grok` (Unix) or `grok.exe` (Windows).
+/// Canonical Workshop application path: `$WORKSHOP_HOME/bin/workshop` (Unix) or `workshop.exe`
+/// (Windows). This is the symlink `scripts/install.sh` and the updater maintain
+/// (`-> ../downloads/workshop-<version>-<platform>`).
 pub fn grok_application() -> PathBuf {
     grok_application_in(&grok_home())
 }
 
-/// [`grok_application`] under an explicit home instead of `$GROK_HOME`.
+/// [`grok_application`] under an explicit home instead of `$WORKSHOP_HOME`.
 pub fn grok_application_in(home: &std::path::Path) -> PathBuf {
-    let name = if cfg!(windows) { "grok.exe" } else { "grok" };
+    let name = if cfg!(windows) {
+        "workshop.exe"
+    } else {
+        "workshop"
+    };
     home.join("bin").join(name)
 }
 
