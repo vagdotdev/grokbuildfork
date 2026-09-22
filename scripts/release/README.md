@@ -66,7 +66,9 @@ draft vanishes without trace when `cleanup` deletes it.
 
 `workflow_dispatch` runs steps 1–5 and 8 as a dry run and publishes nothing. A failed tag
 release keeps its draft (with whatever was uploaded) for inspection; re-running the
-workflow reuses it.
+workflow reuses it and **only rebuilds what is missing**: the draft's notes record the
+build commit, `build` legs and `voice-models` skip when their assets are already there,
+and `meta` purges the assets first if the tag now points at a different commit.
 
 Build prerequisites on runners: a C/C++ toolchain, `cmake` (aws-lc-sys), `protoc` 29.3
 (installed by the workflow to match `bin/protoc`'s DotSlash pin), NASM on Windows.
