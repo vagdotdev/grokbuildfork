@@ -404,6 +404,20 @@ jobs:
             --version "${{ needs.meta.outputs.version }}" \
             --channel "${{ needs.meta.outputs.channel }}" \
             --repo "$WORKSHOP_RELEASE_REPO"
+      # The same string gate CI runs on the debug build, on the artifact users will install:
+      # forbidden hosts may appear only in the reviewed contexts of scripts/no-xai-binary-baseline.txt.
+      - name: Binary string scan of the downloaded release binary (no-xai gate)
+        run: |
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64) platform=linux-x86_64 ;;
+            Linux-aarch64) platform=linux-aarch64 ;;
+            Darwin-arm64) platform=macos-aarch64 ;;
+            Darwin-x86_64) platform=macos-x86_64 ;;
+            *) echo "::error::no release platform for $(uname -s)-$(uname -m)"; exit 1 ;;
+          esac
+          mkdir -p scan
+          tar -xzf "dist/workshop-${{ needs.meta.outputs.version }}-$platform.tar.gz" -C scan workshop
+          scripts/no-xai-scan.sh --binary scan/workshop
 
   publish:
     name: Publish GitHub Release

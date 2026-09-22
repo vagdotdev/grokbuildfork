@@ -46,7 +46,7 @@ time (`WORKSHOP_RELEASE_REPO`).
 ```sh
 cargo test -p workshop-gates                          # compiled defaults: issuer, auth methods, endpoints, updater, model
 scripts/no-xai-scan.sh --sources                      # default-path sources + gate:no-theft markers
-scripts/no-xai-scan.sh --binary target/debug/workshop # forbidden strings vs scripts/no-xai-binary-baseline.txt
+scripts/no-xai-scan.sh --binary target/debug/workshop # forbidden-host strings must be reviewed contexts (scripts/no-xai-binary-baseline.txt)
 scripts/no-egress-smoke.sh target/debug/workshop      # zero xAI egress on startup, login, headless, first-run TUI
 WORKSHOP_BIN=$PWD/target/debug/workshop cargo test -p workshop-gates --test pty_login_picker -- --include-ignored
 ```
