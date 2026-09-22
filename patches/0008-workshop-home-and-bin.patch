@@ -1,8 +1,8 @@
 diff --git a/crates/codegen/xai-dirs/src/lib.rs b/crates/codegen/xai-dirs/src/lib.rs
-index d07253cc..440c5734 100644
+index d07253cc..1a1bc581 100644
 --- a/crates/codegen/xai-dirs/src/lib.rs
 +++ b/crates/codegen/xai-dirs/src/lib.rs
-@@ -24,12 +24,20 @@ use std::sync::OnceLock;
+@@ -24,12 +24,22 @@ use std::sync::OnceLock;
  /// environment at the asking site.
  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
  pub enum GrokHomeSource {
@@ -18,14 +18,16 @@ index d07253cc..440c5734 100644
 +pub const WORKSHOP_HOME_DIR_NAME: &str = ".workshop";
 +/// Workshop overlay: the primary home override variable.
 +pub const WORKSHOP_HOME_ENV: &str = "WORKSHOP_HOME";
-+/// Upstream home override variable, accepted as a compatibility alias (with a warning) for at most
-+/// two pre-GA releases so existing `GROK_HOME` deployments keep working during migration.
++/// Upstream home override variable. The `workshop` binary strips it from its own environment
++/// before anything resolves a path (`xai-grok-pager-bin/src/main.rs`, gate:config-isolation), so
++/// the product never reads a Grok Build home through it; the alias below exists only so the
++/// upstream test suites, which isolate themselves with `GROK_HOME=<tempdir>`, keep working.
 +pub const LEGACY_HOME_ENV: &str = "GROK_HOME";
 +
  /// The user's home directory via [`std::env::home_dir`]: `HOME` on Unix, `USERPROFILE` on Windows.
  /// Not `dirs::home_dir()`: on Windows `dirs` ignores a redirected `USERPROFILE`.
  /// Every home-anchored path must come from this one function.
-@@ -38,15 +46,15 @@ pub fn home_dir() -> Option<PathBuf> {
+@@ -38,15 +48,15 @@ pub fn home_dir() -> Option<PathBuf> {
      std::env::home_dir()
  }
  
@@ -44,7 +46,7 @@ index d07253cc..440c5734 100644
  /// Used as-is (not canonicalized) so literal prefix checks and symlink guards still see original components.
  fn resolve_grok_home_from(
      grok_home_env: Option<&OsStr>,
-@@ -58,6 +66,21 @@ fn resolve_grok_home_from(
+@@ -58,6 +68,21 @@ fn resolve_grok_home_from(
      os_home.map(|home| (grok_home_in(home), GrokHomeSource::HomeDefault))
  }
  
@@ -66,7 +68,7 @@ index d07253cc..440c5734 100644
  /// Resolve the grok home from the environment (fresh, no cache); `None` if neither resolves.
  pub fn resolve_grok_home() -> Option<PathBuf> {
      resolve_grok_home_with_source().map(|(home, _)| home)
-@@ -65,13 +88,10 @@ pub fn resolve_grok_home() -> Option<PathBuf> {
+@@ -65,13 +90,10 @@ pub fn resolve_grok_home() -> Option<PathBuf> {
  
  /// [`resolve_grok_home`] plus the [`GrokHomeSource`] the path came from.
  pub fn resolve_grok_home_with_source() -> Option<(PathBuf, GrokHomeSource)> {
@@ -82,7 +84,7 @@ index d07253cc..440c5734 100644
  pub fn default_grok_home() -> PathBuf {
      grok_home_in(&home_dir().unwrap_or_else(|| PathBuf::from(".")))
  }
-@@ -131,7 +151,7 @@ mod tests {
+@@ -131,7 +153,7 @@ mod tests {
          assert_eq!(
              resolved,
              Some((
@@ -91,7 +93,7 @@ index d07253cc..440c5734 100644
                  GrokHomeSource::HomeDefault
              ))
          );
-@@ -144,7 +164,7 @@ mod tests {
+@@ -144,7 +166,7 @@ mod tests {
          // comparisons. No-op assertion on Unix.
          let home = default_grok_home();
          assert!(!home.to_string_lossy().starts_with(r"\\?\"));
@@ -129,7 +131,7 @@ index e04d7b12..877b1334 100644
  }
  
 diff --git a/crates/codegen/xai-grok-pager-bin/Cargo.toml b/crates/codegen/xai-grok-pager-bin/Cargo.toml
-index d66f3936..e64ffb1a 100644
+index d66f3936..ff7b585e 100644
 --- a/crates/codegen/xai-grok-pager-bin/Cargo.toml
 +++ b/crates/codegen/xai-grok-pager-bin/Cargo.toml
 @@ -4,20 +4,23 @@ version = "1.0.38"
@@ -162,4 +164,14 @@ index d66f3936..e64ffb1a 100644
 +workshop-auth = { path = "../../workshop-auth" }
  # Optional scrollback-native render mode, wired in via the fn-pointer seam.
  xai-grok-pager-minimal = { path = "../xai-grok-pager-minimal" }
+ 
+@@ -52,6 +55,9 @@ xai-tty-utils = { workspace = true }
+ # `collect_crashed()` for the startup crash notice.
+ xai-grok-active-sessions = { workspace = true }
+ xai-grok-config = { workspace = true }
++# Workshop overlay: `isolate_from_grok_build_env` (home + compat env cells) in main.
++xai-dirs = { workspace = true }
++xai-grok-tools = { workspace = true }
+ xai-grok-sandbox = { path = "../xai-grok-sandbox", default-features = false }
+ xai-grok-extra-ca = { workspace = true }
  

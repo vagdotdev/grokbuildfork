@@ -38,10 +38,18 @@ index ae3b381c..64b8ac8d 100644
      /// Whether a local or wake cancel is still in flight.
      pub(crate) fn any_cancel_pending(&self) -> bool {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-index a4d77733..f835d06b 100644
+index a4d77733..2e2f29d9 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-@@ -614,6 +614,80 @@ pub(super) fn dispatch_send_prompt_inner(
+@@ -82,6 +82,7 @@ pub(super) fn collect_live_doctor_report_for_terminal(
+     if crate::app::voice_mode_enabled() {
+         crate::diagnostics::apply_voice_probe(&mut report, true);
+     }
++    crate::diagnostics::apply_engine_probe(&mut report);
+     Some(report)
+ }
+ 
+@@ -614,6 +615,80 @@ pub(super) fn dispatch_send_prompt_inner(
      dispatch_send_prompt_submission(app, text, None, consume_input, literal, is_follow_up)
  }
  
@@ -63,7 +71,7 @@ index a4d77733..f835d06b 100644
 +    use crate::app::workshop::{self, WorkshopConnection, WorkshopTurnKind, WorkshopTurnSpec};
 +
 +    if app.workshop_turn_active {
-+        app.show_toast("A model turn is already running (Esc to cancel).");
++        app.show_toast("Still working on your last message — Ctrl+C cancels it, /model switches model.");
 +        return vec![];
 +    }
 +    let Some(tx) = app.workshop_turn_tx.clone() else {
@@ -79,7 +87,7 @@ index a4d77733..f835d06b 100644
 +    let kind = match &app.workshop_connection {
 +        WorkshopConnection::Shell => return vec![],
 +        WorkshopConnection::Engine { model } => WorkshopTurnKind::Engine {
-+            engine: app.workshop_engine.clone(),
++            slot: app.workshop_engine_slot.clone(),
 +            session: app
 +                .workshop_engine_session
 +                .clone()
@@ -122,7 +130,7 @@ index a4d77733..f835d06b 100644
  pub(super) fn dispatch_send_prompt_submission(
      app: &mut AppView,
      text: String,
-@@ -689,6 +763,16 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -689,6 +764,16 @@ pub(super) fn dispatch_send_prompt_submission(
          text
      };
  
@@ -140,9 +148,18 @@ index a4d77733..f835d06b 100644
      let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
      let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
-index a80f3faf..662108e6 100644
+index a80f3faf..6b08a5e1 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
+@@ -674,7 +674,7 @@ pub(in crate::app::dispatch) fn dispatch_trust_folder(app: &mut AppView) -> Vec<
+         TrustGateOutcome::Finish => finish_trust(app),
+         TrustGateOutcome::FinishSessionLocal => {
+             app.show_toast(
+-                "Folder trusted for this session only. Run `grok --trust` here to save it for next time.",
++                "Folder trusted for this session only. Run `workshop --trust` here to save it for next time.",
+             );
+             finish_trust(app)
+         }
 @@ -785,9 +785,13 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
      let announcements = app.active_announcements.clone();
      let restricted = app.tier_restricted_commands.clone();

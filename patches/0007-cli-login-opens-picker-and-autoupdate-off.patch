@@ -1,5 +1,5 @@
 diff --git a/crates/codegen/xai-grok-pager-bin/src/main.rs b/crates/codegen/xai-grok-pager-bin/src/main.rs
-index aa448be7..b0275719 100644
+index aa448be7..e24d03e5 100644
 --- a/crates/codegen/xai-grok-pager-bin/src/main.rs
 +++ b/crates/codegen/xai-grok-pager-bin/src/main.rs
 @@ -261,7 +261,7 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
@@ -116,7 +116,32 @@ index aa448be7..b0275719 100644
          xai_grok_version::display_version_with_commit(
              xai_grok_version::full_version(),
              channel_label,
-@@ -2054,7 +2055,7 @@ fn main() {
+@@ -2022,7 +2023,24 @@ fn dispatch_doctor_if_requested(args: &PagerArgs) -> bool {
+     }
+     true
+ }
++/// Workshop (gate:config-isolation): the product never reads a Grok Build home. Upstream's
++/// `GROK_HOME` is dropped from this process before any path resolves, so a machine that also runs
++/// Grok Build — with `GROK_HOME` exported, or `~/.grok` full of hooks and settings — keeps that to
++/// itself; Workshop uses `$WORKSHOP_HOME` (default `~/.workshop`) and nothing else. The
++/// `GROK_*` compat env cells that would pull another tool's hooks/MCPs in are dropped too; those
++/// are opted into through `[compat.<vendor>]` in Workshop's own config.
++fn isolate_from_grok_build_env() {
++    // SAFETY: first thing in `main`, before any other thread exists.
++    unsafe {
++        std::env::remove_var(xai_dirs::LEGACY_HOME_ENV);
++        for cell in xai_grok_tools::types::compat::COMPAT_CELLS {
++            std::env::remove_var(cell.env_var());
++        }
++    }
++}
++
+ fn main() {
++    isolate_from_grok_build_env();
+     xai_grok_version::set_full_version(env!("VERSION_WITH_COMMIT"));
+     xai_grok_telemetry::startup::mark_process_start();
+     if let Some(code) = xai_grok_pager::app::mermaid_worker::maybe_run_render_subprocess() {
+@@ -2054,16 +2072,16 @@ fn main() {
          xai_grok_shell::agent::external_otel_pin::strip_conflicting_process_env();
      }
      let args = configure_process_env(args).unwrap_or_else(|err| {
@@ -125,7 +150,18 @@ index aa448be7..b0275719 100644
          std::process::exit(1);
      });
      xai_grok_pager::memory_trace::start(xai_grok_pager::memory_trace::default_dir());
-@@ -2107,7 +2108,7 @@ fn main() {
+     raise_fd_limit();
+     if let Err(e) = xai_grok_config::validate_requirements() {
+-        eprintln!("Couldn't start Grok: {e}");
++        eprintln!("Couldn't start Workshop: {e}");
+         eprintln!();
+         eprintln!(
+-            "Update Grok to a version the policy allows, or ask your administrator \
++            "Update Workshop to a version the policy allows, or ask your administrator \
+              to fix the managed requirements."
+         );
+         std::process::exit(2);
+@@ -2107,7 +2125,7 @@ fn main() {
      builder.worker_threads(workers.get()).enable_all();
      let runtime =
          xai_tty_utils::runtime::build_with_blocking_pool(&mut builder).unwrap_or_else(|e| {
@@ -134,7 +170,7 @@ index aa448be7..b0275719 100644
              shutdown_and_flush_telemetry(1);
          });
      let result = run_and_shutdown(runtime, async_main(args), RUNTIME_SHUTDOWN_GRACE);
-@@ -2373,6 +2374,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2373,6 +2391,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
              }
              Command::Login {
                  legacy: _,
@@ -142,7 +178,7 @@ index aa448be7..b0275719 100644
                  oauth,
                  device_auth,
                  devbox,
-@@ -2381,8 +2383,27 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2381,8 +2400,27 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                  let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                  let config = xai_grok_shell::config::load_agent_config_disk_only()
                      .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
@@ -171,7 +207,7 @@ index aa448be7..b0275719 100644
                      config.login_device_flow,
                      config.endpoints.proxy_url(),
                      oauth,
-@@ -2440,7 +2461,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2440,7 +2478,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
              None,
          );
          if let Some(warning) = launch_yolo.blocked_warning {
@@ -180,7 +216,7 @@ index aa448be7..b0275719 100644
          }
          let json_schema = args
              .json_schema
-@@ -2524,7 +2545,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2524,7 +2562,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
              if finish_update_on_exit(adopted, &update_config).await {
                  eprintln!("Update installed. Run `grok` to start.");
              } else {
@@ -189,7 +225,7 @@ index aa448be7..b0275719 100644
              }
              Ok(())
          }
-@@ -2609,6 +2630,14 @@ fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
+@@ -2609,6 +2647,14 @@ fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
      if no_auto_update_flag {
          return false;
      }
@@ -204,7 +240,7 @@ index aa448be7..b0275719 100644
      !std::env::var_os("GROK_DISABLE_AUTOUPDATER")
          .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
  }
-@@ -2699,7 +2728,7 @@ async fn run_update_command(
+@@ -2699,7 +2745,7 @@ async fn run_update_command(
          );
      }
      let telemetry_cfg = xai_grok_shell::config::load_agent_config_disk_only()
@@ -213,7 +249,7 @@ index aa448be7..b0275719 100644
          .ok();
      if let Some(agent_cfg) = telemetry_cfg {
          let auth_manager =
-@@ -2726,7 +2755,7 @@ async fn run_update_command(
+@@ -2726,7 +2772,7 @@ async fn run_update_command(
      result?;
      Ok(())
  }
@@ -222,7 +258,7 @@ index aa448be7..b0275719 100644
  /// to relaunch onto the new binary. Best-effort and non-fatal: discovery/connect/control failures are logged and
  /// skipped.
  #[tracing::instrument(level = "debug", skip_all)]
-@@ -2886,7 +2915,7 @@ mod tests {
+@@ -2886,7 +2932,7 @@ mod tests {
          );
          assert_eq!(
              resolve_worker_override("100000", cores).notice().unwrap(),
@@ -231,7 +267,7 @@ index aa448be7..b0275719 100644
          );
      }
      #[test]
-@@ -2899,7 +2928,7 @@ mod tests {
+@@ -2899,7 +2945,7 @@ mod tests {
          }
          assert_eq!(
              resolve_worker_override("abc", cores).notice().unwrap(),
@@ -240,7 +276,7 @@ index aa448be7..b0275719 100644
          );
      }
      #[test]
-@@ -2913,7 +2942,7 @@ mod tests {
+@@ -2913,7 +2959,7 @@ mod tests {
              let mut output = Vec::new();
              write_version(&mut output, label).unwrap();
              let output = String::from_utf8(output).unwrap();
@@ -249,7 +285,7 @@ index aa448be7..b0275719 100644
              assert!(output.contains(env!("VERSION_WITH_COMMIT")));
              assert!(output.ends_with(expected_suffix), "{output:?}");
          }
-@@ -3080,30 +3109,37 @@ mod tests {
+@@ -3080,30 +3126,37 @@ mod tests {
      }
      #[cfg(unix)]
      #[test]
