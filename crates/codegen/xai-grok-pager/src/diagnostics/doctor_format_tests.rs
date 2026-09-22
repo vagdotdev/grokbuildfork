@@ -654,6 +654,7 @@ fn keyboard_fact_formats_from_explicit_target_evidence() {
                 fix: None,
             },
             voice: None,
+            voice_engine: None,
         },
         findings: Vec::new(),
         probe_notes: Vec::new(),

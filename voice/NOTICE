@@ -1,0 +1,35 @@
+Workshop voice dictation ships two third-party components. Neither is part of this
+source tree; the installer downloads them and verifies them against voice/MODEL.lock.json.
+
+1. Whisper model weights (one of ggml-large-v3-turbo-q5_0.bin, ggml-small.bin,
+   ggml-base.bin, chosen per machine at install time)
+   Copyright (c) 2022 OpenAI. Licensed under the MIT License.
+   Source: https://github.com/openai/whisper
+   ggml conversion published by the whisper.cpp project:
+   https://huggingface.co/ggerganov/whisper.cpp
+
+2. whisper.cpp (the `voice-engine` helper is built from it)
+   Copyright (c) 2023-2024 The ggml authors. Licensed under the MIT License.
+   Source: https://github.com/ggml-org/whisper.cpp
+   Rust bindings: whisper-rs, released into the public domain (Unlicense).
+   Source: https://codeberg.org/tazz4843/whisper-rs
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

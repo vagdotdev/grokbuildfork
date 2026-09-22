@@ -16,5 +16,6 @@
 0012-telemetry-build-env-inert.patch  # product
 0013-workshop-user-visible-strings.patch  # branding
 0014-pty-harness-workshop-binary.patch  # product
+0015-voice-local-engine.patch  # product
 0016-engine-adapter-turn-routing.patch  # product
 0017-pager-test-fixes.patch  # product

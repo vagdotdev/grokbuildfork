@@ -1,0 +1,1375 @@
+diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
+index 2572590a..9188c171 100644
+--- a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
++++ b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
+@@ -2252,18 +2252,26 @@ impl AgentView {
+                 dot,
+                 Style::default().fg(dot_color).bg(bg),
+             );
+-            buf.set_string(
+-                content_x + 2,
+-                rec_area.y,
+-                "Recording",
+-                Style::default().fg(theme.accent_error).bg(bg),
+-            );
+             let stop_str = "[stop]";
+             let stop_w = unicode_width::UnicodeWidthStr::width(stop_str) as u16;
+             let stop_x = rec_area.x
+                 + rec_area
+                     .width
+                     .saturating_sub(layout_cfg.block_pad_right + stop_w);
++            // Workshop overlay: while the local engine downloads or loads its model the row carries
++            // that one progress line (voice-spec §5 rule 6); otherwise the plain "Recording".
++            let label_avail = stop_x.saturating_sub(content_x + 3) as usize;
++            let (label, label_style) = match crate::voice::banner_status() {
++                Some(status) if label_avail > 0 => (
++                    crate::render::line_utils::truncate_str(&status, label_avail),
++                    Style::default().fg(theme.accent_running).bg(bg),
++                ),
++                _ => (
++                    "Recording".to_owned(),
++                    Style::default().fg(theme.accent_error).bg(bg),
++                ),
++            };
++            buf.set_string(content_x + 2, rec_area.y, &label, label_style);
+             let stop_fg = if self.hit_voice_stop_button.hovered {
+                 theme.accent_error
+             } else {
+@@ -2338,9 +2346,13 @@ impl AgentView {
+         let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
+         let usage_warning = usage_warning_text.as_deref();
+         let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
+-        let model_label = match self.session.models.reasoning_effort {
+-            Some(eff) => format!("{model_id} ({eff})"),
+-            None => model_id,
++        let model_label = match &self.workshop_model_label {
++            // Workshop Engine/Adapter connection: name the runtime, not a shell model.
++            Some(label) => label.clone(),
++            None => match self.session.models.reasoning_effort {
++                Some(eff) => format!("{model_id} ({eff})"),
++                None => model_id,
++            },
+         };
+         let info = match &self.prompt_mode {
+             PromptMode::Normal => PromptInfo {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/voice.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/voice.rs
+index e16c9d24..d5305515 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/voice.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/voice.rs
+@@ -364,8 +364,8 @@ fn voice_ctrl_space_release_leaves_toggle_recording_running() {
+     );
+ }
+ 
+-/// A free-tier user hitting the voice keybinding gets the SuperGrok upsell instead of a doomed voice session.
+-/// The keybinding bypasses the slash registry, so this dispatcher is the enforcement point.
++/// A free-tier user of the opt-in xAI voice provider hitting the voice keybinding gets the SuperGrok upsell
++/// instead of a doomed voice session. The keybinding bypasses the slash registry, so this dispatcher is the enforcement point.
+ #[test]
+ fn voice_keybinding_on_restricted_tier_opens_upsell() {
+     if !xai_grok_voice::AUDIO_SUPPORTED {
+@@ -373,7 +373,8 @@ fn voice_keybinding_on_restricted_tier_opens_upsell() {
+     }
+     let mut app = test_app_with_agent();
+     app.voice_mode_enabled = true;
+-    // A personal login without a subscription tier is free tier, so voice is restricted
++    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
++    // A personal login without a subscription tier is free tier, so xAI voice is restricted
+     app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
+     assert!(app.is_voice_tier_restricted());
+ 
+@@ -389,6 +390,28 @@ fn voice_keybinding_on_restricted_tier_opens_upsell() {
+     );
+ }
+ 
++/// Workshop overlay: the default local engine has no tier; a free-tier login is not gated.
++#[test]
++fn voice_keybinding_local_provider_never_gated() {
++    if !xai_grok_voice::AUDIO_SUPPORTED {
++        return;
++    }
++    let mut app = test_app_with_agent();
++    let (tx, _rx) = tokio::sync::mpsc::channel(8);
++    app.voice_cmd_tx = Some(tx);
++    app.voice_mode_enabled = true;
++    app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
++    assert!(!app.is_voice_tier_restricted());
++
++    dispatch(Action::EnableVoiceMode, &mut app);
++
++    assert!(
++        app.agents.get(&AgentId(0)).unwrap().question_view.is_none(),
++        "no upsell for the local engine"
++    );
++    assert!(app.voice_listening(), "local voice starts on a free-tier login");
++}
++
+ /// A paid-tier user's voice keybinding is not intercepted by the tier gate.
+ #[test]
+ fn voice_keybinding_on_paid_tier_not_gated() {
+@@ -397,6 +420,7 @@ fn voice_keybinding_on_paid_tier_not_gated() {
+     }
+     let mut app = test_app_with_agent();
+     app.voice_mode_enabled = true;
++    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
+     let meta = xai_grok_login::AuthMeta {
+         subscription_tier: Some("SuperGrok".into()),
+         ..Default::default()
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs
+index ebbefb24..ce9d7edf 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs
+@@ -80,9 +80,9 @@ pub(super) fn dispatch_enable_voice_mode(app: &mut AppView, from_hold: bool) ->
+     if !app.voice_mode_enabled {
+         return vec![];
+     }
+-    // Tier gate: free / X Basic personal users can't use voice (the server zero-limits these tiers)
++    // Tier gate: free / X Basic personal users can't use the opt-in xAI voice provider (the server zero-limits these tiers)
+     // The Ctrl+Space / F8 keybinding bypasses the slash registry, so this is the enforcement point for it
+-    // Show the SuperGrok upsell instead of starting a doomed session (`/voice` itself is separately hidden and upsold via the deny list)
++    // Show the SuperGrok upsell instead of starting a doomed session. Workshop's default local engine has no tier.
+     if app.is_voice_tier_restricted() {
+         return open_voice_tier_upsell(app);
+     }
+diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs b/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs
+index 4647b2bb..f92323c4 100644
+--- a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs
++++ b/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs
+@@ -123,8 +123,10 @@ pub fn format_doctor(report: &DiagnosticReport) -> String {
+     };
+     out.push_str(&format!("  status       {status}\n"));
+ 
+-    if let Some(voice) = &facts.voice {
++    if facts.voice.is_some() || facts.voice_engine.is_some() {
+         out.push_str("\nVoice\n");
++    }
++    if let Some(voice) = &facts.voice {
+         match voice {
+             VoiceFacts::Device { name, detail } => {
+                 out.push_str(&format!("  microphone   {name} ({detail})\n"));
+@@ -134,6 +136,27 @@ pub fn format_doctor(report: &DiagnosticReport) -> String {
+             }
+         }
+     }
++    if let Some(engine) = &facts.voice_engine {
++        out.push_str(&format!("  provider     {}\n", engine.provider));
++        match (&engine.engine_path, &engine.engine_version) {
++            (Some(path), Some(version)) => {
++                out.push_str(&format!("  engine       {path} ({version})\n"));
++            }
++            (Some(path), None) => out.push_str(&format!(
++                "  engine       {path} (not runnable: {})\n",
++                engine.engine_error.as_deref().unwrap_or("unknown error")
++            )),
++            (None, _) => out.push_str("  engine       not installed\n"),
++        }
++        out.push_str(&format!(
++            "  model        {} ({}, {})\n",
++            engine.model_path, engine.model_tier, engine.model_tier_source
++        ));
++        out.push_str(&format!("  checksum     {}\n", engine.model_status));
++        if let Some(err) = &engine.last_error {
++            out.push_str(&format!("  last error   {err}\n"));
++        }
++    }
+ 
+     format_findings(report, &mut out);
+     out
+diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format_tests.rs b/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format_tests.rs
+index 02f5defd..c4d670a5 100644
+--- a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format_tests.rs
+@@ -654,6 +654,7 @@ fn keyboard_fact_formats_from_explicit_target_evidence() {
+                 fix: None,
+             },
+             voice: None,
++            voice_engine: None,
+         },
+         findings: Vec::new(),
+         probe_notes: Vec::new(),
+diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs b/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs
+index 2dfa5642..7dcc9c00 100644
+--- a/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs
+@@ -41,6 +41,7 @@ pub(super) fn report() -> DiagnosticReport {
+                 fix: None,
+             },
+             voice: None,
++            voice_engine: None,
+         },
+         findings: Vec::new(),
+         probe_notes: Vec::new(),
+diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs b/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
+index 6bef1daa..8aa2ece3 100644
+--- a/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
+@@ -40,7 +40,7 @@ pub use model::{
+     ClipboardFacts, ColorFacts, DataControlFact, DiagnosticFacts, DiagnosticFinding, DiagnosticId,
+     DiagnosticReport, FindingDisposition, KeyboardFact, ManualRemediation, NewlineFact, ProbeNote,
+     ProbeStatus, RuntimeFact, TmuxColorPassthrough, TmuxFacts, TmuxOptionFact, TmuxSupportFact,
+-    VoiceFacts,
++    VoiceEngineFacts, VoiceFacts,
+ };
+ pub use view::{DiagnosticSnapshot, view};
+ 
+@@ -49,6 +49,13 @@ pub fn apply_voice_probe(report: &mut DiagnosticReport, emit_missing_issue: bool
+     if !xai_grok_voice::AUDIO_SUPPORTED {
+         return;
+     }
++    apply_voice_engine_probe(report, &xai_grok_voice::VoiceConfig::from_config_table(
++        &xai_grok_shell::config::load_effective_config()
++            .ok()
++            .and_then(|v| v.as_table().cloned())
++            .unwrap_or_default(),
++        None,
++    ));
+     match xai_grok_voice::input_device_info() {
+         Ok(device) => {
+             report.facts.voice = Some(VoiceFacts::Device {
+@@ -71,6 +78,37 @@ pub fn apply_voice_probe(report: &mut DiagnosticReport, emit_missing_issue: bool
+     }
+ }
+ 
++/// Workshop overlay: helper present, model path, checksum status, last error (voice-spec §6.4).
++/// Hashes the selected model (one to two seconds); `/doctor` is a debugging aid, not a startup step.
++pub fn apply_voice_engine_probe(report: &mut DiagnosticReport, voice: &xai_grok_voice::VoiceConfig) {
++    let dir = workshop_voice::store::default_dir();
++    let facts = workshop_voice::doctor::probe(
++        &dir,
++        voice.model.as_deref(),
++        voice.engine_path.as_deref().map(std::path::Path::new),
++        true,
++    );
++    let model_ok = facts.model_status.is_ready();
++    report.facts.voice_engine = Some(model::VoiceEngineFacts {
++        provider: match voice.provider {
++            xai_grok_voice::VoiceProvider::Local => "local".to_owned(),
++            xai_grok_voice::VoiceProvider::Xai => "xai".to_owned(),
++        },
++        engine_path: facts
++            .engine_path
++            .as_ref()
++            .map(|p| p.display().to_string()),
++        engine_version: facts.engine_version,
++        engine_error: facts.engine_error,
++        model_tier: facts.tier,
++        model_tier_source: facts.tier_source.to_owned(),
++        model_path: facts.model_path.display().to_string(),
++        model_status: facts.model_status.describe(),
++        model_ok,
++        last_error: facts.last_error.or(facts.engine_note),
++    });
++}
++
+ fn voice_missing_finding(error: String) -> DiagnosticFinding {
+     DiagnosticFinding {
+         id: VOICE_NO_INPUT_DEVICE_ID,
+diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/model.rs b/crates/codegen/xai-grok-pager/src/diagnostics/model.rs
+index 25294d16..ebcd6de9 100644
+--- a/crates/codegen/xai-grok-pager/src/diagnostics/model.rs
++++ b/crates/codegen/xai-grok-pager/src/diagnostics/model.rs
+@@ -95,6 +95,27 @@ pub struct DiagnosticFacts {
+     /// Passive mic enumeration when voice capture is available.
+     /// `None` omits the Voice section (no-audio builds, or TUI when voice mode is off).
+     pub voice: Option<VoiceFacts>,
++    /// Workshop overlay: the local speech-to-text engine and its model (`None` when voice is off).
++    pub voice_engine: Option<VoiceEngineFacts>,
++}
++
++/// Workshop overlay: `/doctor` facts for the local voice engine. Paths and statuses only.
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct VoiceEngineFacts {
++    /// `local` (default) or `xai` (opt-in).
++    pub provider: String,
++    /// Resolved `voice-engine` path, or `None` when it is not installed.
++    pub engine_path: Option<String>,
++    pub engine_version: Option<String>,
++    pub engine_error: Option<String>,
++    /// Selected model tier and where the selection came from.
++    pub model_tier: String,
++    pub model_tier_source: String,
++    pub model_path: String,
++    /// `ok`, `missing`, `wrong size (…)`, `checksum mismatch (…)`.
++    pub model_status: String,
++    pub model_ok: bool,
++    pub last_error: Option<String>,
+ }
+ 
+ /// Result of a passive input-device lookup (does not open a capture stream).
+diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/view.rs b/crates/codegen/xai-grok-pager/src/diagnostics/view.rs
+index 5522e60f..3b047a33 100644
+--- a/crates/codegen/xai-grok-pager/src/diagnostics/view.rs
++++ b/crates/codegen/xai-grok-pager/src/diagnostics/view.rs
+@@ -248,6 +248,7 @@ fn facts(
+             newline,
+             clipboard,
+             voice: None,
++            voice_engine: None,
+         },
+         clipboard_recovery,
+     )
+diff --git a/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs b/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
+index 5cc76928..f53bc566 100644
+--- a/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
++++ b/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
+@@ -126,8 +126,10 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
+     };
+     fact(&mut out, "status", status);
+ 
+-    if let Some(voice) = &facts.voice {
++    if facts.voice.is_some() || facts.voice_engine.is_some() {
+         out.push_str("\nVoice\n");
++    }
++    if let Some(voice) = &facts.voice {
+         match voice {
+             VoiceFacts::Device { name, detail } => {
+                 fact(&mut out, "microphone", &format!("{name} ({detail})"));
+@@ -137,6 +139,40 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
+             }
+         }
+     }
++    if let Some(engine) = &facts.voice_engine {
++        fact(&mut out, "provider", &engine.provider);
++        match (&engine.engine_path, &engine.engine_version) {
++            (Some(path), Some(version)) => fact(&mut out, "engine", &format!("{path} ({version})")),
++            (Some(path), None) => fact(
++                &mut out,
++                "engine",
++                &format!(
++                    "{path} (not runnable: {})",
++                    engine.engine_error.as_deref().unwrap_or("unknown error")
++                ),
++            ),
++            (None, _) => fact(
++                &mut out,
++                "engine",
++                &format!(
++                    "not installed ({})",
++                    engine.engine_error.as_deref().unwrap_or("voice-engine missing")
++                ),
++            ),
++        }
++        fact(
++            &mut out,
++            "model",
++            &format!(
++                "{} ({}, {})",
++                engine.model_path, engine.model_tier, engine.model_tier_source
++            ),
++        );
++        fact(&mut out, "checksum", &engine.model_status);
++        if let Some(err) = &engine.last_error {
++            fact(&mut out, "last error", err);
++        }
++    }
+ 
+     if !report.findings.is_empty() {
+         out.push_str("\nFindings\n");
+diff --git a/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs b/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs
+index 3c4932bb..6feea87d 100644
+--- a/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs
++++ b/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs
+@@ -3,7 +3,7 @@ use serde::Serialize;
+ use crate::clipboard::{ClipboardDelivery, NativeClipboardPreflight, Osc52Capability};
+ use crate::diagnostics::{
+     DataControlFact, DiagnosticFinding, DiagnosticReport, FindingDisposition, NewlineFact,
+-    ProbeNote, ProbeStatus, RuntimeFact, VoiceFacts,
++    ProbeNote, ProbeStatus, RuntimeFact, VoiceEngineFacts, VoiceFacts,
+ };
+ use crate::host::HostOs;
+ use crate::terminal::{ByobuBackend, ModifierFate, MultiplexerKind, TerminalName};
+@@ -58,6 +58,9 @@ struct JsonFacts<'a> {
+     clipboard: JsonClipboardFacts<'a>,
+     #[serde(skip_serializing_if = "Option::is_none")]
+     voice: Option<JsonVoiceFacts<'a>>,
++    /// Workshop overlay: local speech-to-text engine and model facts.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    voice_engine: Option<JsonVoiceEngineFacts<'a>>,
+ }
+ 
+ impl<'a> From<&'a DiagnosticReport> for JsonFacts<'a> {
+@@ -91,6 +94,43 @@ impl<'a> From<&'a DiagnosticReport> for JsonFacts<'a> {
+             newline: facts.newline.as_ref().map(JsonNewlineFact::from),
+             clipboard: JsonClipboardFacts::from(&facts.clipboard),
+             voice: facts.voice.as_ref().map(JsonVoiceFacts::from),
++            voice_engine: facts.voice_engine.as_ref().map(JsonVoiceEngineFacts::from),
++        }
++    }
++}
++
++#[derive(Serialize)]
++#[serde(rename_all = "camelCase")]
++struct JsonVoiceEngineFacts<'a> {
++    provider: &'a str,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    engine_path: Option<&'a str>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    engine_version: Option<&'a str>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    engine_error: Option<&'a str>,
++    model_tier: &'a str,
++    model_tier_source: &'a str,
++    model_path: &'a str,
++    model_status: &'a str,
++    model_ok: bool,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    last_error: Option<&'a str>,
++}
++
++impl<'a> From<&'a VoiceEngineFacts> for JsonVoiceEngineFacts<'a> {
++    fn from(f: &'a VoiceEngineFacts) -> Self {
++        Self {
++            provider: &f.provider,
++            engine_path: f.engine_path.as_deref(),
++            engine_version: f.engine_version.as_deref(),
++            engine_error: f.engine_error.as_deref(),
++            model_tier: &f.model_tier,
++            model_tier_source: &f.model_tier_source,
++            model_path: &f.model_path,
++            model_status: &f.model_status,
++            model_ok: f.model_ok,
++            last_error: f.last_error.as_deref(),
+         }
+     }
+ }
+diff --git a/crates/codegen/xai-grok-pager/src/doctor_cmd/tests.rs b/crates/codegen/xai-grok-pager/src/doctor_cmd/tests.rs
+index 252cee35..81681f4b 100644
+--- a/crates/codegen/xai-grok-pager/src/doctor_cmd/tests.rs
++++ b/crates/codegen/xai-grok-pager/src/doctor_cmd/tests.rs
+@@ -129,6 +129,7 @@ fn healthy_report() -> DiagnosticReport {
+                 fix: None,
+             },
+             voice: None,
++            voice_engine: None,
+         },
+         findings: Vec::new(),
+         probe_notes: Vec::new(),
+@@ -247,7 +248,15 @@ fn fake_standalone_facts_compose_through_shared_view() {
+     );
+     let report = collect_report_with(snapshot);
+ 
+-    assert_eq!(report.issue_count(), 1);
++    // Count only terminal-domain findings: `collect_report_with` also runs a live input-device
++    // probe (`apply_voice_probe`), which on a headless host / CI runner with no microphone adds an
++    // incidental `voice/no-input-device` finding. This test is about terminal/clipboard composition.
++    let terminal_issues = report
++        .findings
++        .iter()
++        .filter(|f| f.id.domain == "terminal")
++        .count();
++    assert_eq!(terminal_issues, 1);
+     assert!(
+         report
+             .findings
+diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
+index 084ceed3..27499245 100644
+--- a/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
++++ b/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
+@@ -2297,12 +2297,26 @@ fn paint_dispatch_config_badge(
+ /// Shared by the dispatch box and the peek panel that replaces it, so a capture started in either box shows the same indicator.
+ pub(super) fn paint_record_badge(buf: &mut Buffer, area: Rect, theme: &Theme, listening: bool) {
+     if listening && area.width >= 12 {
++        // Workshop overlay: the engine's progress line replaces "rec" while the model downloads/loads
++        let (label, fg) = match crate::voice::banner_status() {
++            Some(status) => (
++                format!(
++                    " \u{25CF} {} ",
++                    crate::render::line_utils::truncate_str(
++                        &status,
++                        (area.width as usize).saturating_sub(8)
++                    )
++                ),
++                theme.accent_running,
++            ),
++            None => (" \u{25CF} rec ".to_owned(), theme.accent_error),
++        };
+         buf.set_string(
+             area.x + 2,
+             area.y,
+-            " \u{25CF} rec ",
++            &label,
+             Style::default()
+-                .fg(theme.accent_error)
++                .fg(fg)
+                 .bg(theme.bg_base)
+                 .add_modifier(Modifier::BOLD),
+         );
+diff --git a/crates/codegen/xai-grok-pager/src/voice/handle.rs b/crates/codegen/xai-grok-pager/src/voice/handle.rs
+index 6b1daea6..42afcd9a 100644
+--- a/crates/codegen/xai-grok-pager/src/voice/handle.rs
++++ b/crates/codegen/xai-grok-pager/src/voice/handle.rs
+@@ -177,11 +177,18 @@ pub(crate) fn commit_interim_into_prompt(app: &mut AppView) -> Option<VoiceInter
+ /// Apply a voice event to app state. Returns whether the frame should redraw.
+ pub fn handle_voice_event(app: &mut AppView, event: VoiceEvent) -> bool {
+     match event {
++        // Workshop overlay: engine progress ("Downloading voice model… 42%") for the banner only
++        VoiceEvent::Status { text } => {
++            super::set_banner_status(&text);
++            true
++        }
+         VoiceEvent::InterimTranscript { text } => {
++            super::set_banner_status("");
+             // No-op unless recording, so a late interim after a stop can't repopulate the overlay
+             app.voice_set_interim(text)
+         }
+         VoiceEvent::UtteranceFinal { text } => {
++            super::set_banner_status("");
+             app.voice_clear_interim();
+             // The mic stays open across pauses; the user stops it explicitly, then presses Enter to send
+             // The bound target survives a stop (`Stopping`), so a trailing final after an explicit stop still lands
+@@ -191,6 +198,7 @@ pub fn handle_voice_event(app: &mut AppView, event: VoiceEvent) -> bool {
+             true
+         }
+         VoiceEvent::Error { message, hint } => {
++            super::set_banner_status("");
+             let target = app.voice_recording_target();
+             app.voice_reset();
+             app.show_toast(&format!("Voice: {message}"));
+diff --git a/crates/codegen/xai-grok-pager/src/voice/mod.rs b/crates/codegen/xai-grok-pager/src/voice/mod.rs
+index a3ab3969..09aabf80 100644
+--- a/crates/codegen/xai-grok-pager/src/voice/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/voice/mod.rs
+@@ -18,8 +18,27 @@
+ mod auth;
+ mod handle;
+ 
++use std::sync::Mutex;
++
+ pub use auth::build_voice_auth;
+ pub use handle::handle_voice_event;
++
++/// Workshop overlay: the one-line status the recording banner shows instead of "Recording" while
++/// the local engine gets ready (model download progress, model load). Set from
++/// [`xai_grok_voice::VoiceEvent::Status`], cleared by the next transcript or error. Process-global
++/// like the voice gates above so no `AppView` field or render plumbing changes.
++static BANNER_STATUS: Mutex<Option<String>> = Mutex::new(None);
++
++pub(crate) fn set_banner_status(text: &str) {
++    if let Ok(mut guard) = BANNER_STATUS.lock() {
++        *guard = Some(text.to_owned()).filter(|t| !t.trim().is_empty());
++    }
++}
++
++/// The banner text to paint: the engine's status line, or `None` for the plain "Recording" row.
++pub(crate) fn banner_status() -> Option<String> {
++    BANNER_STATUS.lock().ok().and_then(|g| g.clone())
++}
+ pub(crate) use handle::{
+     VoiceInterimCommit, commit_interim_into_prompt, merge_voice_fragment, prompt_blank_for_voice,
+     space_voice_fragment,
+diff --git a/crates/codegen/xai-grok-voice/Cargo.toml b/crates/codegen/xai-grok-voice/Cargo.toml
+index be26f22a..0e3f9cfe 100644
+--- a/crates/codegen/xai-grok-voice/Cargo.toml
++++ b/crates/codegen/xai-grok-voice/Cargo.toml
+@@ -21,6 +21,8 @@ toml = { workspace = true }
+ tracing = { workspace = true }
+ tracing-subscriber = { workspace = true }
+ url = { workspace = true }
++# Workshop overlay: the local speech-to-text provider (`voice-engine` helper, pinned model store).
++workshop-voice = { path = "../../workshop-voice" }
+ xai-dirs = { workspace = true }
+ xai-grok-extra-ca = { workspace = true }
+ # Sanctioned TTY detach for the capture subprocesses (Linux system recorders,
+@@ -28,6 +30,10 @@ xai-grok-extra-ca = { workspace = true }
+ # `std::process::Command`.
+ xai-tty-utils = { workspace = true }
+ 
++[dev-dependencies]
++# Workshop overlay: `tests/local_dictation.rs` (ignored; needs the helper and a model).
++hound = "3.5"
++
+ [features]
+ # `audio` = "microphone capture is compiled in". It's enabled on every OS for
+ # production builds: macOS/Windows link `cpal`; Linux shells out to a system
+diff --git a/crates/codegen/xai-grok-voice/src/config.rs b/crates/codegen/xai-grok-voice/src/config.rs
+index 8a7f7fb4..fd01a500 100644
+--- a/crates/codegen/xai-grok-voice/src/config.rs
++++ b/crates/codegen/xai-grok-voice/src/config.rs
+@@ -5,12 +5,33 @@ use crate::error::VoiceError;
+ /// Default STT capture rate (Hz). Shared with the `__mic-capture` helper's argv default so parent and child agree when `--rate` is omitted.
+ pub const DEFAULT_SAMPLE_RATE: u32 = 16_000;
+ 
+-/// Prefer https `api_base` (same shape as chat). [`Self::stt_ws_url`] derives `wss://`. When `[voice].api_base` is unset,
+-/// inherits `[endpoints].xai_api_base_url` so enterprise proxies need no second knob.
++/// Which speech-to-text engine `/voice` talks to.
++///
++/// Workshop overlay: the default is the local `voice-engine` helper (whisper.cpp, no account, no
++/// network after install). The inherited xAI WebSocket client is opt-in: `provider = "xai"` plus an
++/// explicit `api_base` and the user's own key; a normal install never constructs it.
++#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
++#[serde(rename_all = "lowercase")]
++pub enum VoiceProvider {
++    #[default]
++    Local,
++    Xai,
++}
++
++/// `[voice]` config. For `provider = "xai"`, prefer an https `api_base` (same shape as chat);
++/// [`Self::stt_ws_url`] derives `wss://` and, when `[voice].api_base` is unset, inherits
++/// `[endpoints].xai_api_base_url` so enterprise proxies need no second knob. The local provider
++/// ignores `api_base`.
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+ #[serde(default)]
+ pub struct VoiceConfig {
+-    /// HTTPS API root (or bare host).
++    pub provider: VoiceProvider,
++    /// Workshop overlay: force a Whisper model tier (`turbo` / `small` / `base`). Unset = chosen
++    /// per machine (voice-spec §9.6). Undocumented on purpose.
++    pub model: Option<String>,
++    /// Workshop overlay: path of the `voice-engine` helper; unset = beside the running binary.
++    pub engine_path: Option<String>,
++    /// HTTPS API root (or bare host) for `provider = "xai"`. Empty for a normal launch.
+     /// Bases may end in `/v1` or `/xai/v1`; the default STT path de-duplicates a leading `v1/` so both become `…/v1/stt`.
+     pub api_base: String,
+     pub stt_ws_path: String,
+@@ -30,7 +51,11 @@ pub struct VoiceConfig {
+ impl Default for VoiceConfig {
+     fn default() -> Self {
+         Self {
+-            api_base: "https://api.x.ai".into(),
++            provider: VoiceProvider::Local,
++            model: None,
++            engine_path: None,
++            // No hosted endpoint by default (gate:no-xai): the xAI provider requires an explicit base.
++            api_base: String::new(),
+             stt_ws_path: "/v1/stt".into(),
+             language: "en".into(),
+             sample_rate: DEFAULT_SAMPLE_RATE,
+@@ -48,7 +73,8 @@ impl VoiceConfig {
+         ws_url(&self.api_base, &self.stt_ws_path)
+     }
+ 
+-    /// `api_base`: non-empty `[voice].api_base`, else `[endpoints].xai_api_base_url` from `root`, else `resolved_endpoints_base`, else the default.
++    /// `api_base` for `provider = "xai"`: non-empty `[voice].api_base`, else `[endpoints].xai_api_base_url` from `root`,
++    /// else `resolved_endpoints_base`. The local provider keeps `api_base` empty: no hosted endpoint is ever derived.
+     ///
+     /// `resolved_endpoints_base` carries the caller's env/CLI overrides; it ranks below the raw table so config keeps beating env (shell precedence).
+     pub fn from_config_table(root: &toml::Table, resolved_endpoints_base: Option<&str>) -> Self {
+@@ -57,22 +83,26 @@ impl VoiceConfig {
+             .and_then(|t| toml::Value::Table(t.clone()).try_into().ok())
+             .unwrap_or_default();
+ 
+-        // Read `[voice].api_base` from the raw table, not `cfg`: serde default makes "unset" and an explicit `https://api.x.ai` indistinguishable
+-        cfg.api_base = non_empty_str(
++        // Read `[voice].api_base` from the raw table, not `cfg`: serde default makes "unset" and an explicit value indistinguishable
++        let explicit = non_empty_str(
+             voice_table
+                 .and_then(|t| t.get("api_base"))
+                 .and_then(|v| v.as_str()),
+-        )
+-        .or_else(|| {
+-            non_empty_str(
+-                root.get("endpoints")
+-                    .and_then(|e| e.get("xai_api_base_url"))
+-                    .and_then(|v| v.as_str()),
+-            )
+-        })
+-        .or_else(|| non_empty_str(resolved_endpoints_base))
+-        .map(|base| base.trim_end_matches('/').to_owned())
+-        .unwrap_or_else(|| Self::default().api_base);
++        );
++        cfg.api_base = match cfg.provider {
++            VoiceProvider::Xai => explicit
++                .or_else(|| {
++                    non_empty_str(
++                        root.get("endpoints")
++                            .and_then(|e| e.get("xai_api_base_url"))
++                            .and_then(|v| v.as_str()),
++                    )
++                })
++                .or_else(|| non_empty_str(resolved_endpoints_base))
++                .map(|base| base.trim_end_matches('/').to_owned())
++                .unwrap_or_default(),
++            VoiceProvider::Local => String::new(),
++        };
+         cfg
+     }
+ }
+@@ -92,6 +122,13 @@ fn strip_scheme<'a>(s: &'a str, scheme: &str) -> Option<&'a str> {
+ fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
+     let base = api_base.trim().trim_end_matches('/');
+     let path = path.trim().trim_start_matches('/');
++    if base.is_empty() {
++        return Err(VoiceError::Config(
++            "voice provider \"xai\" needs [voice].api_base (or [endpoints].xai_api_base_url); \
++             Workshop sets no hosted speech endpoint by default"
++                .into(),
++        ));
++    }
+     if strip_scheme(base, "http://").is_some() || strip_scheme(base, "ws://").is_some() {
+         return Err(VoiceError::Config(format!(
+             "insecure voice api_base {api_base:?}: voice requires a TLS endpoint \
+@@ -114,42 +151,59 @@ fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
+ mod tests {
+     use super::*;
+ 
++    /// Workshop overlay (gate:no-xai): a default launch has no hosted speech endpoint at all.
+     #[test]
+-    fn default_stt_ws_uses_wss() {
+-        assert_eq!(
+-            VoiceConfig::default().stt_ws_url().unwrap(),
+-            "wss://api.x.ai/v1/stt"
++    fn default_is_local_with_no_hosted_endpoint() {
++        let cfg = VoiceConfig::default();
++        assert_eq!(cfg.provider, VoiceProvider::Local);
++        assert!(cfg.api_base.is_empty());
++        assert!(cfg.model.is_none());
++        assert!(matches!(cfg.stt_ws_url(), Err(VoiceError::Config(_))));
++        let cfg =
++            VoiceConfig::from_config_table(&toml::Table::new(), Some("https://env.example.com"));
++        assert_eq!(cfg.provider, VoiceProvider::Local);
++        assert!(
++            cfg.api_base.is_empty(),
++            "local ignores every endpoint fallback"
+         );
+     }
+ 
++    fn xai(base: &str) -> VoiceConfig {
++        VoiceConfig {
++            provider: VoiceProvider::Xai,
++            api_base: base.into(),
++            ..VoiceConfig::default()
++        }
++    }
++
+     #[test]
+     fn scheme_less_and_wss_bases() {
+-        for base in ["api.x.ai", "wss://api.x.ai", "HTTPS://api.x.ai"] {
+-            let cfg = VoiceConfig {
+-                api_base: base.into(),
+-                ..VoiceConfig::default()
+-            };
+-            assert_eq!(cfg.stt_ws_url().unwrap(), "wss://api.x.ai/v1/stt");
++        for base in [
++            "stt.example.com",
++            "wss://stt.example.com",
++            "HTTPS://stt.example.com",
++        ] {
++            assert_eq!(
++                xai(base).stt_ws_url().unwrap(),
++                "wss://stt.example.com/v1/stt"
++            );
+         }
+     }
+ 
+     #[test]
+     fn v1_base_dedupes_default_path() {
+-        let cfg = VoiceConfig {
+-            api_base: "https://proxy.example.com/v1".into(),
+-            ..VoiceConfig::default()
+-        };
+-        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://proxy.example.com/v1/stt");
++        assert_eq!(
++            xai("https://proxy.example.com/v1").stt_ws_url().unwrap(),
++            "wss://proxy.example.com/v1/stt"
++        );
+     }
+ 
+     #[test]
+     fn xai_v1_base_preserves_prefix() {
+-        let cfg = VoiceConfig {
+-            api_base: "https://proxy.example.com/xai/v1".into(),
+-            ..VoiceConfig::default()
+-        };
+         assert_eq!(
+-            cfg.stt_ws_url().unwrap(),
++            xai("https://proxy.example.com/xai/v1")
++                .stt_ws_url()
++                .unwrap(),
+             "wss://proxy.example.com/xai/v1/stt"
+         );
+     }
+@@ -162,24 +216,23 @@ mod tests {
+             "HTTP://localhost:8080",
+             "Ws://localhost:8080",
+         ] {
+-            let cfg = VoiceConfig {
+-                api_base: base.into(),
+-                ..VoiceConfig::default()
+-            };
+-            assert!(matches!(cfg.stt_ws_url(), Err(VoiceError::Config(_))));
++            assert!(matches!(xai(base).stt_ws_url(), Err(VoiceError::Config(_))));
+         }
+     }
+ 
+     #[test]
+-    fn inherits_endpoints_when_voice_api_base_unset() {
++    fn xai_provider_inherits_endpoints_when_voice_api_base_unset() {
+         let table: toml::Table = toml::from_str(
+             r#"
+ [endpoints]
+ xai_api_base_url = "https://proxy.example.com/xai/v1"
++[voice]
++provider = "xai"
+ "#,
+         )
+         .unwrap();
+         let cfg = VoiceConfig::from_config_table(&table, None);
++        assert_eq!(cfg.provider, VoiceProvider::Xai);
+         assert_eq!(cfg.api_base, "https://proxy.example.com/xai/v1");
+         assert_eq!(
+             cfg.stt_ws_url().unwrap(),
+@@ -188,12 +241,30 @@ xai_api_base_url = "https://proxy.example.com/xai/v1"
+     }
+ 
+     #[test]
+-    fn empty_voice_api_base_still_inherits_endpoints() {
++    fn local_provider_never_inherits_endpoints() {
++        let table: toml::Table = toml::from_str(
++            r#"
++[endpoints]
++xai_api_base_url = "https://proxy.example.com/xai/v1"
++[voice]
++language = "fr"
++"#,
++        )
++        .unwrap();
++        let cfg = VoiceConfig::from_config_table(&table, Some("https://env.example.com"));
++        assert_eq!(cfg.provider, VoiceProvider::Local);
++        assert!(cfg.api_base.is_empty());
++        assert_eq!(cfg.language, "fr");
++    }
++
++    #[test]
++    fn xai_empty_voice_api_base_still_inherits_endpoints() {
+         let table: toml::Table = toml::from_str(
+             r#"
+ [endpoints]
+ xai_api_base_url = "https://proxy.example.com/xai/v1"
+ [voice]
++provider = "xai"
+ api_base = "  "
+ language = "fr"
+ "#,
+@@ -205,31 +276,30 @@ language = "fr"
+     }
+ 
+     #[test]
+-    fn whitespace_voice_api_base_without_endpoints_uses_default() {
++    fn xai_without_any_base_has_no_endpoint() {
+         let table: toml::Table = toml::from_str(
+             r#"
+ [voice]
++provider = "xai"
+ api_base = "  "
+ "#,
+         )
+         .unwrap();
+         let cfg = VoiceConfig::from_config_table(&table, None);
+-        assert_eq!(cfg.api_base, VoiceConfig::default().api_base);
+-        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://api.x.ai/v1/stt");
++        assert!(cfg.api_base.is_empty());
++        assert!(matches!(cfg.stt_ws_url(), Err(VoiceError::Config(_))));
+     }
+ 
+     #[test]
+-    fn resolved_endpoints_base_used_when_table_has_none() {
+-        let cfg = VoiceConfig::from_config_table(
+-            &toml::Table::new(),
+-            Some("https://proxy.example.com/v1/"),
+-        );
++    fn xai_resolved_endpoints_base_used_when_table_has_none() {
++        let table: toml::Table = toml::from_str("[voice]\nprovider = \"xai\"\n").unwrap();
++        let cfg = VoiceConfig::from_config_table(&table, Some("https://proxy.example.com/v1/"));
+         assert_eq!(cfg.api_base, "https://proxy.example.com/v1");
+         assert_eq!(cfg.stt_ws_url().unwrap(), "wss://proxy.example.com/v1/stt");
+ 
+-        // Whitespace-only resolved base falls through to the default.
+-        let cfg = VoiceConfig::from_config_table(&toml::Table::new(), Some("  "));
+-        assert_eq!(cfg.api_base, VoiceConfig::default().api_base);
++        // Whitespace-only resolved base leaves the endpoint empty.
++        let cfg = VoiceConfig::from_config_table(&table, Some("  "));
++        assert!(cfg.api_base.is_empty());
+     }
+ 
+     /// config.toml beats the env/CLI fallback, matching the shell's endpoints precedence.
+@@ -239,6 +309,8 @@ api_base = "  "
+             r#"
+ [endpoints]
+ xai_api_base_url = "https://config.example.com"
++[voice]
++provider = "xai"
+ "#,
+         )
+         .unwrap();
+@@ -253,19 +325,20 @@ xai_api_base_url = "https://config.example.com"
+ [endpoints]
+ xai_api_base_url = "https://proxy.example.com/xai/v1"
+ [voice]
+-api_base = "https://api.x.ai"
++provider = "xai"
++api_base = "https://stt.example.com"
+ language = "es"
+ "#,
+         )
+         .unwrap();
+         let cfg = VoiceConfig::from_config_table(&table, None);
+-        assert_eq!(cfg.api_base, "https://api.x.ai");
++        assert_eq!(cfg.api_base, "https://stt.example.com");
+         assert_eq!(cfg.language, "es");
+-        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://api.x.ai/v1/stt");
++        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://stt.example.com/v1/stt");
+     }
+ 
+     #[test]
+-    fn ignores_unknown_and_identity_fields() {
++    fn workshop_keys_parse_and_unknown_or_identity_fields_are_ignored() {
+         let table: toml::Table = toml::from_str(
+             r#"
+ [voice]
+@@ -273,11 +346,18 @@ enabled = false
+ client_identifier = "spoofed"
+ user_agent = "malicious/9.9"
+ language = "es"
++model = "small"
++engine_path = "/opt/workshop/voice-engine"
+ "#,
+         )
+         .unwrap();
+         let cfg = VoiceConfig::from_config_table(&table, None);
+         assert_eq!(cfg.language, "es");
++        assert_eq!(cfg.model.as_deref(), Some("small"));
++        assert_eq!(
++            cfg.engine_path.as_deref(),
++            Some("/opt/workshop/voice-engine")
++        );
+         assert!(cfg.client_identifier.is_empty());
+         assert!(cfg.user_agent.is_empty());
+     }
+diff --git a/crates/codegen/xai-grok-voice/src/event.rs b/crates/codegen/xai-grok-voice/src/event.rs
+index 1f795284..68735fa5 100644
+--- a/crates/codegen/xai-grok-voice/src/event.rs
++++ b/crates/codegen/xai-grok-voice/src/event.rs
+@@ -7,6 +7,11 @@ pub enum VoiceEvent {
+     /// Utterance complete (`speech_final` on streaming STT, or batch result).
+     UtteranceFinal { text: String },
+ 
++    /// Workshop overlay: one-line progress for the recording banner while the local engine is
++    /// getting ready ("Downloading voice model… 42%"). Empty text restores the plain banner.
++    /// Never inserted into the prompt.
++    Status { text: String },
++
+     /// Non-fatal or fatal error from capture or STT.
+     Error {
+         /// Short description for a one-line toast.
+diff --git a/crates/codegen/xai-grok-voice/src/lib.rs b/crates/codegen/xai-grok-voice/src/lib.rs
+index f12eba02..481ea527 100644
+--- a/crates/codegen/xai-grok-voice/src/lib.rs
++++ b/crates/codegen/xai-grok-voice/src/lib.rs
+@@ -20,6 +20,7 @@ pub mod stt;
+ 
+ pub use auth::{SharedVoiceAuth, StaticVoiceAuth, VoiceAuthProvider};
+ pub use config::VoiceConfig;
++pub use config::VoiceProvider;
+ pub use error::VoiceError;
+ pub use event::VoiceEvent;
+ pub use language::{
+diff --git a/crates/codegen/xai-grok-voice/src/pipeline.rs b/crates/codegen/xai-grok-voice/src/pipeline.rs
+index f48b9163..7737b274 100644
+--- a/crates/codegen/xai-grok-voice/src/pipeline.rs
++++ b/crates/codegen/xai-grok-voice/src/pipeline.rs
+@@ -12,10 +12,12 @@ use tokio::task::JoinHandle;
+ 
+ use crate::auth::SharedVoiceAuth;
+ use crate::config::VoiceConfig;
++#[cfg(feature = "audio")]
++use crate::config::VoiceProvider;
+ use crate::error::VoiceError;
+ use crate::event::VoiceEvent;
+ #[cfg(feature = "audio")]
+-use crate::stt::{StreamingSttEvent, StreamingSttSession};
++use crate::stt::{LocalSttSession, StreamingSttEvent, StreamingSttSession, SttSession};
+ 
+ /// Commands from the pager event loop (toggle start/stop, or F12 push-to-talk).
+ #[derive(Debug)]
+@@ -86,6 +88,8 @@ pub async fn run_voice_pipeline(
+     if let Some(session) = active {
+         session.reader.abort();
+     }
++    // Workshop overlay: the warm local engine holds the model weights; release them with the pipeline.
++    workshop_voice::engine::shutdown().await;
+ }
+ 
+ /// Open a capture session, emitting a `VoiceEvent::Error` (and returning `None`) on failure.
+@@ -199,9 +203,19 @@ async fn start_capture_session(
+     let (audio_tx_tx, audio_tx_rx) = tokio::sync::oneshot::channel::<mpsc::Sender<Vec<u8>>>();
+     tokio::spawn(forward_pcm(mic_rx, audio_tx_rx));
+ 
++    // Workshop overlay: the local engine is the default; the xAI socket (and its bearer) only when opted in
+     let connect = async {
+-        let bearer = crate::auth::require_bearer(auth).await?;
+-        StreamingSttSession::connect(config, &bearer).await
++        match config.provider {
++            VoiceProvider::Local => LocalSttSession::open(config, event_tx)
++                .await
++                .map(SttSession::Local),
++            VoiceProvider::Xai => {
++                let bearer = crate::auth::require_bearer(auth).await?;
++                StreamingSttSession::connect(config, &bearer)
++                    .await
++                    .map(SttSession::Xai)
++            }
++        }
+     };
+     let (connect_res, capture_res) = tokio::join!(connect, capture_task);
+ 
+diff --git a/crates/codegen/xai-grok-voice/src/stt/local.rs b/crates/codegen/xai-grok-voice/src/stt/local.rs
+new file mode 100644
+index 00000000..4e594ed3
+--- /dev/null
++++ b/crates/codegen/xai-grok-voice/src/stt/local.rs
+@@ -0,0 +1,112 @@
++//! Workshop overlay: the local `voice-engine` helper behind the same session surface as
++//! [`super::StreamingSttSession`], so `pipeline.rs` drives both the same way.
++//!
++//! Partials map to non-final interims (the preview), the helper's single full-utterance decode
++//! maps to `Done` (the only text the prompt commits). Getting the helper ready — locating it,
++//! verifying or downloading the pinned model, stepping down a model tier on a slow machine — is
++//! `workshop_voice::session::open`; its progress lines surface as [`VoiceEvent::Status`].
++
++use tokio::sync::mpsc;
++use workshop_voice::{EngineSession, SessionEvent};
++
++use super::{StreamingSttEvent, SttTranscriptPartial};
++use crate::config::VoiceConfig;
++use crate::error::VoiceError;
++use crate::event::VoiceEvent;
++
++pub struct LocalSttSession {
++    inner: EngineSession,
++}
++
++impl LocalSttSession {
++    /// Ready the helper (self-healing the model with progress on `event_tx`) and open an utterance.
++    pub async fn open(
++        config: &VoiceConfig,
++        event_tx: &mpsc::Sender<VoiceEvent>,
++    ) -> Result<Self, VoiceError> {
++        let opts = workshop_voice::OpenOptions {
++            voice_dir: None,
++            tier_override: config.model.clone(),
++            engine_path: config.engine_path.clone().map(std::path::PathBuf::from),
++            language: whisper_language(&config.language),
++        };
++        let status = |text: String| {
++            let _ = event_tx.try_send(VoiceEvent::Status { text });
++        };
++        let (inner, opened) = workshop_voice::open(&opts, &status).await.map_err(|e| {
++            workshop_voice::doctor::record_last_error(e.to_string());
++            match e {
++                workshop_voice::Error::EngineMissing | workshop_voice::Error::Config(_) => {
++                    VoiceError::Config(e.to_string())
++                }
++                other => VoiceError::Stt(other.to_string()),
++            }
++        })?;
++        tracing::info!(
++            tier = %opened.tier,
++            cold = opened.ready.cold,
++            load_ms = opened.ready.load_ms,
++            probe_ms = opened.ready.probe_ms,
++            downloaded = opened.downloaded,
++            stepped_down_from = ?opened.stepped_down_from,
++            "local voice session open"
++        );
++        Ok(Self { inner })
++    }
++
++    pub fn audio_sender(&self) -> Option<mpsc::Sender<Vec<u8>>> {
++        self.inner.audio_sender()
++    }
++
++    pub fn finish_audio(&mut self) {
++        self.inner.finish_audio();
++    }
++
++    pub async fn recv(&mut self) -> Option<StreamingSttEvent> {
++        Some(match self.inner.recv().await? {
++            SessionEvent::Partial { text, .. } => {
++                StreamingSttEvent::Partial(SttTranscriptPartial {
++                    text,
++                    is_final: false,
++                    speech_final: false,
++                })
++            }
++            SessionEvent::Final { text, .. } => StreamingSttEvent::Done { text },
++            SessionEvent::Error(message) => {
++                workshop_voice::doctor::record_last_error(message.clone());
++                StreamingSttEvent::Error { message }
++            }
++        })
++    }
++}
++
++/// Catalog / `auto` preference → Whisper language code. `auto` (and anything unknown) becomes
++/// `None`, which is whisper.cpp's detect-per-utterance; the literal `auto` never goes to the engine.
++pub fn whisper_language(stored: &str) -> Option<String> {
++    let canonical = crate::language::canonicalize_stt_language(Some(stored));
++    if canonical == crate::language::STT_LANGUAGE_AUTO {
++        return None;
++    }
++    // Whisper's table uses `tl` for Filipino/Tagalog; the catalog uses the ISO-639-2 `fil`.
++    let code = match canonical {
++        "fil" => "tl",
++        other => other,
++    };
++    Some(code.to_owned())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::whisper_language;
++
++    #[test]
++    fn auto_is_detection_and_catalog_codes_map_to_whisper() {
++        assert_eq!(whisper_language("auto"), None);
++        assert_eq!(whisper_language(" AUTO "), None);
++        assert_eq!(whisper_language("de"), Some("de".into()));
++        assert_eq!(whisper_language("fil"), Some("tl".into()));
++        assert_eq!(whisper_language("en-US"), Some("en".into()));
++        // Unknown codes fall back to the catalog default, never to the literal "auto"
++        assert_eq!(whisper_language("xx"), Some("en".into()));
++    }
++}
+diff --git a/crates/codegen/xai-grok-voice/src/stt/mod.rs b/crates/codegen/xai-grok-voice/src/stt/mod.rs
+index 628d59a8..dd098d89 100644
+--- a/crates/codegen/xai-grok-voice/src/stt/mod.rs
++++ b/crates/codegen/xai-grok-voice/src/stt/mod.rs
+@@ -1,7 +1,39 @@
+-//! xAI Speech-to-Text: streaming `wss://api.x.ai/v1/stt`.
++//! Speech-to-text sessions: the Workshop local engine (default) and the inherited xAI streaming
++//! client (`wss://…/v1/stt`, opt-in via `provider = "xai"`).
+ 
++mod local;
+ mod streaming;
+ mod types;
+ 
++pub use local::{LocalSttSession, whisper_language};
+ pub use streaming::{StreamingSttEvent, StreamingSttSession};
+ pub use types::{SttServerEvent, SttTranscriptPartial};
++
++/// The session `pipeline.rs` drives; both variants speak [`StreamingSttEvent`].
++pub enum SttSession {
++    Local(LocalSttSession),
++    Xai(StreamingSttSession),
++}
++
++impl SttSession {
++    pub fn audio_sender(&self) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
++        match self {
++            SttSession::Local(s) => s.audio_sender(),
++            SttSession::Xai(s) => s.audio_sender(),
++        }
++    }
++
++    pub fn finish_audio(&mut self) {
++        match self {
++            SttSession::Local(s) => s.finish_audio(),
++            SttSession::Xai(s) => s.finish_audio(),
++        }
++    }
++
++    pub async fn recv(&mut self) -> Option<StreamingSttEvent> {
++        match self {
++            SttSession::Local(s) => s.recv().await,
++            SttSession::Xai(s) => s.recv().await,
++        }
++    }
++}
+diff --git a/crates/codegen/xai-grok-voice/src/stt/streaming.rs b/crates/codegen/xai-grok-voice/src/stt/streaming.rs
+index b4486bdf..accf0e90 100644
+--- a/crates/codegen/xai-grok-voice/src/stt/streaming.rs
++++ b/crates/codegen/xai-grok-voice/src/stt/streaming.rs
+@@ -248,9 +248,18 @@ fn build_stt_ws_url(config: &VoiceConfig) -> Result<Url, VoiceError> {
+ mod tests {
+     use super::*;
+ 
++    /// The xAI client under test needs an explicit base: Workshop's default config has none.
++    fn xai_cfg() -> VoiceConfig {
++        VoiceConfig {
++            provider: crate::config::VoiceProvider::Xai,
++            api_base: "https://stt.example.com".into(),
++            ..VoiceConfig::default()
++        }
++    }
++
+     #[test]
+     fn stt_url_includes_query_params() {
+-        let cfg = VoiceConfig::default();
++        let cfg = xai_cfg();
+         let url = build_stt_ws_url(&cfg).unwrap();
+         let q = url.query().unwrap_or_default();
+         assert!(q.contains("sample_rate=16000"));
+@@ -262,7 +271,7 @@ mod tests {
+     fn stt_url_resolves_auto_to_concrete_language() {
+         let cfg = VoiceConfig {
+             language: "auto".into(),
+-            ..VoiceConfig::default()
++            ..xai_cfg()
+         };
+         let url = build_stt_ws_url(&cfg).unwrap();
+         let q = url.query().unwrap_or_default();
+@@ -289,7 +298,7 @@ mod tests {
+     fn stt_url_passes_through_catalog_language() {
+         let cfg = VoiceConfig {
+             language: "ja".into(),
+-            ..VoiceConfig::default()
++            ..xai_cfg()
+         };
+         let url = build_stt_ws_url(&cfg).unwrap();
+         assert!(url.query().unwrap_or_default().contains("language=ja"));
+diff --git a/crates/codegen/xai-grok-voice/tests/local_dictation.rs b/crates/codegen/xai-grok-voice/tests/local_dictation.rs
+new file mode 100644
+index 00000000..6c264324
+--- /dev/null
++++ b/crates/codegen/xai-grok-voice/tests/local_dictation.rs
+@@ -0,0 +1,150 @@
++//! Workshop overlay: end-to-end dictation through the real pipeline with the local engine.
++//!
++//! Upstream's Linux capture spawns a system recorder from `PATH`; the test puts a fake `arecord`
++//! there that streams a WAV at real-time pace, so `run_voice_pipeline` exercises the genuine
++//! path: recorder subprocess → PCM pipe → `voice-engine` helper → `VoiceEvent`s. Needs the helper
++//! and a model, so it is `#[ignore]`d:
++//!
++//! ```bash
++//! WORKSHOP_VOICE_ENGINE=voice/engine/target/release/voice-engine \
++//! WORKSHOP_VOICE_DIR=/tmp/workshop-home/voice \
++//! FAKE_MIC_BIN_DIR=/tmp/fakemic FAKE_MIC_WAV=crates/workshop-voice/tests/fixtures/jfk.wav \
++//! cargo test -p xai-grok-voice --test local_dictation -- --ignored --nocapture
++//! ```
++
++use std::time::{Duration, Instant};
++
++use xai_grok_voice::{StaticVoiceAuth, VoiceCommand, VoiceConfig, VoiceEvent, run_voice_pipeline};
++
++const JFK: &str = "And so, my fellow Americans, ask not what your country can do for you; ask what you can do for your country.";
++
++fn normalize(s: &str) -> Vec<String> {
++    s.split_whitespace()
++        .map(|w| {
++            w.chars()
++                .filter(|c| c.is_alphanumeric())
++                .flat_map(char::to_lowercase)
++                .collect()
++        })
++        .filter(|w: &String| !w.is_empty())
++        .collect()
++}
++
++fn wer(reference: &str, hypothesis: &str) -> f32 {
++    let r = normalize(reference);
++    let h = normalize(hypothesis);
++    let mut prev: Vec<usize> = (0..=h.len()).collect();
++    for (i, rw) in r.iter().enumerate() {
++        let mut cur = vec![i + 1];
++        for (j, hw) in h.iter().enumerate() {
++            let sub = prev[j] + usize::from(rw != hw);
++            cur.push(sub.min(prev[j + 1] + 1).min(cur[j] + 1));
++        }
++        prev = cur;
++    }
++    prev[h.len()] as f32 / r.len().max(1) as f32
++}
++
++#[tokio::test(flavor = "multi_thread")]
++#[ignore = "needs voice-engine, a model, and the fake recorder (see module docs)"]
++async fn jfk_dictation_through_the_real_pipeline() {
++    let _ = tracing_subscriber::fmt()
++        .with_env_filter("xai_grok_voice=debug,workshop_voice=info,voice_engine=info")
++        .with_writer(std::io::stderr)
++        .try_init();
++    let fake_dir = std::env::var("FAKE_MIC_BIN_DIR").expect("FAKE_MIC_BIN_DIR");
++    assert!(std::env::var("FAKE_MIC_WAV").is_ok(), "FAKE_MIC_WAV");
++    // The recorder is resolved from PATH by upstream's capture backend.
++    // SAFETY: single-threaded setup before any task reads the environment.
++    unsafe { std::env::set_var("PATH", fake_dir) };
++    let wav_secs = {
++        let r = hound::WavReader::open(std::env::var("FAKE_MIC_WAV").unwrap()).unwrap();
++        r.duration() as f32 / r.spec().sample_rate as f32
++    };
++
++    let config = VoiceConfig::default();
++    assert_eq!(config.provider, xai_grok_voice::VoiceProvider::Local);
++    let auth = StaticVoiceAuth::shared("unused-by-the-local-provider").unwrap();
++    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(32);
++    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(128);
++    let pipeline = tokio::spawn(run_voice_pipeline(config, auth, cmd_rx, event_tx));
++
++    let t0 = Instant::now();
++    cmd_tx.send(VoiceCommand::PttPress).await.unwrap();
++    // The recorder starts streaming at once while the engine gets ready (model verify, load,
++    // probe, possibly a tier step-down); upstream's pre-connect backlog keeps that audio. Release
++    // (Esc / Enter) once the session is ready and the clip has fully played out.
++    let mut events: Vec<(Duration, VoiceEvent)> = Vec::new();
++    let mut released_at: Option<Instant> = None;
++    let mut ready_at: Option<Instant> = None;
++    loop {
++        if released_at.is_none() {
++            let clip_done = t0.elapsed() >= Duration::from_secs_f32(0.5 + wav_secs + 1.0);
++            let session_ready = ready_at.is_some_and(|r| r.elapsed() >= Duration::from_secs(2));
++            if (clip_done && session_ready) || t0.elapsed() > Duration::from_secs(240) {
++                cmd_tx.send(VoiceCommand::PttRelease).await.unwrap();
++                released_at = Some(Instant::now());
++            }
++        }
++        match tokio::time::timeout(Duration::from_millis(200), event_rx.recv()).await {
++            Ok(Some(ev)) => {
++                let fatal = matches!(ev, VoiceEvent::Error { .. });
++                if matches!(&ev, VoiceEvent::Status { text } if text.is_empty()) {
++                    ready_at.get_or_insert(Instant::now());
++                }
++                events.push((t0.elapsed(), ev));
++                if fatal {
++                    break;
++                }
++            }
++            Ok(None) => break,
++            Err(_) => {}
++        }
++        if let Some(r) = released_at
++            && (events
++                .iter()
++                .any(|(_, e)| matches!(e, VoiceEvent::UtteranceFinal { .. }))
++                || r.elapsed() > Duration::from_secs(150))
++        {
++            break;
++        }
++    }
++    cmd_tx.send(VoiceCommand::Shutdown).await.unwrap();
++    let _ = tokio::time::timeout(Duration::from_secs(10), pipeline).await;
++
++    let mut first_interim = None;
++    let mut final_text = None;
++    let mut final_at = None;
++    let mut statuses = Vec::new();
++    for (t, ev) in &events {
++        eprintln!("{:>7.2}s {ev:?}", t.as_secs_f32());
++        match ev {
++            VoiceEvent::Status { text } => statuses.push(text.clone()),
++            VoiceEvent::InterimTranscript { .. } => {
++                first_interim.get_or_insert(*t);
++            }
++            VoiceEvent::UtteranceFinal { text } => {
++                final_text = Some(text.clone());
++                final_at = Some(*t);
++            }
++            VoiceEvent::Error { message, .. } => panic!("voice error: {message}"),
++        }
++    }
++    let final_text = final_text.expect("one committed utterance");
++    let release_at = released_at.unwrap() - t0;
++    let error_rate = wer(JFK, &final_text);
++    eprintln!(
++        "\nfirst interim at {:.2}s after press; final {:.2}s after release; WER {error_rate:.3}\nstatuses: {statuses:?}\nfinal: {final_text:?}",
++        first_interim.map(|d| d.as_secs_f32()).unwrap_or(f32::NAN),
++        (final_at.unwrap() - release_at).as_secs_f32()
++    );
++    assert!(first_interim.is_some(), "partials must show while speaking");
++    assert!(
++        statuses
++            .iter()
++            .any(|s| s.starts_with("Loading voice model"))
++            && statuses.last().is_some_and(String::is_empty),
++        "banner status must show the engine getting ready and then clear: {statuses:?}"
++    );
++    assert!(error_rate <= 0.15, "WER {error_rate:.3}: {final_text:?}");
++}

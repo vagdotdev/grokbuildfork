@@ -2244,16 +2244,20 @@ fn is_restricted_tier_classification() {
     assert!(!is_restricted_tier(Some("X Premium+")));
     assert!(!is_restricted_tier(Some("SomeFutureTier")));
 }
+/// Workshop overlay: the local engine has no tier, so `/voice` is never in the deny list.
 #[test]
-fn voice_included_in_tier_restricted_commands() {
-    assert!(TIER_RESTRICTED_COMMANDS.contains(&"voice"));
+fn voice_not_in_tier_restricted_commands() {
+    assert!(!TIER_RESTRICTED_COMMANDS.contains(&"voice"));
 }
 #[test]
-fn is_voice_tier_restricted_tracks_tier() {
+fn is_voice_tier_restricted_only_for_the_xai_provider() {
     let mut app = test_app();
     app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
-    assert!(app.is_voice_tier_restricted());
+    assert!(!app.is_voice_tier_restricted(), "local provider: no tier gate");
+    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
+    assert!(app.is_voice_tier_restricted(), "xAI provider on a free tier is gated");
     let mut app = test_app();
+    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
     let meta = xai_grok_login::AuthMeta {
         subscription_tier: Some("SuperGrok".into()),
         ..Default::default()

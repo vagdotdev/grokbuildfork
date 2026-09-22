@@ -16,27 +16,6 @@ index 6aeb988a..5faa1b48 100644
      /// Sticky: once the user types in the prompt, hide the tip for the session.
      pub tip_typing_dismissed: bool,
      pub todo: TodoPane,
-diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
-index 2572590a..6d377a83 100644
---- a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
-+++ b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
-@@ -2338,9 +2338,13 @@ impl AgentView {
-         let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
-         let usage_warning = usage_warning_text.as_deref();
-         let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
--        let model_label = match self.session.models.reasoning_effort {
--            Some(eff) => format!("{model_id} ({eff})"),
--            None => model_id,
-+        let model_label = match &self.workshop_model_label {
-+            // Workshop Engine/Adapter connection: name the runtime, not a shell model.
-+            Some(label) => label.clone(),
-+            None => match self.session.models.reasoning_effort {
-+                Some(eff) => format!("{model_id} ({eff})"),
-+                None => model_id,
-+            },
-         };
-         let info = match &self.prompt_mode {
-             PromptMode::Normal => PromptInfo {
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
 index 78db8552..23ec102e 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs

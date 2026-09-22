@@ -248,6 +248,7 @@ fn facts(
             newline,
             clipboard,
             voice: None,
+            voice_engine: None,
         },
         clipboard_recovery,
     )

@@ -71,6 +71,23 @@ done <"$dist/SHA256SUMS"
 
 cat <<EOF
 
+Voice dictation assets (installed by the same \`install.sh\` run; see \`voice/MODEL.lock.json\`):
+
+| File | SHA-256 |
+|---|---|
+EOF
+while read -r sha name; do
+  [[ -n "$name" ]] || continue
+  case "$name" in
+    voice-engine-*.tar.gz | ggml-*.bin | MODEL.lock.json)
+      # shellcheck disable=SC2016
+      printf '| [%s](%s/%s) | `%s` |\n' "$name" "$download_base" "$name" "$sha"
+      ;;
+  esac
+done <"$dist/SHA256SUMS"
+
+cat <<EOF
+
 Windows assets, when present, are best-effort and unsupported.
 
 ## Verify

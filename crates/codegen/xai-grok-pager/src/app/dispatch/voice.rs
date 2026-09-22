@@ -80,9 +80,9 @@ pub(super) fn dispatch_enable_voice_mode(app: &mut AppView, from_hold: bool) -> 
     if !app.voice_mode_enabled {
         return vec![];
     }
-    // Tier gate: free / X Basic personal users can't use voice (the server zero-limits these tiers)
+    // Tier gate: free / X Basic personal users can't use the opt-in xAI voice provider (the server zero-limits these tiers)
     // The Ctrl+Space / F8 keybinding bypasses the slash registry, so this is the enforcement point for it
-    // Show the SuperGrok upsell instead of starting a doomed session (`/voice` itself is separately hidden and upsold via the deny list)
+    // Show the SuperGrok upsell instead of starting a doomed session. Workshop's default local engine has no tier.
     if app.is_voice_tier_restricted() {
         return open_voice_tier_upsell(app);
     }

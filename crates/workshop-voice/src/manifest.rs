@@ -1,0 +1,179 @@
+//! The pinned voice artifacts: `voice/MODEL.lock.json`, compiled into the binary so the TUI's
+//! self-heal downloads exactly what the installer installs. Three Whisper tiers are pinned;
+//! which one a machine uses is decided by [`crate::tier`]. Changing a pin is a lock-file change,
+//! and only then does anyone download again.
+
+use serde::Deserialize;
+
+/// Raw lock file (also read by scripts/install.sh and the release workflow).
+pub const MODEL_LOCK_JSON: &str = include_str!("../../../voice/MODEL.lock.json");
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelLockFile {
+    pub schema_version: u32,
+    /// Fastest-to-slowest is the reverse of this order: `turbo`, `small`, `base`.
+    pub tiers: Vec<String>,
+    pub models: std::collections::BTreeMap<String, ModelPin>,
+    /// `{release_repo}`, `{version}` and `{file}` are substituted at run time.
+    pub mirror_url_template: String,
+    pub selection: SelectionParams,
+    pub engine: EngineLock,
+    pub license: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelPin {
+    pub name: String,
+    pub file: String,
+    pub size: u64,
+    pub sha256: String,
+    pub upstream_url: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SelectionParams {
+    /// An interim decode must fit in this many ms for a tier to stay selected.
+    pub interim_budget_ms: u64,
+    pub min_ram_bytes_for_probe: u64,
+    pub probe_ratio_small_over_base: f64,
+    pub probe_ratio_turbo_over_base: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EngineLock {
+    pub name: String,
+    pub whisper_cpp_version: String,
+    pub whisper_cpp_git: String,
+    pub platforms: Vec<String>,
+}
+
+/// GitHub `OWNER/NAME` the release workflow bakes in (same variable the updater uses).
+pub const RELEASE_REPO: &str = match option_env!("WORKSHOP_RELEASE_REPO") {
+    Some(repo) => repo,
+    None => "vagdotdev/grokbuildfork",
+};
+
+/// Version stamped by the release workflow; source builds have none and skip the mirror.
+pub const RELEASE_VERSION: Option<&str> = match option_env!("WORKSHOP_VERSION") {
+    Some(v) => Some(v),
+    None => option_env!("GROK_VERSION"),
+};
+
+pub fn lock() -> &'static ModelLockFile {
+    static LOCK: std::sync::OnceLock<ModelLockFile> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| {
+        let lock: ModelLockFile =
+            serde_json::from_str(MODEL_LOCK_JSON).expect("voice/MODEL.lock.json is valid JSON");
+        for tier in &lock.tiers {
+            assert!(
+                lock.models.contains_key(tier),
+                "voice/MODEL.lock.json: tier {tier} has no model pin"
+            );
+        }
+        lock
+    })
+}
+
+/// Pin for a tier id (`turbo` / `small` / `base`).
+pub fn pin(tier: &str) -> Option<&'static ModelPin> {
+    lock().models.get(tier)
+}
+
+impl ModelPin {
+    /// Download sources in order: the project mirror for the running release (when this is a
+    /// release build), then the pinned upstream file. Both must yield the pinned SHA-256.
+    pub fn download_urls(&self) -> Vec<String> {
+        let mut urls = Vec::with_capacity(2);
+        if let Some(mirror) = self.mirror_url(RELEASE_REPO, RELEASE_VERSION) {
+            urls.push(mirror);
+        }
+        urls.push(self.upstream_url.clone());
+        urls
+    }
+
+    pub fn mirror_url(&self, release_repo: &str, version: Option<&str>) -> Option<String> {
+        let version = version?.trim().trim_start_matches('v');
+        if version.is_empty() || release_repo.is_empty() {
+            return None;
+        }
+        Some(
+            lock()
+                .mirror_url_template
+                .replace("{release_repo}", release_repo)
+                .replace("{version}", version)
+                .replace("{file}", &self.file),
+        )
+    }
+
+    /// Human size for one-line messages ("547 MiB").
+    pub fn human_size(&self) -> String {
+        format!("{} MiB", self.size / (1024 * 1024))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lock_pins_three_multilingual_tiers() {
+        let l = lock();
+        assert_eq!(l.schema_version, 2);
+        assert_eq!(l.tiers, vec!["turbo", "small", "base"]);
+        let turbo = pin("turbo").unwrap();
+        assert_eq!(turbo.file, "ggml-large-v3-turbo-q5_0.bin");
+        assert_eq!(turbo.size, 574_041_195);
+        assert_eq!(
+            turbo.sha256,
+            "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+        );
+        assert_eq!(turbo.human_size(), "547 MiB");
+        let small = pin("small").unwrap();
+        assert_eq!(
+            (small.file.as_str(), small.size),
+            ("ggml-small.bin", 487_601_967)
+        );
+        assert_eq!(
+            small.sha256,
+            "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"
+        );
+        let base = pin("base").unwrap();
+        assert_eq!(
+            (base.file.as_str(), base.size),
+            ("ggml-base.bin", 147_951_465)
+        );
+        assert_eq!(
+            base.sha256,
+            "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
+        );
+        for m in l.models.values() {
+            assert!(
+                m.upstream_url
+                    .starts_with("https://huggingface.co/ggerganov/whisper.cpp/")
+            );
+            assert!(
+                !m.file.ends_with(".en.bin"),
+                "tiers must be multilingual: {}",
+                m.file
+            );
+            assert_eq!(m.sha256.len(), 64);
+        }
+        assert_eq!(l.selection.interim_budget_ms, 1000);
+        assert_eq!(l.license, "MIT");
+        assert!(l.engine.platforms.contains(&"macos-aarch64".to_owned()));
+        assert!(pin("tiny").is_none());
+    }
+
+    #[test]
+    fn mirror_url_substitutes_repo_version_and_file() {
+        let base = pin("base").unwrap();
+        assert_eq!(
+            base.mirror_url("owner/name", Some("v1.2.3")).as_deref(),
+            Some("https://github.com/owner/name/releases/download/v1.2.3/ggml-base.bin")
+        );
+        assert!(base.mirror_url("owner/name", None).is_none());
+        let urls = base.download_urls();
+        assert_eq!(urls.last(), Some(&base.upstream_url));
+        assert!(urls.iter().all(|u| u.starts_with("https://")));
+    }
+}

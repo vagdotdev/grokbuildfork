@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Write or verify <dist>/SHA256SUMS for the release assets in <dist>.
 #
-#   checksums.sh <dist>          writes SHA256SUMS over workshop-* files (sorted)
+#   checksums.sh <dist>          writes SHA256SUMS over workshop-*, voice-engine-*, ggml-*.bin
+#                                and MODEL.lock.json (sorted)
 #   checksums.sh --check <dist>  verifies every listed file
 #
 # Format is the classic `<sha256>  <filename>` so users can run
@@ -40,7 +41,8 @@ if $check; then
 fi
 
 shopt -s nullglob
-files=("$dist"/"$PRODUCT_BIN"-*)
+# CLI archives plus the voice helper archives, model mirror files and lock (scripts/install.sh verifies each).
+files=("$dist"/"$PRODUCT_BIN"-* "$dist"/voice-engine-* "$dist"/ggml-*.bin "$dist"/MODEL.lock.json)
 ((${#files[@]} > 0)) || die "no $PRODUCT_BIN-* assets in $dist"
 
 : >"$sums.tmp"

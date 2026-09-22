@@ -114,6 +114,8 @@ xai-grok-dashboard-store = { workspace = true }
 # backend instead, so cpal -> alsa-sys never reaches the static musl binary
 # (cpal is target-gated to non-Linux inside xai-grok-voice).
 xai-grok-voice = { path = "../xai-grok-voice", default-features = false, features = ["audio"] }
+# Workshop overlay: local voice engine facts for `/doctor` (the pipeline itself goes through xai-grok-voice).
+workshop-voice = { path = "../../workshop-voice" }
 xai-grok-login = { workspace = true }
 xai-grok-shell = { workspace = true }
 # Workshop overlay: connection picker state (Login / welcome `l` / `/login` / `/auth` / `/models`),
