@@ -54,7 +54,7 @@ index a32853ed..84494959 100644
              ("grok-night", ThemeKind::GrokNight),
              ("dark", ThemeKind::GrokNight),
 diff --git a/crates/codegen/xai-grok-pager/src/settings/defs.rs b/crates/codegen/xai-grok-pager/src/settings/defs.rs
-index 671138df..201474eb 100644
+index 671138df..3103925b 100644
 --- a/crates/codegen/xai-grok-pager/src/settings/defs.rs
 +++ b/crates/codegen/xai-grok-pager/src/settings/defs.rs
 @@ -34,13 +34,13 @@ const THEME_CHOICES: &[EnumChoice] = &[
@@ -108,6 +108,15 @@ index 671138df..201474eb 100644
          description: "Light theme for bright environments.",
      },
      EnumChoice {
+@@ -493,7 +493,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
+             category: SettingCategory::Appearance,
+             owner: SettingOwner::Shell,
+             label: "Default screen mode",
+-            description: "How plain grok opens next time: Fullscreen (default when unset) or \
++            description: "How Workshop opens next time: Fullscreen (default when unset) or \
+                           Minimal. Writes [ui] screen_mode in config.toml. Restart required. \
+                           Switch this session only with /minimal or /fullscreen.",
+             keywords: &[
 @@ -701,8 +701,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
                  "light",
              ],
@@ -141,6 +150,30 @@ index 671138df..201474eb 100644
                  choices: CONCRETE_THEME_CHOICES,
                  supports_preview: true,
              },
+@@ -1143,10 +1143,10 @@ pub fn default_settings() -> Vec<SettingMeta> {
+             category: SettingCategory::Privacy,
+             owner: SettingOwner::Shell,
+             label: "Coding data, retention, and training",
+-            description: "Opt-in to provide SpaceXAI the ability to retain and train on \
+-                          coding data, e.g., prompts, traces, & metrics, for training and \
+-                          debugging purposes. We may still collect simple user metrics, \
+-                          e.g. how many times you use the product or a feature.",
++            description: "Whether the optional xAI account connection may retain and train on \
++                          your coding data (prompts, traces, metrics). Workshop itself sends \
++                          nothing anywhere; other connections follow their own provider's \
++                          terms.",
+             keywords: &[
+                 "privacy",
+                 "data",
+@@ -1407,7 +1407,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
+             category: SettingCategory::Editor,
+             owner: SettingOwner::Shell,
+             label: "Voice language",
+-            description: "Speech-to-text language for voice dictation (Grok STT). \
++            description: "Speech-to-text language for voice dictation. \
+                           English by default; System uses your locale when supported. \
+                           Sets formatting language for numbers and currencies.",
+             keywords: &["voice", "language", "locale", "dictation", "stt", "speech"],
 @@ -1542,7 +1542,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
              category: SettingCategory::Advanced,
              owner: SettingOwner::Shell,

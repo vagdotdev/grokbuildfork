@@ -13367,10 +13367,13 @@ dependencies = [
  "xai-grok-env",
  "xai-grok-login",
  "xai-grok-models",
+ "xai-grok-pager",
  "xai-grok-pager-pty-harness",
+ "xai-grok-pager-render",
  "xai-grok-shell",
  "xai-grok-shell-base",
  "xai-grok-telemetry",
+ "xai-grok-tools",
  "xai-grok-update",
 ]
 

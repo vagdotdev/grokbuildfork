@@ -31,6 +31,10 @@ tempfile = { workspace = true }
 walkdir = { workspace = true }
 # PTY-driven smoke of the built `workshop` binary (opt-in via WORKSHOP_BIN).
 xai-grok-pager-pty-harness = { path = "../codegen/xai-grok-pager-pty-harness" }
+# Branding gate: slash command metadata, settings labels, theme names.
+xai-grok-pager = { path = "../codegen/xai-grok-pager" }
+xai-grok-pager-render = { path = "../codegen/xai-grok-pager-render" }
+xai-grok-tools = { workspace = true }
 
 [lints]
 workspace = true

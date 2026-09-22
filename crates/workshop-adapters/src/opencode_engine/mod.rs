@@ -310,8 +310,14 @@ impl OpenCodeEngine {
             Ok(Err(_)) => {
                 let (status, tail) = teardown(&mut process).await;
                 return Err(EngineError::Exited {
-                    status: status.map(|s| s.to_string()).unwrap_or_else(|| "unknown".into()),
-                    stderr: if tail.is_empty() { "no output".into() } else { tail },
+                    status: status
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "unknown".into()),
+                    stderr: if tail.is_empty() {
+                        "no output".into()
+                    } else {
+                        tail
+                    },
                 });
             }
             Err(_) => {
