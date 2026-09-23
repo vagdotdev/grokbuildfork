@@ -1303,13 +1303,17 @@ fn ends_with_code_block(tail: &str) -> bool {
 /// sentence is an "I'll …" / "Let me …" that no tool call followed.
 fn announces_unfinished_action(tail: &str) -> bool {
     let mut text = tail.trim_end();
-    // A command shown in a fence instead of run: judge the words before the fence.
+    // A command shown in a fence instead of run: judge the words before the fence. A colon before
+    // a fence usually introduces a finished result ("…Desktop/Panthera:" and the folder tree, "run
+    // this yourself:" and the command), so there only an "I'll …" sentence counts.
+    let mut fenced = false;
     if let Some(body) = text.strip_suffix("```")
         && let Some(before) = body.rfind("```").and_then(|open| body.get(..open))
     {
         text = before.trim_end();
+        fenced = true;
     }
-    if text.ends_with(':') {
+    if text.ends_with(':') && !fenced {
         return true;
     }
     if text.ends_with('?') {
@@ -1743,6 +1747,8 @@ mod tests {
             "Should I install it with snap or the .deb?",
             "I'll install it if you confirm.",
             "Here are the files:\n- a.epub\n- b.epub",
+            "Sorted all 15 photos into ~/Desktop/Panthera:\n```\nPanthera/\n  lion/\n```",
+            "Please run this yourself in a terminal:\n```\nsudo apt install htop\n```",
         ] {
             assert!(!announces_unfinished_action(tail), "{tail:?}");
         }

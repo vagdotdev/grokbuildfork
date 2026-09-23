@@ -31,6 +31,7 @@ from the real server:
     following "Continue: …" prompt writes ./todo.py with a `write` part and answers "Wrote todo.py.".
   * "create stubborn.py"              -> pastes the file every time, continued or not.
   * "show me a loop"                  -> answers with a fenced example (no file was asked for).
+  * "show the tree"                   -> a finished answer that ends on a colon and a fenced tree.
   * "slow"                            -> waits 3 s before answering (to queue prompts behind it).
   * agent == plan                     -> never a tool part, never a permission ask: text only.
 
@@ -221,6 +222,8 @@ def run_turn(sid, agent, text):
         answer = "Wrote todo.py."
     elif "create todo.py" in text_l or "create stubborn.py" in text_l:
         answer = "Here is the file.\n\n```python\nprint(\"todo\")\n```"
+    elif "show the tree" in text_l:
+        answer = "Sorted all 15 photos into ~/Desktop/Panthera:\n\n```\nPanthera/\n  lion/\n  tiger/\n```"
     elif "show me a loop" in text_l:
         answer = "```python\nfor i in range(3):\n    print(i)\n```"
     elif "install the tool" in text_l:

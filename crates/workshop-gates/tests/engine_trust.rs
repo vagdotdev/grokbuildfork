@@ -751,8 +751,8 @@ fn announced_action_is_carried_out() {
     quit(&mut j);
 }
 
-/// A finished answer is never continued, and a model that keeps announcing is continued at most
-/// twice before the turn ends.
+/// A finished answer is never continued (nor one that ends on a colon and a fenced result), and a
+/// model that keeps announcing is continued at most twice before the turn ends.
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
 fn auto_continue_is_bounded() {
@@ -761,9 +761,19 @@ fn auto_continue_is_bounded() {
     let mut j = launch("engine-trust/auto-continue-is-bounded", &bin, &fx);
     send_prompt(&mut j, "hello");
     wait_for(&mut j.h, "Echo: hello", 60);
+    // A finished answer that ends on a colon and a fenced result is not an announcement.
+    send_prompt(&mut j, "show the tree");
+    wait_for(&mut j.h, "tiger/", 60);
+    j.h.update(Duration::from_secs(2));
+    assert_eq!(
+        prompts_sent(&fx.log).len(),
+        2,
+        "{:?}",
+        prompts_sent(&fx.log)
+    );
     send_prompt(&mut j, "keep announcing");
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    while prompts_sent(&fx.log).len() < 4 && std::time::Instant::now() < deadline {
+    while prompts_sent(&fx.log).len() < 5 && std::time::Instant::now() < deadline {
         j.h.update(Duration::from_millis(300));
     }
     j.h.update(Duration::from_secs(3));
@@ -771,11 +781,11 @@ fn auto_continue_is_bounded() {
     let prompts = prompts_sent(&fx.log);
     assert_eq!(
         prompts.len(),
-        4,
-        "hello once, keep announcing once plus two continuations: {prompts:?}"
+        5,
+        "hello, show the tree, keep announcing once plus two continuations: {prompts:?}"
     );
     assert_eq!(prompts[0], "hello");
-    assert!(prompts[2].starts_with("Continue:") && prompts[3].starts_with("Continue:"));
+    assert!(prompts[3].starts_with("Continue:") && prompts[4].starts_with("Continue:"));
     quit(&mut j);
 }
 

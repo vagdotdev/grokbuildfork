@@ -3698,10 +3698,10 @@ index 60fe34f9..d5845f2c 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..b56a30f5
+index 00000000..a02a67f3
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1750 @@
+@@ -0,0 +1,1756 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -5007,13 +5007,17 @@ index 00000000..b56a30f5
 +/// sentence is an "I'll …" / "Let me …" that no tool call followed.
 +fn announces_unfinished_action(tail: &str) -> bool {
 +    let mut text = tail.trim_end();
-+    // A command shown in a fence instead of run: judge the words before the fence.
++    // A command shown in a fence instead of run: judge the words before the fence. A colon before
++    // a fence usually introduces a finished result ("…Desktop/Panthera:" and the folder tree, "run
++    // this yourself:" and the command), so there only an "I'll …" sentence counts.
++    let mut fenced = false;
 +    if let Some(body) = text.strip_suffix("```")
 +        && let Some(before) = body.rfind("```").and_then(|open| body.get(..open))
 +    {
 +        text = before.trim_end();
++        fenced = true;
 +    }
-+    if text.ends_with(':') {
++    if text.ends_with(':') && !fenced {
 +        return true;
 +    }
 +    if text.ends_with('?') {
@@ -5447,6 +5451,8 @@ index 00000000..b56a30f5
 +            "Should I install it with snap or the .deb?",
 +            "I'll install it if you confirm.",
 +            "Here are the files:\n- a.epub\n- b.epub",
++            "Sorted all 15 photos into ~/Desktop/Panthera:\n```\nPanthera/\n  lion/\n```",
++            "Please run this yourself in a terminal:\n```\nsudo apt install htop\n```",
 +        ] {
 +            assert!(!announces_unfinished_action(tail), "{tail:?}");
 +        }
