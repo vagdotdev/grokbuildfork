@@ -612,14 +612,13 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
     // never a `Claude ·` prefix or a runtime name.
     let started = Instant::now();
     loop {
-        let footer = j
-            .h
-            .screen_contents()
-            .lines()
-            .rev()
-            .find(|l| l.contains('\u{256f}'))
-            .map(str::to_owned)
-            .unwrap_or_default();
+        let footer =
+            j.h.screen_contents()
+                .lines()
+                .rev()
+                .find(|l| l.contains('\u{256f}'))
+                .map(str::to_owned)
+                .unwrap_or_default();
         if footer.contains("Default (recommended)") {
             assert!(
                 !footer.contains("Claude \u{00b7}"),
