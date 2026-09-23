@@ -1,0 +1,7 @@
+# T4 — fix a failing test in a cloned open-source repo (more-itertools, one committed bug in ilen)
+@timeout 900
+launch cd ~/projects/more-itertools && workshop
+type the tests in this project are failing. can you find out why and fix it?
+waitturn
+line /exit
+waitshell 30

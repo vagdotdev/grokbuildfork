@@ -1,0 +1,7 @@
+# T6 — data task: a script that fetches a public API and saves a CSV
+@timeout 600
+launch workshop
+type write a script that gets today's weather for London, Paris and Tokyo from a free public API and saves it as a CSV file on my desktop
+waitturn
+line /exit
+waitshell 30

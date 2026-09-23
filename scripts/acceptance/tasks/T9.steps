@@ -1,0 +1,20 @@
+# T9 — quit mid-task, then `workshop -c` and continue
+@timeout 900
+launch mkdir -p ~/myproject && cd ~/myproject && workshop
+type build a command line todo app in python: todo.py with add, list and done commands, saving the todos in todos.json. test it when you're done
+waitre ◆  180
+sleep 2
+key C-c
+sleep 2
+line /exit
+waitshell 30
+snap after-quit
+line clear
+sleep 1
+line workshop -c
+waitre build a command line todo app 10
+sleep 3
+type please continue where you left off
+waitturn
+line /exit
+waitshell 30
