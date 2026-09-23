@@ -206,7 +206,8 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
         "the optional xAI card is last on the Subscriptions view, worded like the other rows:\n{screen}"
     );
     assert!(
-        screen.contains("OpenAI \u{2014} API key") && screen.contains("OpenRouter \u{2014} Sign in"),
+        screen.contains("OpenAI \u{2014} API key")
+            && screen.contains("OpenRouter \u{2014} Sign in"),
         "connect rows share one vocabulary (Provider — API key | Sign in):\n{screen}"
     );
     assert_no_xai(&h, "/auth overlay");

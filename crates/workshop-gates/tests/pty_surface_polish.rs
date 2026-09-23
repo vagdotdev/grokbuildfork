@@ -22,9 +22,7 @@ fn titles(raw: &[u8]) -> Vec<String> {
         let Some(semi) = after.find(';') else { break };
         let code = &after[..semi];
         let body = &after[semi + 1..];
-        let end = body
-            .find(['\u{7}', '\u{1b}'])
-            .unwrap_or(body.len());
+        let end = body.find(['\u{7}', '\u{1b}']).unwrap_or(body.len());
         if code == "0" || code == "2" {
             out.push(body[..end].to_owned());
         }
@@ -42,7 +40,10 @@ fn welcome_is_one_name_and_an_invitation_to_type() {
     connect_big_pickle(&mut j);
     let screen = j.h.screen_contents();
     snapshot(&j.h, &j.dir, "01-welcome");
-    assert!(screen.contains("Vagdev's Workshop"), "one product name:\n{screen}");
+    assert!(
+        screen.contains("Vagdev's Workshop"),
+        "one product name:\n{screen}"
+    );
     assert!(
         !screen.contains("Workshop by Vagdev"),
         "the alternate name is gone:\n{screen}"
@@ -117,7 +118,10 @@ fn model_picker_filters_as_you_type_and_swallows_stray_keys() {
         screen.contains("Tab: Subscriptions"),
         "typing filters instead of closing:\n{screen}"
     );
-    assert!(screen.contains("qwen"), "the filter text is shown:\n{screen}");
+    assert!(
+        screen.contains("qwen"),
+        "the filter text is shown:\n{screen}"
+    );
     // Model rows sit inside the box (they end with its border); the composer footer does not.
     let rows: Vec<&str> = screen
         .lines()
@@ -131,7 +135,9 @@ fn model_picker_filters_as_you_type_and_swallows_stray_keys() {
         "only matching rows remain: {rows:?}"
     );
     assert!(
-        !screen.lines().any(|l| l.contains("\u{276f} wen") || l.contains("\u{276f} qwen")),
+        !screen
+            .lines()
+            .any(|l| l.contains("\u{276f} wen") || l.contains("\u{276f} qwen")),
         "nothing leaked into the composer:\n{screen}"
     );
 
@@ -144,17 +150,21 @@ fn model_picker_filters_as_you_type_and_swallows_stray_keys() {
         "the first Esc clears the filter:\n{screen}"
     );
     j.h.inject_keys(b"\x1b").unwrap();
-    if let Err(e) = j
-        .h
-        .wait_for_text_absent("Tab: Subscriptions", Duration::from_secs(5))
+    if let Err(e) =
+        j.h.wait_for_text_absent("Tab: Subscriptions", Duration::from_secs(5))
     {
-        panic!("the second Esc closes the picker: {e}\n{}", j.h.screen_contents());
+        panic!(
+            "the second Esc closes the picker: {e}\n{}",
+            j.h.screen_contents()
+        );
     }
     j.h.update(Duration::from_millis(300));
     let screen = j.h.screen_contents();
     snapshot(&j.h, &j.dir, "04-after-esc");
     assert!(
-        screen.lines().any(|l| l.trim_start().starts_with("\u{2502} \u{276f}") && !l.contains("wen")),
+        screen
+            .lines()
+            .any(|l| l.trim_start().starts_with("\u{2502} \u{276f}") && !l.contains("wen")),
         "the composer is empty after the picker closes:\n{screen}"
     );
     assert!(
@@ -234,7 +244,9 @@ fn waiting_line_animates_counts_seconds_and_names_the_cancel_key() {
     j.h.update(Duration::from_millis(300));
     let raw = j.h.raw_output().to_vec();
     let text = String::from_utf8_lossy(&raw);
-    let restore = text.rfind("\u{1b}[23;0t").expect("the saved title is popped on exit");
+    let restore = text
+        .rfind("\u{1b}[23;0t")
+        .expect("the saved title is popped on exit");
     let last_title = text.rfind("\u{1b}]0;").expect("a title escape");
     assert!(
         last_title < restore,
