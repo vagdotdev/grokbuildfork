@@ -4126,10 +4126,33 @@ fn handle_workshop_turn_msg(
         app.workshop_engine = Some(engine);
         return (false, vec![]);
     }
+    // `sudo` in one of the engine's commands wants the user's password: one masked prompt,
+    // titled with the command that is running (the turn's shell tool) or sudo's own words.
+    if let M::PasswordAsk { prompt, reply } = msg {
+        let command = app
+            .workshop_turn_tool_inputs
+            .values()
+            .filter(|(name, _)| name == "bash")
+            .filter_map(|(_, input)| input.get("command").and_then(|c| c.as_str()))
+            .last()
+            .map(str::to_owned);
+        let title = crate::app::workshop_askpass::title_for(command.as_deref(), &prompt);
+        if let Some(previous) = app.workshop_password_ask.take() {
+            previous.answer(false);
+        }
+        app.workshop_password_ask = Some(crate::app::workshop_askpass::PendingPassword::new(
+            title, reply,
+        ));
+        return (true, vec![]);
+    }
     let Some(agent_id) = app.workshop_turn_agent else {
         return (false, vec![]);
     };
-    if matches!(msg, M::Error(_) | M::EngineUnavailable { .. }) {
+    // A stall ends the turn on a failure line or the fallback resend, never on `Worked for …`.
+    if matches!(
+        msg,
+        M::Error(_) | M::EngineUnavailable { .. } | M::Stalled { .. }
+    ) {
         app.workshop_turn_errored = true;
     }
     // Reasoning is its own (collapsed) block: the first answer text, tool call, or the end of
@@ -4155,6 +4178,35 @@ fn handle_workshop_turn_msg(
             app,
         );
         return (true, effects);
+    }
+    if let M::Stalled {
+        model,
+        text,
+        engine,
+    } = msg
+    {
+        // A model that stopped mid-answer: an engine turn is resent through the pool fallback
+        // (the same seam a failed bring-up uses); with no pool to fall back to — or on a CLI
+        // rail — the user gets one plain line and Enter retries.
+        let reason = format!("{model} stopped responding");
+        if engine && crate::app::workshop::kilo_fallback_model().is_some() {
+            let effects = dispatch::dispatch(
+                Action::WorkshopEngineUnavailable {
+                    agent_id,
+                    reason,
+                    text,
+                },
+                app,
+            );
+            return (true, effects);
+        }
+        if let Some(agent) = app.agents.get_mut(&agent_id) {
+            agent
+                .scrollback
+                .push_block(RenderBlock::system_error(crate::app::workshop::stall_line(&model)));
+            agent.workshop_retry_prompt = Some(text);
+        }
+        return (true, vec![]);
     }
     let redraw = match msg {
         M::EngineWarm { .. } => false,
@@ -4544,7 +4596,9 @@ fn handle_workshop_turn_msg(
             return (true, effects);
         }
         // Handled above (needs the dispatcher).
-        M::EngineUnavailable { .. } => false,
+        M::EngineUnavailable { .. } | M::Stalled { .. } => false,
+        // Handled above (before any agent is needed).
+        M::PasswordAsk { .. } => false,
     };
     (redraw, vec![])
 }

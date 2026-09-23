@@ -1029,6 +1029,9 @@ pub struct AppView {
     /// welcome `l`, `/login`, `/auth`, `/models` and first run all open it. Rendered on the welcome
     /// view; keys are routed to it while open.
     pub connection_picker: Option<workshop_auth::PickerState>,
+    /// Workshop: a `sudo` password one of the engine's commands is waiting for — the masked
+    /// prompt above the composer owns every key while it is up.
+    pub workshop_password_ask: Option<crate::app::workshop_askpass::PendingPassword>,
     /// Workshop: which runtime prompts are routed through (shell loop, OpenCode engine, or a
     /// vendor CLI adapter). Set by the picker; `Shell` is the default.
     pub workshop_connection: crate::app::workshop::WorkshopConnection,
@@ -1649,6 +1652,7 @@ impl AppView {
             deferred_startup: Default::default(),
             auth_use_oauth: false,
             connection_picker: None,
+            workshop_password_ask: None,
             workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
             workshop_engine: None,
             workshop_engine_slot: crate::app::workshop::new_engine_slot(),
@@ -2550,6 +2554,11 @@ impl AppView {
                 picker.key_entry.is_some(),
             );
         }
+        // Workshop: a `sudo` password prompt owns every key while it is up; the characters go
+        // to the helper's buffer, never to the composer (or its history and drafts).
+        if self.workshop_password_ask.is_some() {
+            return self.handle_workshop_password_input(ev);
+        }
         let zdr_blocked = self.is_zdr_blocked();
         let has_access = self.has_access();
         let welcome_pinned_upgrade_cta = crate::views::announcements::promo_cta(
@@ -3325,6 +3334,52 @@ struct WelcomeInputCtx<'a> {
     #[cfg(feature = "local-workspace")]
     session_picker_open: bool,
 }
+impl AppView {
+    /// Workshop: keys while a `sudo` password prompt is up. Printable characters and pastes go to
+    /// the prompt's buffer (masked on screen), Backspace edits it, Enter sends it to the helper
+    /// (`sudo` reads it), Esc / Ctrl+C skip. Nothing reaches the composer.
+    fn handle_workshop_password_input(&mut self, ev: &Event) -> InputOutcome {
+        let Some(ask) = self.workshop_password_ask.as_mut() else {
+            return InputOutcome::Unchanged;
+        };
+        match ev {
+            Event::Paste(text) => {
+                ask.push_str(text.trim_end_matches(['\r', '\n']));
+                InputOutcome::Changed
+            }
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if key!('c', CONTROL).matches(key)
+                    || key!('d', CONTROL).matches(key)
+                    || key.code == KeyCode::Esc
+                {
+                    if let Some(ask) = self.workshop_password_ask.take() {
+                        ask.answer(false);
+                    }
+                    return InputOutcome::Changed;
+                }
+                match key.code {
+                    KeyCode::Enter => {
+                        if let Some(ask) = self.workshop_password_ask.take() {
+                            ask.answer(true);
+                        }
+                    }
+                    KeyCode::Backspace => ask.pop_char(),
+                    KeyCode::Char(c)
+                        if !key
+                            .modifiers
+                            .intersects(crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT | crossterm::event::KeyModifiers::SUPER) =>
+                    {
+                        ask.push_char(c)
+                    }
+                    _ => {}
+                }
+                InputOutcome::Changed
+            }
+            _ => InputOutcome::Unchanged,
+        }
+    }
+}
+
 /// Workshop: the connection picker (`/model`, `/auth`) owns the keyboard while it is open, on
 /// every view. Every key is consumed here — printable ones filter the Models view — so nothing
 /// leaks into the composer behind the overlay. It never starts a login on its own; `Enter`
@@ -5108,6 +5163,25 @@ impl AppView {
                                         if compact { 1 } else { 4 },
                                     );
                                 }
+                                // Workshop: a `sudo` password prompt sits right above the
+                                // composer while one of the engine's commands waits for it.
+                                if let Some(ask) = self.workshop_password_ask.as_ref() {
+                                    let theme = crate::theme::Theme::current();
+                                    let margin: u16 = if compact { 1 } else { 4 };
+                                    // Ends one row above the composer's top border.
+                                    let above_composer = ratatui::layout::Rect {
+                                        x: view_area.x + margin,
+                                        y: view_area.y + 2,
+                                        width: view_area.width.saturating_sub(margin * 2),
+                                        height: view_area.height.saturating_sub(8),
+                                    };
+                                    crate::views::workshop_password::render(
+                                        above_composer,
+                                        f.buffer_mut(),
+                                        &theme,
+                                        ask,
+                                    );
+                                }
                                 if let Some(fps) = &fps_overlay {
                                     fps.render(full_area, f.buffer_mut());
                                 }
@@ -5116,7 +5190,8 @@ impl AppView {
                                 }
                                 let (cursor_pos, post_flush) = result;
                                 let has_cloud = false;
-                                let picker_open = self.connection_picker.is_some();
+                                let picker_open = self.connection_picker.is_some()
+                                    || self.workshop_password_ask.is_some();
                                 if has_cloud
                                     || self.import_claude_modal.is_some()
                                     || self.tutorial.is_some()

@@ -139,6 +139,9 @@ pub struct ServeTurn {
     /// for both kinds on 1.18.31, so the part type is what tells them apart.
     reasoning_parts: HashSet<String>,
     announced_calls: HashSet<String>,
+    /// Tool calls announced and not yet finished: while one runs (a long `apt install`, a test
+    /// suite) the server has nothing to say, and that silence is not a stall.
+    running_calls: HashSet<String>,
     saw_busy: bool,
     last_text: Option<String>,
     error: Option<String>,
@@ -155,6 +158,7 @@ impl ServeTurn {
             streamed_parts: HashSet::new(),
             reasoning_parts: HashSet::new(),
             announced_calls: HashSet::new(),
+            running_calls: HashSet::new(),
             saw_busy: false,
             last_text: None,
             error: None,
@@ -172,6 +176,11 @@ impl ServeTurn {
     /// True once the server reported the turn as aborted.
     pub fn aborted(&self) -> bool {
         self.aborted
+    }
+
+    /// Tool calls the server announced and has not finished yet.
+    pub fn tools_running(&self) -> usize {
+        self.running_calls.len()
     }
 
     /// Permission requests seen since the last drain.
@@ -266,9 +275,13 @@ impl ServeTurn {
                             }
                         };
                         match status {
-                            "running" => announce(self, &mut out),
+                            "running" => {
+                                announce(self, &mut out);
+                                self.running_calls.insert(call_id);
+                            }
                             "completed" => {
                                 announce(self, &mut out);
+                                self.running_calls.remove(&call_id);
                                 detail(&mut out);
                                 out.push(AdapterEvent::ToolResult {
                                     id: call_id,
@@ -280,6 +293,7 @@ impl ServeTurn {
                             }
                             "error" => {
                                 announce(self, &mut out);
+                                self.running_calls.remove(&call_id);
                                 detail(&mut out);
                                 out.push(AdapterEvent::ToolResult {
                                     id: call_id,

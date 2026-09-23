@@ -659,6 +659,13 @@ impl TurnStream {
             Self::Adapter(r) => r.session_id(),
         }
     }
+    /// The engine ended this turn at its idle ceiling (set before its final `Error` arrives).
+    pub fn stalled(&self) -> bool {
+        match self {
+            Self::Engine(t) => t.stalled(),
+            Self::Adapter(_) => false,
+        }
+    }
 }
 
 /// What the UI thread learns as a turn streams. Mapped to scrollback `RenderBlock`s by the event
@@ -742,6 +749,22 @@ pub enum WorkshopTurnMsg {
         reason: String,
         text: String,
     },
+    /// `sudo` in one of the engine's commands needs the user's password: the askpass helper is
+    /// waiting on `reply` (`Some(bytes)` = the password, `None` = skipped). The UI shows one
+    /// masked prompt; the bytes go to the helper only. Any turn, any time.
+    PasswordAsk {
+        prompt: String,
+        reply: tokio::sync::oneshot::Sender<Option<Vec<u8>>>,
+    },
+    /// The model started answering and then went silent for [`STALL_TIMEOUT`] (no output, no
+    /// tool running, no prompt waiting on the user); the engine aborted the turn. `text` is the
+    /// prompt to resend: an engine turn goes through the pool fallback, else the user gets
+    /// [`stall_line`] with Enter to retry. Followed by `Done`.
+    Stalled {
+        model: String,
+        text: String,
+        engine: bool,
+    },
     /// The turn ended; `session_id` is persisted per workspace for resume.
     Done {
         session_id: Option<String>,
@@ -768,6 +791,9 @@ pub struct EngineSlotInner {
     /// The warm-up's failure, so a turn typed right after it reports that cause at once instead
     /// of silently repeating a 30 s bring-up that just failed. Cleared by the next attempt.
     recent_failure: std::sync::Mutex<Option<(std::time::Instant, String)>>,
+    /// The `sudo` askpass listener (one per process, started with the first engine); `None`
+    /// until then, or when the home could not hold it.
+    askpass: std::sync::Mutex<Option<Arc<crate::app::workshop_askpass::AskpassServer>>>,
 }
 
 pub type EngineSlot = Arc<EngineSlotInner>;
@@ -777,7 +803,20 @@ pub fn new_engine_slot() -> EngineSlot {
         engine: tokio::sync::Mutex::new(None),
         phase: watch::channel(String::new()).0,
         recent_failure: std::sync::Mutex::new(None),
+        askpass: std::sync::Mutex::new(None),
     })
+}
+
+/// The process's askpass listener, started on first use with the live loop's channel.
+fn askpass_server(
+    slot: &EngineSlot,
+    ui_tx: &mpsc::UnboundedSender<WorkshopTurnMsg>,
+) -> Option<Arc<crate::app::workshop_askpass::AskpassServer>> {
+    let mut guard = slot.askpass.lock().ok()?;
+    if guard.is_none() {
+        *guard = crate::app::workshop_askpass::start(ui_tx.clone()).map(Arc::new);
+    }
+    guard.clone()
 }
 
 /// The pager's permission mode as it applies to one Engine/Adapter turn (Shift+Tab cycle,
@@ -807,6 +846,26 @@ const RECENT_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 /// Hard ceiling on a turn's silence before its first event: past this the engine is up but the
 /// model never answered, and the user gets the cause plus a way out instead of a spinner.
 pub const FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
+/// Mid-turn ceiling: once the model has started answering, this long without any output, tool
+/// activity or permission traffic means it stopped (an upstream 504 the engine retries silently,
+/// a dropped stream). The engine aborts the turn and Workshop recovers. `WORKSHOP_STALL_TIMEOUT_SECS`
+/// overrides it (gates run it in seconds).
+pub const STALL_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// [`STALL_TIMEOUT`], or the `WORKSHOP_STALL_TIMEOUT_SECS` override.
+pub fn stall_timeout() -> Duration {
+    std::env::var("WORKSHOP_STALL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(STALL_TIMEOUT)
+}
+
+/// The one line shown when a model stopped mid-answer and no fallback could take over.
+pub fn stall_line(model: &str) -> String {
+    format!("{model} stopped responding \u{2014} Enter to retry \u{b7} /model to switch")
+}
 /// Hard ceiling on `opencode serve` binding its port and passing its health check.
 pub const ENGINE_START_TIMEOUT: Duration = Duration::from_secs(30);
 /// The bring-up's "nothing to add" progress: the turn-status row shows the pager's own wait for
@@ -1324,6 +1383,15 @@ async fn start_engine(
     // The engine asks before edits and commands; what happens next is the agent's permission
     // mode (Plan/Normal prompt, Auto/Always-approve allow), decided on the UI thread per ask.
     opts.permission = Some(ask_before_edit_and_bash());
+    // `sudo` in the engine's commands has no terminal to ask on. Grok Build's shell tool defers
+    // to the user's own `SUDO_ASKPASS` helper when one is set; so does the engine (the variable
+    // passes through). With none, Workshop is the helper: `SUDO_ASKPASS` → this process's socket
+    // → one masked prompt, never the model.
+    if std::env::var_os(crate::app::workshop_askpass::HELPER_ENV).is_none_or(|v| v.is_empty())
+        && let Some(askpass) = askpass_server(slot, &ui_tx)
+    {
+        opts.extra_env = askpass.env();
+    }
     opts.permission_handler = Some(engine_permission_handler(ui_tx.clone()));
     opts.question_handler = Some(engine_question_handler(ui_tx));
     // The models answer as Workshop's assistant, not as "opencode".
@@ -1335,6 +1403,9 @@ async fn start_engine(
     // `opencode serve` is up in a couple of seconds on any laptop; a server that has not bound
     // its port after this long is broken, and the user should hear so instead of waiting.
     opts.startup_timeout = ENGINE_START_TIMEOUT;
+    // A model that stops mid-answer is aborted after this and the turn recovers (see `Stalled`).
+    opts.idle_timeout = Some(stall_timeout());
+
     match OpenCodeEngine::start(&cli, opts).await {
         Ok(engine) => {
             st.last_phase = Some("ready".into());
@@ -1812,6 +1883,7 @@ pub async fn run_workshop_turn(
     // is continued (engine, not Plan), at most MAX_AUTO_CONTINUES times in all.
     let mut tail = String::new();
     let mut errored = false;
+    let mut stalled = false;
     let mut continues = 0;
     let asks_for_files = asks_to_write_files(&spec.text);
     let mut wrote_a_file = false;
@@ -1915,9 +1987,17 @@ pub async fn run_workshop_turn(
                         continue;
                     }
                     errored = true;
-                    // An abort we asked for (Ctrl-C, or the silence timeout above) is already
-                    // reported; the backend's own "run cancelled" would only repeat it.
-                    if !(aborted_by_us && message == "run cancelled") {
+                    if stream.stalled() {
+                        // The engine's idle ceiling ended the turn: reported as `Stalled` below,
+                        // with the recovery, not as a bare error.
+                        stalled = true;
+                        state::append_log(
+                            &engine_log_path(),
+                            &format!("stall: {model_name} stopped responding ({message}); recovering"),
+                        );
+                    } else if !(aborted_by_us && message == "run cancelled") {
+                        // An abort we asked for (Ctrl-C, or the silence timeout above) is already
+                        // reported; the backend's own "run cancelled" would only repeat it.
                         // OpenCode's model failing before a word came back cannot answer: the
                         // silent fallback answers instead. After output started, or on a vendor
                         // CLI, the plain failure line.
@@ -2053,6 +2133,13 @@ pub async fn run_workshop_turn(
     }
 
     let session_id = stream.session_id();
+    if stalled && !cancelled {
+        let _ = tx.send(WorkshopTurnMsg::Stalled {
+            model: model_name.clone(),
+            text: spec.text.clone(),
+            engine: matches!(spec.kind, WorkshopTurnKind::Engine { .. }),
+        });
+    }
     let _ = tx.send(WorkshopTurnMsg::Done {
         session_id,
         cancelled,
