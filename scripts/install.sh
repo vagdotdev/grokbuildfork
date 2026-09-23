@@ -10,16 +10,21 @@
 #   4. install $WORKSHOP_HOME/downloads/workshop-<version>-<platform>
 #      and point the symlink $WORKSHOP_HOME/bin/workshop at it
 #   5. macOS: clear the quarantine attribute; run `workshop --version`
-#   6. voice dictation (no prompt, no flag): install the `voice-engine` helper beside the
-#      CLI, pick the Whisper model tier for this machine (Apple Silicon -> turbo; otherwise a
-#      timed probe decode on `base` decides between turbo/small/base), download that model into
-#      $WORKSHOP_HOME/voice with resume + SHA-256 verification (three attempts, project mirror
-#      first, then Hugging Face), and record the choice. A matching file is never downloaded again.
-#   7. print a PATH hint
+#   6. voice dictation: install the small `voice-engine` helper beside the CLI. The Whisper
+#      speech model (about 150 MB) is NOT downloaded here unless WORKSHOP_VOICE=1 (or a tier is
+#      forced with WORKSHOP_VOICE_TIER): the first `/voice` in the app fetches it. With
+#      WORKSHOP_VOICE=1 the installer picks the tier for this machine (Apple Silicon -> turbo;
+#      otherwise a timed probe decode on `base` decides between turbo/small/base), downloads that
+#      model into $WORKSHOP_HOME/voice with resume + SHA-256 verification (three attempts,
+#      project mirror first, then Hugging Face), and records the choice. A matching file is never
+#      downloaded again.
+#   7. print what to do next: `cd <project> && workshop`
+#
+# Every step is labeled `[n/6]` so a user can tell a download from a checksum from an install.
 #
 # Network: manifest (or SHA256SUMS when WORKSHOP_VERSION pins a version), the CLI archive,
-# SHA256SUMS, MODEL.lock.json, the helper archive and the model file(s), all from the release
-# repo (models fall back to huggingface.co). No telemetry.
+# SHA256SUMS, MODEL.lock.json and the helper archive, all from the release repo; the model
+# file(s) only with WORKSHOP_VOICE=1 (models fall back to huggingface.co). No telemetry.
 #
 # Environment:
 #   WORKSHOP_CHANNEL        stable (default) or alpha
@@ -29,6 +34,7 @@
 #   WORKSHOP_MANIFEST_URL   full manifest URL (mirrors, tests)
 #   WORKSHOP_DOWNLOAD_BASE  asset base containing v<version>/ directories, for pinned
 #                           installs (mirrors, tests; default: the GitHub release assets)
+#   WORKSHOP_VOICE=1        also download the speech model now (default: on the first /voice)
 #
 # This file is POSIX sh on purpose: it runs under whatever `sh` the user has.
 set -eu
@@ -39,6 +45,7 @@ CHANNEL_BRANCH="release-channel"
 BIN="workshop"
 
 say() { printf 'workshop: %s\n' "$*" >&2; }
+step() { printf '\nworkshop: [%s/6] %s\n' "$1" "$2" >&2; }
 die() { printf 'workshop: error: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 
@@ -116,7 +123,8 @@ detect_platform() {
 #
 # Undocumented CI escape hatches (never needed by users; never printed):
 #   WORKSHOP_VOICE_SKIP=1            skip helper + model entirely (machines with no mirror access)
-#   WORKSHOP_VOICE_TIER=turbo|small|base   force the tier, skip the hardware probe
+#   WORKSHOP_VOICE=1                 download the model during install (else: first /voice)
+#   WORKSHOP_VOICE_TIER=turbo|small|base   force the tier, skip the hardware probe (implies WORKSHOP_VOICE=1)
 #   WORKSHOP_VOICE_MODEL_BASE=URL    base URL for the model mirror (default: the release assets)
 #   WORKSHOP_VOICE_UPSTREAM_BASE=URL base URL replacing https://huggingface.co/... upstream files
 # ---------------------------------------------------------------------------
@@ -219,7 +227,7 @@ voice_fetch_model() {
   if [ "$(avail_kib "$2")" -lt "$need_kib" ]; then
     die "not enough disk space in $2 for the voice model ($(( VM_SIZE / 1048576 )) MiB needed); free some space and re-run this command"
   fi
-  say "Downloading voice model..."
+  say "Downloading the voice model ($VM_FILE, $(( VM_SIZE / 1048576 )) MiB)..."
   mirror="${3%/}/$VM_FILE"
   attempt=1
   while [ "$attempt" -le 3 ]; do
@@ -346,6 +354,16 @@ $ve_version"
   fetch "$v_base/MODEL.lock.json" "$VOICE_LOCK"
   [ -n "$(json_block "$VOICE_LOCK" base)" ] || die "release $v_version ships no MODEL.lock.json with model pins"
 
+  # 2b. the speech model is deferred to the first /voice unless asked for now
+  if [ "${WORKSHOP_VOICE:-0}" != 1 ] && [ -z "${WORKSHOP_VOICE_TIER:-}" ]; then
+    if [ -f "$VOICE_DIR/model.selected" ]; then
+      say "Voice model already present; kept."
+    else
+      say "Voice model (about 150 MB) not downloaded now: the first /voice fetches it (or re-run with WORKSHOP_VOICE=1)."
+    fi
+    return 0
+  fi
+
   # 3. an earlier install (or the app) already chose a tier and its file verifies: nothing to download
   if [ -z "${WORKSHOP_VOICE_TIER:-}" ] && [ -f "$VOICE_DIR/model.selected" ]; then
     selected=$(tr -d '\n\r ' <"$VOICE_DIR/model.selected")
@@ -378,10 +396,14 @@ main() {
   home="${WORKSHOP_HOME:-$HOME/.workshop}"
   pinned="${WORKSHOP_VERSION:-}"
 
+  step 1 "Detecting your platform"
   detect_platform
+  say "$PLATFORM"
 
   tmp=$(mktemp -d 2>/dev/null || mktemp -d -t workshop)
   trap 'rm -rf "$tmp"' EXIT INT TERM
+
+  step 2 "Finding the release to install"
 
   if [ -n "$pinned" ]; then
     is_semver "$pinned" || die "WORKSHOP_VERSION must be a semver version like 1.2.3 or 1.2.3-alpha.1"
@@ -413,8 +435,9 @@ main() {
     fetch "$asset_base/SHA256SUMS" "$tmp/SHA256SUMS"
   fi
 
-  say "downloading $BIN $version for $PLATFORM"
+  step 3 "Downloading $BIN $version for $PLATFORM"
   fetch "$url" "$tmp/$asset"
+  say "verifying the SHA-256 checksum"
   actual=$(sha256_of "$tmp/$asset")
   if [ "$actual" != "$sha" ]; then
     die "checksum mismatch for $asset
@@ -423,6 +446,8 @@ main() {
 The download is corrupt or tampered with; nothing was installed."
   fi
   say "checksum verified"
+
+  step 4 "Installing into $home"
 
   mkdir -p "$tmp/x"
   tar -xzf "$tmp/$asset" -C "$tmp/x"
@@ -457,19 +482,27 @@ $reported"
     say "macOS note: this build is not Apple-notarized. If it is ever blocked, run: xattr -d com.apple.quarantine $bindir/$BIN"
   fi
 
-  # Voice dictation is part of the install, not a follow-up step (voice-spec §6.3).
-  install_voice "$version" "$PLATFORM" "$asset_base" "$tmp/SHA256SUMS"
+  # Voice dictation: the helper is part of the install; the speech model waits for /voice (voice-spec §6.3).
+  step 5 "Voice dictation helper"
+  if [ "${WORKSHOP_VOICE_SKIP:-0}" = 1 ]; then
+    say "skipped (WORKSHOP_VOICE_SKIP=1)"
+  else
+    install_voice "$version" "$PLATFORM" "$asset_base" "$tmp/SHA256SUMS"
+  fi
 
+  step 6 "Done. Workshop starts on a free model; nothing to sign in to."
   case ":$PATH:" in
-    *":$bindir:"*) say "run: $BIN" ;;
+    *":$bindir:"*) ;;
     *)
-      say "add Workshop to your PATH (append to ~/.zshrc, ~/.bashrc or ~/.config/fish/config.fish), then run: $BIN"
+      say "first add Workshop to your PATH (append to ~/.zshrc, ~/.bashrc or ~/.config/fish/config.fish):"
       case "$(basename "${SHELL:-sh}")" in
         fish) printf '  fish_add_path %s\n' "$bindir" >&2 ;;
         *) printf '  export PATH="%s:%s"\n' "$bindir" "\$PATH" >&2 ;;
       esac
       ;;
   esac
+  printf '\n  cd <your-project> && %s\n\n' "$BIN" >&2
+  say "then type what you want. /model switches models, /auth connects a subscription or an API key."
 }
 
 main "$@"

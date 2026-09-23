@@ -68,6 +68,7 @@ if [[ -f "$dist/$engine_asset" && -f "$dist/MODEL.lock.json" ]]; then
   voice=true
   cp "$dist/$engine_asset" "$dist/MODEL.lock.json" "$dist"/ggml-*.bin "$www/dl/v$version/" 2>/dev/null || die "voice assets incomplete in $dist"
   # The smallest tier is what CPU runners end up with; the smoke pins it to keep the run bounded.
+  # A forced tier also opts in to downloading the model during install (the default defers it to /voice).
   export WORKSHOP_VOICE_TIER=${WORKSHOP_VOICE_TIER:-base}
   base_file=$(jq -r '.models.base.file' "$dist/MODEL.lock.json")
   base_sha=$(jq -r '.models.base.sha256' "$dist/MODEL.lock.json")
@@ -203,6 +204,17 @@ if $voice; then
     report ok "both sources down: exit 1, no model file, re-run instruction printed"
   else
     cat "$tmp/h9.err"; report fail "double failure exited for the wrong reason"
+  fi
+
+  echo "== 10. voice: a default install (no WORKSHOP_VOICE, no tier) installs the helper and defers the model"
+  before=$(model_gets)
+  if (env -u WORKSHOP_VOICE_TIER WORKSHOP_HOME="$tmp/h10" WORKSHOP_CHANNEL="$channel" WORKSHOP_MANIFEST_URL="$base/$channel.json" sh "$install_sh") 2>"$tmp/h10.err" \
+    && [[ -x "$tmp/h10/bin/voice-engine" ]] && [[ ! -e "$tmp/h10/voice/$base_file" ]] \
+    && grep -q "not downloaded now" "$tmp/h10.err" && grep -q "cd <your-project> && $PRODUCT_BIN" "$tmp/h10.err" \
+    && [[ "$(model_gets)" == "$before" ]]; then
+    report ok "helper installed, no model bytes, first-/voice note and the next command printed"
+  else
+    cat "$tmp/h10.err"; report fail "default install downloaded the model or lost the next-step line"
   fi
 fi
 
