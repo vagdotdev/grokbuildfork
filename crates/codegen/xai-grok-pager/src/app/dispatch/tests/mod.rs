@@ -320,6 +320,7 @@ fn test_app() -> AppView {
         pending_pager_path: None,
         pending_workshop_login: None,
         workshop_rail_install: None,
+        workshop_voice_prefetch: None,
         pending_pager_ansi: false,
         minimal_state: crate::minimal_api::MinimalState::default(),
         reconnect_pending: false,

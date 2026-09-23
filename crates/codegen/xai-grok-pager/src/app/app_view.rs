@@ -753,6 +753,9 @@ pub struct AppView {
     /// Workshop: the vendor CLI installer the user pressed Enter on, while it runs (one at a time);
     /// the picker's status line follows its output every tick.
     pub workshop_rail_install: Option<crate::app::workshop::RailInstall>,
+    /// Workshop: the background voice setup (helper, then speech model) once started this
+    /// process; `/voice` reads its status while voice is not ready yet.
+    pub workshop_voice_prefetch: Option<workshop_voice::prefetch::Shared>,
     /// Minimal mode only: the Ctrl+T **force-show** pin for the todo panel.
     /// Minimal-mode-only per-session state, consolidated into a single field so the central `AppView` isn't peppered with loose minimal flags.
     /// Default-empty and inert outside `--minimal`; the `xai-grok-pager-minimal` crate reads/mutates it through the `crate::minimal_api` accessors.
@@ -1525,6 +1528,7 @@ impl AppView {
             pending_pager_path: None,
             pending_workshop_login: None,
             workshop_rail_install: None,
+            workshop_voice_prefetch: None,
             pending_pager_ansi: false,
             minimal_state: crate::minimal_api::MinimalState::default(),
             welcome_menu_index: None,

@@ -206,6 +206,15 @@ jobs:
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test pty_rail_install -- --nocapture --include-ignored
+      - name: PTY gate — voice gets ready in the background from the release mirror only
+        # A default install ships no voice helper or model. Nothing is fetched before the first
+        # reply; then the helper (verified against SHA256SUMS, linked as bin/voice-engine) and the
+        # model arrive from a loopback mirror, `/voice` meanwhile reads `Voice is getting ready —
+        # 6%`, and the mirror saw exactly those three files. `WORKSHOP_VOICE_AUTO=0` fetches
+        # nothing on its own; a `/voice` press still asks.
+        env:
+          WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
+        run: cargo test -p workshop-gates --test pty_voice_prefetch -- --nocapture --include-ignored --test-threads=1
       - name: PTY gate — composer border reads like upstream (`<model> (<effort>) · <mode>`)
         # `Big Pickle · always-approve` under --yolo; a catalog model with effort levels is one
         # /model row per level and picking `… (high)` puts `Ling 3.0 Flash Fin Free (high) ·

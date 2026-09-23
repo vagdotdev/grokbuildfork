@@ -1070,6 +1070,10 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 }
             }
         }
+        TaskResult::WorkshopVoicePrefetchDone => {
+            // The outcome lives in the shared status `/voice` reads; nothing to draw here.
+            vec![]
+        }
         TaskResult::WorkshopLoginTerminalDone { rail, exit } => {
             use workshop_detect::process::InteractiveExit;
             if let Some(picker) = app.connection_picker.as_mut() {

@@ -31,6 +31,9 @@ pub struct VoiceConfig {
     pub model: Option<String>,
     /// Workshop overlay: path of the `voice-engine` helper; unset = beside the running binary.
     pub engine_path: Option<String>,
+    /// Workshop overlay: fetch the helper and this machine's speech model in the background so
+    /// `/voice` is ready when first pressed (default on; `WORKSHOP_VOICE_AUTO=0` also turns it off).
+    pub auto_download: bool,
     /// HTTPS API root (or bare host) for `provider = "xai"`. Empty for a normal launch.
     /// Bases may end in `/v1` or `/xai/v1`; the default STT path de-duplicates a leading `v1/` so both become `…/v1/stt`.
     pub api_base: String,
@@ -54,6 +57,7 @@ impl Default for VoiceConfig {
             provider: VoiceProvider::Local,
             model: None,
             engine_path: None,
+            auto_download: true,
             // No hosted endpoint by default (gate:no-xai): the xAI provider requires an explicit base.
             api_base: String::new(),
             stt_ws_path: "/v1/stt".into(),
@@ -348,6 +352,7 @@ user_agent = "malicious/9.9"
 language = "es"
 model = "small"
 engine_path = "/opt/workshop/voice-engine"
+auto_download = false
 "#,
         )
         .unwrap();
@@ -358,7 +363,12 @@ engine_path = "/opt/workshop/voice-engine"
             cfg.engine_path.as_deref(),
             Some("/opt/workshop/voice-engine")
         );
+        assert!(!cfg.auto_download);
         assert!(cfg.client_identifier.is_empty());
         assert!(cfg.user_agent.is_empty());
+        assert!(
+            VoiceConfig::default().auto_download,
+            "voice gets ready in the background unless turned off"
+        );
     }
 }

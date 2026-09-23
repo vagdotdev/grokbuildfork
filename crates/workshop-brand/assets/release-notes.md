@@ -32,6 +32,11 @@ Install or update: `curl -fsSL https://raw.githubusercontent.com/vagdotdev/grokb
   runs the vendor's official installer behind one status line and then that vendor's own sign-in.
   Nothing ever installs on its own, and Workshop never reads another app's login files.
 - `/feedback` says where the note is saved and drafts a prefilled GitHub issue.
+- Voice gets ready on its own: after your first reply (or half a minute into a later launch)
+  Workshop fetches the dictation helper and the speech model for this machine in the background,
+  from the release's own files only, resuming where it left off; `/voice` before that says
+  `Voice is getting ready — 62%`. `voice.auto_download = false` (or `WORKSHOP_VOICE_AUTO=0`) leaves
+  it to a `/voice` press.
 - The installer downloads one thing, `workshop` — no voice helper or speech model up front
   (`WORKSHOP_VOICE=1` installs voice right away) — reads like a product (`Verifying… done`,
   `Installing… done`), says what it did (`Installed Workshop 0.2.2`, or `Updated Workshop 0.2.0 →

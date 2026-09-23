@@ -888,6 +888,90 @@ pub fn has_resumable_sessions(cwd: &Path) -> bool {
             .any(|rail| load_resume_id(rail.vendor().id(), cwd).is_some())
 }
 
+/// Start the background voice setup (the `voice-engine` helper, then this machine's speech model,
+/// from the release mirror only) unless it is off (`voice.auto_download`, `WORKSHOP_VOICE_AUTO=0`),
+/// voice is disabled, already running this process, or already in place. `delay` holds it back
+/// on a returning launch so the first half minute is the user's.
+pub fn maybe_start_voice_prefetch(
+    app: &mut crate::app::app_view::AppView,
+    delay: Duration,
+) -> Vec<crate::app::actions::Effect> {
+    if !workshop_voice::prefetch::auto_enabled(app.voice_config.auto_download) {
+        return vec![];
+    }
+    start_voice_prefetch(app, delay)
+}
+
+/// The setup itself, regardless of the automatic-download flag (a `/voice` press asked for it).
+fn start_voice_prefetch(
+    app: &mut crate::app::app_view::AppView,
+    delay: Duration,
+) -> Vec<crate::app::actions::Effect> {
+    if app.workshop_voice_prefetch.is_some()
+        || !app.voice_mode_enabled
+        || !xai_grok_voice::AUDIO_SUPPORTED
+    {
+        return vec![];
+    }
+    let voice_dir = workshop_voice::store::default_dir();
+    let engine_override = app.voice_config.engine_path.as_deref().map(Path::new);
+    if workshop_voice::prefetch::is_ready(
+        &voice_dir,
+        app.voice_config.model.as_deref(),
+        engine_override,
+    ) {
+        return vec![];
+    }
+    let shared = workshop_voice::prefetch::shared();
+    app.workshop_voice_prefetch = Some(shared.clone());
+    vec![crate::app::actions::Effect::WorkshopVoicePrefetch {
+        shared,
+        delay,
+        home: workshop_home(),
+        voice_dir,
+        tier: app.voice_config.model.clone(),
+    }]
+}
+
+/// `/voice` while voice is not ready: the one line to show instead of starting the microphone
+/// (`Voice is getting ready — 62%`), plus the setup to start if it is not running (a failed
+/// attempt is tried again). `None` when the helper and the model are in place.
+pub fn voice_getting_ready(
+    app: &mut crate::app::app_view::AppView,
+) -> Option<(String, Vec<crate::app::actions::Effect>)> {
+    use workshop_voice::prefetch::Phase;
+    let voice_dir = workshop_voice::store::default_dir();
+    let engine_override = app.voice_config.engine_path.as_deref().map(Path::new);
+    if workshop_voice::prefetch::is_ready(
+        &voice_dir,
+        app.voice_config.model.as_deref(),
+        engine_override,
+    ) {
+        return None;
+    }
+    let status = app
+        .workshop_voice_prefetch
+        .as_ref()
+        .and_then(|s| s.lock().ok().map(|s| s.clone()));
+    match status {
+        Some(status) if !matches!(status.phase, Phase::Failed(_) | Phase::Ready) => {
+            Some((status.line(), vec![]))
+        }
+        _ => {
+            // Not started (or turned off for the background), done but something is missing
+            // again, or failed: the press asked for voice, so one try now.
+            app.workshop_voice_prefetch = None;
+            let effects = start_voice_prefetch(app, Duration::ZERO);
+            let line = if effects.is_empty() {
+                "Voice isn't set up on this machine \u{2014} /doctor shows why".to_owned()
+            } else {
+                workshop_voice::prefetch::Status::default().line()
+            };
+            Some((line, effects))
+        }
+    }
+}
+
 /// Persist the session id for `(backend, workspace)` so the next turn resumes the conversation.
 pub fn save_resume_id(backend: &str, cwd: &Path, session_id: &str) {
     let path = resume_store_path();

@@ -849,10 +849,10 @@ index 8ffcc224..613c4739 100644
  ## Reopen this tutorial
  
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
-index ab27a76d..298c2c63 100644
+index ab27a76d..4a8342a4 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
-@@ -1,99 +1,98 @@
+@@ -1,99 +1,100 @@
  # Getting Started
  
 -Grok Build is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
@@ -906,9 +906,7 @@ index ab27a76d..298c2c63 100644
 -The PowerShell installer automatically adds `%USERPROFILE%\.grok\bin` to your User PATH. Alternatively, install via [Git for Windows](https://gitforwindows.org/) (Git Bash) or MSYS2 using the bash script above. WSL users get the Linux binary automatically.
 -
 -Verify the installation:
-+**macOS:** the binary is not Apple-notarized. The installer clears the quarantine attribute; if
-+macOS still refuses to start it, run `xattr -d com.apple.quarantine ~/.workshop/bin/workshop`.
- 
+-
 -```bash
 -grok --version
 -```
@@ -918,7 +916,9 @@ index ab27a76d..298c2c63 100644
 -```bash
 -grok update
 -```
--
++**macOS:** the binary is not Apple-notarized. The installer clears the quarantine attribute; if
++macOS still refuses to start it, run `xattr -d com.apple.quarantine ~/.workshop/bin/workshop`.
+ 
 -To fetch a repository through Grove (NFS on macOS, FUSE on Linux), enable
 -`grok clone` with `[clone] enabled = true` in Grove config, `GROK_CLONE=1`,
 -or the enable-both convenience `GROK_GROVE=1` / `[cli] grove = true` in
@@ -942,31 +942,37 @@ index ab27a76d..298c2c63 100644
  
 -Start Grok by running:
 -
+-```bash
+-grok
+-```
+-
+-On first launch, Grok opens your browser to authenticate with grok.com. After you sign in, Grok stores your credentials in `~/.grok/auth.json`, where they persist across sessions. Grok refreshes your credentials automatically and prompts you to sign in again when they can no longer be renewed.
+-
+-If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
+-
  ```bash
+-export XAI_API_KEY="xai-..."
 -grok
 +cd your-project
 +workshop
  ```
  
--On first launch, Grok opens your browser to authenticate with grok.com. After you sign in, Grok stores your credentials in `~/.grok/auth.json`, where they persist across sessions. Grok refreshes your credentials automatically and prompts you to sign in again when they can no longer be renewed.
+-See [Authentication](02-authentication.md) for the full set of auth options including OIDC, external auth providers, and device code flow.
 +You land in the composer. The footer names the active model, **Big Pickle**: OpenCode's free
 +default, no sign-in, no key. Type a sentence and press `Enter`.
- 
--If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
-+While a message is being worked on, the status row above the composer shows what is happening —
-+`Waiting for response…`, `Thinking…`, `Run sudo apt install ghostty` with that command's own seconds
-+— plus the turn's total time and `[stop]` (or `Ctrl+C`) to cancel; the turn closes with `Worked for
-+2m31s`. The first message also sets up OpenCode's `opencode` CLI on your machine (about a minute;
-+the row shows `First-time setup, 12 MB downloaded…` as it goes); every later message answers within
-+seconds. Nothing is downloaded until you send that first message. If the free model cannot be
-+reached, Workshop quietly answers through another free model and the footer names the model that
-+answered; only if that fails too do you see `Couldn't reach Big Pickle — Enter to retry · /model to
-+switch`.
- 
--```bash
--export XAI_API_KEY="xai-..."
--grok
--```
++
++OpenCode's official `opencode` CLI is installed on your first launch and started in the background
++every time Workshop opens, so it is usually ready by the time you press `Enter`; a message sent
++before it is ready simply waits for it — the status row reads `First-time setup, 12 MB downloaded…`
++while it does. The install (about a minute on a slow connection) reaches only opencode.ai, the
++vendor's installer; every later message answers within seconds. While a message is being
++worked on, the status row above the composer shows what is happening — `Waiting for response…`,
++`Thinking…`, `Run sudo apt install ghostty` with that command's own seconds — plus the turn's total
++time and `[stop]` (or `Ctrl+C`) to cancel; the turn closes with `Worked for 2m31s`. If the free
++model cannot be reached, Workshop quietly answers through another free model and the footer names
++the model that answered; only if that fails too do you see `Couldn't reach Big Pickle — Enter to
++retry · /model to switch`.
++
 +Two commands are all you need to know on day one:
 +
 +- **`/model`** lists the models you can use right now: OpenCode's free models, then each coding
@@ -977,8 +983,7 @@ index ab27a76d..298c2c63 100644
 +- **`/auth`** connects more: the Claude / Codex / Cursor subscription CLIs (installed and signed in
 +  with their own official login), API keys for OpenRouter, Google AI Studio, NVIDIA, OpenAI and
 +  Anthropic (kept in your OS keyring), and — last, optional and labeled — an xAI account.
- 
--See [Authentication](02-authentication.md) for the full set of auth options including OIDC, external auth providers, and device code flow.
++
 +See [Authentication](02-authentication.md) for the details of each.
  
  ---
@@ -1009,7 +1014,7 @@ index ab27a76d..298c2c63 100644
  
  ### File References
  
-@@ -105,7 +104,8 @@ Use `@` in your prompt to attach files:
+@@ -105,7 +106,8 @@ Use `@` in your prompt to attach files:
  @src/                     # Browse a directory
  ```
  
@@ -1019,13 +1024,16 @@ index ab27a76d..298c2c63 100644
  
  ```
  @!.github                 # Search hidden files
-@@ -114,10 +114,11 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore`
+@@ -114,10 +116,14 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore`
  
  ### Permissions
  
 -By default, Grok asks for permission before executing shell commands or editing files. You can approve individually or toggle always-approve mode:
-+`Shift+Tab` cycles the session mode: **Normal** asks before risky commands and edits, **Plan**
-+explores read-only and presents a plan first, **Always-approve** skips the prompts. You can also:
++Workshop starts in **Always-approve**: commands and edits run without prompts, and the composer
++border says so (`Big Pickle · always-approve`). `Shift+Tab` cycles the session mode: **Normal**
++asks before risky commands and edits, **Plan** explores read-only and presents a plan first,
++**Always-approve** skips the prompts. The mode you pick is remembered for later launches. You can
++also:
  
  - Press `Ctrl+O` to toggle always-approve mode
 -- Use the `--yolo` flag at launch: `grok --yolo`
@@ -1033,7 +1041,7 @@ index ab27a76d..298c2c63 100644
  - Type `/always-approve` in the prompt to toggle the mode
  
  ---
-@@ -126,27 +127,31 @@ By default, Grok asks for permission before executing shell commands or editing
+@@ -126,27 +132,31 @@ By default, Grok asks for permission before executing shell commands or editing
  
  ### Sessions
  
@@ -1071,7 +1079,7 @@ index ab27a76d..298c2c63 100644
  
  | Tool | Description |
  |------|-------------|
-@@ -159,14 +164,17 @@ Grok has built-in tools for:
+@@ -159,14 +169,17 @@ Grok has built-in tools for:
  | `spawn_subagent` | Spawn parallel subagent sessions |
  | `memory_search` | Search cross-session memory |
  
@@ -1092,7 +1100,7 @@ index ab27a76d..298c2c63 100644
  /compact                          # Compress conversation history
  /always-approve                   # Toggle always-approve mode
  /new                              # Start a new session
-@@ -180,54 +188,50 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
+@@ -180,54 +193,50 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
  
  ```bash
  # Launch the interactive TUI and submit an initial prompt as the first turn
@@ -1162,7 +1170,7 @@ index ab27a76d..298c2c63 100644
  ```
  
  Output formats:
-@@ -241,22 +245,24 @@ Output formats:
+@@ -241,22 +250,24 @@ Output formats:
  Example CI/CD usage:
  
  ```bash
@@ -1191,7 +1199,7 @@ index ab27a76d..298c2c63 100644
  
  ---
  
-@@ -264,7 +270,7 @@ Deeper files take precedence. Grok also reads `CLAUDE.md` files for compatibilit
+@@ -264,7 +275,7 @@ Deeper files take precedence. Grok also reads `CLAUDE.md` files for compatibilit
  
  | Document | What You Will Learn |
  |----------|-------------------|
@@ -1201,10 +1209,10 @@ index ab27a76d..298c2c63 100644
  | [Slash Commands](04-slash-commands.md) | All available `/` commands |
  | [Configuration](05-configuration.md) | config.toml, pager.toml, environment variables |
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md b/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
-index 5e321a67..e0b5ac15 100644
+index 5e321a67..0fae23fc 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
-@@ -1,368 +1,100 @@
+@@ -1,368 +1,102 @@
  # Authentication
  
 -Grok supports several authentication methods, including interactive browser login, enterprise single sign-on (SSO), and headless CI/CD runners.
@@ -1590,8 +1598,10 @@ index 5e321a67..e0b5ac15 100644
 -or `user.email` — see [ZDR and this stream](24-monitoring-usage.md#zdr-and-this-stream).
 -
 -See [Monitoring Usage](24-monitoring-usage.md#related-settings) and [Configuration](05-configuration.md#telemetry).
-+- Nothing is fetched on launch. The first message sets up and starts OpenCode's `opencode` CLI;
-+  `/model` refreshes the model lists of the providers you connected when you open it.
++- On launch, only OpenCode's `opencode` CLI is brought up: a first run fetches the vendor's
++  installer from opencode.ai and starts it on this machine; later launches just start it. Nothing
++  is sent to a model before your first message; `/model` refreshes the model lists of the providers
++  you connected when you open it.
 +- Free pools are shared services: prompts sent through them may be logged by the operator. The
 +  row's detail line says so.
 +- Telemetry is off and no analytics token is baked in. Auto-update is off unless you opt in with
@@ -7099,7 +7109,7 @@ index 82da5ad4..abba426b 100644
 -- **Errors.** Anything your script prints is shown, even when it exits non-zero, so `printf …; [[ -n $dirty ]]` behaves as you would expect. A script that prints nothing and fails shows `[status line: exit N]`, and that stays until the next run succeeds — for a run triggered by session state, which reports its failure at once; a timer run's failure keeps the last output instead (see [Refresh runs](#refresh-runs)). Your script's stderr is never painted, so a debugging `echo` will not disturb the row; run Grok with `--debug` to read it. A script Grok could not start at all shows `[status line: could not start the script: …]`, which is what a file without the execute bit produces, and one the system kills shows `[status line: killed by signal]`. A `#!` line naming a missing interpreter is retried under `sh` instead, so it shows an exit code.
 +- **Errors.** Anything your script prints is shown, even when it exits non-zero, so `printf …; [[ -n $dirty ]]` behaves as you would expect. A script that prints nothing and fails shows `[status line: exit N]`, and that stays until the next run succeeds — for a run triggered by session state, which reports its failure at once; a timer run's failure keeps the last output instead (see [Refresh runs](#refresh-runs)). Your script's stderr is never painted, so a debugging `echo` will not disturb the row; run Workshop with `--debug` to read it. A script Workshop could not start at all shows `[status line: could not start the script: …]`, which is what a file without the execute bit produces, and one the system kills shows `[status line: killed by signal]`. A `#!` line naming a missing interpreter is retried under `sh` instead, so it shows an exit code.
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/26-config-reference.md b/crates/codegen/xai-grok-pager/docs/user-guide/26-config-reference.md
-index fa13551c..0b8f5ec0 100644
+index fa13551c..70524ac1 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/26-config-reference.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/26-config-reference.md
 @@ -1,35 +1,35 @@
@@ -7571,7 +7581,15 @@ index fa13551c..0b8f5ec0 100644
  | `ui.ui_theme` | `string` | `yes` | `user` | Legacy alias for `ui.theme`. |
  | `ui.vim_mode` | `boolean` | `yes` | `user` | Vim keys in the scrollback, not the prompt. Also `/vim-mode`. |
  | `ui.voice_capture_mode` | `hold / toggle` | `yes` | `user` | Hold-to-talk or press-to-toggle voice capture. |
-@@ -673,13 +624,13 @@ One exception to that rule:
+@@ -648,6 +599,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
+ | Key | Type / Values | Requirements | Managed | Details |
+ | --- | --- | --- | --- | --- |
+ | `voice.api_base` | `string` | `yes` | `user` | HTTPS API root for speech-to-text. Unset inherits `[endpoints].xai_api_base_url`. |
++| `voice.auto_download` | `boolean` | `yes` | `user` | Fetch the voice helper and this machine's speech model in the background (after the first reply, or half a minute into a later launch) so `/voice` is ready when first pressed. Default true. `WORKSHOP_VOICE_AUTO=0` also turns it off; a `/voice` press still fetches on request. |
+ | `voice.language` | `string` | `yes` | `user` | Preferred STT language catalog code or `auto`. |
+ | `voice.sample_rate` | `number` | `yes` | `user` | STT capture rate in Hz. |
+ 
+@@ -673,13 +625,13 @@ One exception to that rule:
  | --- | --- |
  | `features.remote_fetch` | The managed value wins over the developer's. |
  
@@ -7587,7 +7605,7 @@ index fa13551c..0b8f5ec0 100644
  
  These keys exist only in `requirements.toml`:
  
-@@ -695,13 +646,13 @@ Policy pins such as `allow_managed_hooks_only` (see [Hooks](10-hooks.md#allow-on
+@@ -695,13 +647,13 @@ Policy pins such as `allow_managed_hooks_only` (see [Hooks](10-hooks.md#allow-on
  
  ## What happens when a setting is refused
  

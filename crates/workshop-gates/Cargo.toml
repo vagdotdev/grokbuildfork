@@ -42,6 +42,8 @@ xai-grok-agent = { workspace = true }
 # Branding gate: `workshop --help` rendered from the clap definition; the welcome copy.
 clap = { workspace = true }
 workshop-brand = { path = "../workshop-brand" }
+# Voice prefetch gate: the test lock pins a model by SHA-256.
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

@@ -6,8 +6,10 @@ license = "Apache-2.0"
 description = "Workshop overlay: local speech-to-text for /voice — pinned Whisper model store (verify, resume, self-heal download), the voice-engine helper client, and the /doctor probe. Links no speech model; the helper process does."
 
 [dependencies]
+flate2 = { workspace = true }
 fs2 = { workspace = true }
 reqwest = { workspace = true }
+tar = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
