@@ -3,8 +3,8 @@
 
 usage: setup.py TASK HOME OUTDIR USER
 
-Creates the run's account if needed (`sam`: NOPASSWD sudo; `mac`: in the sudo group, so sudo asks for
-its password) and the fresh HOME with the folders a Mac user always has (Desktop, Documents, Downloads),
+Creates the run's account if needed, like a normal desktop user: in the sudo group, with a password, so
+sudo asks for it (the task's `@password`, default `workshop`); and the fresh HOME with the folders a Mac user always has (Desktop, Documents, Downloads),
 puts the task's fixtures in it, and resets whatever system state the task changes (packages it
 installs). What the verifier needs to know about the fixtures goes to OUTDIR/fixture.json, outside
 anything the run's account can read. Fixtures that are downloaded or generated once are cached under
@@ -99,13 +99,14 @@ def stage(rel, src=None, data=None):
 
 # --- the fresh HOME ----------------------------------------------------------------------------
 if OTHER:
-    groups = "-G sudo " if TASK == "T11" else ""
-    sh(f"id {USER} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash {groups}{USER}", check=True)
-    if TASK != "T11":
-        rule = Path(f"/etc/sudoers.d/acc-{USER}")
-        subprocess.run(["sudo", "tee", str(rule)], input=f"{USER} ALL=(ALL) NOPASSWD:ALL\n", text=True,
-                       capture_output=True, check=True)
-        sh(f"sudo chmod 440 {rule}")
+    sh(f"id {USER} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash -G sudo {USER}", check=True)
+    sh(f"sudo usermod -aG sudo {USER} && sudo rm -f /etc/sudoers.d/acc-{USER}", check=True)
+    steps = (HERE / f"tasks/{TASK}.steps").read_text().splitlines()
+    pw = next((l.split(None, 1)[1].strip() for l in steps if l.startswith("@password ")), "workshop")
+    subprocess.run(["sudo", "chpasswd"], input=f"{USER}:{pw}\n", text=True, check=True)
+    sh(f"sudo rm -rf /var/run/sudo/ts/{USER}")
+    if sh(f"sudo -u {USER} sudo -n true").returncode == 0:
+        sys.exit(f"sudo for {USER} does not ask for a password; the suite's user must be a normal desktop user")
     sh(f"sudo rm -rf '{HOME}'")
     # root-owned and execute-only: a run can reach its own HOME but cannot list the others
     sh(f"sudo install -d -m 711 -o root -g root '{HOME.parent}'")
@@ -258,13 +259,6 @@ elif TASK == "T7":
         fixture["files"][hashlib.sha256(data).hexdigest()] = {"name": name, "categories": cats}
 
 elif TASK == "T11":
-    r = sh(f"sudo -u {USER} sudo -n true")
-    if r.returncode == 0:
-        sys.exit(f"sudo for {USER} does not ask for a password; T11 needs it to")
-    pw = next((l.split(None, 1)[1] for l in (HERE / "tasks/T11.steps").read_text().splitlines()
-               if l.startswith("@password ")), "").strip()
-    subprocess.run(["sudo", "chpasswd"], input=f"{USER}:{pw}\n", text=True, check=True)
-    sh(f"sudo rm -rf /var/run/sudo/ts/{USER}")
     apt_purge(["htop"])
     fixture["htop_before"] = sh("dpkg -s htop 2>/dev/null | grep -m1 ^Status").stdout.strip()
 
