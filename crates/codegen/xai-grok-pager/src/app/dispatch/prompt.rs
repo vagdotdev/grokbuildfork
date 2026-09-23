@@ -686,6 +686,9 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
     app.workshop_turn_stream_entry = None;
     app.workshop_turn_progress = None;
     app.workshop_turn_started = Some(std::time::Instant::now());
+    app.workshop_turn_last_output = None;
+    app.workshop_turn_running = None;
+    app.workshop_turn_phase_started = None;
     app.workshop_last_prompt = Some(text.clone());
     app.workshop_turn_thinking_entry = None;
     app.workshop_turn_tools.clear();

@@ -1045,6 +1045,14 @@ pub struct AppView {
     pub workshop_turn_progress: Option<String>,
     /// When the current Workshop turn was submitted (the waiting line's elapsed clock).
     pub workshop_turn_started: Option<Instant>,
+    /// When the current turn last drew output. After [`crate::app::workshop::WORKING_AFTER`] of
+    /// silence (a command running, the model working between steps) the waiting line comes
+    /// back, so a running turn is never a still screen.
+    pub workshop_turn_last_output: Option<Instant>,
+    /// The command of the `bash` call in flight, named by that line.
+    pub workshop_turn_running: Option<String>,
+    /// When the waiting line reappeared; its seconds count from here, not from the submit.
+    pub workshop_turn_phase_started: Option<Instant>,
     /// Tick counter driving the waiting line's spinner.
     pub workshop_progress_tick: u64,
     /// Workshop: the prompt of the last Engine/Adapter turn, kept so Enter on an empty composer
@@ -1640,6 +1648,9 @@ impl AppView {
             workshop_turn_progress_entry: None,
             workshop_turn_progress: None,
             workshop_turn_started: None,
+            workshop_turn_last_output: None,
+            workshop_turn_running: None,
+            workshop_turn_phase_started: None,
             workshop_progress_tick: 0,
             workshop_last_prompt: None,
             workshop_turn_active: false,
@@ -5895,8 +5906,9 @@ impl AppView {
         if self.pending_action.is_some() {
             return TickDemand::Fast;
         }
-        // Workshop: the waiting line animates while an Engine/Adapter turn has produced nothing.
-        if self.workshop_turn_active && self.workshop_turn_progress.is_some() {
+        // Workshop: the waiting line animates, and comes back after a silence, while an
+        // Engine/Adapter turn runs.
+        if self.workshop_turn_active {
             return TickDemand::Fast;
         }
         if self.minimal_state.transcript.is_some() {
@@ -6049,8 +6061,26 @@ impl AppView {
     /// Workshop: advance the waiting line of an Engine/Adapter turn (spinner frame, elapsed
     /// seconds) while it has produced nothing yet. Every third tick: ~10 frames a second at 30 fps.
     fn tick_workshop_progress(&mut self) -> bool {
-        if !self.workshop_turn_active || self.workshop_turn_progress.is_none() {
+        if !self.workshop_turn_active {
             return false;
+        }
+        if self.workshop_turn_progress.is_none() {
+            let quiet = self
+                .workshop_turn_last_output
+                .is_some_and(|t| t.elapsed() >= crate::app::workshop::WORKING_AFTER);
+            let prompt_up = self
+                .workshop_turn_agent
+                .and_then(|id| self.agents.get(&id))
+                .is_some_and(|a| !a.permission_queue.is_empty());
+            if !quiet || prompt_up {
+                return false;
+            }
+            self.workshop_turn_progress = Some(
+                self.workshop_turn_running
+                    .clone()
+                    .unwrap_or_else(|| "Working\u{2026}".to_owned()),
+            );
+            self.workshop_turn_phase_started = Some(Instant::now());
         }
         self.workshop_progress_tick = self.workshop_progress_tick.wrapping_add(1);
         if !self.workshop_progress_tick.is_multiple_of(3) {
@@ -6069,7 +6099,8 @@ impl AppView {
             return false;
         };
         let elapsed = self
-            .workshop_turn_started
+            .workshop_turn_phase_started
+            .or(self.workshop_turn_started)
             .map(|t| t.elapsed())
             .unwrap_or_default();
         let frame = (self.workshop_progress_tick / 3) as usize;

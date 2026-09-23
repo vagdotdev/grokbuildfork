@@ -4096,6 +4096,8 @@ fn handle_workshop_turn_msg(
     };
     if clears_progress {
         app.workshop_turn_progress = None;
+        app.workshop_turn_last_output = Some(std::time::Instant::now());
+        app.workshop_turn_phase_started = None;
         if let Some(id) = app.workshop_turn_progress_entry.take()
             && let Some(agent) = app.agents.get_mut(&agent_id)
         {
@@ -4203,6 +4205,7 @@ fn handle_workshop_turn_msg(
             true
         }
         M::Tool { id, name, input } => {
+            app.workshop_turn_running = crate::app::workshop::running_label(&name, &input);
             // A tool call ends the current assistant paragraph; the next delta starts a fresh block.
             if let Some(id) = app.workshop_turn_stream_entry.take()
                 && let Some(agent) = app.agents.get_mut(&agent_id)
@@ -4226,6 +4229,8 @@ fn handle_workshop_turn_msg(
             title,
             metadata,
         } => {
+            app.workshop_turn_running = None;
+            app.workshop_turn_last_output = Some(std::time::Instant::now());
             // The result lands on the row that announced the call: the row becomes the pager's
             // Edit block with the diff, or Run block with output + exit code, and stops running.
             let Some(entry) = app.workshop_turn_tools.remove(&id) else {
@@ -4390,6 +4395,9 @@ fn handle_workshop_turn_msg(
             app.workshop_turn_agent = None;
             app.workshop_turn_prompt_entry = None;
             app.workshop_turn_started = None;
+            app.workshop_turn_last_output = None;
+            app.workshop_turn_running = None;
+            app.workshop_turn_phase_started = None;
             // Prompts typed during the turn go out now, one turn each, oldest first. A cancel
             // drops them: the user stopped the conversation, not just this answer.
             if cancelled {

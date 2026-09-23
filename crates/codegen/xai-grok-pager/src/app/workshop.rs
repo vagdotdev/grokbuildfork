@@ -755,6 +755,22 @@ pub const WAIT_SPINNER: [char; 10] = [
     '\u{2807}', '\u{280F}',
 ];
 
+/// Silence after which a running turn shows the waiting line again (a command running, the model
+/// working between steps).
+pub const WORKING_AFTER: Duration = Duration::from_millis(1500);
+
+/// The waiting line's text while a tool call is in flight: the command of a `bash` call.
+pub fn running_label(tool: &str, input: &serde_json::Value) -> Option<String> {
+    let command = input.get("command").and_then(serde_json::Value::as_str)?;
+    if tool != "bash" {
+        return None;
+    }
+    let command = command.lines().next().unwrap_or_default().trim();
+    let shown: String = command.chars().take(60).collect();
+    let more = if command.chars().count() > 60 { "\u{2026}" } else { "" };
+    Some(format!("Running `{shown}{more}`"))
+}
+
 /// The one line a user sees while a turn has produced nothing yet: an animated mark, the phase
 /// ("Installing…", "Waiting for Big Pickle…"), the elapsed seconds after [`ELAPSED_AFTER`], and
 /// how to stop waiting. Repainted every tick by the UI so the mark moves and the seconds count.

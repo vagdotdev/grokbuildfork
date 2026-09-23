@@ -201,6 +201,22 @@ def run_turn(sid, agent, text):
         else:
             emit_part(tool_part(sid, mid, "bash", call_id, inp, "The user rejected permission to use this specific tool call.", "rm -rf tmp", {}, status="error"))
             answer = "Understood — tmp was left alone."
+    elif "install the thing" in text_l:
+        # A command that takes a while after the approval (an apt-get install): the turn must
+        # not look frozen while it runs.
+        call_id = next_id("call")
+        cmd = "sudo apt-get install -y thing"
+        inp = {"command": cmd}
+        emit_part(part(sid, mid, "tool", {"tool": "bash", "callID": call_id,
+                                          "state": {"status": "running", "input": inp, "time": {"start": now_ms()}}}))
+        reply = ask_permission(sid, mid, call_id, "bash", [cmd], {"command": cmd}, ["sudo *"])
+        if reply in ("once", "always"):
+            time.sleep(7)
+            emit_part(tool_part(sid, mid, "bash", call_id, inp, "thing installed", cmd,
+                                {"output": "thing installed", "exit": 0, "truncated": False}))
+            answer = "Installed the thing."
+        else:
+            answer = "Left the thing alone."
     elif "edit hello.txt" in text_l:
         path = os.path.join(CWD, "hello.txt")
         call_id = next_id("call")
