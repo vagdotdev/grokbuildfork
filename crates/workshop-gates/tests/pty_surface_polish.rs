@@ -1,7 +1,8 @@
 //! Surface polish gates on the built `workshop` binary (v0.2.2): the welcome card is one product
 //! name and an invitation to type; `/model` is an overlay with type-to-filter whose keys never
-//! leak into the composer; the waiting line animates, counts seconds and names the cancel key;
-//! the terminal title follows the session topic and is restored on exit.
+//! leak into the composer; while a turn waits the pager's own turn-status row (spinner, `Waiting
+//! for response…`, timers, `[stop]`) shows, as for a shell turn; the terminal title follows the
+//! session topic and is restored on exit.
 //!
 //! Opt-in: set `WORKSHOP_BIN` to the built binary and run with `--include-ignored`. Hermetic: the
 //! engine is the fake `opencode` fixture (`silent` serve on loopback), no network.
@@ -176,7 +177,7 @@ fn model_picker_filters_as_you_type_and_swallows_stray_keys() {
 
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); run with --include-ignored"]
-fn thinking_line_animates_counts_seconds_and_names_the_cancel_key() {
+fn status_row_animates_counts_seconds_and_offers_stop() {
     let Some(bin) = bin_from_env() else { return };
     if std::process::Command::new("python3")
         .arg("--version")
@@ -190,19 +191,21 @@ fn thinking_line_animates_counts_seconds_and_names_the_cancel_key() {
     let mut j = spawn("surface-waiting", &bin, &[], Some(fake.path()));
     connect_big_pickle(&mut j);
     send_prompt(&mut j, "add a test for multiply");
-    // One neutral line for every phase behind the first answer; never a runtime name.
-    wait_for(&mut j.h, "Thinking", 40);
-    wait_for(&mut j.h, "Ctrl+C to cancel", 5);
-    assert_no_plumbing(&j.h, "thinking line");
-    let waiting_line = |h: &xai_grok_pager_pty_harness::PtyHarness| {
+    // The pager's own turn-status row, exactly as a shell turn shows it: spinner, `Waiting for
+    // response…`, the phase and turn timers, `[stop]` — for every phase behind the first
+    // answer, and never a runtime name.
+    wait_for(&mut j.h, WAITING_ROW, 40);
+    wait_for(&mut j.h, "[stop]", 5);
+    assert_no_plumbing(&j.h, "status row");
+    let status_row = |h: &xai_grok_pager_pty_harness::PtyHarness| {
         h.screen_contents()
             .lines()
-            .find(|l| l.contains("Thinking"))
+            .find(|l| l.contains(WAITING_ROW))
             .map(|l| l.trim().to_owned())
     };
     let mut marks = std::collections::BTreeSet::new();
     for _ in 0..12 {
-        if let Some(line) = waiting_line(&j.h)
+        if let Some(line) = status_row(&j.h)
             && let Some(mark) = line.chars().next()
         {
             marks.insert(mark);
@@ -210,37 +213,41 @@ fn thinking_line_animates_counts_seconds_and_names_the_cancel_key() {
         j.h.update(Duration::from_millis(150));
     }
     assert!(marks.len() >= 2, "the spinner animates, saw {marks:?}");
-    // Elapsed seconds appear after 3 s.
+    // The timers count: `Waiting for response… 3.4s … 3.4s [stop]`.
     j.h.update(Duration::from_millis(3200));
-    let line = waiting_line(&j.h).expect("waiting line");
+    let line = status_row(&j.h).expect("status row");
     snapshot(&j.h, &j.dir, "05-waiting-elapsed");
+    let seconds: Vec<&str> = line
+        .split_whitespace()
+        .filter(|w| w.ends_with('s') && w.trim_end_matches('s').parse::<f64>().is_ok())
+        .collect();
     assert!(
-        line.contains("s \u{b7} Ctrl+C to cancel") || line.contains("s · Ctrl+C to cancel"),
-        "elapsed seconds precede the cancel hint: {line}"
+        seconds.len() >= 2 && line.ends_with("[stop]"),
+        "the row carries the phase and turn timers and the stop button: {line}"
     );
-    // Ten seconds in it is still the same calm line — no phase names, no runtime words.
+    // Ten seconds in it is still the same calm row — no phase names, no runtime words.
     j.h.update(Duration::from_millis(7000));
-    let line = waiting_line(&j.h).expect("waiting line");
+    let line = status_row(&j.h).expect("status row");
     assert!(
-        line.starts_with(|c: char| !c.is_ascii()) && line.contains("Thinking"),
+        line.starts_with(|c: char| !c.is_ascii()) && line.contains(WAITING_ROW),
         "{line}"
     );
     assert_no_plumbing(&j.h, "ten seconds in");
-    snapshot(&j.h, &j.dir, "06-still-thinking");
+    snapshot(&j.h, &j.dir, "06-still-waiting");
     // The title follows the topic (the first prompt) while the turn runs.
     let seen = titles(j.h.raw_output());
     assert!(
         seen.iter().any(|t| t.contains("add a test for multiply")),
         "the terminal title names the session topic: {seen:?}"
     );
-    // Ctrl+C twice cancels; the waiting line goes away.
+    // Ctrl+C twice cancels; the pager's own marker closes the turn and the row goes away.
     j.h.inject_keys(b"\x03").unwrap();
     j.h.update(Duration::from_millis(300));
     j.h.inject_keys(b"\x03").unwrap();
-    wait_for(&mut j.h, "Turn cancelled", 10);
+    wait_for(&mut j.h, "Turn cancelled by user in", 10);
     assert!(
-        !j.h.screen_contents().contains("Ctrl+C to cancel"),
-        "the waiting line is removed once the turn ends:\n{}",
+        !j.h.screen_contents().contains("[stop]") && !j.h.screen_contents().contains(WAITING_ROW),
+        "the status row is gone once the turn ends:\n{}",
         j.h.screen_contents()
     );
 

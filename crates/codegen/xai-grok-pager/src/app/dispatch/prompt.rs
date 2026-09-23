@@ -684,8 +684,7 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
     app.workshop_turn_active = true;
     app.workshop_turn_agent = Some(id);
     app.workshop_turn_stream_entry = None;
-    app.workshop_turn_progress = None;
-    app.workshop_turn_started = Some(std::time::Instant::now());
+    app.workshop_turn_running.clear();
     app.workshop_turn_errored = false;
     app.workshop_last_prompt = Some(text.clone());
     app.workshop_turn_thinking_entry = None;
@@ -702,6 +701,17 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
         app.workshop_turn_prompt_entry = Some(entry);
         agent.prompt.set_text("");
         agent.workshop_turn_active = true;
+        // The pager's own turn-status row runs from here: the wait for the model, its timers,
+        // `[stop]` — the same row a shell turn shows.
+        agent.workshop_turn_activity = Some(crate::acp::tracker::TurnActivity::Waiting(
+            crate::acp::tracker::WaitingReason::Model,
+        ));
+        agent.workshop_turn_started_at = Some(std::time::Instant::now());
+        agent.workshop_turn_cancelling = false;
+        // A fresh phase clock: the row's first frame counts from this send, not from whatever
+        // the previous turn ended on.
+        agent.last_activity = None;
+        agent.activity_started_at = None;
         agent.workshop_retry_prompt = None;
         // The terminal title follows the session topic: Engine/Adapter turns never reach the
         // shell's auto-titling, so the first prompt names the session.

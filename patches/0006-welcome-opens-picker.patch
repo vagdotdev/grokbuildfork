@@ -148,7 +148,7 @@ index f1602289..15ba70ea 100644
      ChangelogFetched {
          markdown: Option<String>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..85732946 100644
+index fc9a4553..716cda32 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -202,7 +202,7 @@ index fc9a4553..85732946 100644
      /// The environment gates are process-constant, so one evaluation decides the run.
      pub ssh_wrap_tip_evaluated: bool,
      /// State for the clipboard-image tip, polled opportunistically and only while the terminal is focused.
-@@ -1009,6 +1022,95 @@ pub struct AppView {
+@@ -1009,6 +1022,86 @@ pub struct AppView {
      pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
      /// Whether deferred welcome-screen login should force OAuth.
      pub auth_use_oauth: bool,
@@ -221,24 +221,15 @@ index fc9a4553..85732946 100644
 +    /// first message reuses the server the warm-up started (or waits for it) instead of starting
 +    /// a second one.
 +    pub workshop_engine_slot: crate::app::workshop::EngineSlot,
-+    /// Set once the engine warm-up has started for this process (at launch with an engine model
-+    /// active, else on the first typed character after one is picked).
++    /// Set once the first typed character has started the engine warm-up for this process.
 +    pub workshop_engine_warm_started: bool,
 +    pub workshop_engine_session: Option<String>,
-+    /// The waiting line (`Thinking…`) of the current turn: kept under the latest block for the
-+    /// whole turn (each new block lifts it and puts it back underneath), removed when the turn
-+    /// fails or ends.
-+    pub workshop_turn_progress_entry: Option<crate::scrollback::EntryId>,
-+    /// The phase text behind `workshop_turn_progress_entry` (`Thinking…`, or the first-time
-+    /// download progress); the entry is repainted every few ticks with the spinner frame and the
-+    /// elapsed seconds.
-+    pub workshop_turn_progress: Option<String>,
-+    /// When the current Workshop turn was submitted (the waiting line's elapsed clock).
-+    pub workshop_turn_started: Option<Instant>,
-+    /// The current Workshop turn has shown a failure line: its end gets no `Done · Ns`.
++    /// Tool calls of the current Workshop turn still running, oldest first, as `(call id,
++    /// activity)`: the turn-status row shows the newest one until it finishes, then the wait for
++    /// the model again.
++    pub workshop_turn_running: Vec<(String, crate::acp::tracker::TurnActivity)>,
++    /// The current Workshop turn has shown a failure line: its end gets no `Worked for …` marker.
 +    pub workshop_turn_errored: bool,
-+    /// Tick counter driving the waiting line's spinner.
-+    pub workshop_progress_tick: u64,
 +    /// Workshop: the prompt of the last Engine/Adapter turn, kept so Enter on an empty composer
 +    /// can retry it after a failure.
 +    pub workshop_last_prompt: Option<String>,
@@ -298,7 +289,7 @@ index fc9a4553..85732946 100644
      /// Delivery state from the last clipboard copy during auth.
      pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
      /// Generation of the current auth copy feedback and its clear timer.
-@@ -1429,11 +1531,15 @@ impl AppView {
+@@ -1429,11 +1522,15 @@ impl AppView {
              pending_effects: Vec::new(),
              pending_editor: None,
              pending_pager_path: None,
@@ -314,7 +305,7 @@ index fc9a4553..85732946 100644
              welcome_import_banner_rect: None,
              last_mouse_pos: None,
              last_scroll_pos: None,
-@@ -1543,6 +1649,36 @@ impl AppView {
+@@ -1543,6 +1640,33 @@ impl AppView {
              auth_url_poll_handle: None,
              deferred_startup: Default::default(),
              auth_use_oauth: false,
@@ -324,11 +315,8 @@ index fc9a4553..85732946 100644
 +            workshop_engine_slot: crate::app::workshop::new_engine_slot(),
 +            workshop_engine_warm_started: false,
 +            workshop_engine_session: None,
-+            workshop_turn_progress_entry: None,
-+            workshop_turn_progress: None,
-+            workshop_turn_started: None,
++            workshop_turn_running: Vec::new(),
 +            workshop_turn_errored: false,
-+            workshop_progress_tick: 0,
 +            workshop_last_prompt: None,
 +            workshop_turn_active: false,
 +            workshop_turn_tx: None,
@@ -351,7 +339,7 @@ index fc9a4553..85732946 100644
              auth_clipboard_delivery: None,
              auth_clipboard_feedback_generation: 0,
              team_id: None,
-@@ -1709,11 +1845,15 @@ impl AppView {
+@@ -1709,11 +1833,15 @@ impl AppView {
      pub(super) fn consumer_account(&self) -> bool {
          !self.backend_billed && !self.is_api_key_auth && !self.has_external_auth_provider
      }
@@ -370,7 +358,7 @@ index fc9a4553..85732946 100644
      }
      /// Draw-time expiry can flip the live-announcement predicate between pushes.
      /// Resync the slash gate only when it diverges from the stored flags (checked per frame, fan-out runs only on change).
-@@ -2404,6 +2544,15 @@ impl AppView {
+@@ -2404,6 +2532,15 @@ impl AppView {
              }
              return InputOutcome::Changed;
          }
@@ -386,7 +374,7 @@ index fc9a4553..85732946 100644
          let zdr_blocked = self.is_zdr_blocked();
          let has_access = self.has_access();
          let welcome_pinned_upgrade_cta = crate::views::announcements::promo_cta(
-@@ -2442,7 +2591,12 @@ impl AppView {
+@@ -2442,7 +2579,12 @@ impl AppView {
                      menu_count: if zdr_blocked {
                          2
                      } else {
@@ -400,7 +388,7 @@ index fc9a4553..85732946 100644
                              + if self.welcome_show_changelog_action {
                                  1
                              } else {
-@@ -2483,6 +2637,7 @@ impl AppView {
+@@ -2483,6 +2625,7 @@ impl AppView {
                      welcome_doc_viewer: &mut self.welcome_doc_viewer,
                      changelog_markdown: &self.changelog_markdown,
                      show_changelog_action: self.welcome_show_changelog_action,
@@ -408,7 +396,7 @@ index fc9a4553..85732946 100644
                      has_pending_update: self.pending_update_version.is_some(),
                      has_foreign_resume,
                      cwd_has_git_ancestor: self.cwd_has_git_ancestor,
-@@ -3143,8 +3298,10 @@ struct WelcomeInputCtx<'a> {
+@@ -3143,8 +3286,10 @@ struct WelcomeInputCtx<'a> {
      import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
      welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
      changelog_markdown: &'a Option<String>,
@@ -420,7 +408,7 @@ index fc9a4553..85732946 100644
      has_pending_update: bool,
      /// A recent foreign session is available to resume when no update is pending.
      has_foreign_resume: bool,
-@@ -3171,6 +3328,73 @@ struct WelcomeInputCtx<'a> {
+@@ -3171,6 +3316,73 @@ struct WelcomeInputCtx<'a> {
      #[cfg(feature = "local-workspace")]
      session_picker_open: bool,
  }
@@ -494,7 +482,7 @@ index fc9a4553..85732946 100644
  /// Welcome view input: overlays first, then composer, then the menu.
  fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
      if let Some(modal) = ctx.import_claude_modal.as_mut() {
-@@ -3750,6 +3974,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3750,6 +3962,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                  return dispatch_menu_action(
                      idx,
                      ctx.has_claude_import,
@@ -502,7 +490,7 @@ index fc9a4553..85732946 100644
                      ctx.show_changelog_action,
                      ctx.changelog_markdown.as_deref(),
                  );
-@@ -3888,6 +4113,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3888,6 +4101,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                          return dispatch_menu_action(
                              i,
                              ctx.has_claude_import,
@@ -510,7 +498,7 @@ index fc9a4553..85732946 100644
                              ctx.show_changelog_action,
                              ctx.changelog_markdown.as_deref(),
                          );
-@@ -4138,39 +4364,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
+@@ -4138,39 +4352,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
      }
  }
  /// Dispatch an action for a welcome menu item by index.
@@ -569,7 +557,7 @@ index fc9a4553..85732946 100644
      }
      if index == quit_idx {
          return InputOutcome::Action(Action::Quit);
-@@ -4477,11 +4706,39 @@ impl AppView {
+@@ -4477,11 +4694,39 @@ impl AppView {
                              } else {
                                  self.tip.as_deref()
                              };
@@ -614,7 +602,7 @@ index fc9a4553..85732946 100644
                              };
                              let hero_cta = crate::views::announcements::promo_cta(
                                  &self.active_announcements,
-@@ -4495,7 +4752,14 @@ impl AppView {
+@@ -4495,7 +4740,14 @@ impl AppView {
                                          &self.hidden_announcement_ids,
                                      )
                                  })
@@ -630,7 +618,7 @@ index fc9a4553..85732946 100644
                              let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                  prompt_focus: if self.welcome_prompt_focused {
                                      WelcomePromptFocus::Focused
-@@ -4508,6 +4772,7 @@ impl AppView {
+@@ -4508,6 +4760,7 @@ impl AppView {
                                  consent_state: &self.consent_state,
                                  consent_hover_link: self.welcome_consent_hover_link,
                                  login_label: self.login_label.as_deref(),
@@ -638,7 +626,7 @@ index fc9a4553..85732946 100644
                                  auth_code_input: self.auth_code_input.text(),
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
-@@ -4520,6 +4785,7 @@ impl AppView {
+@@ -4520,6 +4773,7 @@ impl AppView {
                                  team_name: self.team_name.as_deref(),
                                  has_access,
                                  has_claude_import: self.has_claude_import,
@@ -646,7 +634,7 @@ index fc9a4553..85732946 100644
                                  mouse_pos: self.last_mouse_pos,
                                  is_zdr_blocked: zdr_blocked_for_draw,
                                  session_picker: self.session_picker_entries.as_deref(),
-@@ -4577,6 +4843,7 @@ impl AppView {
+@@ -4577,6 +4831,7 @@ impl AppView {
                              );
                              self.welcome_menu_rects = result.menu_rects;
                              self.welcome_show_changelog_action = result.changelog_action_present;
@@ -654,7 +642,7 @@ index fc9a4553..85732946 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4824,6 +5091,25 @@ impl AppView {
+@@ -4824,6 +5079,25 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -680,7 +668,7 @@ index fc9a4553..85732946 100644
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5118,16 @@ impl AppView {
+@@ -4832,13 +5106,16 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
@@ -698,7 +686,7 @@ index fc9a4553..85732946 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5409,7 @@ impl AppView {
+@@ -5120,6 +5397,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -706,7 +694,7 @@ index fc9a4553..85732946 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5457,7 @@ impl AppView {
+@@ -5167,7 +5445,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -715,21 +703,33 @@ index fc9a4553..85732946 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5572,8 @@ impl AppView {
+@@ -5282,6 +5560,7 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
-+        needs_redraw |= self.tick_workshop_progress();
 +        needs_redraw |= self.tick_rail_install();
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5637,6 +5929,14 @@ impl AppView {
+@@ -5355,7 +5634,10 @@ impl AppView {
+             }
+             let spinner_frame_tick =
+                 agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
+-            needs_redraw |= !agent.session.state.is_idle() && spinner_frame_tick;
++            // Workshop: an Engine/Adapter turn drives the same turn-status row while the ACP
++            // session stays idle.
++            needs_redraw |= (!agent.session.state.is_idle() || agent.workshop_turn_active)
++                && spinner_frame_tick;
+             needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
+                 && spinner_frame_tick;
+             needs_redraw |= matches!(
+@@ -5637,6 +5919,15 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
-+        // Workshop: the waiting line animates while an Engine/Adapter turn has produced nothing.
-+        if self.workshop_turn_active && self.workshop_turn_progress.is_some() {
++        // Workshop: the turn-status row (spinner, timers) and the running tool row's accent
++        // animate for the whole Engine/Adapter turn, as they do for a shell turn.
++        if self.workshop_turn_active {
 +            return TickDemand::Fast;
 +        }
 +        // Workshop: an installer's one status line follows its output while it runs.
@@ -739,7 +739,7 @@ index fc9a4553..85732946 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5784,6 +6084,84 @@ impl AppView {
+@@ -5784,6 +6075,59 @@ impl AppView {
              ActiveView::Welcome => TickDemand::Slow,
          }
      }
@@ -757,18 +757,6 @@ index fc9a4553..85732946 100644
 +            .or_else(|| self.models.current_model_name())
 +            .unwrap_or_else(|| "the model".to_owned())
 +    }
-+    /// Workshop: advance the waiting line of an Engine/Adapter turn (spinner frame, elapsed
-+    /// seconds) while it has produced nothing yet. Every third tick: ~10 frames a second at 30 fps.
-+    fn tick_workshop_progress(&mut self) -> bool {
-+        if !self.workshop_turn_active || self.workshop_turn_progress.is_none() {
-+            return false;
-+        }
-+        self.workshop_progress_tick = self.workshop_progress_tick.wrapping_add(1);
-+        if !self.workshop_progress_tick.is_multiple_of(3) {
-+            return false;
-+        }
-+        self.repaint_workshop_progress()
-+    }
 +    /// Workshop: keep the picker's status line on the running installer — `Installing Claude
 +    /// Code… 12s · <its latest output line>` — until it finishes.
 +    fn tick_rail_install(&mut self) -> bool {
@@ -784,47 +772,34 @@ index fc9a4553..85732946 100644
 +            _ => false,
 +        }
 +    }
-+    /// Workshop: (re)paint the waiting line from `workshop_turn_progress` — in place when its
-+    /// scrollback entry exists, else as a new system block at the end of the transcript.
-+    pub(crate) fn repaint_workshop_progress(&mut self) -> bool {
-+        use crate::scrollback::block::RenderBlock;
-+        let (Some(agent_id), Some(text)) = (
-+            self.workshop_turn_agent,
-+            self.workshop_turn_progress.as_deref(),
-+        ) else {
-+            return false;
-+        };
-+        let elapsed = self
-+            .workshop_turn_started
-+            .map(|t| t.elapsed())
-+            .unwrap_or_default();
-+        let frame = (self.workshop_progress_tick / 3) as usize;
-+        let line = crate::app::workshop::waiting_line(text, elapsed, frame);
-+        let Some(agent) = self.agents.get_mut(&agent_id) else {
-+            return false;
-+        };
-+        if let Some(id) = self.workshop_turn_progress_entry
-+            && let Some(entry) = agent.scrollback.get_by_id_mut(id)
-+            && let RenderBlock::System(block) = &mut entry.block
++    /// Workshop: the turn-status row's activity for the running Engine/Adapter turn — the newest
++    /// tool call still running, else the wait for the model (as the ACP tracker reports the gap
++    /// before the first token and after each tool result).
++    pub(crate) fn set_workshop_turn_activity(
++        &mut self,
++        activity: crate::acp::tracker::TurnActivity,
++    ) {
++        if let Some(agent) = self
++            .workshop_turn_agent
++            .and_then(|id| self.agents.get_mut(&id))
 +        {
-+            if block.text != line {
-+                block.text = line;
-+                entry.invalidate_cache();
-+                agent.scrollback.mark_height_dirty(id);
-+            }
-+            return true;
++            agent.workshop_turn_activity = Some(activity);
 +        }
-+        if let Some(id) = self.workshop_turn_progress_entry.take() {
-+            agent.scrollback.remove_entry(id);
-+        }
-+        self.workshop_turn_progress_entry =
-+            Some(agent.scrollback.push_block(RenderBlock::system(line)));
-+        true
++    }
++    /// Workshop: the activity after a tool call started or finished.
++    pub(crate) fn sync_workshop_tool_activity(&mut self) {
++        let activity = match self.workshop_turn_running.last() {
++            Some((_, activity)) => activity.clone(),
++            None => crate::acp::tracker::TurnActivity::Waiting(
++                crate::acp::tracker::WaitingReason::Model,
++            ),
++        };
++        self.set_workshop_turn_activity(activity);
 +    }
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6183,9 @@ impl AppView {
+@@ -5805,7 +6149,9 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -836,10 +811,10 @@ index fc9a4553..85732946 100644
              } else {
                  (None, None, None, false, None, false)
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-index 483296d4..e95aa23f 100644
+index 483296d4..d0447d3e 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-@@ -169,6 +169,36 @@ pub(crate) fn test_app() -> AppView {
+@@ -169,6 +169,33 @@ pub(crate) fn test_app() -> AppView {
          auth_url_poll_handle: None,
          deferred_startup: Default::default(),
          auth_use_oauth: false,
@@ -867,16 +842,13 @@ index 483296d4..e95aa23f 100644
 +        workshop_first_launch: false,
 +        workshop_engine_slot: crate::app::workshop::new_engine_slot(),
 +        workshop_engine_warm_started: false,
-+        workshop_turn_progress_entry: None,
-+        workshop_turn_progress: None,
-+        workshop_turn_started: None,
++        workshop_turn_running: Vec::new(),
 +        workshop_turn_errored: false,
-+        workshop_progress_tick: 0,
 +        workshop_last_prompt: None,
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -210,6 +240,8 @@ pub(crate) fn test_app() -> AppView {
+@@ -210,6 +237,8 @@ pub(crate) fn test_app() -> AppView {
          welcome_menu_index: None,
          welcome_menu_rects: Vec::new(),
          welcome_show_changelog_action: false,
@@ -885,7 +857,7 @@ index 483296d4..e95aa23f 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -278,6 +310,8 @@ pub(crate) fn test_app() -> AppView {
+@@ -278,6 +307,8 @@ pub(crate) fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -894,7 +866,7 @@ index 483296d4..e95aa23f 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -616,6 +650,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
+@@ -616,6 +647,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
      );
  }
  #[test]
@@ -902,7 +874,7 @@ index 483296d4..e95aa23f 100644
  fn needs_animation_gates_prompt_history_tick_delivery() {
      let mut app = test_app_with_agent();
      let id = super::super::agent::AgentId(0);
-@@ -2268,16 +2303,26 @@ fn is_restricted_tier_classification() {
+@@ -2268,16 +2300,26 @@ fn is_restricted_tier_classification() {
      assert!(!is_restricted_tier(Some("X Premium+")));
      assert!(!is_restricted_tier(Some("SomeFutureTier")));
  }
@@ -933,7 +905,7 @@ index 483296d4..e95aa23f 100644
      let meta = xai_grok_login::AuthMeta {
          subscription_tier: Some("SuperGrok".into()),
          ..Default::default()
-@@ -3198,15 +3243,15 @@ fn welcome_ctrl_d_requires_confirmation() {
+@@ -3198,15 +3240,15 @@ fn welcome_ctrl_d_requires_confirmation() {
  #[test]
  fn menu_action_indices_without_changelog() {
      assert!(matches!(
@@ -952,7 +924,7 @@ index 483296d4..e95aa23f 100644
          InputOutcome::Action(Action::Quit)
      ));
  }
-@@ -3214,46 +3259,69 @@ fn menu_action_indices_without_changelog() {
+@@ -3214,46 +3256,69 @@ fn menu_action_indices_without_changelog() {
  fn menu_action_changelog_sits_above_quit() {
      let md = Some("# notes");
      assert!(matches!(
@@ -1260,7 +1232,7 @@ index 87f63aef..96f1e81d 100644
          let explicit = self.sandbox.as_deref().filter(|s| !s.is_empty());
          Self::resolve_startup_sandbox(explicit, saved.map(String::from))
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
-index 769d63a9..73ddc022 100644
+index 769d63a9..d9684ee0 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 @@ -10,6 +10,7 @@ use crate::app::agent_view::AgentView;
@@ -1271,7 +1243,7 @@ index 769d63a9..73ddc022 100644
  
  /// `/logout`: ask the shell to clear auth, then return to the login screen.
  pub(super) fn dispatch_logout(_app: &mut AppView) -> Vec<Effect> {
-@@ -203,22 +204,347 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
+@@ -203,22 +204,346 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
      }
  }
  
@@ -1376,10 +1348,9 @@ index 769d63a9..73ddc022 100644
 +}
 +
 +/// First run (nothing connected yet): land in the composer with the OpenCode engine's default free
-+/// model active — no picker; the event loop then installs and starts `opencode` in the background
-+/// (the vendor's installer is the only host contacted). The placeholder shell model + anonymous
-+/// session are established in-process exactly as selecting the row in `/model` would; `/model`
-+/// and `/auth` remain the only doors afterwards.
++/// model active — no picker, no network until the first message (`opencode` installs itself
++/// then). The placeholder shell model + anonymous session are established in-process exactly as
++/// selecting the row in `/model` would; `/model` and `/auth` remain the only doors afterwards.
 +pub(super) fn dispatch_workshop_first_run(app: &mut AppView) -> Vec<Effect> {
 +    app.workshop_first_launch = true;
 +    set_workshop_connection(app, crate::app::workshop::first_run_connection());
@@ -1630,7 +1601,7 @@ index 769d63a9..73ddc022 100644
          show_welcome(app);
      }
  
-@@ -240,6 +566,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
+@@ -240,6 +565,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
              method_id,
              use_oauth: app.auth_use_oauth,
              force_interactive: true,
@@ -1638,7 +1609,7 @@ index 769d63a9..73ddc022 100644
          },
          Effect::PollAuthUrl { request_seq },
      ]
-@@ -263,6 +590,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
+@@ -263,6 +589,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
      app.auth_state = AuthState::Done;
      app.auth_show_raw_url = false;
      app.auth_code_input.reset();
@@ -1647,7 +1618,7 @@ index 769d63a9..73ddc022 100644
      restore_auth_return_view(app, return_view);
      // This runs on all agents because the login may have been started from the dashboard
      // Clearing the stash alone is not enough
-@@ -314,6 +643,15 @@ pub(super) fn handle_auth_complete(
+@@ -314,6 +642,15 @@ pub(super) fn handle_auth_complete(
          app.welcome_prompt_focused = !app.is_access_blocked();
          app.auth_code_input.reset();
  
@@ -1663,7 +1634,7 @@ index 769d63a9..73ddc022 100644
          // Mid-session re-auth (`/login` or a 401 prompt): restore the view the user was on instead of running the startup load-session flow
          // The session state lives in `app.agents`, independent of `active_view`, so it is preserved across the auth detour
          if let Some(return_view) = app.auth_return_view.take() {
-@@ -327,6 +665,19 @@ pub(super) fn handle_auth_complete(
+@@ -327,6 +664,19 @@ pub(super) fn handle_auth_complete(
              // Auth is global, so handle every agent (the login may have been started from the dashboard, not the agent that 401'd)
              let mut retry_effects = Vec::new();
              let mut page_flips = Vec::new();
@@ -2617,10 +2588,10 @@ index 2049a2d9..3ec2aebf 100644
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-index bf64193d..3bcf6bff 100644
+index bf64193d..b0f8d78b 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-@@ -181,6 +181,36 @@ fn test_app() -> AppView {
+@@ -181,6 +181,33 @@ fn test_app() -> AppView {
          auth_url_poll_handle: None,
          deferred_startup: Default::default(),
          auth_use_oauth: false,
@@ -2648,16 +2619,13 @@ index bf64193d..3bcf6bff 100644
 +        workshop_first_launch: false,
 +        workshop_engine_slot: crate::app::workshop::new_engine_slot(),
 +        workshop_engine_warm_started: false,
-+        workshop_turn_progress_entry: None,
-+        workshop_turn_progress: None,
-+        workshop_turn_started: None,
++        workshop_turn_running: Vec::new(),
 +        workshop_turn_errored: false,
-+        workshop_progress_tick: 0,
 +        workshop_last_prompt: None,
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -222,6 +252,8 @@ fn test_app() -> AppView {
+@@ -222,6 +249,8 @@ fn test_app() -> AppView {
          welcome_menu_index: None,
          welcome_menu_rects: Vec::new(),
          welcome_show_changelog_action: false,
@@ -2666,7 +2634,7 @@ index bf64193d..3bcf6bff 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -289,6 +321,8 @@ fn test_app() -> AppView {
+@@ -289,6 +318,8 @@ fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -2675,7 +2643,7 @@ index bf64193d..3bcf6bff 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -585,6 +619,25 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
+@@ -585,6 +616,25 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
      std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
      sess_dir
  }
@@ -3008,7 +2976,7 @@ index 1c507697..3f753808 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..d2dd1ecb 100644
+index eda61b3c..fb78aa9a 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -3130,36 +3098,7 @@ index eda61b3c..d2dd1ecb 100644
  ) -> anyhow::Result<RunResult> {
      crate::unified_log::init(connection.tx.clone());
      crate::unified_log::info("pager started", None, None);
-@@ -1075,7 +1137,7 @@ pub(crate) async fn run(
-     let remote_permission_mode = remote_settings
-         .as_ref()
-         .and_then(|s| s.permission_mode.as_deref());
--    let launch_yolo = xai_grok_shell::util::config::effective_yolo_for_launch(
-+    let mut launch_yolo = xai_grok_shell::util::config::effective_yolo_for_launch(
-         args.yolo,
-         args.permission_mode_flag.as_deref(),
-         remote_permission_mode,
-@@ -1103,6 +1165,19 @@ pub(crate) async fn run(
-         .and_then(xai_grok_shell::util::config::permission_mode_from_ui_if_set)
-         .is_some();
-     app.permission_mode_from_soft_default = !cli_owns_mode && !toml_owns_mode;
-+    // Workshop: nothing chose a mode (no CLI flag, no `[ui]` permission key, no remote setting),
-+    // so the launch is always-approve. Plan and the asking mode stay one Shift+Tab away, and that
-+    // pick persists as an explicit `[ui] permission_mode`, which wins on every later launch. A
-+    // managed policy that pins bypass off still wins here too (the launch stays in the asking
-+    // mode, as upstream).
-+    if app.permission_mode_from_soft_default
-+        && remote_permission_mode.is_none()
-+        && !launch_auto
-+        && launch_yolo.policy_block.is_none()
-+    {
-+        launch_yolo.yolo = true;
-+        app.default_yolo = true;
-+    }
-     app.yolo_policy_block = launch_yolo.policy_block;
-     if let Some(warning) = launch_yolo.blocked_warning {
-         tracing::warn!("{warning}");
-@@ -1271,19 +1346,35 @@ pub(crate) async fn run(
+@@ -1271,19 +1333,35 @@ pub(crate) async fn run(
              "auto-triggering login at startup"
          );
      }
@@ -3202,7 +3141,7 @@ index eda61b3c..d2dd1ecb 100644
      };
      app.has_external_auth_provider =
          crate::slash::commands::usage::detect_external_auth_provider(&app.auth_methods);
-@@ -1632,6 +1723,15 @@ pub(crate) async fn run(
+@@ -1632,6 +1710,12 @@ pub(crate) async fn run(
      let (progress_tx, mut progress_rx) =
          tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
      let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
@@ -3212,13 +3151,10 @@ index eda61b3c..d2dd1ecb 100644
 +    let (workshop_turn_tx, mut workshop_turn_rx) =
 +        tokio::sync::mpsc::unbounded_channel::<crate::app::workshop::WorkshopTurnMsg>();
 +    app.workshop_turn_tx = Some(workshop_turn_tx);
-+    // Workshop: with an engine model active (a first run, or a home that last used one), the
-+    // engine starts now, in the background, so the first message finds it ready.
-+    maybe_warm_engine_at_launch(&mut app);
      let voice_auth_factory = connection.auth_manager.clone();
      let mut tick_interval = tick_interval;
      let mut animation_tick_at: Option<Instant> = None;
-@@ -1759,6 +1859,16 @@ pub(crate) async fn run(
+@@ -1759,6 +1843,16 @@ pub(crate) async fn run(
                  git_ref: args.worktree_ref.clone(),
              })
          }
@@ -3235,7 +3171,7 @@ index eda61b3c..d2dd1ecb 100644
          MaterializedStartup::NewAuto => None,
      };
      if let Some(action) = startup_action {
-@@ -1892,7 +2002,7 @@ pub(crate) async fn run(
+@@ -1892,7 +1986,7 @@ pub(crate) async fn run(
          if process_effects(workspace_effects, &mut tasks, &mut app, &progress_tx) {
              break;
          }
@@ -3244,7 +3180,7 @@ index eda61b3c..d2dd1ecb 100644
              &mut app,
              terminal,
              &input_paused,
-@@ -1902,9 +2012,16 @@ pub(crate) async fn run(
+@@ -1902,9 +1996,16 @@ pub(crate) async fn run(
              &mut suspend_retry_after,
              &mut suspend_wait_reports,
          ) {
@@ -3264,7 +3200,7 @@ index eda61b3c..d2dd1ecb 100644
          }
          if run_pending_mode_switch(
              &mut app,
-@@ -2314,6 +2431,7 @@ pub(crate) async fn run(
+@@ -2314,6 +2415,7 @@ pub(crate) async fn run(
              maybe_ev = input_rx.recv() => {
                  // `None` means the dedicated terminal reader thread has ended.
                  let Some(ev) = maybe_ev else { break };
@@ -3272,7 +3208,7 @@ index eda61b3c..d2dd1ecb 100644
                  let handled_at = std::time::Instant::now();
                  let waited =
                      super::event_loop_stall::input_wait(ev.arrived_at, handled_at, loop_entry);
-@@ -2331,6 +2449,9 @@ pub(crate) async fn run(
+@@ -2331,6 +2433,9 @@ pub(crate) async fn run(
                  if result.should_quit {
                      break;
                  }
@@ -3282,7 +3218,7 @@ index eda61b3c..d2dd1ecb 100644
                  if !app.pending_effects.is_empty() {
                      let effs = std::mem::take(&mut app.pending_effects);
                      if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
-@@ -2885,6 +3006,23 @@ pub(crate) async fn run(
+@@ -2885,6 +2990,23 @@ pub(crate) async fn run(
                  presenter.request(false);
              }
  
@@ -3306,7 +3242,7 @@ index eda61b3c..d2dd1ecb 100644
              // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
              // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
              // Voice is only serviced when nothing else is pending
-@@ -3096,6 +3234,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3096,6 +3218,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
      app.abandon_startup();
      let exit_info = app.active_agent().and_then(|agent| {
          let sid = agent.session.session_id.as_ref()?;
@@ -3316,7 +3252,7 @@ index eda61b3c..d2dd1ecb 100644
          let summary = if app.screen_mode.is_fullscreen() {
              use crate::views::session_title;
              let last_prompt = session_title::last_user_prompt_line(agent);
-@@ -3109,7 +3250,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3109,7 +3234,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
              None
          };
          Some(super::ExitInfo {
@@ -3325,7 +3261,7 @@ index eda61b3c..d2dd1ecb 100644
              minimal: app.screen_mode.is_minimal(),
              summary,
          })
-@@ -3143,7 +3284,9 @@ struct RoutedInputEvent {
+@@ -3143,7 +3268,9 @@ struct RoutedInputEvent {
      is_startup_replay: bool,
  }
  fn tty_suspend_armed(app: &AppView) -> bool {
@@ -3336,7 +3272,7 @@ index eda61b3c..d2dd1ecb 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4077,453 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4061,429 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -3351,6 +3287,7 @@ index eda61b3c..d2dd1ecb 100644
 +) -> (bool, Vec<super::actions::Effect>) {
 +    use crate::app::workshop::WorkshopTurnMsg as M;
 +    use crate::scrollback::block::RenderBlock;
++    use crate::scrollback::blocks::SessionEvent;
 +
 +    // The engine warm-up reports before any turn (and any agent) exists.
 +    if let M::EngineWarm { engine } = msg {
@@ -3360,16 +3297,6 @@ index eda61b3c..d2dd1ecb 100644
 +    let Some(agent_id) = app.workshop_turn_agent else {
 +        return (false, vec![]);
 +    };
-+    // The waiting line stays under the latest block for the whole turn (a new block lifts it and
-+    // puts it back underneath); a failure or the end of the turn removes it, and an approval
-+    // prompt hides it while the user is the one being waited for.
-+    if matches!(
-+        msg,
-+        M::Error(_) | M::EngineUnavailable { .. } | M::Done { .. }
-+    ) {
-+        app.workshop_turn_progress = None;
-+        lift_workshop_progress(app, agent_id);
-+    }
 +    if matches!(msg, M::Error(_) | M::EngineUnavailable { .. }) {
 +        app.workshop_turn_errored = true;
 +    }
@@ -3400,10 +3327,24 @@ index eda61b3c..d2dd1ecb 100644
 +    let redraw = match msg {
 +        M::EngineWarm { .. } => false,
 +        M::Progress(text) => {
-+            // One animated line, repainted in place by `AppView::tick` (spinner, elapsed
-+            // seconds, the cancel hint) until the first real output replaces it.
-+            app.workshop_turn_progress = Some(text);
-+            app.repaint_workshop_progress()
++            // The bring-up's phase for the turn-status row: the plain wait for the model, or the
++            // first-time download as a described step (`First-time setup, 12 MB downloaded…`,
++            // one phase whose byte count refines its description). A tool call underway keeps
++            // its own activity.
++            if app.workshop_turn_running.is_empty() {
++                let activity = if text == crate::app::workshop::THINKING {
++                    crate::acp::tracker::TurnActivity::Waiting(
++                        crate::acp::tracker::WaitingReason::Model,
++                    )
++                } else {
++                    crate::acp::tracker::TurnActivity::ToolRunning {
++                        title: crate::app::workshop::FIRST_TIME_SETUP.to_owned(),
++                        description: Some(text),
++                    }
++                };
++                app.set_workshop_turn_activity(activity);
++            }
++            true
 +        }
 +        // A model the user picked in /model is kept; only a connection still on the default follows it.
 +        M::EngineDefaultResolved { .. }
@@ -3448,25 +3389,22 @@ index eda61b3c..d2dd1ecb 100644
 +                return (false, vec![]);
 +            }
 +            crate::app::workshop_sessions::record_text(&mut app.workshop_turn_record, &text);
-+            match app.workshop_turn_stream_entry {
-+                Some(id) => {
-+                    if let Some(agent) = app.agents.get_mut(&agent_id) {
++            let entry = app.workshop_turn_stream_entry;
++            if let Some(agent) = app.agents.get_mut(&agent_id) {
++                match entry {
++                    Some(id) => {
 +                        agent.scrollback.push_chunk_to_agent(id, &text);
 +                    }
-+                }
-+                None => {
-+                    // A new paragraph lands above the waiting line, which moves back underneath.
-+                    lift_workshop_progress(app, agent_id);
-+                    if let Some(agent) = app.agents.get_mut(&agent_id) {
++                    None => {
 +                        let id = agent
 +                            .scrollback
 +                            .push_block(RenderBlock::agent_message_streaming());
 +                        agent.scrollback.push_chunk_to_agent(id, &text);
 +                        app.workshop_turn_stream_entry = Some(id);
 +                    }
-+                    app.repaint_workshop_progress();
 +                }
 +            }
++            app.set_workshop_turn_activity(crate::acp::tracker::TurnActivity::Responding);
 +            true
 +        }
 +        M::Thinking(text) => {
@@ -3476,10 +3414,6 @@ index eda61b3c..d2dd1ecb 100644
 +                && let Some(agent) = app.agents.get_mut(&agent_id)
 +            {
 +                agent.scrollback.finish_running(id);
-+            }
-+            let opens_block = app.workshop_turn_thinking_entry.is_none();
-+            if opens_block {
-+                lift_workshop_progress(app, agent_id);
 +            }
 +            if let Some(agent) = app.agents.get_mut(&agent_id) {
 +                let id = match app.workshop_turn_thinking_entry {
@@ -3495,9 +3429,7 @@ index eda61b3c..d2dd1ecb 100644
 +                };
 +                agent.scrollback.push_chunk_to_thinking(id, &text);
 +            }
-+            if opens_block {
-+                app.repaint_workshop_progress();
-+            }
++            app.set_workshop_turn_activity(crate::acp::tracker::TurnActivity::Thinking);
 +            true
 +        }
 +        M::Tool { id, name, input } => {
@@ -3507,16 +3439,19 @@ index eda61b3c..d2dd1ecb 100644
 +            {
 +                agent.scrollback.finish_running(id);
 +            }
-+            lift_workshop_progress(app, agent_id);
++            // The turn-status row reads `Run <command>` with the call's own timer while it runs,
++            // as it does for a shell turn's tool, so a long command never looks frozen.
++            let activity = crate::app::workshop_tools::turn_activity(&name, &input);
 +            if let Some(agent) = app.agents.get_mut(&agent_id) {
 +                let entry = agent
 +                    .scrollback
 +                    .push_block(crate::app::workshop_tools::running_row(&name, &input));
 +                agent.scrollback.set_entry_running(entry, true);
-+                app.workshop_turn_tools.insert(id, entry);
++                app.workshop_turn_tools.insert(id.clone(), entry);
 +                app.workshop_turn_tool_inputs.insert(entry, (name, input));
 +            }
-+            app.repaint_workshop_progress();
++            app.workshop_turn_running.push((id, activity));
++            app.sync_workshop_tool_activity();
 +            true
 +        }
 +        M::ToolResult {
@@ -3528,6 +3463,9 @@ index eda61b3c..d2dd1ecb 100644
 +        } => {
 +            // The result lands on the row that announced the call: the row becomes the pager's
 +            // Edit block with the diff, or Run block with output + exit code, and stops running.
++            // The status row goes back to the wait for the model (or the newest call still running).
++            app.workshop_turn_running.retain(|(call, _)| call != &id);
++            app.sync_workshop_tool_activity();
 +            let Some(entry) = app.workshop_turn_tools.remove(&id) else {
 +                return (false, vec![]);
 +            };
@@ -3595,10 +3533,6 @@ index eda61b3c..d2dd1ecb 100644
 +            }
 +            let ui_tx = app.workshop_turn_tx.clone();
 +            crate::app::workshop_permissions::enqueue_engine_permission(agent, request, reply, ui_tx);
-+            // The user is the one being waited for: no waiting line under the question. The
-+            // tool that follows the answer brings it back.
-+            app.workshop_turn_progress = None;
-+            lift_workshop_progress(app, agent_id);
 +            true
 +        }
 +        M::PermissionDecided { call_id, decision } => {
@@ -3683,19 +3617,23 @@ index eda61b3c..d2dd1ecb 100644
 +                app.workshop_turn_tool_inputs.clear();
 +                app.workshop_turn_decided_calls.clear();
 +                dispatch::drain_workshop_permission_queue(agent);
++                // The turn ends the way a shell turn does: the pager's own marker (`Worked for
++                // 2m31s`, `Turn cancelled by user in 10s.`); a failed turn already showed its
++                // red failure line.
++                let elapsed = agent.workshop_turn_started_at.map(|t| t.elapsed());
++                agent.workshop_turn_activity = None;
++                agent.workshop_turn_started_at = None;
++                agent.workshop_turn_cancelling = false;
 +                if cancelled {
-+                    agent
-+                        .scrollback
-+                        .push_block(RenderBlock::system("Turn cancelled."));
++                    agent.scrollback.push_block(RenderBlock::session_event(
++                        SessionEvent::TurnCancelled {
++                            elapsed,
++                            cause: crate::scrollback::blocks::CancelledBy::User,
++                        },
++                    ));
 +                } else if !app.workshop_turn_errored {
-+                    // The quiet end: one dim line with how long the turn took, under the last
-+                    // thing the model did (the composer placeholder returns with it).
-+                    let elapsed = app
-+                        .workshop_turn_started
-+                        .map(|t| t.elapsed())
-+                        .unwrap_or_default();
-+                    agent.scrollback.push_block(RenderBlock::system(
-+                        crate::app::workshop::done_line(elapsed),
++                    agent.scrollback.push_block(RenderBlock::session_event(
++                        SessionEvent::TurnCompleted { elapsed },
 +                    ));
 +                }
 +            }
@@ -3703,7 +3641,7 @@ index eda61b3c..d2dd1ecb 100644
 +            app.workshop_turn_cancel = None;
 +            app.workshop_turn_agent = None;
 +            app.workshop_turn_prompt_entry = None;
-+            app.workshop_turn_started = None;
++            app.workshop_turn_running.clear();
 +            // Prompts typed during the turn go out now, one turn each, oldest first. A cancel
 +            // drops them: the user stopped the conversation, not just this answer.
 +            if cancelled {
@@ -3719,16 +3657,6 @@ index eda61b3c..d2dd1ecb 100644
 +    (redraw, vec![])
 +}
 +
-+/// Workshop: take the waiting line off the transcript so the block pushed next lands above it;
-+/// `AppView::repaint_workshop_progress` puts it back underneath.
-+fn lift_workshop_progress(app: &mut AppView, agent_id: crate::app::agent::AgentId) {
-+    if let Some(id) = app.workshop_turn_progress_entry.take()
-+        && let Some(agent) = app.agents.get_mut(&agent_id)
-+    {
-+        agent.scrollback.remove_entry(id);
-+    }
-+}
-+
 +/// A plain character key press (not a Ctrl/Alt chord, not a release).
 +fn typed_character(event: &Event) -> bool {
 +    let Event::Key(key) = event else { return false };
@@ -3739,20 +3667,10 @@ index eda61b3c..d2dd1ecb 100644
 +            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
 +}
 +
-+/// Workshop: the OpenCode engine is brought up (installed on a first run, then `opencode serve`)
-+/// in the background the moment the composer opens with an engine model active, so it is ready
-+/// by the time the first message is sent. Nothing is drawn and nothing waits: the composer is live
-+/// while the engine starts, and a message sent before it is ready joins the same start. Only the
-+/// vendor's installer and the loopback server are contacted — never a model host.
-+fn maybe_warm_engine_at_launch(app: &mut AppView) {
-+    if !app.workshop_connection.is_engine() {
-+        return;
-+    }
-+    spawn_engine_warm_up(app);
-+}
-+
-+/// Workshop: the engine model was picked after launch (`/model` on a home that opened on another
-+/// connection) — the first typed *message* character brings the engine up, never a slash command.
++/// Workshop: the OpenCode engine is brought up (installed on first run, `opencode serve`) the
++/// moment the user starts typing a *message*, never on launch and never for a slash command —
++/// a fresh home that is opened, browsed with `/model` and `/auth`, and quit makes no network call
++/// and gains no `tools/` directory, while a typed first message only waits for the model.
 +fn maybe_warm_engine_on_first_message_keystroke(app: &mut AppView) {
 +    if app.workshop_engine_warm_started || !app.workshop_connection.is_engine() {
 +        return;
@@ -3769,15 +3687,9 @@ index eda61b3c..d2dd1ecb 100644
 +    if text.is_empty() || text.starts_with('/') {
 +        return;
 +    }
-+    spawn_engine_warm_up(app);
-+}
-+
-+/// One warm-up per process: `warm_engine` on the shared engine slot, quiet (no progress lines).
-+fn spawn_engine_warm_up(app: &mut AppView) {
-+    if app.workshop_engine_warm_started {
++    let Some(tx) = app.workshop_turn_tx.clone() else {
 +        return;
-+    }
-+    let Some(tx) = app.workshop_turn_tx.clone() else { return };
++    };
 +    app.workshop_engine_warm_started = true;
 +    let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 +    tokio::spawn(crate::app::workshop::warm_engine(
@@ -3967,10 +3879,10 @@ index 60fe34f9..e7eec7b0 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..dbe3e44a
+index 00000000..6ed62461
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1911 @@
+@@ -0,0 +1,1877 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -4636,9 +4548,9 @@ index 00000000..dbe3e44a
 +/// loop's Workshop `select!` arm (kept UI-agnostic so `workshop-adapters` never depends on the pager).
 +#[derive(Debug)]
 +pub enum WorkshopTurnMsg {
-+    /// One line of waiting status (`Thinking…`, or the first-time download progress); replaces the
-+    /// previous progress line, and the first real event clears it. Never silent while the user
-+    /// waits, and never a word about what runs underneath.
++    /// The bring-up's phase for the pager's turn-status row: [`THINKING`] for the plain wait for
++    /// the model, or the first-time download progress ([`install_progress_line`]). Never a word
++    /// about what runs underneath.
 +    Progress(String),
 +    /// The OpenCode engine started (lazily, on the first turn); cache it and the session so later
 +    /// turns reuse the same `opencode serve` and conversation. Engine turns only.
@@ -4646,8 +4558,10 @@ index 00000000..dbe3e44a
 +        engine: Arc<OpenCodeEngine>,
 +        session: String,
 +    },
-+    /// The launch warm-up finished: the engine is up before the first message.
-+    EngineWarm { engine: Arc<OpenCodeEngine> },
++    /// The first-keystroke warm-up finished: the engine is up before the first message.
++    EngineWarm {
++        engine: Arc<OpenCodeEngine>,
++    },
 +    /// The engine's live catalog names a different default than the pinned seed the first run
 +    /// activated: the connection follows OpenCode's default (composer label, persisted file).
 +    EngineDefaultResolved {
@@ -4720,7 +4634,7 @@ index 00000000..dbe3e44a
 +    Other(String),
 +}
 +
-+/// The one `opencode serve` this process owns, shared by the launch warm-up and every
++/// The one `opencode serve` this process owns, shared by the first-keystroke warm-up and every
 +/// turn so two callers never start two servers: whoever holds the lock starts it, the other
 +/// reuses it. `phase` carries the live bring-up status so a turn that waits on the lock can show
 +/// what the other task is doing ("Installing…") instead of a generic line.
@@ -4771,53 +4685,18 @@ index 00000000..dbe3e44a
 +pub const FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 +/// Hard ceiling on `opencode serve` binding its port and passing its health check.
 +pub const ENGINE_START_TIMEOUT: Duration = Duration::from_secs(30);
-+/// The one thing the user sees while nothing has come back yet — whatever is happening behind it
-+/// (installing, starting, connecting, waiting for the model). No plumbing words, ever.
++/// The bring-up's "nothing to add" progress: the turn-status row shows the pager's own wait for
++/// the model (`Waiting for response…`) — whatever happens behind it (installing, starting,
++/// connecting). No plumbing words, ever.
 +pub const THINKING: &str = "Thinking\u{2026}";
-+/// The waiting line shows its elapsed seconds only once the wait is long enough to feel like one.
-+pub const ELAPSED_AFTER: Duration = Duration::from_secs(3);
-+/// Frames of the animated mark in front of the waiting line.
-+pub const WAIT_SPINNER: [char; 10] = [
-+    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
-+    '\u{2807}', '\u{280F}',
-+];
++/// The one described step of a first run, for the turn-status row (`First-time setup, 12 MB
++/// downloaded…` with its own timer): the row's phase identity while the byte count refines it.
++pub const FIRST_TIME_SETUP: &str = "first-time setup";
 +
-+/// The one line a user sees while a turn has produced nothing yet: an animated mark, the phase
-+/// ("Installing…", "Waiting for Big Pickle…"), the elapsed seconds after [`ELAPSED_AFTER`], and
-+/// how to stop waiting. Repainted every tick by the UI so the mark moves and the seconds count.
-+pub fn waiting_line(text: &str, elapsed: Duration, frame: usize) -> String {
-+    let mark = WAIT_SPINNER
-+        .get(frame % WAIT_SPINNER.len())
-+        .copied()
-+        .unwrap_or(' ');
-+    let mut line = format!("{mark} {text}");
-+    if elapsed >= ELAPSED_AFTER {
-+        line.push_str(&format!(" \u{b7} {}s", elapsed.as_secs()));
-+    }
-+    line.push_str(" \u{b7} Ctrl+C to cancel");
-+    line
-+}
-+
-+/// The quiet end of a turn, under the last thing the model did: how long the whole turn took.
-+pub fn done_line(elapsed: Duration) -> String {
-+    let secs = elapsed.as_secs();
-+    let took = if secs == 0 {
-+        "<1s".to_owned()
-+    } else if secs < 60 {
-+        format!("{secs}s")
-+    } else {
-+        format!("{}m {:02}s", secs / 60, secs % 60)
-+    };
-+    format!("Done \u{b7} {took}")
-+}
-+
-+/// The first-run download, once the vendor script has started writing: still `Thinking…`, with
-+/// the honest byte count so a minute-long first message never looks hung.
++/// The first-run download, once the vendor script has started writing: the honest byte count so a
++/// minute-long first message never looks hung (the status row adds the spinner and the seconds).
 +pub fn install_progress_line(bytes: u64) -> String {
-+    format!(
-+        "{THINKING} \u{b7} first-time setup, {} downloaded",
-+        format_bytes(bytes)
-+    )
++    format!("First-time setup, {} downloaded", format_bytes(bytes))
 +}
 +
 +/// The one failure line a user sees when a model could not be reached or did not answer (after
@@ -5226,11 +5105,10 @@ index 00000000..dbe3e44a
 +    }
 +}
 +
-+/// Warm-up in the background as soon as the composer opens with an engine model active (or, if
-+/// the engine model is picked later, on the first typed character): install (first run) and
-+/// start `opencode serve` while the user is still reading or typing, so the first message only
-+/// waits for the model. Also resolves OpenCode's live default model. Failures are recorded for
-+/// `workshop doctor` and surface on the first real turn, which reports the cause and falls back.
++/// Warm-up on the user's first typed character (never on launch): install (first run) and start
++/// `opencode serve` while the user is still typing, so the first message only waits for the
++/// model. Also resolves OpenCode's live default model. Failures are recorded for `workshop
++/// doctor` and surface on the first real turn, which reports the cause and falls back.
 +pub async fn warm_engine(
 +    slot: EngineSlot,
 +    workspace: PathBuf,

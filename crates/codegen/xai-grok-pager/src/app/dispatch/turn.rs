@@ -61,6 +61,13 @@ pub(super) fn dispatch_cancel_turn(app: &mut AppView) -> Vec<Effect> {
         if let Some(cancel) = &app.workshop_turn_cancel {
             let _ = cancel.send(true);
         }
+        // The turn-status row reads `Cancelling…` until the turn reports its end.
+        if let Some(agent) = app
+            .workshop_turn_agent
+            .and_then(|id| app.agents.get_mut(&id))
+        {
+            agent.workshop_turn_cancelling = true;
+        }
         return vec![];
     }
     let ActiveView::Agent(id) = app.active_view else {

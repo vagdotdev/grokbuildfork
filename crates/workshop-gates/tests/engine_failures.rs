@@ -133,7 +133,7 @@ fn serve_that_exits_at_once_ends_in_one_plain_line_within_seconds() {
     assert!(took < Duration::from_secs(20), "reported in {took:?}");
     assert_cause_recorded(&j, &["exited during startup", "libfake.dylib"]);
     assert!(
-        !j.h.screen_contents().contains("Thinking"),
+        !j.h.screen_contents().contains(WAITING_ROW),
         "the waiting line is gone once the turn ends:\n{}",
         j.h.screen_contents()
     );
@@ -141,14 +141,14 @@ fn serve_that_exits_at_once_ends_in_one_plain_line_within_seconds() {
 
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); run with --include-ignored"]
-fn serve_that_never_binds_hits_the_30s_ceiling_behind_one_thinking_line() {
+fn serve_that_never_binds_hits_the_30s_ceiling_behind_the_status_row() {
     let Some(bin) = bin_from_env() else { return };
     let fake = fake_opencode("nobind");
     let (mut j, _api) = spawn_with_refusing_fallback("engine-nobind", &bin, fake.path());
     connect_big_pickle(&mut j);
     send_prompt(&mut j, "hello");
     // One calm line while the server "starts"; no phase names.
-    wait_for(&mut j.h, "Thinking", 10);
+    wait_for(&mut j.h, WAITING_ROW, 10);
     assert_no_plumbing(&j.h, "status line");
     snapshot(&j.h, &j.dir, "status-line");
     let (line, _) = wait_for_failure_line(&mut j, 60);
@@ -165,7 +165,7 @@ fn ctrl_c_cancels_while_the_engine_is_still_starting() {
     let mut j = spawn("engine-cancel", &bin, &[], Some(fake.path()));
     connect_big_pickle(&mut j);
     send_prompt(&mut j, "hello");
-    wait_for(&mut j.h, "Thinking", 10);
+    wait_for(&mut j.h, WAITING_ROW, 10);
     // Ctrl+C is a two-step gesture from the composer: arm, then cancel.
     j.h.inject_keys(b"\x03").unwrap();
     j.h.update(Duration::from_millis(300));
@@ -174,7 +174,7 @@ fn ctrl_c_cancels_while_the_engine_is_still_starting() {
     snapshot(&j.h, &j.dir, "cancelled");
     // The lock is released: a new message starts a new attempt instead of "already running".
     send_prompt(&mut j, "again");
-    wait_for(&mut j.h, "Thinking", 10);
+    wait_for(&mut j.h, WAITING_ROW, 10);
     assert!(
         !j.h.screen_contents()
             .contains("Still working on your last message")
@@ -228,7 +228,7 @@ fn healthy_serve_with_a_silent_model_hits_the_90s_first_event_ceiling() {
     let (mut j, _api) = spawn_with_refusing_fallback("engine-silent", &bin, fake.path());
     connect_big_pickle(&mut j);
     send_prompt(&mut j, "hello");
-    wait_for(&mut j.h, "Thinking", 40);
+    wait_for(&mut j.h, WAITING_ROW, 40);
     assert_no_plumbing(&j.h, "waiting line");
     snapshot(&j.h, &j.dir, "waiting-line");
     // The model was up and silent for the whole ceiling: it cannot answer, so the fallback is

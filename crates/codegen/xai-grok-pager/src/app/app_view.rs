@@ -1041,20 +1041,12 @@ pub struct AppView {
     /// active, else on the first typed character after one is picked).
     pub workshop_engine_warm_started: bool,
     pub workshop_engine_session: Option<String>,
-    /// The waiting line (`Thinking…`) of the current turn: kept under the latest block for the
-    /// whole turn (each new block lifts it and puts it back underneath), removed when the turn
-    /// fails or ends.
-    pub workshop_turn_progress_entry: Option<crate::scrollback::EntryId>,
-    /// The phase text behind `workshop_turn_progress_entry` (`Thinking…`, or the first-time
-    /// download progress); the entry is repainted every few ticks with the spinner frame and the
-    /// elapsed seconds.
-    pub workshop_turn_progress: Option<String>,
-    /// When the current Workshop turn was submitted (the waiting line's elapsed clock).
-    pub workshop_turn_started: Option<Instant>,
-    /// The current Workshop turn has shown a failure line: its end gets no `Done · Ns`.
+    /// Tool calls of the current Workshop turn still running, oldest first, as `(call id,
+    /// activity)`: the turn-status row shows the newest one until it finishes, then the wait for
+    /// the model again.
+    pub workshop_turn_running: Vec<(String, crate::acp::tracker::TurnActivity)>,
+    /// The current Workshop turn has shown a failure line: its end gets no `Worked for …` marker.
     pub workshop_turn_errored: bool,
-    /// Tick counter driving the waiting line's spinner.
-    pub workshop_progress_tick: u64,
     /// Workshop: the prompt of the last Engine/Adapter turn, kept so Enter on an empty composer
     /// can retry it after a failure.
     pub workshop_last_prompt: Option<String>,
@@ -1655,11 +1647,8 @@ impl AppView {
             workshop_engine_slot: crate::app::workshop::new_engine_slot(),
             workshop_engine_warm_started: false,
             workshop_engine_session: None,
-            workshop_turn_progress_entry: None,
-            workshop_turn_progress: None,
-            workshop_turn_started: None,
+            workshop_turn_running: Vec::new(),
             workshop_turn_errored: false,
-            workshop_progress_tick: 0,
             workshop_last_prompt: None,
             workshop_turn_active: false,
             workshop_turn_tx: None,
@@ -5572,7 +5561,6 @@ impl AppView {
         let mut needs_redraw = false;
         needs_redraw |= self.minimal_state.transcript.is_some();
         needs_redraw |= self.poll_clipboard_focus_tip();
-        needs_redraw |= self.tick_workshop_progress();
         needs_redraw |= self.tick_rail_install();
         if matches!(self.active_view, ActiveView::Welcome) {
             self.welcome_tick = self.welcome_tick.wrapping_add(1);
@@ -5647,7 +5635,10 @@ impl AppView {
             }
             let spinner_frame_tick =
                 agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
-            needs_redraw |= !agent.session.state.is_idle() && spinner_frame_tick;
+            // Workshop: an Engine/Adapter turn drives the same turn-status row while the ACP
+            // session stays idle.
+            needs_redraw |= (!agent.session.state.is_idle() || agent.workshop_turn_active)
+                && spinner_frame_tick;
             needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
                 && spinner_frame_tick;
             needs_redraw |= matches!(
@@ -5929,8 +5920,9 @@ impl AppView {
         if self.pending_action.is_some() {
             return TickDemand::Fast;
         }
-        // Workshop: the waiting line animates while an Engine/Adapter turn has produced nothing.
-        if self.workshop_turn_active && self.workshop_turn_progress.is_some() {
+        // Workshop: the turn-status row (spinner, timers) and the running tool row's accent
+        // animate for the whole Engine/Adapter turn, as they do for a shell turn.
+        if self.workshop_turn_active {
             return TickDemand::Fast;
         }
         // Workshop: an installer's one status line follows its output while it runs.
@@ -6098,18 +6090,6 @@ impl AppView {
             .or_else(|| self.models.current_model_name())
             .unwrap_or_else(|| "the model".to_owned())
     }
-    /// Workshop: advance the waiting line of an Engine/Adapter turn (spinner frame, elapsed
-    /// seconds) while it has produced nothing yet. Every third tick: ~10 frames a second at 30 fps.
-    fn tick_workshop_progress(&mut self) -> bool {
-        if !self.workshop_turn_active || self.workshop_turn_progress.is_none() {
-            return false;
-        }
-        self.workshop_progress_tick = self.workshop_progress_tick.wrapping_add(1);
-        if !self.workshop_progress_tick.is_multiple_of(3) {
-            return false;
-        }
-        self.repaint_workshop_progress()
-    }
     /// Workshop: keep the picker's status line on the running installer — `Installing Claude
     /// Code… 12s · <its latest output line>` — until it finishes.
     fn tick_rail_install(&mut self) -> bool {
@@ -6125,42 +6105,29 @@ impl AppView {
             _ => false,
         }
     }
-    /// Workshop: (re)paint the waiting line from `workshop_turn_progress` — in place when its
-    /// scrollback entry exists, else as a new system block at the end of the transcript.
-    pub(crate) fn repaint_workshop_progress(&mut self) -> bool {
-        use crate::scrollback::block::RenderBlock;
-        let (Some(agent_id), Some(text)) = (
-            self.workshop_turn_agent,
-            self.workshop_turn_progress.as_deref(),
-        ) else {
-            return false;
-        };
-        let elapsed = self
-            .workshop_turn_started
-            .map(|t| t.elapsed())
-            .unwrap_or_default();
-        let frame = (self.workshop_progress_tick / 3) as usize;
-        let line = crate::app::workshop::waiting_line(text, elapsed, frame);
-        let Some(agent) = self.agents.get_mut(&agent_id) else {
-            return false;
-        };
-        if let Some(id) = self.workshop_turn_progress_entry
-            && let Some(entry) = agent.scrollback.get_by_id_mut(id)
-            && let RenderBlock::System(block) = &mut entry.block
+    /// Workshop: the turn-status row's activity for the running Engine/Adapter turn — the newest
+    /// tool call still running, else the wait for the model (as the ACP tracker reports the gap
+    /// before the first token and after each tool result).
+    pub(crate) fn set_workshop_turn_activity(
+        &mut self,
+        activity: crate::acp::tracker::TurnActivity,
+    ) {
+        if let Some(agent) = self
+            .workshop_turn_agent
+            .and_then(|id| self.agents.get_mut(&id))
         {
-            if block.text != line {
-                block.text = line;
-                entry.invalidate_cache();
-                agent.scrollback.mark_height_dirty(id);
-            }
-            return true;
+            agent.workshop_turn_activity = Some(activity);
         }
-        if let Some(id) = self.workshop_turn_progress_entry.take() {
-            agent.scrollback.remove_entry(id);
-        }
-        self.workshop_turn_progress_entry =
-            Some(agent.scrollback.push_block(RenderBlock::system(line)));
-        true
+    }
+    /// Workshop: the activity after a tool call started or finished.
+    pub(crate) fn sync_workshop_tool_activity(&mut self) {
+        let activity = match self.workshop_turn_running.last() {
+            Some((_, activity)) => activity.clone(),
+            None => crate::acp::tracker::TurnActivity::Waiting(
+                crate::acp::tracker::WaitingReason::Model,
+            ),
+        };
+        self.set_workshop_turn_activity(activity);
     }
     /// Update the terminal tab title and OSC 9;4 progress bar.
     /// Stores any resulting escape sequences in `pending_notification_escapes`.

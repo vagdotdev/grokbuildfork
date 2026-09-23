@@ -4088,6 +4088,7 @@ fn handle_workshop_turn_msg(
 ) -> (bool, Vec<super::actions::Effect>) {
     use crate::app::workshop::WorkshopTurnMsg as M;
     use crate::scrollback::block::RenderBlock;
+    use crate::scrollback::blocks::SessionEvent;
 
     // The engine warm-up reports before any turn (and any agent) exists.
     if let M::EngineWarm { engine } = msg {
@@ -4097,16 +4098,6 @@ fn handle_workshop_turn_msg(
     let Some(agent_id) = app.workshop_turn_agent else {
         return (false, vec![]);
     };
-    // The waiting line stays under the latest block for the whole turn (a new block lifts it and
-    // puts it back underneath); a failure or the end of the turn removes it, and an approval
-    // prompt hides it while the user is the one being waited for.
-    if matches!(
-        msg,
-        M::Error(_) | M::EngineUnavailable { .. } | M::Done { .. }
-    ) {
-        app.workshop_turn_progress = None;
-        lift_workshop_progress(app, agent_id);
-    }
     if matches!(msg, M::Error(_) | M::EngineUnavailable { .. }) {
         app.workshop_turn_errored = true;
     }
@@ -4137,10 +4128,24 @@ fn handle_workshop_turn_msg(
     let redraw = match msg {
         M::EngineWarm { .. } => false,
         M::Progress(text) => {
-            // One animated line, repainted in place by `AppView::tick` (spinner, elapsed
-            // seconds, the cancel hint) until the first real output replaces it.
-            app.workshop_turn_progress = Some(text);
-            app.repaint_workshop_progress()
+            // The bring-up's phase for the turn-status row: the plain wait for the model, or the
+            // first-time download as a described step (`First-time setup, 12 MB downloaded…`,
+            // one phase whose byte count refines its description). A tool call underway keeps
+            // its own activity.
+            if app.workshop_turn_running.is_empty() {
+                let activity = if text == crate::app::workshop::THINKING {
+                    crate::acp::tracker::TurnActivity::Waiting(
+                        crate::acp::tracker::WaitingReason::Model,
+                    )
+                } else {
+                    crate::acp::tracker::TurnActivity::ToolRunning {
+                        title: crate::app::workshop::FIRST_TIME_SETUP.to_owned(),
+                        description: Some(text),
+                    }
+                };
+                app.set_workshop_turn_activity(activity);
+            }
+            true
         }
         // A model the user picked in /model is kept; only a connection still on the default follows it.
         M::EngineDefaultResolved { .. }
@@ -4185,25 +4190,22 @@ fn handle_workshop_turn_msg(
                 return (false, vec![]);
             }
             crate::app::workshop_sessions::record_text(&mut app.workshop_turn_record, &text);
-            match app.workshop_turn_stream_entry {
-                Some(id) => {
-                    if let Some(agent) = app.agents.get_mut(&agent_id) {
+            let entry = app.workshop_turn_stream_entry;
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                match entry {
+                    Some(id) => {
                         agent.scrollback.push_chunk_to_agent(id, &text);
                     }
-                }
-                None => {
-                    // A new paragraph lands above the waiting line, which moves back underneath.
-                    lift_workshop_progress(app, agent_id);
-                    if let Some(agent) = app.agents.get_mut(&agent_id) {
+                    None => {
                         let id = agent
                             .scrollback
                             .push_block(RenderBlock::agent_message_streaming());
                         agent.scrollback.push_chunk_to_agent(id, &text);
                         app.workshop_turn_stream_entry = Some(id);
                     }
-                    app.repaint_workshop_progress();
                 }
             }
+            app.set_workshop_turn_activity(crate::acp::tracker::TurnActivity::Responding);
             true
         }
         M::Thinking(text) => {
@@ -4213,10 +4215,6 @@ fn handle_workshop_turn_msg(
                 && let Some(agent) = app.agents.get_mut(&agent_id)
             {
                 agent.scrollback.finish_running(id);
-            }
-            let opens_block = app.workshop_turn_thinking_entry.is_none();
-            if opens_block {
-                lift_workshop_progress(app, agent_id);
             }
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 let id = match app.workshop_turn_thinking_entry {
@@ -4232,9 +4230,7 @@ fn handle_workshop_turn_msg(
                 };
                 agent.scrollback.push_chunk_to_thinking(id, &text);
             }
-            if opens_block {
-                app.repaint_workshop_progress();
-            }
+            app.set_workshop_turn_activity(crate::acp::tracker::TurnActivity::Thinking);
             true
         }
         M::Tool { id, name, input } => {
@@ -4244,16 +4240,19 @@ fn handle_workshop_turn_msg(
             {
                 agent.scrollback.finish_running(id);
             }
-            lift_workshop_progress(app, agent_id);
+            // The turn-status row reads `Run <command>` with the call's own timer while it runs,
+            // as it does for a shell turn's tool, so a long command never looks frozen.
+            let activity = crate::app::workshop_tools::turn_activity(&name, &input);
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 let entry = agent
                     .scrollback
                     .push_block(crate::app::workshop_tools::running_row(&name, &input));
                 agent.scrollback.set_entry_running(entry, true);
-                app.workshop_turn_tools.insert(id, entry);
+                app.workshop_turn_tools.insert(id.clone(), entry);
                 app.workshop_turn_tool_inputs.insert(entry, (name, input));
             }
-            app.repaint_workshop_progress();
+            app.workshop_turn_running.push((id, activity));
+            app.sync_workshop_tool_activity();
             true
         }
         M::ToolResult {
@@ -4265,6 +4264,9 @@ fn handle_workshop_turn_msg(
         } => {
             // The result lands on the row that announced the call: the row becomes the pager's
             // Edit block with the diff, or Run block with output + exit code, and stops running.
+            // The status row goes back to the wait for the model (or the newest call still running).
+            app.workshop_turn_running.retain(|(call, _)| call != &id);
+            app.sync_workshop_tool_activity();
             let Some(entry) = app.workshop_turn_tools.remove(&id) else {
                 return (false, vec![]);
             };
@@ -4332,10 +4334,6 @@ fn handle_workshop_turn_msg(
             }
             let ui_tx = app.workshop_turn_tx.clone();
             crate::app::workshop_permissions::enqueue_engine_permission(agent, request, reply, ui_tx);
-            // The user is the one being waited for: no waiting line under the question. The
-            // tool that follows the answer brings it back.
-            app.workshop_turn_progress = None;
-            lift_workshop_progress(app, agent_id);
             true
         }
         M::PermissionDecided { call_id, decision } => {
@@ -4420,19 +4418,23 @@ fn handle_workshop_turn_msg(
                 app.workshop_turn_tool_inputs.clear();
                 app.workshop_turn_decided_calls.clear();
                 dispatch::drain_workshop_permission_queue(agent);
+                // The turn ends the way a shell turn does: the pager's own marker (`Worked for
+                // 2m31s`, `Turn cancelled by user in 10s.`); a failed turn already showed its
+                // red failure line.
+                let elapsed = agent.workshop_turn_started_at.map(|t| t.elapsed());
+                agent.workshop_turn_activity = None;
+                agent.workshop_turn_started_at = None;
+                agent.workshop_turn_cancelling = false;
                 if cancelled {
-                    agent
-                        .scrollback
-                        .push_block(RenderBlock::system("Turn cancelled."));
+                    agent.scrollback.push_block(RenderBlock::session_event(
+                        SessionEvent::TurnCancelled {
+                            elapsed,
+                            cause: crate::scrollback::blocks::CancelledBy::User,
+                        },
+                    ));
                 } else if !app.workshop_turn_errored {
-                    // The quiet end: one dim line with how long the turn took, under the last
-                    // thing the model did (the composer placeholder returns with it).
-                    let elapsed = app
-                        .workshop_turn_started
-                        .map(|t| t.elapsed())
-                        .unwrap_or_default();
-                    agent.scrollback.push_block(RenderBlock::system(
-                        crate::app::workshop::done_line(elapsed),
+                    agent.scrollback.push_block(RenderBlock::session_event(
+                        SessionEvent::TurnCompleted { elapsed },
                     ));
                 }
             }
@@ -4440,7 +4442,7 @@ fn handle_workshop_turn_msg(
             app.workshop_turn_cancel = None;
             app.workshop_turn_agent = None;
             app.workshop_turn_prompt_entry = None;
-            app.workshop_turn_started = None;
+            app.workshop_turn_running.clear();
             // Prompts typed during the turn go out now, one turn each, oldest first. A cancel
             // drops them: the user stopped the conversation, not just this answer.
             if cancelled {
@@ -4454,16 +4456,6 @@ fn handle_workshop_turn_msg(
         M::EngineUnavailable { .. } => false,
     };
     (redraw, vec![])
-}
-
-/// Workshop: take the waiting line off the transcript so the block pushed next lands above it;
-/// `AppView::repaint_workshop_progress` puts it back underneath.
-fn lift_workshop_progress(app: &mut AppView, agent_id: crate::app::agent::AgentId) {
-    if let Some(id) = app.workshop_turn_progress_entry.take()
-        && let Some(agent) = app.agents.get_mut(&agent_id)
-    {
-        agent.scrollback.remove_entry(id);
-    }
 }
 
 /// A plain character key press (not a Ctrl/Alt chord, not a release).
