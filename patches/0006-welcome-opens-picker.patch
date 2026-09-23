@@ -1114,7 +1114,7 @@ index 87f63aef..96f1e81d 100644
          let explicit = self.sandbox.as_deref().filter(|s| !s.is_empty());
          Self::resolve_startup_sandbox(explicit, saved.map(String::from))
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
-index 769d63a9..fa73d775 100644
+index 769d63a9..d3783a49 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 @@ -10,6 +10,7 @@ use crate::app::agent_view::AgentView;
@@ -1125,7 +1125,7 @@ index 769d63a9..fa73d775 100644
  
  /// `/logout`: ask the shell to clear auth, then return to the login screen.
  pub(super) fn dispatch_logout(_app: &mut AppView) -> Vec<Effect> {
-@@ -203,22 +204,327 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
+@@ -203,22 +204,331 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
      }
  }
  
@@ -1254,8 +1254,8 @@ index 769d63a9..fa73d775 100644
 +    text: String,
 +) -> Vec<Effect> {
 +    let Some(kilo) = crate::app::workshop::kilo_fallback_model() else {
-+        return vec![];
-+    };
+         return vec![];
+     };
 +    let reason = reason.lines().next().unwrap_or_default().trim().to_owned();
 +    let plan = match crate::app::workshop::activate_catalog_model(&kilo) {
 +        Ok(plan) => plan,
@@ -1286,7 +1286,9 @@ index 769d63a9..fa73d775 100644
 +    app.auth_return_view = Some(ActiveView::Agent(agent_id));
 +    start_workshop_activation(app, plan.key)
 +}
-+
+ 
+-    // Show the auth UI when triggered from inside a session
+-    // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
 +/// Close the picker and return to the view it was opened from.
 +fn close_connection_picker(app: &mut AppView) {
 +    app.connection_picker = None;
@@ -1302,8 +1304,8 @@ index 769d63a9..fa73d775 100644
 +) -> Vec<Effect> {
 +    use workshop_auth::PickerOutcome;
 +    let Some(picker) = app.connection_picker.as_mut() else {
-         return vec![];
-     };
++        return vec![];
++    };
 +    match picker.handle(input) {
 +        PickerOutcome::Changed => vec![],
 +        PickerOutcome::Refresh => {
@@ -1312,6 +1314,10 @@ index 769d63a9..fa73d775 100644
 +            picker.loading = true;
 +            picker.set_status("Refreshing…");
 +            dispatch_refresh_catalogs(app, true)
++        }
++        PickerOutcome::RetryRailModels => {
++            picker.set_status("Asking the CLI for its models again…");
++            vec![Effect::WorkshopRefreshRailModels]
 +        }
 +        PickerOutcome::Close => {
 +            // Before any connection is configured the welcome screen stays on the (auth-pending)
@@ -1394,9 +1400,7 @@ index 769d63a9..fa73d775 100644
 +        }
 +    }
 +}
- 
--    // Show the auth UI when triggered from inside a session
--    // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
++
 +/// An Engine/Adapter connection routes turns through workshop-adapters, not the shell model — but
 +/// the shell still needs a model + auth method to open the ACP session that backs the agent view.
 +/// Write a keyless placeholder model and reuse the same anonymous activation Direct/Local uses, so
@@ -1464,7 +1468,7 @@ index 769d63a9..fa73d775 100644
          show_welcome(app);
      }
  
-@@ -240,6 +546,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
+@@ -240,6 +550,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
              method_id,
              use_oauth: app.auth_use_oauth,
              force_interactive: true,
@@ -1472,7 +1476,7 @@ index 769d63a9..fa73d775 100644
          },
          Effect::PollAuthUrl { request_seq },
      ]
-@@ -263,6 +570,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
+@@ -263,6 +574,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
      app.auth_state = AuthState::Done;
      app.auth_show_raw_url = false;
      app.auth_code_input.reset();
@@ -1481,7 +1485,7 @@ index 769d63a9..fa73d775 100644
      restore_auth_return_view(app, return_view);
      // This runs on all agents because the login may have been started from the dashboard
      // Clearing the stash alone is not enough
-@@ -314,6 +623,18 @@ pub(super) fn handle_auth_complete(
+@@ -314,6 +627,18 @@ pub(super) fn handle_auth_complete(
          app.welcome_prompt_focused = !app.is_access_blocked();
          app.auth_code_input.reset();
  
@@ -1500,7 +1504,7 @@ index 769d63a9..fa73d775 100644
          // Mid-session re-auth (`/login` or a 401 prompt): restore the view the user was on instead of running the startup load-session flow
          // The session state lives in `app.agents`, independent of `active_view`, so it is preserved across the auth detour
          if let Some(return_view) = app.auth_return_view.take() {
-@@ -327,6 +648,19 @@ pub(super) fn handle_auth_complete(
+@@ -327,6 +652,19 @@ pub(super) fn handle_auth_complete(
              // Auth is global, so handle every agent (the login may have been started from the dashboard, not the agent that 401'd)
              let mut retry_effects = Vec::new();
              let mut page_flips = Vec::new();
@@ -1711,7 +1715,7 @@ index b00317f2..9684cc8e 100644
                  app.auth_code_input.reset();
              }
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
-index 0cbf3632..26385c75 100644
+index 0cbf3632..49e7727c 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 @@ -394,7 +394,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
@@ -1723,7 +1727,7 @@ index 0cbf3632..26385c75 100644
      let seq = authenticating_seq(&app);
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -554,34 +554,593 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
+@@ -554,34 +554,603 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
      );
  }
  
@@ -2041,7 +2045,17 @@ index 0cbf3632..26385c75 100644
 +    };
 +    assert!(
 +        dispatch(loaded(failed), &mut app).is_empty(),
-+        "a failed rail waits for Ctrl+R"
++        "a failed rail waits for the user"
++    );
++    // Enter on it ("Couldn't load models — press Enter to retry") asks the CLIs again, and only
++    // them: no hosted-list refresh.
++    let effects = dispatch(
++        Action::ConnectionPicker(workshop_auth::PickerInput::Enter),
++        &mut app,
++    );
++    assert!(
++        matches!(effects.as_slice(), [Effect::WorkshopRefreshRailModels]),
++        "got {effects:?}"
 +    );
 +
 +    // `/model`: the queued live refresh asks the CLIs itself; no second probe.
@@ -2328,7 +2342,7 @@ index 0cbf3632..26385c75 100644
  }
  
  /// Puts the app in `Authenticating` with a live task's abort handle installed, as the event loop would.
-@@ -591,7 +1150,7 @@ fn install_live_auth_task(
+@@ -591,7 +1160,7 @@ fn install_live_auth_task(
      app: &mut AppView,
      rt: &tokio::runtime::Runtime,
  ) -> (tokio::task::JoinHandle<()>, u64) {
@@ -2337,7 +2351,7 @@ index 0cbf3632..26385c75 100644
      let task = rt.spawn(std::future::pending::<()>());
      match &mut app.auth_state {
          AuthState::Authenticating {
-@@ -621,7 +1180,7 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -621,7 +1190,7 @@ fn login_while_authenticating_aborts_prior_task() {
      let mut app = test_app_with_agent();
      let (prior_task, first_seq) = install_live_auth_task(&mut app, &rt);
  
@@ -2346,7 +2360,7 @@ index 0cbf3632..26385c75 100644
  
      rt.block_on(async {
          assert!(
-@@ -651,12 +1210,12 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -651,12 +1220,12 @@ fn login_while_authenticating_aborts_prior_task() {
  #[test]
  fn stale_auth_complete_after_relogin_is_ignored() {
      let mut app = test_app_with_agent();
@@ -2361,7 +2375,7 @@ index 0cbf3632..26385c75 100644
  
      dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -722,7 +1281,7 @@ fn cancel_login_aborts_prior_task() {
+@@ -722,7 +1291,7 @@ fn cancel_login_aborts_prior_task() {
  #[test]
  fn cancel_login_restores_view() {
      let mut app = test_app_with_agent();

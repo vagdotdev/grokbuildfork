@@ -482,7 +482,10 @@ const FAKE_CURSOR: FakeVendor = FakeVendor {
     status_fd: 1,
     login_args: "login",
     fixture: "cursor_success.jsonl",
+    // `<state>/models_fail`: the listing fails like an offline CLI; every call is counted.
     models_arm: r#"models)
+    echo models >> "$state/models_calls"
+    if [ -f "$state/models_fail" ]; then echo 'Failed to load models: network down' >&2; exit 1; fi
     printf 'Available models\n\nauto - Auto (current)\ncomposer-2.5 - Composer 2.5 (default)\n\nTip: use --model <id> to switch.\n'; exit 0 ;;"#,
 };
 
@@ -709,6 +712,63 @@ fn rails_signin_connect_launches_login() {
         "P3 rails (logged-out fakes): Claude rail Sign in → Connect launched `claude auth login` \
          in the terminal (marker written); after it exited the TUI re-entered the alternate \
          screen and ↓ moved to the next rail. No network (fake CLIs).\n",
+    );
+}
+
+/// P3 (logged in, a CLI that cannot list its models): the rail says "Couldn't load models — press
+/// Enter to retry", never placeholder rows, and Enter on it asks that CLI again (and nothing else:
+/// no hosted list is fetched); once the CLI answers, the rail lists its models.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake CLIs, no network); run with --include-ignored"]
+fn rails_failed_models_retry_on_enter() {
+    use workshop_detect::copy::MODELS_FAILED;
+    let Some(bin) = bin_from_env() else { return };
+    let fakes = install_fakes(true);
+    let cursor = fakes.state.join("cursor-agent");
+    std::fs::write(cursor.join("models_fail"), "1").unwrap();
+    let calls = || {
+        std::fs::read_to_string(cursor.join("models_calls"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    let mut j = spawn("rails-models-retry", &bin, &[], Some(&fakes.bin));
+    open_subscriptions(&mut j);
+    wait_for(&mut j.h, MODELS_FAILED, 20);
+    snapshot(&j.h, &j.dir, "01-cursor-models-failed");
+    let before = calls();
+    // Cursor is the third rail.
+    for _ in 0..2 {
+        j.h.inject_keys(b"\x1b[B").unwrap();
+        j.h.update(Duration::from_millis(300));
+    }
+    assert!(
+        selected_line(&j.h).is_some_and(|l| l.contains("Cursor")),
+        "the Cursor rail is selected:\n{}",
+        j.h.screen_contents()
+    );
+    std::fs::remove_file(cursor.join("models_fail")).unwrap();
+    j.h.inject_keys(b"\r").unwrap();
+    if let Err(e) =
+        j.h.wait_for_text_absent(MODELS_FAILED, Duration::from_secs(30))
+    {
+        panic!(
+            "Enter did not retry the model list: {e}\n{}",
+            j.h.screen_contents()
+        );
+    }
+    assert!(calls() > before, "Enter must ask cursor-agent again");
+    assert!(
+        selected_line(&j.h).is_some_and(|l| l.contains("Cursor") && l.contains("2 models")),
+        "the Cursor rail lists the models its CLI reported:\n{}",
+        j.h.screen_contents()
+    );
+    snapshot(&j.h, &j.dir, "02-cursor-models-after-retry");
+    finish(
+        j,
+        "P3 rails (logged-in fakes, cursor-agent models failing): Cursor rail showed \
+         \"Couldn't load models — press Enter to retry\"; Enter re-asked cursor-agent, which then \
+         answered, and the rail listed its 2 models. No network (fake CLIs).\n",
     );
 }
 
