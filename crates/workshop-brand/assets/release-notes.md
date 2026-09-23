@@ -21,9 +21,12 @@ Install or update: `curl -fsSL https://raw.githubusercontent.com/vagdotdev/grokb
 - Help, tutorial and the bundled guides describe Workshop: `workshop --help`, `~/.workshop`,
   `WORKSHOP_*` environment variables (the old names keep working), `/docs` Getting Started tells the
   real install and first-run story.
-- `/feedback` says where the note is saved and drafts a prefilled GitHub issue. The installer labels
-  every step, no longer downloads the 142 MB voice model up front (first `/voice` fetches it, or
-  `WORKSHOP_VOICE=1`), and ends with `cd <project> && workshop`.
+- `/feedback` says where the note is saved and drafts a prefilled GitHub issue.
+- The installer downloads one thing, `workshop` — no voice helper or speech model up front
+  (`WORKSHOP_VOICE=1` installs voice right away) — reads like a product (`Verifying… done`,
+  `Installing… done`), says what it did (`Installed Workshop 0.2.2`, or `Updated Workshop 0.2.0 →
+  0.2.2` over an earlier install, a manual tar install included) and ends with
+  `cd <project> && workshop`.
 - The terminal title follows the session topic while Workshop runs and is restored on exit. The `/`
   menu and the command palette show the common commands first and the power tools under *Advanced*.
 - Trust: true safety modes for the free models, diffs and command output visible in the
