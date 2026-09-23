@@ -132,7 +132,7 @@ index f1602289..421913ab 100644
      ChangelogFetched {
          markdown: Option<String>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..5c95d558 100644
+index fc9a4553..c413af28 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -183,7 +183,7 @@ index fc9a4553..5c95d558 100644
      /// The environment gates are process-constant, so one evaluation decides the run.
      pub ssh_wrap_tip_evaluated: bool,
      /// State for the clipboard-image tip, polled opportunistically and only while the terminal is focused.
-@@ -1009,6 +1019,77 @@ pub struct AppView {
+@@ -1009,6 +1019,81 @@ pub struct AppView {
      pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
      /// Whether deferred welcome-screen login should force OAuth.
      pub auth_use_oauth: bool,
@@ -245,6 +245,10 @@ index fc9a4553..5c95d558 100644
 +    /// Prompts submitted while an Engine/Adapter turn was running, oldest first; each becomes
 +    /// its own turn when the running one ends.
 +    pub workshop_turn_queue: std::collections::VecDeque<String>,
++    /// Permission answers of the current engine turn by tool call id: a call that asks twice
++    /// (`external_directory`, then `bash`) is answered once by the user and once from here.
++    pub workshop_turn_decided_calls:
++        std::collections::HashMap<String, workshop_adapters::opencode_engine::PermissionReply>,
 +    /// Workshop: the engine's last reported token usage for the active session (`Some` once the
 +    /// first turn finished a step), what the context meter shows against the model's limit.
 +    pub workshop_context_used: Option<u64>,
@@ -261,7 +265,7 @@ index fc9a4553..5c95d558 100644
      /// Delivery state from the last clipboard copy during auth.
      pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
      /// Generation of the current auth copy feedback and its clear timer.
-@@ -1429,11 +1510,14 @@ impl AppView {
+@@ -1429,11 +1514,14 @@ impl AppView {
              pending_effects: Vec::new(),
              pending_editor: None,
              pending_pager_path: None,
@@ -276,7 +280,7 @@ index fc9a4553..5c95d558 100644
              welcome_import_banner_rect: None,
              last_mouse_pos: None,
              last_scroll_pos: None,
-@@ -1543,6 +1627,32 @@ impl AppView {
+@@ -1543,6 +1631,33 @@ impl AppView {
              auth_url_poll_handle: None,
              deferred_startup: Default::default(),
              auth_use_oauth: false,
@@ -301,6 +305,7 @@ index fc9a4553..5c95d558 100644
 +            workshop_turn_tools: std::collections::HashMap::new(),
 +            workshop_turn_tool_inputs: std::collections::HashMap::new(),
 +            workshop_turn_queue: std::collections::VecDeque::new(),
++            workshop_turn_decided_calls: std::collections::HashMap::new(),
 +            workshop_context_used: None,
 +            workshop_engine_resume: None,
 +            workshop_turn_record: Vec::new(),
@@ -309,7 +314,7 @@ index fc9a4553..5c95d558 100644
              auth_clipboard_delivery: None,
              auth_clipboard_feedback_generation: 0,
              team_id: None,
-@@ -1709,11 +1819,15 @@ impl AppView {
+@@ -1709,11 +1824,15 @@ impl AppView {
      pub(super) fn consumer_account(&self) -> bool {
          !self.backend_billed && !self.is_api_key_auth && !self.has_external_auth_provider
      }
@@ -328,7 +333,7 @@ index fc9a4553..5c95d558 100644
      }
      /// Draw-time expiry can flip the live-announcement predicate between pushes.
      /// Resync the slash gate only when it diverges from the stored flags (checked per frame, fan-out runs only on change).
-@@ -2404,6 +2518,15 @@ impl AppView {
+@@ -2404,6 +2523,15 @@ impl AppView {
              }
              return InputOutcome::Changed;
          }
@@ -344,7 +349,7 @@ index fc9a4553..5c95d558 100644
          let zdr_blocked = self.is_zdr_blocked();
          let has_access = self.has_access();
          let welcome_pinned_upgrade_cta = crate::views::announcements::promo_cta(
-@@ -2442,7 +2565,8 @@ impl AppView {
+@@ -2442,7 +2570,8 @@ impl AppView {
                      menu_count: if zdr_blocked {
                          2
                      } else {
@@ -354,7 +359,7 @@ index fc9a4553..5c95d558 100644
                              + if self.welcome_show_changelog_action {
                                  1
                              } else {
-@@ -2483,6 +2607,7 @@ impl AppView {
+@@ -2483,6 +2612,7 @@ impl AppView {
                      welcome_doc_viewer: &mut self.welcome_doc_viewer,
                      changelog_markdown: &self.changelog_markdown,
                      show_changelog_action: self.welcome_show_changelog_action,
@@ -362,7 +367,7 @@ index fc9a4553..5c95d558 100644
                      has_pending_update: self.pending_update_version.is_some(),
                      has_foreign_resume,
                      cwd_has_git_ancestor: self.cwd_has_git_ancestor,
-@@ -3143,8 +3268,10 @@ struct WelcomeInputCtx<'a> {
+@@ -3143,8 +3273,10 @@ struct WelcomeInputCtx<'a> {
      import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
      welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
      changelog_markdown: &'a Option<String>,
@@ -374,7 +379,7 @@ index fc9a4553..5c95d558 100644
      has_pending_update: bool,
      /// A recent foreign session is available to resume when no update is pending.
      has_foreign_resume: bool,
-@@ -3171,6 +3298,73 @@ struct WelcomeInputCtx<'a> {
+@@ -3171,6 +3303,73 @@ struct WelcomeInputCtx<'a> {
      #[cfg(feature = "local-workspace")]
      session_picker_open: bool,
  }
@@ -448,7 +453,7 @@ index fc9a4553..5c95d558 100644
  /// Welcome view input: overlays first, then composer, then the menu.
  fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
      if let Some(modal) = ctx.import_claude_modal.as_mut() {
-@@ -3750,6 +3944,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3750,6 +3949,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                  return dispatch_menu_action(
                      idx,
                      ctx.has_claude_import,
@@ -456,7 +461,7 @@ index fc9a4553..5c95d558 100644
                      ctx.show_changelog_action,
                      ctx.changelog_markdown.as_deref(),
                  );
-@@ -3888,6 +4083,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3888,6 +4088,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                          return dispatch_menu_action(
                              i,
                              ctx.has_claude_import,
@@ -464,7 +469,7 @@ index fc9a4553..5c95d558 100644
                              ctx.show_changelog_action,
                              ctx.changelog_markdown.as_deref(),
                          );
-@@ -4138,39 +4334,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
+@@ -4138,39 +4339,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
      }
  }
  /// Dispatch an action for a welcome menu item by index.
@@ -523,7 +528,7 @@ index fc9a4553..5c95d558 100644
      }
      if index == quit_idx {
          return InputOutcome::Action(Action::Quit);
-@@ -4477,11 +4676,31 @@ impl AppView {
+@@ -4477,11 +4681,31 @@ impl AppView {
                              } else {
                                  self.tip.as_deref()
                              };
@@ -560,7 +565,7 @@ index fc9a4553..5c95d558 100644
                              };
                              let hero_cta = crate::views::announcements::promo_cta(
                                  &self.active_announcements,
-@@ -4495,7 +4714,15 @@ impl AppView {
+@@ -4495,7 +4719,15 @@ impl AppView {
                                          &self.hidden_announcement_ids,
                                      )
                                  })
@@ -577,7 +582,7 @@ index fc9a4553..5c95d558 100644
                              let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                  prompt_focus: if self.welcome_prompt_focused {
                                      WelcomePromptFocus::Focused
-@@ -4508,6 +4735,7 @@ impl AppView {
+@@ -4508,6 +4740,7 @@ impl AppView {
                                  consent_state: &self.consent_state,
                                  consent_hover_link: self.welcome_consent_hover_link,
                                  login_label: self.login_label.as_deref(),
@@ -585,7 +590,7 @@ index fc9a4553..5c95d558 100644
                                  auth_code_input: self.auth_code_input.text(),
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
-@@ -4520,6 +4748,7 @@ impl AppView {
+@@ -4520,6 +4753,7 @@ impl AppView {
                                  team_name: self.team_name.as_deref(),
                                  has_access,
                                  has_claude_import: self.has_claude_import,
@@ -593,7 +598,7 @@ index fc9a4553..5c95d558 100644
                                  mouse_pos: self.last_mouse_pos,
                                  is_zdr_blocked: zdr_blocked_for_draw,
                                  session_picker: self.session_picker_entries.as_deref(),
-@@ -4577,6 +4806,7 @@ impl AppView {
+@@ -4577,6 +4811,7 @@ impl AppView {
                              );
                              self.welcome_menu_rects = result.menu_rects;
                              self.welcome_show_changelog_action = result.changelog_action_present;
@@ -601,7 +606,7 @@ index fc9a4553..5c95d558 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4824,6 +5054,25 @@ impl AppView {
+@@ -4824,6 +5059,25 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -627,7 +632,7 @@ index fc9a4553..5c95d558 100644
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5081,15 @@ impl AppView {
+@@ -4832,13 +5086,15 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
@@ -644,7 +649,7 @@ index fc9a4553..5c95d558 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5371,7 @@ impl AppView {
+@@ -5120,6 +5376,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -652,7 +657,7 @@ index fc9a4553..5c95d558 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5419,7 @@ impl AppView {
+@@ -5167,7 +5424,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -661,7 +666,7 @@ index fc9a4553..5c95d558 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5534,7 @@ impl AppView {
+@@ -5282,6 +5539,7 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
@@ -669,7 +674,7 @@ index fc9a4553..5c95d558 100644
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5637,6 +5890,10 @@ impl AppView {
+@@ -5637,6 +5895,10 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -680,7 +685,7 @@ index fc9a4553..5c95d558 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5784,6 +6041,54 @@ impl AppView {
+@@ -5784,6 +6046,54 @@ impl AppView {
              ActiveView::Welcome => TickDemand::Slow,
          }
      }
@@ -735,7 +740,7 @@ index fc9a4553..5c95d558 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6110,8 @@ impl AppView {
+@@ -5805,7 +6115,8 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -746,10 +751,10 @@ index fc9a4553..5c95d558 100644
              } else {
                  (None, None, None, false, None, false)
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-index 483296d4..6c64a0b1 100644
+index 483296d4..5e49d16b 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-@@ -169,6 +169,32 @@ pub(crate) fn test_app() -> AppView {
+@@ -169,6 +169,33 @@ pub(crate) fn test_app() -> AppView {
          auth_url_poll_handle: None,
          deferred_startup: Default::default(),
          auth_use_oauth: false,
@@ -767,6 +772,7 @@ index 483296d4..6c64a0b1 100644
 +        workshop_turn_tools: std::collections::HashMap::new(),
 +        workshop_turn_tool_inputs: std::collections::HashMap::new(),
 +        workshop_turn_queue: std::collections::VecDeque::new(),
++        workshop_turn_decided_calls: std::collections::HashMap::new(),
 +        workshop_context_used: None,
 +        workshop_engine_resume: None,
 +        workshop_turn_record: Vec::new(),
@@ -782,7 +788,7 @@ index 483296d4..6c64a0b1 100644
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -210,6 +236,8 @@ pub(crate) fn test_app() -> AppView {
+@@ -210,6 +237,8 @@ pub(crate) fn test_app() -> AppView {
          welcome_menu_index: None,
          welcome_menu_rects: Vec::new(),
          welcome_show_changelog_action: false,
@@ -791,7 +797,7 @@ index 483296d4..6c64a0b1 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -278,6 +306,7 @@ pub(crate) fn test_app() -> AppView {
+@@ -278,6 +307,7 @@ pub(crate) fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -799,7 +805,7 @@ index 483296d4..6c64a0b1 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -616,6 +645,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
+@@ -616,6 +646,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
      );
  }
  #[test]
@@ -807,7 +813,7 @@ index 483296d4..6c64a0b1 100644
  fn needs_animation_gates_prompt_history_tick_delivery() {
      let mut app = test_app_with_agent();
      let id = super::super::agent::AgentId(0);
-@@ -2268,16 +2298,20 @@ fn is_restricted_tier_classification() {
+@@ -2268,16 +2299,20 @@ fn is_restricted_tier_classification() {
      assert!(!is_restricted_tier(Some("X Premium+")));
      assert!(!is_restricted_tier(Some("SomeFutureTier")));
  }
@@ -832,7 +838,7 @@ index 483296d4..6c64a0b1 100644
      let meta = xai_grok_login::AuthMeta {
          subscription_tier: Some("SuperGrok".into()),
          ..Default::default()
-@@ -3198,15 +3232,15 @@ fn welcome_ctrl_d_requires_confirmation() {
+@@ -3198,15 +3233,15 @@ fn welcome_ctrl_d_requires_confirmation() {
  #[test]
  fn menu_action_indices_without_changelog() {
      assert!(matches!(
@@ -851,7 +857,7 @@ index 483296d4..6c64a0b1 100644
          InputOutcome::Action(Action::Quit)
      ));
  }
-@@ -3214,46 +3248,69 @@ fn menu_action_indices_without_changelog() {
+@@ -3214,46 +3249,69 @@ fn menu_action_indices_without_changelog() {
  fn menu_action_changelog_sits_above_quit() {
      let md = Some("# notes");
      assert!(matches!(
@@ -2364,10 +2370,10 @@ index 2049a2d9..3ec2aebf 100644
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-index bf64193d..52d0af59 100644
+index bf64193d..034d83ef 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-@@ -181,6 +181,32 @@ fn test_app() -> AppView {
+@@ -181,6 +181,33 @@ fn test_app() -> AppView {
          auth_url_poll_handle: None,
          deferred_startup: Default::default(),
          auth_use_oauth: false,
@@ -2385,6 +2391,7 @@ index bf64193d..52d0af59 100644
 +        workshop_turn_tools: std::collections::HashMap::new(),
 +        workshop_turn_tool_inputs: std::collections::HashMap::new(),
 +        workshop_turn_queue: std::collections::VecDeque::new(),
++        workshop_turn_decided_calls: std::collections::HashMap::new(),
 +        workshop_context_used: None,
 +        workshop_engine_resume: None,
 +        workshop_turn_record: Vec::new(),
@@ -2400,7 +2407,7 @@ index bf64193d..52d0af59 100644
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -222,6 +248,8 @@ fn test_app() -> AppView {
+@@ -222,6 +249,8 @@ fn test_app() -> AppView {
          welcome_menu_index: None,
          welcome_menu_rects: Vec::new(),
          welcome_show_changelog_action: false,
@@ -2409,7 +2416,7 @@ index bf64193d..52d0af59 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -289,6 +317,7 @@ fn test_app() -> AppView {
+@@ -289,6 +318,7 @@ fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -2417,7 +2424,7 @@ index bf64193d..52d0af59 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -585,6 +614,25 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
+@@ -585,6 +615,25 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
      std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
      sess_dir
  }
@@ -2733,7 +2740,7 @@ index 1c507697..6b5e925c 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..d8b3a8d3 100644
+index eda61b3c..9be89849 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -3029,7 +3036,7 @@ index eda61b3c..d8b3a8d3 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4061,368 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4061,400 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -3053,27 +3060,20 @@ index eda61b3c..d8b3a8d3 100644
 +    let Some(agent_id) = app.workshop_turn_agent else {
 +        return (false, vec![]);
 +    };
-+    // A whitespace-only text part (models send "\n\n" right after their reasoning) is not an
-+    // answer: it opens no reply row, is not recorded, and leaves the waiting line up.
-+    if let M::Delta(text) = &msg
-+        && text.trim().is_empty()
-+        && app.workshop_turn_stream_entry.is_none()
-+    {
-+        return (false, vec![]);
-+    }
 +    // Bring-up status is transient: the first real output, a fallback, or the end of the turn
 +    // removes it.
-+    // Hidden thinking (the default) draws nothing, so the waiting line stays up through it.
-+    let clears_progress = matches!(
-+        msg,
-+        M::Delta(_)
-+            | M::Tool { .. }
-+            | M::PermissionAsk { .. }
-+            | M::Error(_)
-+            | M::EngineUnavailable { .. }
-+            | M::Done { .. }
-+    ) || (matches!(msg, M::Thinking(_))
-+        && crate::appearance::cache::load_show_thinking_blocks());
++    let clears_progress = match &msg {
++        // A whitespace-only part is not output yet (see the `Delta` arm).
++        M::Delta(text) => !text.trim().is_empty(),
++        // Hidden thinking (the default) draws nothing, so the waiting line stays up through it.
++        M::Thinking(_) => crate::appearance::cache::load_show_thinking_blocks(),
++        M::Tool { .. }
++        | M::PermissionAsk { .. }
++        | M::Error(_)
++        | M::EngineUnavailable { .. }
++        | M::Done { .. } => true,
++        _ => false,
++    };
 +    if clears_progress {
 +        app.workshop_turn_progress = None;
 +        if let Some(id) = app.workshop_turn_progress_entry.take()
@@ -3084,7 +3084,12 @@ index eda61b3c..d8b3a8d3 100644
 +    }
 +    // Reasoning is its own (collapsed) block: the first answer text, tool call, or the end of
 +    // the turn closes it, so thinking is never printed as part of the answer.
-+    if !matches!(msg, M::Thinking(_) | M::Usage(_) | M::Progress(_))
++    let keeps_thinking_open = match &msg {
++        M::Thinking(_) | M::Usage(_) | M::Progress(_) | M::PermissionDecided { .. } => true,
++        M::Delta(text) => text.trim().is_empty(),
++        _ => false,
++    };
++    if !keeps_thinking_open
 +        && let Some(id) = app.workshop_turn_thinking_entry.take()
 +        && let Some(agent) = app.agents.get_mut(&agent_id)
 +    {
@@ -3139,6 +3144,11 @@ index eda61b3c..d8b3a8d3 100644
 +            false
 +        }
 +        M::Delta(text) => {
++            // A whitespace-only part before the answer (models emit `"\n\n"` after reasoning)
++            // would open an empty bubble; wait for real text.
++            if app.workshop_turn_stream_entry.is_none() && text.trim().is_empty() {
++                return (false, vec![]);
++            }
 +            crate::app::workshop_sessions::record_text(&mut app.workshop_turn_record, &text);
 +            let entry = app.workshop_turn_stream_entry;
 +            if let Some(agent) = app.agents.get_mut(&agent_id) {
@@ -3248,9 +3258,37 @@ index eda61b3c..d8b3a8d3 100644
 +                let _ = reply.send(PermissionReply::Once);
 +                return (false, vec![]);
 +            }
++            // One question per tool call: an out-of-folder command asks `external_directory`
++            // and then `bash`; the user answered the first, the second follows that answer.
++            if let Some(call_id) = request.call_id.as_deref()
++                && let Some(decided) = app.workshop_turn_decided_calls.get(call_id)
++            {
++                let _ = reply.send(match decided {
++                    PermissionReply::Reject => PermissionReply::Reject,
++                    _ => PermissionReply::Once,
++                });
++                return (false, vec![]);
++            }
++            // Read-only commands (`ls`, `cat`, `git status`, …) run without a prompt, as they do
++            // in Claude Code and OpenCode; anything that writes, installs or runs another program
++            // asks. The row in the transcript still shows what ran.
++            if let Some(command) = request.command()
++                && crate::app::workshop_permissions::is_read_only_command(command)
++            {
++                if let Some(call_id) = request.call_id.clone() {
++                    app.workshop_turn_decided_calls
++                        .insert(call_id, PermissionReply::Once);
++                }
++                let _ = reply.send(PermissionReply::Once);
++                return (false, vec![]);
++            }
 +            let ui_tx = app.workshop_turn_tx.clone();
 +            crate::app::workshop_permissions::enqueue_engine_permission(agent, request, reply, ui_tx);
 +            true
++        }
++        M::PermissionDecided { call_id, decision } => {
++            app.workshop_turn_decided_calls.insert(call_id, decision);
++            false
 +        }
 +        M::Usage(usage) => {
 +            // The engine reports the whole prompt per step (input + cached + output), which is
@@ -3328,6 +3366,7 @@ index eda61b3c..d8b3a8d3 100644
 +                    agent.scrollback.finish_running(entry);
 +                }
 +                app.workshop_turn_tool_inputs.clear();
++                app.workshop_turn_decided_calls.clear();
 +                dispatch::drain_workshop_permission_queue(agent);
 +                if cancelled {
 +                    agent
@@ -3561,10 +3600,10 @@ index 60fe34f9..d5845f2c 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..af6d3661
+index 00000000..16266b81
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1631 @@
+@@ -0,0 +1,1638 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -4198,6 +4237,13 @@ index 00000000..af6d3661
 +    PermissionAsk {
 +        request: PermissionRequest,
 +        reply: oneshot::Sender<PermissionReply>,
++    },
++    /// The user answered a prompt for tool call `call_id`; the same call's next ask (the engine
++    /// asks `external_directory` and then `bash` for one out-of-folder command) gets the same
++    /// answer without a second prompt.
++    PermissionDecided {
++        call_id: String,
++        decision: PermissionReply,
 +    },
 +    /// Token accounting the backend reported for a finished step (the engine's `step-finish`);
 +    /// the last one of a turn is the model's current context usage.

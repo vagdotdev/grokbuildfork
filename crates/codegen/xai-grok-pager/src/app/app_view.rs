@@ -1077,6 +1077,10 @@ pub struct AppView {
     /// Prompts submitted while an Engine/Adapter turn was running, oldest first; each becomes
     /// its own turn when the running one ends.
     pub workshop_turn_queue: std::collections::VecDeque<String>,
+    /// Permission answers of the current engine turn by tool call id: a call that asks twice
+    /// (`external_directory`, then `bash`) is answered once by the user and once from here.
+    pub workshop_turn_decided_calls:
+        std::collections::HashMap<String, workshop_adapters::opencode_engine::PermissionReply>,
     /// Workshop: the engine's last reported token usage for the active session (`Some` once the
     /// first turn finished a step), what the context meter shows against the model's limit.
     pub workshop_context_used: Option<u64>,
@@ -1648,6 +1652,7 @@ impl AppView {
             workshop_turn_tools: std::collections::HashMap::new(),
             workshop_turn_tool_inputs: std::collections::HashMap::new(),
             workshop_turn_queue: std::collections::VecDeque::new(),
+            workshop_turn_decided_calls: std::collections::HashMap::new(),
             workshop_context_used: None,
             workshop_engine_resume: None,
             workshop_turn_record: Vec::new(),

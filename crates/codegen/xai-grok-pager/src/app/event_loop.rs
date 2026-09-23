@@ -4081,27 +4081,20 @@ fn handle_workshop_turn_msg(
     let Some(agent_id) = app.workshop_turn_agent else {
         return (false, vec![]);
     };
-    // A whitespace-only text part (models send "\n\n" right after their reasoning) is not an
-    // answer: it opens no reply row, is not recorded, and leaves the waiting line up.
-    if let M::Delta(text) = &msg
-        && text.trim().is_empty()
-        && app.workshop_turn_stream_entry.is_none()
-    {
-        return (false, vec![]);
-    }
     // Bring-up status is transient: the first real output, a fallback, or the end of the turn
     // removes it.
-    // Hidden thinking (the default) draws nothing, so the waiting line stays up through it.
-    let clears_progress = matches!(
-        msg,
-        M::Delta(_)
-            | M::Tool { .. }
-            | M::PermissionAsk { .. }
-            | M::Error(_)
-            | M::EngineUnavailable { .. }
-            | M::Done { .. }
-    ) || (matches!(msg, M::Thinking(_))
-        && crate::appearance::cache::load_show_thinking_blocks());
+    let clears_progress = match &msg {
+        // A whitespace-only part is not output yet (see the `Delta` arm).
+        M::Delta(text) => !text.trim().is_empty(),
+        // Hidden thinking (the default) draws nothing, so the waiting line stays up through it.
+        M::Thinking(_) => crate::appearance::cache::load_show_thinking_blocks(),
+        M::Tool { .. }
+        | M::PermissionAsk { .. }
+        | M::Error(_)
+        | M::EngineUnavailable { .. }
+        | M::Done { .. } => true,
+        _ => false,
+    };
     if clears_progress {
         app.workshop_turn_progress = None;
         if let Some(id) = app.workshop_turn_progress_entry.take()
@@ -4112,7 +4105,12 @@ fn handle_workshop_turn_msg(
     }
     // Reasoning is its own (collapsed) block: the first answer text, tool call, or the end of
     // the turn closes it, so thinking is never printed as part of the answer.
-    if !matches!(msg, M::Thinking(_) | M::Usage(_) | M::Progress(_))
+    let keeps_thinking_open = match &msg {
+        M::Thinking(_) | M::Usage(_) | M::Progress(_) | M::PermissionDecided { .. } => true,
+        M::Delta(text) => text.trim().is_empty(),
+        _ => false,
+    };
+    if !keeps_thinking_open
         && let Some(id) = app.workshop_turn_thinking_entry.take()
         && let Some(agent) = app.agents.get_mut(&agent_id)
     {
@@ -4167,6 +4165,11 @@ fn handle_workshop_turn_msg(
             false
         }
         M::Delta(text) => {
+            // A whitespace-only part before the answer (models emit `"\n\n"` after reasoning)
+            // would open an empty bubble; wait for real text.
+            if app.workshop_turn_stream_entry.is_none() && text.trim().is_empty() {
+                return (false, vec![]);
+            }
             crate::app::workshop_sessions::record_text(&mut app.workshop_turn_record, &text);
             let entry = app.workshop_turn_stream_entry;
             if let Some(agent) = app.agents.get_mut(&agent_id) {
@@ -4276,9 +4279,37 @@ fn handle_workshop_turn_msg(
                 let _ = reply.send(PermissionReply::Once);
                 return (false, vec![]);
             }
+            // One question per tool call: an out-of-folder command asks `external_directory`
+            // and then `bash`; the user answered the first, the second follows that answer.
+            if let Some(call_id) = request.call_id.as_deref()
+                && let Some(decided) = app.workshop_turn_decided_calls.get(call_id)
+            {
+                let _ = reply.send(match decided {
+                    PermissionReply::Reject => PermissionReply::Reject,
+                    _ => PermissionReply::Once,
+                });
+                return (false, vec![]);
+            }
+            // Read-only commands (`ls`, `cat`, `git status`, …) run without a prompt, as they do
+            // in Claude Code and OpenCode; anything that writes, installs or runs another program
+            // asks. The row in the transcript still shows what ran.
+            if let Some(command) = request.command()
+                && crate::app::workshop_permissions::is_read_only_command(command)
+            {
+                if let Some(call_id) = request.call_id.clone() {
+                    app.workshop_turn_decided_calls
+                        .insert(call_id, PermissionReply::Once);
+                }
+                let _ = reply.send(PermissionReply::Once);
+                return (false, vec![]);
+            }
             let ui_tx = app.workshop_turn_tx.clone();
             crate::app::workshop_permissions::enqueue_engine_permission(agent, request, reply, ui_tx);
             true
+        }
+        M::PermissionDecided { call_id, decision } => {
+            app.workshop_turn_decided_calls.insert(call_id, decision);
+            false
         }
         M::Usage(usage) => {
             // The engine reports the whole prompt per step (input + cached + output), which is
@@ -4356,6 +4387,7 @@ fn handle_workshop_turn_msg(
                     agent.scrollback.finish_running(entry);
                 }
                 app.workshop_turn_tool_inputs.clear();
+                app.workshop_turn_decided_calls.clear();
                 dispatch::drain_workshop_permission_queue(agent);
                 if cancelled {
                     agent

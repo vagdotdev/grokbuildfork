@@ -11,7 +11,11 @@ from the real server:
   * "rm -rf tmp" (build agent)        -> permission.asked (bash) then a completed `bash` part with
     metadata.exit; `once`/`always` really removes ./tmp so the effect is visible on disk.
   * "edit hello.txt"                  -> a completed `edit` part with metadata.diff/filediff.
-  * "list files" / "ls"               -> a completed `bash` part (`ls -1`) with real output + exit 0.
+  * "list files" / "ls"               -> permission.asked (bash `ls -1`, as the real server asks
+    for every command under an `ask` policy) then a completed `bash` part with real output.
+  * "make a folder on my desktop"     -> the out-of-folder pair captured live: permission.asked
+    (`external_directory`, metadata.command + directories) and, once replied, permission.asked
+    (`bash`) for the same tool call, then the completed `bash` part.
   * "what are you" / "who made you"   -> answers from the identity the system prompt opens with, as
     the real models do: OpenCode 1.18.31 opens it with the agent's `prompt` from the inline config
     (OPENCODE_CONFIG_CONTENT) when one is set, else with the model family's prompt ("You are
@@ -127,6 +131,7 @@ def ask_permission(sid, mid, call_id, kind, patterns, metadata, always):
     pid = next_id("per")
     ev = threading.Event()
     permission_events[pid] = ev
+    log({"asked": pid, "permission": kind, "callID": call_id})
     broadcast({"type": "permission.asked", "properties": {
         "id": pid, "sessionID": sid, "permission": kind, "patterns": patterns,
         "metadata": metadata, "always": always, "tool": {"messageID": mid, "callID": call_id}}})
@@ -253,14 +258,41 @@ def run_turn(sid, agent, text):
         if "think" in text_l:
             stream_text(sid, mid, "\n\n")
         call_id = next_id("call")
-        out = subprocess.run(["ls", "-1"], cwd=CWD, capture_output=True, text=True).stdout or "(no output)"
-        emit_part(tool_part(sid, mid, "bash", call_id, {"command": "ls -1"}, out, "ls -1",
-                            {"output": out, "exit": 0, "truncated": False}))
-        if "think" in text_l:
-            stream_text(sid, mid, "The listing is in. Summarize it.", ptype="reasoning")
-        if "slowly" in text_l:
-            time.sleep(3)
-        answer = "Here is the listing."
+        reply = ask_permission(sid, mid, call_id, "bash", ["ls -1"], {"command": "ls -1"}, ["ls *"])
+        if reply in ("once", "always"):
+            out = subprocess.run(["ls", "-1"], cwd=CWD, capture_output=True, text=True).stdout or "(no output)"
+            emit_part(tool_part(sid, mid, "bash", call_id, {"command": "ls -1"}, out, "ls -1",
+                                {"output": out, "exit": 0, "truncated": False}))
+            if "think" in text_l:
+                stream_text(sid, mid, "The listing is in. Summarize it.", ptype="reasoning")
+            if "slowly" in text_l:
+                time.sleep(3)
+            answer = "Here is the listing."
+        else:
+            emit_part(tool_part(sid, mid, "bash", call_id, {"command": "ls -1"}, "The user rejected permission to use this specific tool call.", "ls -1", {}, status="error"))
+            answer = "Understood — I did not list the files."
+    elif "make a folder on my desktop" in text_l:
+        home = os.environ.get("HOME", "/root")
+        desk = os.path.join(home, "Desktop")
+        cmd = ("mkdir -p %s/iBooks && curl -fsSL -o %s/iBooks/alice_in_wonderland.epub https://www.gutenberg.org/ebooks/11.epub.noimages"
+               " && curl -fsSL -o %s/iBooks/frankenstein.epub https://www.gutenberg.org/ebooks/84.epub.noimages" % (desk, desk, desk))
+        call_id = next_id("call")
+        reply = ask_permission(sid, mid, call_id, "external_directory", [desk + "/*"],
+                               {"command": cmd, "directories": [desk], "patterns": [desk + "/*"]}, [desk + "/*"])
+        if reply in ("once", "always"):
+            reply2 = ask_permission(sid, mid, call_id, "bash", ["mkdir -p " + desk + "/iBooks", "curl -fsSL -o " + desk + "/iBooks/alice_in_wonderland.epub", "curl -fsSL -o " + desk + "/iBooks/frankenstein.epub"],
+                                    {"command": cmd}, ["mkdir *", "curl *"])
+            if reply2 in ("once", "always"):
+                os.makedirs(os.path.join(desk, "iBooks"), exist_ok=True)
+                emit_part(tool_part(sid, mid, "bash", call_id, {"command": cmd}, "(no output)", cmd,
+                                    {"output": "(no output)", "exit": 0, "truncated": False}))
+                answer = "Created the iBooks folder on your desktop."
+            else:
+                emit_part(tool_part(sid, mid, "bash", call_id, {"command": cmd}, "The user rejected permission to use this specific tool call.", cmd, {}, status="error"))
+                answer = "Understood — nothing was created."
+        else:
+            emit_part(tool_part(sid, mid, "bash", call_id, {"command": cmd}, "The user rejected permission to use this specific tool call.", cmd, {}, status="error"))
+            answer = "Understood — nothing was created."
     else:
         answer = "Echo: " + text.strip()
     stream_text(sid, mid, answer)
