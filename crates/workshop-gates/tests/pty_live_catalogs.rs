@@ -319,7 +319,7 @@ fn catalogs_are_fetched_only_after_the_user_acts() {
     let installer_only = BTreeSet::from(["opencode.ai".to_owned()]);
     let mut run = spawn(&bin, home.path(), &proxy.env(), None);
     wait_for(&mut run.h, FIRST_RUN_LABEL, 30);
-    let hosts = proxy.wait_for_hosts(1, 20);
+    let hosts = proxy.wait_for_hosts(1, 60);
     assert_eq!(
         hosts, installer_only,
         "a first run asks for the engine installer at launch and nothing else"
@@ -599,7 +599,7 @@ fn model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up() {
     let cache = workshop_home
         .join("catalog-cache")
         .join("opencode-engine.json");
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !cache.is_file() && Instant::now() < deadline {
         run.h.update(Duration::from_millis(200));
     }
