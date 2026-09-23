@@ -1,0 +1,126 @@
+# First-run smoke on real macOS (Apple Silicon and Intel) and Linux: a fresh user runs the public
+# one-liner, starts `workshop` in a new project, types one sentence and must get a reply, exactly
+# as in the first-person acceptance run. This is the only place the macOS-specific first-user
+# path runs for real: the OpenCode installer on darwin, quarantine and signatures of everything
+# that was downloaded, `opencode serve` on loopback, and the terminal teardown on /exit.
+#
+# Runs after every successful Release (against the channel it just published), on demand, and on
+# changes to this file or its driver. Informational: it is not a required check, because the reply
+# depends on a free model that can be down; the evidence artifact shows what the user saw.
+name: First-run smoke
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/first-run-smoke.yml"
+      - "scripts/smoke/**"
+
+permissions:
+  contents: read
+
+jobs:
+  first-run:
+    name: First run (${{ matrix.runner }})
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel, ubuntu-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: A fresh user runs the public one-liner
+        run: |
+          FRESH_HOME="$RUNNER_TEMP/fresh-home" EVIDENCE="$RUNNER_TEMP/evidence"
+          mkdir -p "$FRESH_HOME/hello" "$EVIDENCE"
+          if [ "$(uname -s)" = Darwin ]; then user_shell=/bin/zsh; path=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+          else user_shell=/bin/bash; path=/usr/local/bin:/usr/bin:/bin; fi
+          {
+            echo "FRESH_HOME=$FRESH_HOME"
+            echo "EVIDENCE=$EVIDENCE"
+            echo "USER_SHELL=$user_shell"
+            echo "USER_PATH=$path"
+          } >> "$GITHUB_ENV"
+          start=$(date +%s)
+          env -i HOME="$FRESH_HOME" PATH="$path" SHELL="$user_shell" LANG=en_US.UTF-8 TERM=xterm-256color \
+            sh -c 'curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/release-channel/install.sh | sh' \
+            2>&1 | tee "$EVIDENCE/install.log"
+          echo "install took $(( $(date +%s) - start )) s" | tee -a "$EVIDENCE/install.log"
+          grep -q 'export PATH=' "$EVIDENCE/install.log" || { echo "::error::no PATH hint for a shell without ~/.workshop/bin"; exit 1; }
+          env -i HOME="$FRESH_HOME" PATH="$path" "$FRESH_HOME/.workshop/bin/workshop" --version | tee -a "$EVIDENCE/install.log"
+
+      - name: macOS — installed binaries are native, validly signed and not quarantined
+        if: runner.os == 'macOS'
+        run: |
+          arch=$(uname -m)
+          for b in "$FRESH_HOME/.workshop/bin/workshop" "$FRESH_HOME/.workshop/bin/voice-engine"; do
+            real=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$b")
+            file "$real"
+            file "$real" | grep -q "$arch" || { echo "::error::$real is not $arch"; exit 1; }
+            codesign --verify --verbose=2 "$real"
+            if xattr -p com.apple.quarantine "$real" 2>/dev/null; then echo "::error::$real is quarantined"; exit 1; fi
+          done
+          "$FRESH_HOME/.workshop/bin/voice-engine" --version
+
+      - name: First run in a PTY — composer, first sentence, reply, /exit
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q pyte
+          cd "$FRESH_HOME/hello" && git init -q
+          env -i HOME="$FRESH_HOME" PATH="$USER_PATH" SHELL="$USER_SHELL" LANG=en_US.UTF-8 TERM=xterm-256color \
+            "$RUNNER_TEMP/venv/bin/python" "$GITHUB_WORKSPACE/scripts/smoke/first-run.py" \
+            --workshop "$FRESH_HOME/.workshop/bin/workshop" --project "$FRESH_HOME/hello" --out "$EVIDENCE/pty"
+
+      - name: The engine Workshop installed — native, signed, not quarantined, loopback only
+        if: always()
+        run: |
+          oc="$FRESH_HOME/.workshop/tools/opencode/.opencode/bin/opencode"
+          log="$FRESH_HOME/.workshop/logs/opencode-engine.log"
+          cat "$log" || true
+          test -x "$oc" || { echo "::error::no engine at $oc"; exit 1; }
+          file "$oc"
+          if [ "$(uname -s)" = Darwin ]; then
+            file "$oc" | grep -q "$(uname -m)" || { echo "::error::engine is not $(uname -m)"; exit 1; }
+            # OpenCode ships Bun-compiled binaries: linker-signed ad hoc, with the JS payload appended
+            # after the signature, so strict `codesign --verify` rejects them although they run
+            # (the serve line below is the proof). Record, do not gate.
+            codesign -dv "$oc" 2>&1 | grep -E 'Identifier|Signature|flags' || true
+            codesign --verify "$oc" 2>&1 || echo "note: strict verification fails for OpenCode's own binary (expected)"
+            if xattr -p com.apple.quarantine "$oc" 2>/dev/null; then echo "::error::engine is quarantined"; exit 1; fi
+          fi
+          grep -q 'listening on http://127.0.0.1:' "$log" || { echo "::error::opencode serve did not listen on loopback"; exit 1; }
+          if grep -E 'listening on http://(0\.0\.0\.0|\[::\])' "$log"; then echo "::error::engine listened beyond loopback"; exit 1; fi
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### First run on ${{ matrix.runner }} ($(uname -sm))"
+            echo '```'
+            tail -3 "$EVIDENCE/install.log" 2>/dev/null
+            cat "$EVIDENCE/pty/timings.json" 2>/dev/null
+            echo '```'
+            echo '```'
+            grep -v '^\s*$' "$EVIDENCE/pty/05-reply.txt" 2>/dev/null | head -30 || grep -v '^\s*$' "$EVIDENCE/pty/04-no-reply.txt" 2>/dev/null | head -30
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cp -r "$FRESH_HOME/.workshop/logs" "$EVIDENCE/workshop-logs" 2>/dev/null || true
+          cp -r "$FRESH_HOME/.local/share/opencode/log" "$EVIDENCE/opencode-log" 2>/dev/null || true
+
+      - name: Upload evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: first-run-${{ matrix.runner }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: ignore
