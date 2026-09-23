@@ -1455,6 +1455,112 @@ fn new_starts_a_fresh_engine_conversation() {
     let _ = h.wait_exit_code(Duration::from_secs(10));
 }
 
+/// Unix seconds at which the fake engine was told to abort a turn.
+fn aborts(log: &Path) -> Vec<f64> {
+    engine_log(log)
+        .iter()
+        .filter(|v| v.get("aborted").is_some())
+        .filter_map(|v| v.get("time").and_then(|t| t.as_f64()))
+        .collect()
+}
+
+/// A model that goes silent mid-answer is not left on the waiting line: after the stall ceiling
+/// (`WORKSHOP_STALL_TIMEOUT_SECS`, 5 s here; 90 s shipped) the engine turn is aborted and resent
+/// through the pool fallback — the composer follows the model that answers — or, with nothing to
+/// fall back to, one plain line offers Enter to retry. The ceiling never fires while a tool runs.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn mid_turn_stall_is_recovered() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut env: Vec<(&str, &str)> = OFFLINE.to_vec();
+    env.push(("WORKSHOP_STALL_TIMEOUT_SECS", "5"));
+    let mut j = pty_common::spawn("engine-trust/mid-turn-stall", &bin, &env, Some(&fx.bin));
+    pty_common::connect_big_pickle(&mut j);
+    send_prompt(&mut j, "stall please");
+    // The answer began, then nothing more comes.
+    wait_for(&mut j.h, "Let me look at that", 60);
+    let began = std::time::Instant::now();
+    snapshot(&j.h, &j.dir, "01-answer-began-then-silence");
+    let deadline = began + Duration::from_secs(30);
+    while aborts(&fx.log).is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the engine turn was never aborted after the stall ceiling:\n{}",
+            j.h.screen_contents()
+        );
+        j.h.update(Duration::from_millis(200));
+    }
+    let aborted_after = began.elapsed();
+    assert!(
+        aborted_after >= Duration::from_secs(4),
+        "the ceiling is not jumped early: aborted after {aborted_after:?}"
+    );
+    // Recovery on screen: the waiting line is gone and either the pool fallback took over (the
+    // composer no longer names Big Pickle) or the plain stall line stands with Enter to retry.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let screen = j.h.screen_contents();
+        let label_switched = screen
+            .lines()
+            .find(|l| l.contains("/model to switch") || l.contains("Shift+Tab"))
+            .is_some_and(|l| !l.contains("Big Pickle"));
+        let plain_line = screen.contains("stopped responding");
+        if (label_switched || plain_line) && !screen.contains("Waiting for Big Pickle") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no recovery after the stall:\n{screen}"
+        );
+        j.h.update(Duration::from_millis(300));
+    }
+    j.h.update(Duration::from_millis(800));
+    snapshot(&j.h, &j.dir, "02-stall-recovered");
+    let engine_log_text =
+        std::fs::read_to_string(j.workshop_home().join("logs").join("opencode-engine.log"))
+            .unwrap_or_default();
+    assert!(
+        engine_log_text.contains("stall: Big Pickle stopped responding"),
+        "the stall is on record for /doctor:\n{engine_log_text}"
+    );
+    eprintln!("stall: engine aborted {aborted_after:.1?} after the answer began (ceiling 5 s)");
+    quit(&mut j);
+}
+
+/// Silence while a tool runs is not a stall: a command longer than the ceiling finishes and the
+/// turn ends normally, with no abort.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn long_tool_run_is_not_a_stall() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut env: Vec<(&str, &str)> = OFFLINE.to_vec();
+    env.push(("WORKSHOP_STALL_TIMEOUT_SECS", "3"));
+    let mut j = pty_common::spawn(
+        "engine-trust/long-tool-not-a-stall",
+        &bin,
+        &env,
+        Some(&fx.bin),
+    );
+    pty_common::connect_big_pickle(&mut j);
+    // Always-approve (the default): the `sleep 8` runs at once and the server is quiet for 8 s.
+    send_prompt(&mut j, "run the long command");
+    wait_for(&mut j.h, "Done waiting.", 60);
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "01-long-command-finished");
+    assert!(
+        aborts(&fx.log).is_empty(),
+        "a running tool is not a stall: nothing was aborted"
+    );
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("stopped responding"),
+        "no stall line for a slow command:\n{screen}"
+    );
+    quit(&mut j);
+}
+
 /// The same promises against the real `opencode` (keyless Big Pickle, network): the proof run
 /// behind the v0.2.2 evidence. Needs a genuine `opencode` on `PATH` and `WORKSHOP_LIVE_OPENCODE=1`;
 /// never runs in CI. Screens land in `WORKSHOP_PTY_EVIDENCE_DIR/engine-trust/live-*`.

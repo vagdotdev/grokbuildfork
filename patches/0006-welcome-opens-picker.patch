@@ -2840,7 +2840,7 @@ index 1c507697..5f4a9b72 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..88da8439 100644
+index eda61b3c..c8a70e80 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -3168,7 +3168,7 @@ index eda61b3c..88da8439 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4077,418 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4077,448 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -3203,6 +3203,7 @@ index eda61b3c..88da8439 100644
 +        | M::PermissionAsk { .. }
 +        | M::Error(_)
 +        | M::EngineUnavailable { .. }
++        | M::Stalled { .. }
 +        | M::Done { .. } => true,
 +        _ => false,
 +    };
@@ -3237,6 +3238,35 @@ index eda61b3c..88da8439 100644
 +            app,
 +        );
 +        return (true, effects);
++    }
++    if let M::Stalled {
++        model,
++        text,
++        engine,
++    } = msg
++    {
++        // A model that stopped mid-answer: an engine turn is resent through the pool fallback
++        // (the same seam a failed bring-up uses); with no pool to fall back to — or on a CLI
++        // rail — the user gets one plain line and Enter retries.
++        let reason = format!("{model} stopped responding");
++        if engine && crate::app::workshop::kilo_fallback_model().is_some() {
++            let effects = dispatch::dispatch(
++                Action::WorkshopEngineUnavailable {
++                    agent_id,
++                    reason,
++                    text,
++                },
++                app,
++            );
++            return (true, effects);
++        }
++        if let Some(agent) = app.agents.get_mut(&agent_id) {
++            agent
++                .scrollback
++                .push_block(RenderBlock::system_error(crate::app::workshop::stall_line(&model)));
++            agent.workshop_retry_prompt = Some(text);
++        }
++        return (true, vec![]);
 +    }
 +    let redraw = match msg {
 +        M::EngineWarm { .. } => false,
@@ -3521,7 +3551,7 @@ index eda61b3c..88da8439 100644
 +            return (true, effects);
 +        }
 +        // Handled above (needs the dispatcher).
-+        M::EngineUnavailable { .. } => false,
++        M::EngineUnavailable { .. } | M::Stalled { .. } => false,
 +    };
 +    (redraw, vec![])
 +}
@@ -3750,10 +3780,10 @@ index 60fe34f9..d5845f2c 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..c8c856f6
+index 00000000..916abf2f
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1751 @@
+@@ -0,0 +1,1805 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -4366,6 +4396,13 @@ index 00000000..c8c856f6
 +            Self::Adapter(r) => r.session_id(),
 +        }
 +    }
++    /// The engine ended this turn at its idle ceiling (set before its final `Error` arrives).
++    pub fn stalled(&self) -> bool {
++        match self {
++            Self::Engine(t) => t.stalled(),
++            Self::Adapter(_) => false,
++        }
++    }
 +}
 +
 +/// What the UI thread learns as a turn streams. Mapped to scrollback `RenderBlock`s by the event
@@ -4435,6 +4472,15 @@ index 00000000..c8c856f6
 +        reason: String,
 +        text: String,
 +    },
++    /// The model started answering and then went silent for [`STALL_TIMEOUT`] (no output, no
++    /// tool running, no prompt waiting on the user); the engine aborted the turn. `text` is the
++    /// prompt to resend: an engine turn goes through the pool fallback, else the user gets
++    /// [`stall_line`] with Enter to retry. Followed by `Done`.
++    Stalled {
++        model: String,
++        text: String,
++        engine: bool,
++    },
 +    /// The turn ended; `session_id` is persisted per workspace for resume.
 +    Done {
 +        session_id: Option<String>,
@@ -4498,6 +4544,26 @@ index 00000000..c8c856f6
 +/// Hard ceiling on a turn's silence before its first event: past this the engine is up but the
 +/// model never answered, and the user gets the cause plus a way out instead of a spinner.
 +pub const FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
++/// Mid-turn ceiling: once the model has started answering, this long without any output, tool
++/// activity or permission traffic means it stopped (an upstream 504 the engine retries silently,
++/// a dropped stream). The engine aborts the turn and Workshop recovers. `WORKSHOP_STALL_TIMEOUT_SECS`
++/// overrides it (gates run it in seconds).
++pub const STALL_TIMEOUT: Duration = Duration::from_secs(90);
++
++/// [`STALL_TIMEOUT`], or the `WORKSHOP_STALL_TIMEOUT_SECS` override.
++pub fn stall_timeout() -> Duration {
++    std::env::var("WORKSHOP_STALL_TIMEOUT_SECS")
++        .ok()
++        .and_then(|v| v.trim().parse::<u64>().ok())
++        .filter(|s| *s > 0)
++        .map(Duration::from_secs)
++        .unwrap_or(STALL_TIMEOUT)
++}
++
++/// The one line shown when a model stopped mid-answer and no fallback could take over.
++pub fn stall_line(model: &str) -> String {
++    format!("{model} stopped responding \u{2014} Enter to retry \u{b7} /model to switch")
++}
 +/// Hard ceiling on `opencode serve` binding its port and passing its health check.
 +pub const ENGINE_START_TIMEOUT: Duration = Duration::from_secs(30);
 +/// A model that has not sent anything back after this long is said to still be connecting: the
@@ -4879,6 +4945,8 @@ index 00000000..c8c856f6
 +    // `opencode serve` is up in a couple of seconds on any laptop; a server that has not bound
 +    // its port after this long is broken, and the user should hear so instead of waiting.
 +    opts.startup_timeout = ENGINE_START_TIMEOUT;
++    // A model that stops mid-answer is aborted after this and the turn recovers (see `Stalled`).
++    opts.idle_timeout = Some(stall_timeout());
 +    match OpenCodeEngine::start(&cli, opts).await {
 +        Ok(engine) => {
 +            st.last_phase = Some("ready".into());
@@ -5255,6 +5323,7 @@ index 00000000..c8c856f6
 +    // is continued (engine, not Plan), at most MAX_AUTO_CONTINUES times in all.
 +    let mut tail = String::new();
 +    let mut errored = false;
++    let mut stalled = false;
 +    let mut continues = 0;
 +    let asks_for_files = asks_to_write_files(&spec.text);
 +    let mut wrote_a_file = false;
@@ -5323,9 +5392,17 @@ index 00000000..c8c856f6
 +                    first_event_at = None;
 +                    still_connecting_at = None;
 +                    errored = true;
-+                    // An abort we asked for (Ctrl-C, or the silence timeout above) is already
-+                    // reported; the backend's own "run cancelled" would only repeat it.
-+                    if !(aborted_by_us && message == "run cancelled") {
++                    if stream.stalled() {
++                        // The engine's idle ceiling ended the turn: reported as `Stalled` below,
++                        // with the recovery, not as a bare error.
++                        stalled = true;
++                        state::append_log(
++                            &engine_log_path(),
++                            &format!("stall: {model_name} stopped responding ({message}); recovering"),
++                        );
++                    } else if !(aborted_by_us && message == "run cancelled") {
++                        // An abort we asked for (Ctrl-C, or the silence timeout above) is already
++                        // reported; the backend's own "run cancelled" would only repeat it.
 +                        let _ = tx.send(WorkshopTurnMsg::Error(message));
 +                    }
 +                }
@@ -5395,6 +5472,13 @@ index 00000000..c8c856f6
 +    }
 +
 +    let session_id = stream.session_id();
++    if stalled && !cancelled {
++        let _ = tx.send(WorkshopTurnMsg::Stalled {
++            model: model_name.clone(),
++            text: spec.text.clone(),
++            engine: matches!(spec.kind, WorkshopTurnKind::Engine { .. }),
++        });
++    }
 +    let _ = tx.send(WorkshopTurnMsg::Done {
 +        session_id,
 +        cancelled,

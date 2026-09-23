@@ -4108,6 +4108,7 @@ fn handle_workshop_turn_msg(
         | M::PermissionAsk { .. }
         | M::Error(_)
         | M::EngineUnavailable { .. }
+        | M::Stalled { .. }
         | M::Done { .. } => true,
         _ => false,
     };
@@ -4142,6 +4143,35 @@ fn handle_workshop_turn_msg(
             app,
         );
         return (true, effects);
+    }
+    if let M::Stalled {
+        model,
+        text,
+        engine,
+    } = msg
+    {
+        // A model that stopped mid-answer: an engine turn is resent through the pool fallback
+        // (the same seam a failed bring-up uses); with no pool to fall back to — or on a CLI
+        // rail — the user gets one plain line and Enter retries.
+        let reason = format!("{model} stopped responding");
+        if engine && crate::app::workshop::kilo_fallback_model().is_some() {
+            let effects = dispatch::dispatch(
+                Action::WorkshopEngineUnavailable {
+                    agent_id,
+                    reason,
+                    text,
+                },
+                app,
+            );
+            return (true, effects);
+        }
+        if let Some(agent) = app.agents.get_mut(&agent_id) {
+            agent
+                .scrollback
+                .push_block(RenderBlock::system_error(crate::app::workshop::stall_line(&model)));
+            agent.workshop_retry_prompt = Some(text);
+        }
+        return (true, vec![]);
     }
     let redraw = match msg {
         M::EngineWarm { .. } => false,
@@ -4426,7 +4456,7 @@ fn handle_workshop_turn_msg(
             return (true, effects);
         }
         // Handled above (needs the dispatcher).
-        M::EngineUnavailable { .. } => false,
+        M::EngineUnavailable { .. } | M::Stalled { .. } => false,
     };
     (redraw, vec![])
 }

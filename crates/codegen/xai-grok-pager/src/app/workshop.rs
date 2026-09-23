@@ -610,6 +610,13 @@ impl TurnStream {
             Self::Adapter(r) => r.session_id(),
         }
     }
+    /// The engine ended this turn at its idle ceiling (set before its final `Error` arrives).
+    pub fn stalled(&self) -> bool {
+        match self {
+            Self::Engine(t) => t.stalled(),
+            Self::Adapter(_) => false,
+        }
+    }
 }
 
 /// What the UI thread learns as a turn streams. Mapped to scrollback `RenderBlock`s by the event
@@ -679,6 +686,15 @@ pub enum WorkshopTurnMsg {
         reason: String,
         text: String,
     },
+    /// The model started answering and then went silent for [`STALL_TIMEOUT`] (no output, no
+    /// tool running, no prompt waiting on the user); the engine aborted the turn. `text` is the
+    /// prompt to resend: an engine turn goes through the pool fallback, else the user gets
+    /// [`stall_line`] with Enter to retry. Followed by `Done`.
+    Stalled {
+        model: String,
+        text: String,
+        engine: bool,
+    },
     /// The turn ended; `session_id` is persisted per workspace for resume.
     Done {
         session_id: Option<String>,
@@ -742,6 +758,26 @@ const RECENT_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 /// Hard ceiling on a turn's silence before its first event: past this the engine is up but the
 /// model never answered, and the user gets the cause plus a way out instead of a spinner.
 pub const FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
+/// Mid-turn ceiling: once the model has started answering, this long without any output, tool
+/// activity or permission traffic means it stopped (an upstream 504 the engine retries silently,
+/// a dropped stream). The engine aborts the turn and Workshop recovers. `WORKSHOP_STALL_TIMEOUT_SECS`
+/// overrides it (gates run it in seconds).
+pub const STALL_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// [`STALL_TIMEOUT`], or the `WORKSHOP_STALL_TIMEOUT_SECS` override.
+pub fn stall_timeout() -> Duration {
+    std::env::var("WORKSHOP_STALL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(STALL_TIMEOUT)
+}
+
+/// The one line shown when a model stopped mid-answer and no fallback could take over.
+pub fn stall_line(model: &str) -> String {
+    format!("{model} stopped responding \u{2014} Enter to retry \u{b7} /model to switch")
+}
 /// Hard ceiling on `opencode serve` binding its port and passing its health check.
 pub const ENGINE_START_TIMEOUT: Duration = Duration::from_secs(30);
 /// A model that has not sent anything back after this long is said to still be connecting: the
@@ -1123,6 +1159,8 @@ async fn start_engine(
     // `opencode serve` is up in a couple of seconds on any laptop; a server that has not bound
     // its port after this long is broken, and the user should hear so instead of waiting.
     opts.startup_timeout = ENGINE_START_TIMEOUT;
+    // A model that stops mid-answer is aborted after this and the turn recovers (see `Stalled`).
+    opts.idle_timeout = Some(stall_timeout());
     match OpenCodeEngine::start(&cli, opts).await {
         Ok(engine) => {
             st.last_phase = Some("ready".into());
@@ -1499,6 +1537,7 @@ pub async fn run_workshop_turn(
     // is continued (engine, not Plan), at most MAX_AUTO_CONTINUES times in all.
     let mut tail = String::new();
     let mut errored = false;
+    let mut stalled = false;
     let mut continues = 0;
     let asks_for_files = asks_to_write_files(&spec.text);
     let mut wrote_a_file = false;
@@ -1567,9 +1606,17 @@ pub async fn run_workshop_turn(
                     first_event_at = None;
                     still_connecting_at = None;
                     errored = true;
-                    // An abort we asked for (Ctrl-C, or the silence timeout above) is already
-                    // reported; the backend's own "run cancelled" would only repeat it.
-                    if !(aborted_by_us && message == "run cancelled") {
+                    if stream.stalled() {
+                        // The engine's idle ceiling ended the turn: reported as `Stalled` below,
+                        // with the recovery, not as a bare error.
+                        stalled = true;
+                        state::append_log(
+                            &engine_log_path(),
+                            &format!("stall: {model_name} stopped responding ({message}); recovering"),
+                        );
+                    } else if !(aborted_by_us && message == "run cancelled") {
+                        // An abort we asked for (Ctrl-C, or the silence timeout above) is already
+                        // reported; the backend's own "run cancelled" would only repeat it.
                         let _ = tx.send(WorkshopTurnMsg::Error(message));
                     }
                 }
@@ -1639,6 +1686,13 @@ pub async fn run_workshop_turn(
     }
 
     let session_id = stream.session_id();
+    if stalled && !cancelled {
+        let _ = tx.send(WorkshopTurnMsg::Stalled {
+            model: model_name.clone(),
+            text: spec.text.clone(),
+            engine: matches!(spec.kind, WorkshopTurnKind::Engine { .. }),
+        });
+    }
     let _ = tx.send(WorkshopTurnMsg::Done {
         session_id,
         cancelled,

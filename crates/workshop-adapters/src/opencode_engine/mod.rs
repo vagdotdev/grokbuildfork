@@ -34,6 +34,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ::http::Method;
@@ -109,7 +110,9 @@ pub struct EngineOptions {
     /// Environment for the server; `None` = minimal env from this process.
     pub env: Option<BTreeMap<OsString, OsString>>,
     pub startup_timeout: Duration,
-    /// How long a turn may stay silent before it is aborted.
+    /// How long a turn may stay silent — after its first output, with no tool running and no
+    /// permission waiting on the user — before it is aborted as stalled ([`TurnHandle::stalled`]).
+    /// The server's heartbeats do not count as output.
     pub idle_timeout: Option<Duration>,
     /// After `abort`, how long to wait for the server to report idle.
     pub cancel_grace: Duration,
@@ -624,6 +627,7 @@ impl OpenCodeEngine {
 
         let (events_tx, events_rx) = mpsc::channel(256);
         let (cancel_tx, cancel_rx) = watch::channel(false);
+        let stalled = Arc::new(AtomicBool::new(false));
         let driver = TurnDriver {
             client: self.client.clone(),
             session_id: session_id.to_string(),
@@ -636,6 +640,7 @@ impl OpenCodeEngine {
             permission_handler: self.permission_handler.clone(),
             idle_timeout: self.idle_timeout,
             cancel_grace: self.cancel_grace,
+            stalled: stalled.clone(),
         };
         let outcome = tokio::spawn(driver.run());
         Ok(TurnHandle {
@@ -643,6 +648,7 @@ impl OpenCodeEngine {
             events: events_rx,
             cancel: cancel_tx,
             outcome,
+            stalled,
         })
     }
 
@@ -773,9 +779,17 @@ pub struct TurnHandle {
     events: mpsc::Receiver<AdapterEvent>,
     cancel: watch::Sender<bool>,
     outcome: tokio::task::JoinHandle<RunOutcome>,
+    stalled: Arc<AtomicBool>,
 }
 
 impl TurnHandle {
+    /// True once the idle ceiling ([`EngineOptions::idle_timeout`]) ended this turn: the model
+    /// had started answering and then nothing arrived for that long while no tool was running
+    /// and no permission was waiting on the user. Set before the final `Error` event is emitted.
+    pub fn stalled(&self) -> bool {
+        self.stalled.load(Ordering::SeqCst)
+    }
+
     /// The OpenCode session id — pass it back to [`OpenCodeEngine::prompt`]
     /// to continue the conversation, now or after a restart.
     pub fn session_id(&self) -> &str {
@@ -813,6 +827,9 @@ struct TurnDriver {
     permission_handler: Option<PermissionHandler>,
     idle_timeout: Option<Duration>,
     cancel_grace: Duration,
+    /// Set when the idle ceiling ended the turn, so the host can tell a stall from any other
+    /// failure (the stream still ends with an `Error`).
+    stalled: Arc<AtomicBool>,
 }
 
 impl TurnDriver {
@@ -838,7 +855,12 @@ impl TurnDriver {
         // while a prompt is up and the model's other output keeps streaming.
         let mut pending: JoinSet<(String, PermissionReply)> = JoinSet::new();
         let mut pending_ids: HashMap<tokio::task::Id, String> = HashMap::new();
+        // The idle ceiling counts from the turn's last real activity — output, a tool starting or
+        // finishing, a permission answered — never from the server's 10 s heartbeats, and only
+        // once the model has said something (the host owns the wait for the first event).
+        let mut last_activity: Option<tokio::time::Instant> = None;
         let outcome = loop {
+            let idle_at = last_activity.map(|at| at + idle);
             let grace = match abort_deadline {
                 Some(deadline) => deadline.saturating_duration_since(tokio::time::Instant::now()),
                 None => NEVER,
@@ -861,6 +883,7 @@ impl TurnDriver {
                     }
                 }
                 Some(decided) = pending.join_next_with_id(), if !pending.is_empty() => {
+                    last_activity = Some(tokio::time::Instant::now());
                     match decided {
                         Ok((task_id, (perm_id, reply))) => {
                             pending_ids.remove(&task_id);
@@ -881,10 +904,15 @@ impl TurnDriver {
                         break RunOutcome::Failed { reason, stderr_tail: String::new() };
                     }
                     Some(ev) => {
-                        for out in self.turn.on_event(&ev) {
+                        let outputs = self.turn.on_event(&ev);
+                        let permissions = self.turn.take_permissions();
+                        if !outputs.is_empty() || !permissions.is_empty() {
+                            last_activity = Some(tokio::time::Instant::now());
+                        }
+                        for out in outputs {
                             self.emit(out).await;
                         }
-                        for perm in self.turn.take_permissions() {
+                        for perm in permissions {
                             match self.decide_permission(&perm) {
                                 PermissionDecision::Reply(reply) => {
                                     self.post_reply(&perm.id, reply).await;
@@ -914,9 +942,14 @@ impl TurnDriver {
                     self.emit(AdapterEvent::Error { message: "run cancelled".to_string() }).await;
                     break RunOutcome::Cancelled;
                 }
-                // A turn waiting on the user's answer is not idle: the silence is ours.
-                _ = tokio::time::sleep(idle), if self.idle_timeout.is_some() && !cancel_requested && pending.is_empty() => {
-                    let reason = format!("no output for {idle:?}");
+                // A turn waiting on the user's answer, or on a tool the server is running, is not
+                // idle: that silence is expected. Anything else this long is a stall.
+                _ = tokio::time::sleep_until(idle_at.unwrap_or_else(|| tokio::time::Instant::now() + NEVER)),
+                    if self.idle_timeout.is_some() && idle_at.is_some() && !cancel_requested
+                        && pending.is_empty() && self.turn.tools_running() == 0 =>
+                {
+                    let reason = format!("no output for {}s", idle.as_secs());
+                    self.stalled.store(true, Ordering::SeqCst);
                     let _ = self.client.call(Method::POST, &self.abort_path(), None).await;
                     self.emit(AdapterEvent::Error { message: reason.clone() }).await;
                     break RunOutcome::Failed { reason, stderr_tail: String::new() };
