@@ -3,10 +3,12 @@
 
 usage: setup.py TASK HOME OUTDIR USER
 
-Creates the fresh HOME with the folders a Mac user always has (Desktop, Documents, Downloads), puts the
-task's fixtures in it, and resets whatever system state the task changes (packages it installs). What
-the verifier needs to know about the fixtures goes to OUTDIR/fixture.json. Fixtures that are
-downloaded or generated once are cached under $ACC_CACHE (default ~/.cache/workshop-acceptance).
+Creates the run's account if needed (`sam`: NOPASSWD sudo; `mac`: in the sudo group, so sudo asks for
+its password) and the fresh HOME with the folders a Mac user always has (Desktop, Documents, Downloads),
+puts the task's fixtures in it, and resets whatever system state the task changes (packages it
+installs). What the verifier needs to know about the fixtures goes to OUTDIR/fixture.json, outside
+anything the run's account can read. Fixtures that are downloaded or generated once are cached under
+$ACC_CACHE (default ~/.cache/workshop-acceptance).
 """
 import hashlib
 import io
@@ -68,9 +70,16 @@ def stage(rel, src=None, data=None):
 
 # --- the fresh HOME ----------------------------------------------------------------------------
 if OTHER:
-    sh(f"id {USER} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash -G sudo {USER}", check=True)
+    groups = "-G sudo " if TASK == "T11" else ""
+    sh(f"id {USER} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash {groups}{USER}", check=True)
+    if TASK != "T11":
+        rule = Path(f"/etc/sudoers.d/acc-{USER}")
+        subprocess.run(["sudo", "tee", str(rule)], input=f"{USER} ALL=(ALL) NOPASSWD:ALL\n", text=True,
+                       capture_output=True, check=True)
+        sh(f"sudo chmod 440 {rule}")
     sh(f"sudo rm -rf '{HOME}'")
-    sh(f"sudo install -d -m 755 '{HOME.parent}'")
+    # root-owned and execute-only: a run can reach its own HOME but cannot list the others
+    sh(f"sudo install -d -m 711 -o root -g root '{HOME.parent}'")
     sh(f"sudo install -d -m 755 -o {USER} -g {USER} '{HOME}'", check=True)
     for d in ("Desktop", "Documents", "Downloads"):
         sh(f"sudo -u {USER} mkdir -p '{HOME / d}'", check=True)
@@ -132,9 +141,8 @@ elif TASK == "T4":
         r = sh(f"cd '{repo}' && python3 -m unittest discover -s tests -t . 2>&1 | tail -5")
         ran = [l for l in r.stdout.splitlines() if l.startswith("Ran ")]
         base.write_text(json.dumps({"ran": int(ran[0].split()[1]) if ran else None, "tail": r.stdout}))
-    dst = HOME / "projects/more-itertools"
-    if OTHER:
-        sys.exit("T4 runs as the invoking user")
+    dst = CACHE / "stage/projects/more-itertools"
+    shutil.rmtree(dst, ignore_errors=True)
     shutil.copytree(repo, dst, symlinks=True)
     more = dst / "more_itertools/more.py"
     src = more.read_text()
@@ -147,6 +155,11 @@ elif TASK == "T4":
     fixture["head"] = sh(f"cd '{dst}' && git rev-parse HEAD").stdout.strip()
     r = sh(f"cd '{dst}' && python3 -m unittest discover -s tests -t . 2>&1 | tail -3")
     fixture["broken_tail"] = r.stdout
+    if OTHER:
+        sh(f"sudo cp -a '{dst}' '{HOME}/projects/' 2>/dev/null || (sudo mkdir -p '{HOME}/projects' && sudo cp -a '{dst}' '{HOME}/projects/')", check=True)
+        sh(f"sudo chown -R {USER}:{USER} '{HOME}/projects'", check=True)
+    else:
+        shutil.copytree(dst, HOME / "projects/more-itertools", symlinks=True)
 
 elif TASK == "T5":
     clip = CACHE / "clip.mp4"

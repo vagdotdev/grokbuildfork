@@ -9,11 +9,16 @@
 # pane is also shown in an xfce4-terminal on $DISPLAY and the whole desktop is recorded to
 # OUTDIR/raw-screen.mp4 (render.py cuts the waits afterwards).
 #
-# Needs: tmux, asciinema, python3 with pyte and PIL, and a static ffmpeg outside the user's PATH
-# ($ACC_FFMPEG, default /opt/rec/bin/ffmpeg; T5 removes the system one). sudo for system resets.
+# The task runs as its own account (default `sam`, with NOPASSWD sudo like a Mac admin using Homebrew;
+# T11's `mac` needs its password), with HOME under the root-owned, unlistable /home/acc/. That account
+# cannot read the invoking user's home, where the evidence and the fixtures' answer keys live; after the
+# checks the HOME is moved into OUTDIR/home.
+#
+# Needs: tmux, asciinema, xauth, python3 with pyte and PIL, and a static ffmpeg outside the user's PATH
+# ($ACC_FFMPEG, default /opt/rec/bin/ffmpeg; T5 removes the system one). sudo for users and system resets.
 #
 # Steps file (one per line; '#' comments; `@key value` directives before the first step):
-#   @user NAME / @password PW / @timeout S / @stall S      run as NAME (T11), per-turn limits
+#   @user NAME / @password PW / @timeout S / @stall S      run as NAME (default sam), per-turn limits
 #   launch CMD         type CMD at the shell prompt, then wait for the composer
 #   type TEXT          type a prompt exactly, then Enter (starts a turn)
 #   waitturn [S]       wait until that turn has ended (engine session record + still screen)
@@ -44,13 +49,13 @@ export DISPLAY="${DISPLAY:-:1}"
 XAUTH="${XAUTHORITY:-$HOME/.Xauthority}"
 
 directive() { sed -n "s/^@$1[[:space:]]\+//p" "$STEPS" | head -1; }
-RUN_USER="$(directive user)"; RUN_USER="${RUN_USER:-$(id -un)}"
+RUN_USER="$(directive user)"; RUN_USER="${RUN_USER:-${ACC_USER:-sam}}"
 PASSWORD="$(directive password)"
 TURN_TIMEOUT="$(directive timeout)"; TURN_TIMEOUT="${TURN_TIMEOUT:-900}"
 STALL="$(directive stall)"; STALL="${STALL:-120}"
-if [ "$RUN_USER" = "$(id -un)" ]; then UHOME="$OUT/home"; AS=(); else UHOME="/home/acc-$RUN_USER/$RUN_ID"; AS=(sudo -n -u "$RUN_USER"); fi
+if [ "$RUN_USER" = "$(id -un)" ]; then UHOME="$OUT/home"; AS=(); else UHOME="/home/acc/$RUN_ID"; AS=(sudo -n -u "$RUN_USER"); fi
 
-rm -rf "$OUT"/{live-screen.txt,events.jsonl,driver.log,cast-wall-sync.txt,prompts.log,prompts,snaps,probes,verify.*}
+sudo rm -rf "$OUT/home"; rm -rf "$OUT"/{live-screen.txt,events.jsonl,driver.log,cast-wall-sync.txt,prompts.log,prompts,snaps,probes,verify.*}
 mkdir -p "$OUT/snaps" "$OUT/probes"
 CAST="$OUT/session.cast"; rm -f "$CAST"
 LIVE="$OUT/live-screen.txt"
@@ -144,7 +149,8 @@ probe_keys() { # probes that need the keyboard
 ev setup_start "$TASK as $RUN_USER, HOME=$UHOME"
 python3 "$HERE/setup.py" "$TASK" "$UHOME" "$OUT" "$RUN_USER" >> "$LOG" 2>&1 || { ev setup_failed; exit 3; }
 if [ ${#AS[@]} -gt 0 ]; then
-  sudo install -D -m 755 -o "$RUN_USER" -g "$RUN_USER" "$BIN" "$UHOME/.workshop/bin/workshop"
+  "${AS[@]}" mkdir -p "$UHOME/.workshop/bin"
+  sudo install -m 755 -o "$RUN_USER" -g "$RUN_USER" "$BIN" "$UHOME/.workshop/bin/workshop"
 else
   install -D -m 755 "$BIN" "$UHOME/.workshop/bin/workshop"
 fi
@@ -160,7 +166,11 @@ fi
 RC="$UHOME/.acc-rc"
 printf 'PS1="\\$ "\nexport LANG=C.UTF-8\ncd ~\n' | "${AS[@]}" tee "$RC" >/dev/null
 UPATH="$UHOME/.local/bin:$UHOME/.workshop/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-XENV="DISPLAY=$DISPLAY XAUTHORITY=$XAUTH"; [ ${#AS[@]} -gt 0 ] && XENV=""
+XENV="DISPLAY=$DISPLAY XAUTHORITY=$XAUTH"
+if [ ${#AS[@]} -gt 0 ]; then # the desktop session's X cookie, as any desktop user's home has one
+  xauth -f "$XAUTH" extract - "$DISPLAY" 2>/dev/null | "${AS[@]}" xauth -f "$UHOME/.Xauthority" merge - 2>/dev/null
+  XENV="DISPLAY=$DISPLAY XAUTHORITY=$UHOME/.Xauthority"
+fi
 INNER="${AS[*]} env -i HOME=$UHOME USER=$RUN_USER LOGNAME=$RUN_USER PATH=$UPATH TERM=xterm-256color LANG=C.UTF-8 SHELL=/bin/bash $XENV bash --noprofile --rcfile $RC -i"
 python3 - "$OUT/run.json" <<EOF
 import json, sys, time
@@ -234,6 +244,9 @@ kill "$MON" 2>/dev/null
 ev recording_stopped
 python3 "$HERE/verify.py" verify "$TASK" "$OUT" >> "$LOG" 2>&1
 python3 "$HERE/verify.py" cleanup "$TASK" "$OUT" >> "$LOG" 2>&1
+if [ ${#AS[@]} -gt 0 ]; then
+  sudo mv "$UHOME" "$OUT/home" && sudo chown -R "$(id -un):$(id -gn)" "$OUT/home"
+fi
 tail -1 "$OUT/verify.txt" 2>/dev/null
 exit 0
 }

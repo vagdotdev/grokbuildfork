@@ -34,6 +34,8 @@ RUN = json.loads((OUT / "run.json").read_text())
 HOME = Path(RUN["home"])
 ME = subprocess.run(["id", "-un"], capture_output=True, text=True).stdout.strip()
 OTHER = RUN["user"] != ME
+if OTHER and not HOME.exists() and (OUT / "home").exists():  # archived after the run: re-checking files
+    HOME, OTHER = OUT / "home", False
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".avif", ".bmp", ".tif", ".tiff"}
 
 
@@ -41,9 +43,8 @@ IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".avif", ".bmp",
 def user_env(extra=None):
     env = {"HOME": str(HOME), "USER": RUN["user"], "LOGNAME": RUN["user"], "PATH": RUN["path"],
            "LANG": "C.UTF-8", "SHELL": "/bin/bash", "TERM": "xterm-256color"}
-    if not OTHER:
-        env.update(DISPLAY=os.environ.get("DISPLAY", ":1"),
-                   XAUTHORITY=os.environ.get("XAUTHORITY", str(Path.home() / ".Xauthority")))
+    env.update(DISPLAY=os.environ.get("DISPLAY", ":1"),
+               XAUTHORITY=str(HOME / ".Xauthority") if OTHER else os.environ.get("XAUTHORITY", str(Path.home() / ".Xauthority")))
     env.update(extra or {})
     return env
 
@@ -397,13 +398,19 @@ def probe(name):
         p["which"] = where.strip()
         if rc == 0:
             env = user_env()
-            proc = subprocess.Popen(["bash", "-c", "exec ghostty"], env=env, stdout=subprocess.DEVNULL,
+            argv = ["bash", "-c", "exec ghostty"]
+            if OTHER:
+                argv = ["sudo", "-n", "-u", RUN["user"], "env", "-i"] + [f"{k}={v}" for k, v in env.items()] + argv
+                env = None
+            before = set(subprocess.run(["xdotool", "search", "--onlyvisible", "--class", "ghostty"],
+                                        capture_output=True, text=True).stdout.split())
+            proc = subprocess.Popen(argv, env=env, cwd=str(HOME), stdout=subprocess.DEVNULL,
                                     stderr=open(OUT / "probes/ghostty-stderr.txt", "w"), start_new_session=True)
             t0, wid = time.time(), ""
             while time.time() - t0 < 15 and not wid:
                 time.sleep(0.5)
-                r = subprocess.run(["xdotool", "search", "--onlyvisible", "--pid", str(proc.pid)], capture_output=True, text=True)
-                wid = r.stdout.split()[0] if r.stdout.split() else ""
+                r = subprocess.run(["xdotool", "search", "--onlyvisible", "--class", "ghostty"], capture_output=True, text=True)
+                wid = next((w for w in r.stdout.split() if w not in before), "")
             p["window_after_s"] = round(time.time() - t0, 1) if wid else None
             p["window"] = wid
             if wid:
@@ -411,7 +418,10 @@ def probe(name):
                 subprocess.run(["scrot", "-o", str(OUT / "probes/ghostty-window.png")], capture_output=True)
                 p["title"] = subprocess.run(["xdotool", "getwindowname", wid], capture_output=True, text=True).stdout.strip()
             p["alive"] = proc.poll() is None
-            os.killpg(proc.pid, signal.SIGTERM)
+            if OTHER:
+                subprocess.run(["sudo", "-n", "pkill", "-u", RUN["user"], "-x", "ghostty"], capture_output=True)
+            else:
+                os.killpg(proc.pid, signal.SIGTERM)
     (OUT / "probes" / f"{name}.json").write_text(json.dumps(p, indent=1))
 
 
@@ -833,8 +843,10 @@ def cleanup():
             cwd = os.readlink(f"/proc/{pid}/cwd")
             env = open(f"/proc/{pid}/environ", "rb").read()
         except OSError:
-            r = subprocess.run(["sudo", "-n", "readlink", f"/proc/{pid}/cwd"], capture_output=True, text=True)
-            cwd, env = r.stdout.strip(), b""
+            if not OTHER:
+                continue
+            cwd = subprocess.run(["sudo", "-n", "readlink", f"/proc/{pid}/cwd"], capture_output=True, text=True).stdout.strip()
+            env = subprocess.run(["sudo", "-n", "cat", f"/proc/{pid}/environ"], capture_output=True).stdout
         if cwd.startswith(home) or f"HOME={home}".encode() in env:
             subprocess.run(["sudo", "-n", "kill", "-9", pid] if OTHER else ["kill", "-9", pid], capture_output=True)
     print("cleanup done")
