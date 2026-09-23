@@ -4103,7 +4103,14 @@ fn handle_workshop_turn_msg(
             app.repaint_workshop_progress()
         }
         M::EngineDefaultResolved { model } => {
-            // OpenCode's live default replaces the pinned seed the first run activated.
+            // OpenCode's live default replaces the pinned seed the first run activated; a picked
+            // effort level stays while the model still offers it.
+            let model = match &app.workshop_connection {
+                crate::app::workshop::WorkshopConnection::Engine { model: current } => {
+                    model.carrying_effort_from(current)
+                }
+                _ => model,
+            };
             let conn = crate::app::workshop::WorkshopConnection::Engine { model };
             crate::app::workshop::save_active_connection(&conn);
             app.workshop_connection = conn;

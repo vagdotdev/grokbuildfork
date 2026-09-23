@@ -1174,10 +1174,10 @@ index ab27a76d..15f378e2 100644
  | [Slash Commands](04-slash-commands.md) | All available `/` commands |
  | [Configuration](05-configuration.md) | config.toml, pager.toml, environment variables |
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md b/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
-index 5e321a67..e7d2ea23 100644
+index 5e321a67..5f55d879 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
-@@ -1,368 +1,93 @@
+@@ -1,368 +1,96 @@
  # Authentication
  
 -Grok supports several authentication methods, including interactive browser login, enterprise single sign-on (SSO), and headless CI/CD runners.
@@ -1229,8 +1229,11 @@ index 5e321a67..e7d2ea23 100644
 -| `--device-auth` (alias `--device-code`) | Sign in with the device-code flow for headless or remote environments. |
 -
 -To sign out, run `grok logout`. It takes no flags and clears your cached credentials.
-+The composer footer always names the active model (`Big Pickle`, `Claude Sonnet`, or the model of
-+an API-key provider) — the model only, never a provider or runtime name.
++The composer's bottom border reads `<model> (<effort>) · <mode>`: the active model by name
++(`Big Pickle`, `Claude Sonnet`, or an API-key provider's model — never a provider or runtime
++name), its effort level in parentheses when the model offers levels and you picked one on
++`/model` (`Ling 3.0 Flash Fin Free (high)`; a model without levels shows none), then the current
++mode when it is not the default (`· plan`, `· auto`, `· always-approve`).
  
  ---
  

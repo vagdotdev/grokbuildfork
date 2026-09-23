@@ -2724,7 +2724,7 @@ index 1c507697..68fd7094 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..e28001e0 100644
+index eda61b3c..76b8a9e2 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -2973,7 +2973,7 @@ index eda61b3c..e28001e0 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4044,220 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4044,227 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -3036,7 +3036,14 @@ index eda61b3c..e28001e0 100644
 +            app.repaint_workshop_progress()
 +        }
 +        M::EngineDefaultResolved { model } => {
-+            // OpenCode's live default replaces the pinned seed the first run activated.
++            // OpenCode's live default replaces the pinned seed the first run activated; a picked
++            // effort level stays while the model still offers it.
++            let model = match &app.workshop_connection {
++                crate::app::workshop::WorkshopConnection::Engine { model: current } => {
++                    model.carrying_effort_from(current)
++                }
++                _ => model,
++            };
 +            let conn = crate::app::workshop::WorkshopConnection::Engine { model };
 +            crate::app::workshop::save_active_connection(&conn);
 +            app.workshop_connection = conn;
@@ -3324,10 +3331,10 @@ index 60fe34f9..14e8431b 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..c334be27
+index 00000000..a5fe5ec7
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1275 @@
+@@ -0,0 +1,1287 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -3381,18 +3388,24 @@ index 00000000..c334be27
 +}
 +
 +impl WorkshopConnection {
-+    /// Composer label: the model's name only (`Big Pickle`, `Claude Sonnet`), never a provider or
-+    /// runtime name — a first-time user chose a model, not plumbing.
++    /// Composer label in upstream's format, `<model> (<effort>)`: `Big Pickle`,
++    /// `Ling 3.0 Flash Fin Free (high)`, `Claude Sonnet` — the effort only when the model has
++    /// levels and one is picked, never a provider or runtime name. The mode (`· plan`,
++    /// `· always-approve`) is appended by the composer's own mode flags, as upstream does.
 +    pub fn composer_label(&self) -> Option<String> {
 +        match self {
 +            Self::Shell => None,
-+            Self::Engine { model } => Some(model.name.clone()),
++            Self::Engine { model } => Some(model.display()),
 +            Self::Adapter { model, .. } => Some(model.display().to_owned()),
 +        }
 +    }
 +    /// The model name for the failure line (`Couldn't reach {model}`); `Shell` has none.
 +    pub fn model_name(&self) -> Option<String> {
-+        self.composer_label()
++        match self {
++            Self::Shell => None,
++            Self::Engine { model } => Some(model.name.clone()),
++            Self::Adapter { model, .. } => Some(model.display().to_owned()),
++        }
 +    }
 +    pub fn is_shell(&self) -> bool {
 +        matches!(self, Self::Shell)
@@ -3565,6 +3578,8 @@ index 00000000..c334be27
 +            is_default: m.is_default,
 +            tool_call: m.tool_call,
 +            context_limit: m.context_limit,
++            variants: m.variants.clone(),
++            effort: None,
 +        })
 +        .collect();
 +    if models.is_empty() {
@@ -4349,7 +4364,9 @@ index 00000000..c334be27
 +            if model.is_default
 +                && let Some(live) = live_engine_default(&cached_engine_models())
 +            {
-+                if live.model_ref != model.model_ref {
++                // The user's picked effort level survives the swap while the model offers it.
++                let live = live.carrying_effort_from(&model);
++                if live.model_ref != model.model_ref || live.effort != model.effort {
 +                    let _ = tx.send(WorkshopTurnMsg::EngineDefaultResolved {
 +                        model: live.clone(),
 +                    });
@@ -4371,6 +4388,8 @@ index 00000000..c334be27
 +            });
 +            let mut req = TurnRequest::new(spec.text.clone());
 +            req.model = Some(model.model_ref.clone());
++            // The picked effort level reaches OpenCode as the prompt's `variant`.
++            req.variant = model.effort.clone();
 +            req.permission = permission;
 +            let turn = engine.prompt(&session, req).await.map_err(|e| {
 +                TurnStartError::EngineUnavailable(format!("the prompt was refused: {e}"))

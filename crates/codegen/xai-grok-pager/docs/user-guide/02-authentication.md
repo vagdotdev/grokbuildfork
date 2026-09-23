@@ -16,8 +16,11 @@ Nothing on this page happens until you choose it.
 | **Local servers** — Ollama, LM Studio, llama.cpp, vLLM | Start the server; `/model` lists its models once it answers on loopback. | No secret. |
 | **xAI account** (optional) | Last row of `/auth`, labeled `xAI — Sign in · optional`. Press `Enter` twice; the browser opens `auth.x.ai`. | The inherited sign-in store under `~/.workshop`. This is the only Workshop path that ever contacts x.ai. |
 
-The composer footer always names the active model (`Big Pickle`, `Claude Sonnet`, or the model of
-an API-key provider) — the model only, never a provider or runtime name.
+The composer's bottom border reads `<model> (<effort>) · <mode>`: the active model by name
+(`Big Pickle`, `Claude Sonnet`, or an API-key provider's model — never a provider or runtime
+name), its effort level in parentheses when the model offers levels and you picked one on
+`/model` (`Ling 3.0 Flash Fin Free (high)`; a model without levels shows none), then the current
+mode when it is not the default (`· plan`, `· auto`, `· always-approve`).
 
 ---
 

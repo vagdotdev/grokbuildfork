@@ -14,9 +14,13 @@ Install or update: `curl -fsSL https://raw.githubusercontent.com/vagdotdev/grokb
   then each installed coding subscription (Claude, Codex, Cursor) with its models or a `Sign in`
   row, then the API-key providers you connected; type to filter, stable order while open,
   classifiers and routers hidden behind `Ctrl+A`. Keys never leak out of an open picker.
-- The composer names the model only (`Big Pickle`, `Claude Sonnet`). If the free default cannot
-  be reached, Workshop quietly answers through another free model and names it; only when that
-  fails too do you see `Couldn't reach Big Pickle — Enter to retry · /model to switch`.
+- The composer's border reads `<model> (<effort>) · <mode>` — `Big Pickle · always-approve`,
+  `Ling 3.0 Flash Fin Free (high) · plan`. The model by name only; the effort
+  level when the model offers levels and you picked one on `/model` (each level is its own row,
+  and the pick is what the model actually runs at); the mode when it is not the default. If the
+  free default cannot be reached, Workshop quietly answers through another free model and names
+  it; only when that fails too do you see `Couldn't reach Big Pickle — Enter to retry · /model to
+  switch`.
   `/release-notes` works offline.
 - Help, tutorial and the bundled guides describe Workshop: `workshop --help`, `~/.workshop`,
   `WORKSHOP_*` environment variables (the old names keep working), `/docs` Getting Started tells the

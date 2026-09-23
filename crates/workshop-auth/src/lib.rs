@@ -154,6 +154,14 @@ pub struct EngineModel {
     pub is_default: bool,
     pub tool_call: bool,
     pub context_limit: Option<u64>,
+    /// The effort / reasoning levels OpenCode's catalog offers for this model (`low`, `medium`,
+    /// `high`, …), lowest first; empty for a model without levels.
+    #[serde(default)]
+    pub variants: Vec<String>,
+    /// The level the user picked, one of `variants`; `None` runs the model at its own default.
+    /// Lives on the model so the active connection, the picker row and the prompt agree on it.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 impl EngineModel {
@@ -166,6 +174,8 @@ impl EngineModel {
             is_default: true,
             tool_call: true,
             context_limit: Some(200_000),
+            variants: Vec::new(),
+            effort: None,
         }
     }
 
@@ -179,9 +189,41 @@ impl EngineModel {
             .unwrap_or_else(Self::big_pickle_seed)
     }
 
-    /// Picker row id of this model (`opencode-engine:opencode/<id>`).
+    /// Picker row id of this model (`opencode-engine:opencode/<id>`, `…/<id>@<effort>` for a
+    /// picked level).
     pub fn row_id(&self) -> String {
-        format!("{ENGINE_PROVIDER_ID}:{}", self.model_ref)
+        match &self.effort {
+            Some(effort) => format!("{ENGINE_PROVIDER_ID}:{}@{effort}", self.model_ref),
+            None => format!("{ENGINE_PROVIDER_ID}:{}", self.model_ref),
+        }
+    }
+
+    /// The composer / row text, upstream's format: `Big Pickle`, `Ling 3.0 Flash Fin Free (high)`.
+    pub fn display(&self) -> String {
+        match &self.effort {
+            Some(effort) => format!("{} ({effort})", self.name),
+            None => self.name.clone(),
+        }
+    }
+
+    /// This model at `effort` (a level of `variants`).
+    pub fn with_effort(&self, effort: &str) -> Self {
+        Self {
+            effort: Some(effort.to_owned()),
+            ..self.clone()
+        }
+    }
+
+    /// A newer catalog entry for the same model keeps the level the user picked, as long as the
+    /// model still offers it; another model, or a dropped level, starts at the default.
+    pub fn carrying_effort_from(mut self, previous: &EngineModel) -> Self {
+        if previous.model_ref == self.model_ref
+            && let Some(effort) = &previous.effort
+            && self.variants.iter().any(|v| v == effort)
+        {
+            self.effort = Some(effort.clone());
+        }
+        self
     }
 }
 
@@ -241,7 +283,7 @@ impl ModelsRow {
             RowKind::ConnectProvider { .. } | RowKind::XaiOptional => {
                 format!("{} \u{2014} {}", self.group, self.connect_action())
             }
-            RowKind::Engine(m) => m.name.clone(),
+            RowKind::Engine(m) => m.display(),
             RowKind::RailModel { model, .. } => model.display().to_owned(),
             RowKind::RailSignIn(_) => "Sign in".into(),
         }
@@ -363,13 +405,18 @@ pub fn models_rows(
     } else {
         engine_models.to_vec()
     };
+    // A model with effort levels is one row at its default plus one per level (`Name (high)`),
+    // so the composer can say exactly what was picked; a model without levels is one row.
     for m in engine {
-        rows.push(ModelsRow {
-            kind: RowKind::Engine(m),
-            group: ENGINE_DISPLAY_NAME.into(),
-            badge: "Free · no sign-in · OpenCode's shared pool".into(),
-            class: ConnectionClass::AgentAdapter,
-        });
+        let levels: Vec<EngineModel> = m.variants.iter().map(|v| m.with_effort(v)).collect();
+        for model in std::iter::once(m).chain(levels) {
+            rows.push(ModelsRow {
+                kind: RowKind::Engine(model),
+                group: ENGINE_DISPLAY_NAME.into(),
+                badge: "Free · no sign-in · OpenCode's shared pool".into(),
+                class: ConnectionClass::AgentAdapter,
+            });
+        }
     }
     // Then each installed subscription CLI as its own group: its models when signed in, one
     // `Sign in` row when not. A CLI that is not installed stays on the Subscriptions view only.
@@ -1099,8 +1146,14 @@ fn row_detail_lines(row: &ModelsRow, xai_armed: bool, list_note: Option<String>)
                 lines.push(format!("Get a key: {url}"));
             }
         }
-        RowKind::Engine(_) => {
-            lines.push("Free model from OpenCode's shared pool; no sign-in, no key.".into());
+        RowKind::Engine(m) => {
+            lines.push(match &m.effort {
+                Some(effort) => format!(
+                    "Free model from OpenCode's shared pool at effort {effort} (of {}); no sign-in, no key.",
+                    m.variants.join(" / ")
+                ),
+                None => "Free model from OpenCode's shared pool; no sign-in, no key.".into(),
+            });
             // One line at the overlay's width: the detail area is three rows tall.
             lines.push(
                 "Runs here through the official opencode CLI; prompts go to opencode.ai and may be logged."
@@ -1512,20 +1565,8 @@ mod tests {
             EngineModel::big_pickle_seed()
         );
         let live = vec![
-            EngineModel {
-                model_ref: "opencode/other".into(),
-                name: "Other".into(),
-                is_default: false,
-                tool_call: true,
-                context_limit: None,
-            },
-            EngineModel {
-                model_ref: "opencode/new-default".into(),
-                name: "New Default".into(),
-                is_default: true,
-                tool_call: true,
-                context_limit: None,
-            },
+            engine("Other", "opencode/other", false, true),
+            engine("New Default", "opencode/new-default", true, true),
         ];
         assert_eq!(
             EngineModel::first_run_default(&live).model_ref,
@@ -1600,7 +1641,64 @@ mod tests {
             is_default,
             tool_call,
             context_limit: None,
+            variants: Vec::new(),
+            effort: None,
         }
+    }
+
+    /// A model with effort levels becomes its default row plus one row per level, titled the
+    /// way the composer will read (`Ling Free (high)`); picking a level carries it on the model
+    /// (`effort`), and a newer catalog entry keeps a picked level only while it is still offered.
+    #[test]
+    fn effort_levels_are_rows_and_travel_with_the_picked_model() {
+        let mut ling = engine("Ling Free", "opencode/ling", false, true);
+        ling.variants = vec!["low".into(), "medium".into(), "high".into()];
+        let p = loaded_with_engine(&[
+            engine("Big Pickle", "opencode/big-pickle", true, true),
+            ling.clone(),
+        ]);
+        let titles: Vec<String> = p
+            .rows
+            .iter()
+            .filter(|r| matches!(r.kind, RowKind::Engine(_)))
+            .map(ModelsRow::title)
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "Big Pickle",
+                "Ling Free",
+                "Ling Free (low)",
+                "Ling Free (medium)",
+                "Ling Free (high)"
+            ]
+        );
+        let high = p
+            .rows
+            .iter()
+            .find(|r| r.title() == "Ling Free (high)")
+            .expect("level row");
+        assert_eq!(high.id(), "opencode-engine:opencode/ling@high");
+        let RowKind::Engine(picked) = &high.kind else {
+            panic!("engine row")
+        };
+        assert_eq!(picked.effort.as_deref(), Some("high"));
+        assert_eq!(picked.display(), "Ling Free (high)");
+        assert_eq!(EngineModel::big_pickle_seed().display(), "Big Pickle");
+
+        // The live catalog re-reports the model: the pick survives while the level exists.
+        let fresh = ling.clone().carrying_effort_from(picked);
+        assert_eq!(fresh.effort.as_deref(), Some("high"));
+        let mut without_high = ling.clone();
+        without_high.variants = vec!["low".into()];
+        assert_eq!(without_high.carrying_effort_from(picked).effort, None);
+        assert_eq!(
+            engine("Other", "opencode/other", false, true)
+                .carrying_effort_from(picked)
+                .effort,
+            None,
+            "another model never inherits a level"
+        );
     }
 
     fn loaded_with_engine(models: &[EngineModel]) -> PickerState {

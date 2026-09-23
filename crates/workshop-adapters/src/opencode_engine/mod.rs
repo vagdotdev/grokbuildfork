@@ -160,6 +160,9 @@ pub struct TurnRequest {
     pub text: String,
     /// `opencode/<model>`; `None` lets OpenCode pick its default (free) model.
     pub model: Option<String>,
+    /// One of the model's effort variants (`FreeModel::variants`), sent as OpenCode's `variant`;
+    /// `None` runs the model at its own default.
+    pub variant: Option<String>,
     pub permission: PermissionPolicy,
 }
 
@@ -168,6 +171,7 @@ impl TurnRequest {
         Self {
             text: text.into(),
             model: None,
+            variant: None,
             permission: PermissionPolicy::ReadOnly,
         }
     }
@@ -530,6 +534,9 @@ impl OpenCodeEngine {
         });
         if let Some((provider_id, model_id)) = model {
             body["model"] = json!({ "providerID": provider_id, "modelID": model_id });
+        }
+        if let Some(variant) = &req.variant {
+            body["variant"] = json!(variant);
         }
         if let Err(e) = self
             .client

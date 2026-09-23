@@ -51,18 +51,24 @@ pub enum WorkshopConnection {
 }
 
 impl WorkshopConnection {
-    /// Composer label: the model's name only (`Big Pickle`, `Claude Sonnet`), never a provider or
-    /// runtime name — a first-time user chose a model, not plumbing.
+    /// Composer label in upstream's format, `<model> (<effort>)`: `Big Pickle`,
+    /// `Ling 3.0 Flash Fin Free (high)`, `Claude Sonnet` — the effort only when the model has
+    /// levels and one is picked, never a provider or runtime name. The mode (`· plan`,
+    /// `· always-approve`) is appended by the composer's own mode flags, as upstream does.
     pub fn composer_label(&self) -> Option<String> {
         match self {
             Self::Shell => None,
-            Self::Engine { model } => Some(model.name.clone()),
+            Self::Engine { model } => Some(model.display()),
             Self::Adapter { model, .. } => Some(model.display().to_owned()),
         }
     }
     /// The model name for the failure line (`Couldn't reach {model}`); `Shell` has none.
     pub fn model_name(&self) -> Option<String> {
-        self.composer_label()
+        match self {
+            Self::Shell => None,
+            Self::Engine { model } => Some(model.name.clone()),
+            Self::Adapter { model, .. } => Some(model.display().to_owned()),
+        }
     }
     pub fn is_shell(&self) -> bool {
         matches!(self, Self::Shell)
@@ -236,6 +242,8 @@ pub async fn refresh_engine_catalog(engine: &OpenCodeEngine) -> Result<Vec<Engin
             is_default: m.is_default,
             tool_call: m.tool_call,
             context_limit: m.context_limit,
+            variants: m.variants.clone(),
+            effort: None,
         })
         .collect();
     if models.is_empty() {
@@ -1045,7 +1053,9 @@ async fn build_stream(
             if model.is_default
                 && let Some(live) = live_engine_default(&cached_engine_models())
             {
-                if live.model_ref != model.model_ref {
+                // The user's picked effort level survives the swap while the model offers it.
+                let live = live.carrying_effort_from(&model);
+                if live.model_ref != model.model_ref || live.effort != model.effort {
                     let _ = tx.send(WorkshopTurnMsg::EngineDefaultResolved {
                         model: live.clone(),
                     });
@@ -1067,6 +1077,8 @@ async fn build_stream(
             });
             let mut req = TurnRequest::new(spec.text.clone());
             req.model = Some(model.model_ref.clone());
+            // The picked effort level reaches OpenCode as the prompt's `variant`.
+            req.variant = model.effort.clone();
             req.permission = permission;
             let turn = engine.prompt(&session, req).await.map_err(|e| {
                 TurnStartError::EngineUnavailable(format!("the prompt was refused: {e}"))
