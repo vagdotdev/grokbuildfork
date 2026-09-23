@@ -26,6 +26,9 @@
 #   mark TEXT          caption/marker in events.jsonl (protect-start / protect-end keep video)
 #   sleep S
 set -uo pipefail
+# The whole script is one brace group, so bash has parsed all of it before running any of it (editing
+# this file while a run is in flight cannot break that run).
+{
 export LC_ALL=C.UTF-8
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TASK="$1"; mkdir -p "$2"; OUT="$(cd "$2" && pwd)"; BIN="$3"; DESKTOP="${4:-}"
@@ -232,3 +235,5 @@ ev recording_stopped
 python3 "$HERE/verify.py" verify "$TASK" "$OUT" >> "$LOG" 2>&1
 python3 "$HERE/verify.py" cleanup "$TASK" "$OUT" >> "$LOG" 2>&1
 tail -1 "$OUT/verify.txt" 2>/dev/null
+exit 0
+}
