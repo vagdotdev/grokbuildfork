@@ -849,10 +849,10 @@ index 8ffcc224..613c4739 100644
  ## Reopen this tutorial
  
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
-index ab27a76d..15f378e2 100644
+index ab27a76d..298c2c63 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
-@@ -1,99 +1,96 @@
+@@ -1,99 +1,98 @@
  # Getting Started
  
 -Grok Build is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
@@ -953,9 +953,11 @@ index ab27a76d..15f378e2 100644
 +default, no sign-in, no key. Type a sentence and press `Enter`.
  
 -If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
-+While the first answer is on its way you see one line, `Thinking…`, with the elapsed seconds and
-+`Ctrl+C to cancel`. The first message also sets up OpenCode's `opencode` CLI on your machine (about
-+a minute, the download progress is shown on that same line); every later message answers within
++While a message is being worked on, the status row above the composer shows what is happening —
++`Waiting for response…`, `Thinking…`, `Run sudo apt install ghostty` with that command's own seconds
++— plus the turn's total time and `[stop]` (or `Ctrl+C`) to cancel; the turn closes with `Worked for
++2m31s`. The first message also sets up OpenCode's `opencode` CLI on your machine (about a minute;
++the row shows `First-time setup, 12 MB downloaded…` as it goes); every later message answers within
 +seconds. Nothing is downloaded until you send that first message. If the free model cannot be
 +reached, Workshop quietly answers through another free model and the footer names the model that
 +answered; only if that fails too do you see `Couldn't reach Big Pickle — Enter to retry · /model to
@@ -1007,7 +1009,7 @@ index ab27a76d..15f378e2 100644
  
  ### File References
  
-@@ -105,7 +102,8 @@ Use `@` in your prompt to attach files:
+@@ -105,7 +104,8 @@ Use `@` in your prompt to attach files:
  @src/                     # Browse a directory
  ```
  
@@ -1017,7 +1019,7 @@ index ab27a76d..15f378e2 100644
  
  ```
  @!.github                 # Search hidden files
-@@ -114,10 +112,11 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore`
+@@ -114,10 +114,11 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore`
  
  ### Permissions
  
@@ -1031,7 +1033,7 @@ index ab27a76d..15f378e2 100644
  - Type `/always-approve` in the prompt to toggle the mode
  
  ---
-@@ -126,27 +125,31 @@ By default, Grok asks for permission before executing shell commands or editing
+@@ -126,27 +127,31 @@ By default, Grok asks for permission before executing shell commands or editing
  
  ### Sessions
  
@@ -1069,7 +1071,7 @@ index ab27a76d..15f378e2 100644
  
  | Tool | Description |
  |------|-------------|
-@@ -159,14 +162,17 @@ Grok has built-in tools for:
+@@ -159,14 +164,17 @@ Grok has built-in tools for:
  | `spawn_subagent` | Spawn parallel subagent sessions |
  | `memory_search` | Search cross-session memory |
  
@@ -1090,7 +1092,7 @@ index ab27a76d..15f378e2 100644
  /compact                          # Compress conversation history
  /always-approve                   # Toggle always-approve mode
  /new                              # Start a new session
-@@ -180,54 +186,50 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
+@@ -180,54 +188,50 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
  
  ```bash
  # Launch the interactive TUI and submit an initial prompt as the first turn
@@ -1160,7 +1162,7 @@ index ab27a76d..15f378e2 100644
  ```
  
  Output formats:
-@@ -241,22 +243,24 @@ Output formats:
+@@ -241,22 +245,24 @@ Output formats:
  Example CI/CD usage:
  
  ```bash
@@ -1189,7 +1191,7 @@ index ab27a76d..15f378e2 100644
  
  ---
  
-@@ -264,7 +268,7 @@ Deeper files take precedence. Grok also reads `CLAUDE.md` files for compatibilit
+@@ -264,7 +270,7 @@ Deeper files take precedence. Grok also reads `CLAUDE.md` files for compatibilit
  
  | Document | What You Will Learn |
  |----------|-------------------|

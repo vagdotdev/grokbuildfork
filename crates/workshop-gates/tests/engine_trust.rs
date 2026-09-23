@@ -641,11 +641,11 @@ fn queued_prompts_are_separate() {
 const REASONING: [&str; 2] = ["Keep it brief", "Summarize it"];
 
 fn assert_no_thinking(screen: &str) {
-    // The waiting line (`⠧ Thinking… · 4s · Ctrl+C to cancel`) is Workshop's own, not the
-    // model's reasoning; every other row must be free of it.
+    // The pager's turn-status row (`⠧ Thinking… 2.1s … 5s [stop]`) names the phase, not the
+    // model's reasoning; every transcript row must be free of it.
     let transcript: Vec<&str> = screen
         .lines()
-        .filter(|l| !l.contains("Ctrl+C to cancel"))
+        .filter(|l| !l.trim_end().ends_with("[stop]"))
         .collect();
     let transcript = transcript.join("\n");
     for text in REASONING.iter().chain(&["Thought", "Thinking"]) {
@@ -682,14 +682,18 @@ fn reasoning_hidden_by_default() {
         "the whitespace-only text part after the thinking opens no empty reply row:\n{screen}"
     );
 
-    // Hidden thinking after a tool call draws nothing, so the waiting line shows the model is
-    // still at work until its answer lands.
+    // Hidden thinking after a tool call draws nothing in the transcript, so the turn-status row
+    // (`Thinking…` while the reasoning streams, the wait for the model around it) shows the model
+    // is still at work until its answer lands.
     send_prompt(&mut j, "think slowly, then list files");
     let waiting_after_tool = |screen: &str| {
         let mut lines = screen.lines();
         lines.any(|l| l.contains("\u{276f} think slowly, then list files"))
             && lines.any(|l| l.contains("ls -1"))
-            && lines.any(|l| l.contains("Thinking\u{2026}"))
+            && lines.any(|l| {
+                l.trim_end().ends_with("[stop]")
+                    && (l.contains("Thinking\u{2026}") || l.contains(pty_common::WAITING_ROW))
+            })
     };
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while !waiting_after_tool(&j.h.screen_contents()) {
@@ -700,10 +704,10 @@ fn reasoning_hidden_by_default() {
         );
         j.h.update(Duration::from_millis(150));
     }
-    snapshot(&j.h, &j.dir, "03-waiting-line-during-hidden-thinking");
+    snapshot(&j.h, &j.dir, "03-status-row-during-hidden-thinking");
     assert_no_thinking(&j.h.screen_contents());
     wait_for(&mut j.h, "Here is the listing.", 30);
-    wait_gone(&mut j, "Ctrl+C to cancel", 30);
+    wait_gone(&mut j, "[stop]", 30);
     assert_no_thinking(&j.h.screen_contents());
     quit(&mut j);
 }

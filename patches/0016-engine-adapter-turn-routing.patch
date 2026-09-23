@@ -12,10 +12,10 @@ index a06a65ab..982e38c1 100644
  pub(crate) use routing::task_view_by_session_id;
  use routing::{
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
-index f968c838..693af166 100644
+index f968c838..af1f7d97 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
-@@ -740,6 +740,19 @@ pub struct AgentView {
+@@ -740,6 +740,30 @@ pub struct AgentView {
      pub(crate) session_binding_epoch: u32,
      pub scrollback: ScrollbackState,
      pub prompt: PromptWidget,
@@ -30,6 +30,17 @@ index f968c838..693af166 100644
 +    /// flag so the per-agent input layer treats Ctrl+C as a cancellable activity (there is no ACP
 +    /// turn to detect). Cleared when the turn ends.
 +    pub(crate) workshop_turn_active: bool,
++    /// Workshop: what the running Engine/Adapter turn is doing, for the pager's own turn-status
++    /// row (`Waiting for response…`, `Thinking…`, `Responding…`, `Run <command>` with its phase
++    /// timer): the event loop sets it from the turn's stream, the way the ACP tracker does for a
++    /// shell turn.
++    pub(crate) workshop_turn_activity: Option<crate::acp::tracker::TurnActivity>,
++    /// Workshop: when the running Engine/Adapter turn was sent — the status row's turn timer and
++    /// the `Worked for …` marker at its end.
++    pub(crate) workshop_turn_started_at: Option<Instant>,
++    /// Workshop: Ctrl+C / `[stop]` asked the running Engine/Adapter turn to end; the status row
++    /// reads `Cancelling…` until it does.
++    pub(crate) workshop_turn_cancelling: bool,
 +    /// Workshop: the prompt whose Engine/Adapter turn failed; Enter on an empty composer resends it.
 +    pub(crate) workshop_retry_prompt: Option<String>,
      /// Sticky: once the user types in the prompt, hide the tip for the session.
@@ -56,21 +67,24 @@ index 13962908..3cccf270 100644
                      // Skip while editing a queued row (edit-mode Enter is handled earlier for non-empty; empty must stay a no-op)
                      // That Enter must only insert the newline, not fire a queued follow-up
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
-index ae3b381c..4e7fc471 100644
+index ae3b381c..89810676 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
-@@ -135,6 +135,10 @@ impl AgentView {
+@@ -135,6 +135,13 @@ impl AgentView {
              session_binding_epoch: 0,
              scrollback,
              prompt,
 +            workshop_model_label: None,
 +            workshop_context: None,
 +            workshop_turn_active: false,
++            workshop_turn_activity: None,
++            workshop_turn_started_at: None,
++            workshop_turn_cancelling: false,
 +            workshop_retry_prompt: None,
              tip_typing_dismissed: false,
              todo: TodoPane::new(),
              tasks: TasksPane::new(),
-@@ -874,6 +878,7 @@ impl AgentView {
+@@ -874,6 +881,7 @@ impl AgentView {
          self.session.state.is_turn_running()
              || self.session.state.is_compact_running()
              || (self.wake_turn_active() && !self.wake_turn_cancelling())
@@ -78,6 +92,48 @@ index ae3b381c..4e7fc471 100644
      }
      /// Whether a local or wake cancel is still in flight.
      pub(crate) fn any_cancel_pending(&self) -> bool {
+@@ -907,6 +915,19 @@ impl AgentView {
+             }
+         })
+     }
++    /// Workshop: an Engine/Adapter turn runs outside the ACP session (its state stays idle), so
++    /// the turn-status row is shown from this state instead — running, or cancelling after
++    /// Ctrl+C — exactly as a shell turn would show it.
++    pub(crate) fn workshop_display_state(&self) -> Option<&'static crate::app::agent::AgentState> {
++        if !self.workshop_turn_active || !self.session.state.is_idle() {
++            return None;
++        }
++        Some(if self.workshop_turn_cancelling {
++            &crate::app::agent::AgentState::TurnCancelling
++        } else {
++            &crate::app::agent::AgentState::TurnRunning
++        })
++    }
+     /// Finalize a reconnect-reload window and, iff the running prompt is adoptable, adopt it. Returns whether the window finalized.
+     /// Adoption is gated by [`Self::should_adopt_running_prompt`] and ordered AFTER finalize.
+     /// The finalize side effects (force-idle and window resolve) then run even when adoption is skipped for a non-adoptable running id.
+@@ -1038,6 +1059,10 @@ impl AgentView {
+     }
+     /// Effective turn elapsed time, excluding time spent in question views (accumulated pauses plus the currently open one, on both clocks).
+     pub fn turn_elapsed(&self) -> Option<std::time::Duration> {
++        // Workshop: an Engine/Adapter turn keeps its own clock (no ACP prompt, no pauses).
++        if self.workshop_turn_active {
++            return self.workshop_turn_started_at.map(|t| t.elapsed());
++        }
+         let instant_elapsed = self.turn_started_at?.elapsed();
+         let now_ms = chrono::Utc::now().timestamp_millis();
+         let mut instant_paused = self.turn_paused_duration;
+@@ -1069,6 +1094,10 @@ impl AgentView {
+     ) -> Option<crate::acp::tracker::TurnActivity> {
+         use crate::acp::tracker::{TurnActivity, WaitingReason};
+         use crate::app::agent::AgentState;
++        // Workshop: an Engine/Adapter turn reports its activity through the event loop.
++        if self.workshop_turn_active {
++            return self.workshop_turn_activity.clone();
++        }
+         if let Some(activity) = self.session.turn_activity() {
+             return Some(activity);
+         }
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs
 index b04f0f9c..86049684 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs
@@ -107,7 +163,7 @@ index 59bf6734..4f85ad00 100644
      if agent.permission_queue.is_empty() {
          return;
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-index a4d77733..df4d9bd8 100644
+index a4d77733..88ce124c 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 @@ -82,6 +82,7 @@ pub(super) fn collect_live_doctor_report_for_terminal(
@@ -118,7 +174,7 @@ index a4d77733..df4d9bd8 100644
      Some(report)
  }
  
-@@ -614,6 +615,146 @@ pub(super) fn dispatch_send_prompt_inner(
+@@ -614,6 +615,156 @@ pub(super) fn dispatch_send_prompt_inner(
      dispatch_send_prompt_submission(app, text, None, consume_input, literal, is_follow_up)
  }
  
@@ -191,8 +247,7 @@ index a4d77733..df4d9bd8 100644
 +    app.workshop_turn_active = true;
 +    app.workshop_turn_agent = Some(id);
 +    app.workshop_turn_stream_entry = None;
-+    app.workshop_turn_progress = None;
-+    app.workshop_turn_started = Some(std::time::Instant::now());
++    app.workshop_turn_running.clear();
 +    app.workshop_turn_errored = false;
 +    app.workshop_last_prompt = Some(text.clone());
 +    app.workshop_turn_thinking_entry = None;
@@ -209,6 +264,17 @@ index a4d77733..df4d9bd8 100644
 +        app.workshop_turn_prompt_entry = Some(entry);
 +        agent.prompt.set_text("");
 +        agent.workshop_turn_active = true;
++        // The pager's own turn-status row runs from here: the wait for the model, its timers,
++        // `[stop]` — the same row a shell turn shows.
++        agent.workshop_turn_activity = Some(crate::acp::tracker::TurnActivity::Waiting(
++            crate::acp::tracker::WaitingReason::Model,
++        ));
++        agent.workshop_turn_started_at = Some(std::time::Instant::now());
++        agent.workshop_turn_cancelling = false;
++        // A fresh phase clock: the row's first frame counts from this send, not from whatever
++        // the previous turn ended on.
++        agent.last_activity = None;
++        agent.activity_started_at = None;
 +        agent.workshop_retry_prompt = None;
 +        // The terminal title follows the session topic: Engine/Adapter turns never reach the
 +        // shell's auto-titling, so the first prompt names the session.
@@ -265,7 +331,7 @@ index a4d77733..df4d9bd8 100644
  pub(super) fn dispatch_send_prompt_submission(
      app: &mut AppView,
      text: String,
-@@ -689,6 +830,20 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -689,6 +840,20 @@ pub(super) fn dispatch_send_prompt_submission(
          text
      };
  
@@ -286,7 +352,7 @@ index a4d77733..df4d9bd8 100644
      // Capture app-level fields before the mut-borrow on `agent`.
      let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
      let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
-@@ -701,6 +856,7 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -701,6 +866,7 @@ pub(super) fn dispatch_send_prompt_submission(
      let login_method_id_from_app = app.login_method_id.as_ref().map(|id| id.0.to_string());
      let leader_mode = app.leader_mode;
      let screen_mode_is_minimal = app.screen_mode.is_minimal();
@@ -294,7 +360,7 @@ index a4d77733..df4d9bd8 100644
      let Some(agent) = app.agents.get_mut(&id) else {
          return prelude;
      };
-@@ -1029,6 +1185,23 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -1029,6 +1195,23 @@ pub(super) fn dispatch_send_prompt_submission(
                  return effects;
              }
              CommandResult::QueueCommand(cmd_text) => {
@@ -318,7 +384,7 @@ index a4d77733..df4d9bd8 100644
                  agent.session.enqueue_command(cmd_text);
              }
              CommandResult::InjectSkill {
-@@ -1413,7 +1586,23 @@ pub(super) fn handle_prompt_response(
+@@ -1413,7 +1596,23 @@ pub(super) fn handle_prompt_response(
      // The leader's `running_prompt_id` broadcast can arrive before this `PromptResponse`
      // Take any stashed adoption now; it is applied after `finish_turn` clears `current_prompt_id` below
      let pending_adoption = app.pending_running_adoptions.remove(&agent_id);
@@ -342,7 +408,7 @@ index a4d77733..df4d9bd8 100644
          // Discard PromptResponses that don't belong to the currently active prompt
          // They belong to a turn the user rewound, or to a queued prompt that never became the running turn
          // Without the `Err` fallback, a queued prompt's RPC error has no id to gate on and is misattributed to the running turn
-@@ -1642,6 +1831,17 @@ pub(super) fn handle_prompt_response(
+@@ -1642,6 +1841,17 @@ pub(super) fn handle_prompt_response(
          // Insert the session event message (skip TurnCompleted for bash-mode, which has no agent turn)
          let event = match (&result, was_cancelling) {
              (Ok(_), false) if agent.bash_turn => None,
@@ -360,7 +426,7 @@ index a4d77733..df4d9bd8 100644
              (Err(_), _) if dedicated_ux_shown => None,
              // `err` is already banner-formatted by `format_acp_error` at the producer, the single formatting owner
              // Don't re-format here
-@@ -1682,9 +1882,13 @@ pub(super) fn handle_prompt_response(
+@@ -1682,9 +1892,13 @@ pub(super) fn handle_prompt_response(
                  };
                  Some((NotificationEventKind::TurnComplete, body))
              }
@@ -544,10 +610,10 @@ index f2985d30..b9ce17d2 100644
 +    assert!(app.workshop_turn_stream_entry.is_none());
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs
-index 40625217..e04fb559 100644
+index 40625217..6b47c26a 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs
-@@ -55,6 +55,14 @@ pub(super) fn apply_cancel_subagents_preference_global(app: &mut AppView, stop:
+@@ -55,6 +55,21 @@ pub(super) fn apply_cancel_subagents_preference_global(app: &mut AppView, stop:
  }
  
  pub(super) fn dispatch_cancel_turn(app: &mut AppView) -> Vec<Effect> {
@@ -556,6 +622,13 @@ index 40625217..e04fb559 100644
 +    if app.workshop_turn_active {
 +        if let Some(cancel) = &app.workshop_turn_cancel {
 +            let _ = cancel.send(true);
++        }
++        // The turn-status row reads `Cancelling…` until the turn reports its end.
++        if let Some(agent) = app
++            .workshop_turn_agent
++            .and_then(|id| app.agents.get_mut(&id))
++        {
++            agent.workshop_turn_cancelling = true;
 +        }
 +        return vec![];
 +    }
@@ -2130,10 +2203,10 @@ index 00000000..b953733b
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs b/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs
 new file mode 100644
-index 00000000..aeee3b77
+index 00000000..c7bbbe0b
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs
-@@ -0,0 +1,360 @@
+@@ -0,0 +1,496 @@
 +//! Workshop overlay: the engine's tool calls as the pager's own tool rows, with the work inside
 +//! them once the result lands — the diff an edit applied, the output and exit code of a command,
 +//! the text a read returned — so a row can be opened (`Enter`, fold keys) like any ACP tool row.
@@ -2161,6 +2234,62 @@ index 00000000..aeee3b77
 +/// The row's one-line summary: the path, command, pattern or URL of the call.
 +pub fn summary(input: &Value) -> String {
 +    crate::app::workshop::summarize_tool_input(input)
++}
++
++/// The turn-status row's activity while the call runs, in the shape the ACP tracker reports for a
++/// shell turn's tool. A command is the title and the model's `description` (when it gave one) is
++/// preferred by the row, as upstream does: `Install Ghostty… 42s`, else `Run sudo apt install …`.
++/// The web tools use the tracker's `Web search:` / `Fetch:` titles. File tools carry a description
++/// in the transcript row's own words (`Writing hello.txt…`, `Reading …`), since `Run <path>` would
++/// read as executing the file.
++pub fn turn_activity(name: &str, input: &Value) -> crate::acp::tracker::TurnActivity {
++    use crate::acp::tracker::clamp_activity_subject;
++    let subject = summary(input);
++    let described = |verb: &str| {
++        if subject.is_empty() {
++            None
++        } else {
++            Some(clamp_activity_subject(&format!("{verb} {subject}")))
++        }
++    };
++    let (title, description) = match name {
++        "bash" | "shell" | "execute" | "run_terminal_command" | "run_terminal_cmd" => (
++            if subject.is_empty() {
++                name.to_owned()
++            } else {
++                subject.clone()
++            },
++            str_of(input, "description")
++                .map(str::trim)
++                .filter(|d| !d.is_empty())
++                .map(clamp_activity_subject),
++        ),
++        "websearch" | "web_search" => (
++            format!(
++                "Web search: {}",
++                str_of(input, "query").unwrap_or(subject.as_str())
++            ),
++            None,
++        ),
++        "webfetch" | "web_fetch" | "fetch" => (
++            format!(
++                "Fetch: {}",
++                str_of(input, "url").unwrap_or(subject.as_str())
++            ),
++            None,
++        ),
++        "write" => (subject.clone(), described("Writing")),
++        "edit" | "patch" | "apply_patch" | "search_replace" | "strreplace" => {
++            (subject.clone(), described("Editing"))
++        }
++        "read" | "read_file" => (subject.clone(), described("Reading")),
++        "list" | "ls" | "list_dir" => (subject.clone(), described("Listing")),
++        "glob" | "grep" | "search" => (subject.clone(), described("Searching")),
++        "todowrite" | "todoread" => (name.to_owned(), Some("Updating the plan".to_owned())),
++        _ if subject.is_empty() => (name.to_owned(), None),
++        _ => (subject.clone(), None),
++    };
++    crate::acp::tracker::TurnActivity::ToolRunning { title, description }
 +}
 +
 +/// The row shown while the call runs: the pager's own verb rows (`◆ Run`, `◆ Edit`,
@@ -2395,6 +2524,86 @@ index 00000000..aeee3b77
 +                .any(|l| l.tag == ChangeTag::Insert && l.text == "b\n")
 +        );
 +        assert!(hunks_from_unified_diff("").is_empty());
++    }
++
++    #[test]
++    fn turn_activity_is_the_trackers_tool_shape() {
++        use crate::acp::tracker::TurnActivity;
++        // A command is the title (the row reads `Run <command>`); a description, when the model
++        // gave one, is what the row prefers (`{description}…`).
++        assert_eq!(
++            turn_activity(
++                "bash",
++                &json!({"command": "sudo apt install ghostty", "description": "Install Ghostty"})
++            ),
++            TurnActivity::ToolRunning {
++                title: "sudo apt install ghostty".into(),
++                description: Some("Install Ghostty".into()),
++            }
++        );
++        assert_eq!(
++            turn_activity("bash", &json!({"command": "ls", "description": "  "})),
++            TurnActivity::ToolRunning {
++                title: "ls".into(),
++                description: None,
++            }
++        );
++        // File tools describe the step in the row's own words (never `Run <path>`); the web tools
++        // use the tracker's `Web search:` / `Fetch:` forms.
++        assert_eq!(
++            turn_activity(
++                "write",
++                &json!({"filePath": "/w/hello.txt", "content": "hi"})
++            ),
++            TurnActivity::ToolRunning {
++                title: "/w/hello.txt".into(),
++                description: Some("Writing /w/hello.txt".into()),
++            }
++        );
++        assert_eq!(
++            turn_activity("read", &json!({"filePath": "/w/a.rs"})),
++            TurnActivity::ToolRunning {
++                title: "/w/a.rs".into(),
++                description: Some("Reading /w/a.rs".into()),
++            }
++        );
++        assert_eq!(
++            turn_activity("grep", &json!({"pattern": "TODO"})),
++            TurnActivity::ToolRunning {
++                title: "TODO".into(),
++                description: Some("Searching TODO".into()),
++            }
++        );
++        assert_eq!(
++            turn_activity("websearch", &json!({"query": "ghostty ubuntu"})),
++            TurnActivity::ToolRunning {
++                title: "Web search: ghostty ubuntu".into(),
++                description: None,
++            }
++        );
++        assert_eq!(
++            turn_activity("webfetch", &json!({"url": "https://example.org"})),
++            TurnActivity::ToolRunning {
++                title: "Fetch: https://example.org".into(),
++                description: None,
++            }
++        );
++        // A tool with nothing to name falls back to its name; a long description is clamped the
++        // way the tracker clamps its own.
++        assert_eq!(
++            turn_activity("task", &json!({})),
++            TurnActivity::ToolRunning {
++                title: "task".into(),
++                description: None,
++            }
++        );
++        let TurnActivity::ToolRunning { description, .. } = turn_activity(
++            "bash",
++            &json!({"command": "true", "description": "x".repeat(80)}),
++        ) else {
++            panic!("tool activity");
++        };
++        assert_eq!(description.map(|d| d.chars().count()), Some(40));
 +    }
 +
 +    #[test]

@@ -28,26 +28,58 @@ pub fn summary(input: &Value) -> String {
 }
 
 /// The turn-status row's activity while the call runs, in the shape the ACP tracker reports for a
-/// shell turn's tool: the row then reads `Run <command>` (highlighted, with the call's own timer),
-/// `{description}…` when the model described the step, `Search <query>` / `Fetch <url>` for the
-/// web tools, `Run <path>` for file tools.
+/// shell turn's tool. A command is the title and the model's `description` (when it gave one) is
+/// preferred by the row, as upstream does: `Install Ghostty… 42s`, else `Run sudo apt install …`.
+/// The web tools use the tracker's `Web search:` / `Fetch:` titles. File tools carry a description
+/// in the transcript row's own words (`Writing hello.txt…`, `Reading …`), since `Run <path>` would
+/// read as executing the file.
 pub fn turn_activity(name: &str, input: &Value) -> crate::acp::tracker::TurnActivity {
+    use crate::acp::tracker::clamp_activity_subject;
     let subject = summary(input);
-    let title = match name {
-        "websearch" | "web_search" => format!(
-            "Web search: {}",
-            str_of(input, "query").unwrap_or(subject.as_str())
-        ),
-        "webfetch" | "web_fetch" | "fetch" => {
-            format!("Fetch: {}", str_of(input, "url").unwrap_or(subject.as_str()))
+    let described = |verb: &str| {
+        if subject.is_empty() {
+            None
+        } else {
+            Some(clamp_activity_subject(&format!("{verb} {subject}")))
         }
-        _ if subject.is_empty() => name.to_owned(),
-        _ => subject,
     };
-    let description = str_of(input, "description")
-        .map(str::trim)
-        .filter(|d| !d.is_empty())
-        .map(str::to_owned);
+    let (title, description) = match name {
+        "bash" | "shell" | "execute" | "run_terminal_command" | "run_terminal_cmd" => (
+            if subject.is_empty() {
+                name.to_owned()
+            } else {
+                subject.clone()
+            },
+            str_of(input, "description")
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .map(clamp_activity_subject),
+        ),
+        "websearch" | "web_search" => (
+            format!(
+                "Web search: {}",
+                str_of(input, "query").unwrap_or(subject.as_str())
+            ),
+            None,
+        ),
+        "webfetch" | "web_fetch" | "fetch" => (
+            format!(
+                "Fetch: {}",
+                str_of(input, "url").unwrap_or(subject.as_str())
+            ),
+            None,
+        ),
+        "write" => (subject.clone(), described("Writing")),
+        "edit" | "patch" | "apply_patch" | "search_replace" | "strreplace" => {
+            (subject.clone(), described("Editing"))
+        }
+        "read" | "read_file" => (subject.clone(), described("Reading")),
+        "list" | "ls" | "list_dir" => (subject.clone(), described("Listing")),
+        "glob" | "grep" | "search" => (subject.clone(), described("Searching")),
+        "todowrite" | "todoread" => (name.to_owned(), Some("Updating the plan".to_owned())),
+        _ if subject.is_empty() => (name.to_owned(), None),
+        _ => (subject.clone(), None),
+    };
     crate::acp::tracker::TurnActivity::ToolRunning { title, description }
 }
 
@@ -307,12 +339,30 @@ mod tests {
                 description: None,
             }
         );
-        // File tools name the path; the web tools use the tracker's `Web search:` / `Fetch:` forms.
+        // File tools describe the step in the row's own words (never `Run <path>`); the web tools
+        // use the tracker's `Web search:` / `Fetch:` forms.
         assert_eq!(
-            turn_activity("write", &json!({"filePath": "/w/hello.txt", "content": "hi"})),
+            turn_activity(
+                "write",
+                &json!({"filePath": "/w/hello.txt", "content": "hi"})
+            ),
             TurnActivity::ToolRunning {
                 title: "/w/hello.txt".into(),
-                description: None,
+                description: Some("Writing /w/hello.txt".into()),
+            }
+        );
+        assert_eq!(
+            turn_activity("read", &json!({"filePath": "/w/a.rs"})),
+            TurnActivity::ToolRunning {
+                title: "/w/a.rs".into(),
+                description: Some("Reading /w/a.rs".into()),
+            }
+        );
+        assert_eq!(
+            turn_activity("grep", &json!({"pattern": "TODO"})),
+            TurnActivity::ToolRunning {
+                title: "TODO".into(),
+                description: Some("Searching TODO".into()),
             }
         );
         assert_eq!(
@@ -329,7 +379,8 @@ mod tests {
                 description: None,
             }
         );
-        // A tool with nothing to name falls back to its name.
+        // A tool with nothing to name falls back to its name; a long description is clamped the
+        // way the tracker clamps its own.
         assert_eq!(
             turn_activity("task", &json!({})),
             TurnActivity::ToolRunning {
@@ -337,6 +388,13 @@ mod tests {
                 description: None,
             }
         );
+        let TurnActivity::ToolRunning { description, .. } = turn_activity(
+            "bash",
+            &json!({"command": "true", "description": "x".repeat(80)}),
+        ) else {
+            panic!("tool activity");
+        };
+        assert_eq!(description.map(|d| d.chars().count()), Some(40));
     }
 
     #[test]

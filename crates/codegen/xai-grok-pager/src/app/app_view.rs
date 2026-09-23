@@ -5634,7 +5634,10 @@ impl AppView {
             }
             let spinner_frame_tick =
                 agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
-            needs_redraw |= !agent.session.state.is_idle() && spinner_frame_tick;
+            // Workshop: an Engine/Adapter turn drives the same turn-status row while the ACP
+            // session stays idle.
+            needs_redraw |= (!agent.session.state.is_idle() || agent.workshop_turn_active)
+                && spinner_frame_tick;
             needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
                 && spinner_frame_tick;
             needs_redraw |= matches!(
@@ -6104,7 +6107,10 @@ impl AppView {
     /// Workshop: the turn-status row's activity for the running Engine/Adapter turn — the newest
     /// tool call still running, else the wait for the model (as the ACP tracker reports the gap
     /// before the first token and after each tool result).
-    pub(crate) fn set_workshop_turn_activity(&mut self, activity: crate::acp::tracker::TurnActivity) {
+    pub(crate) fn set_workshop_turn_activity(
+        &mut self,
+        activity: crate::acp::tracker::TurnActivity,
+    ) {
         if let Some(agent) = self
             .workshop_turn_agent
             .and_then(|id| self.agents.get_mut(&id))

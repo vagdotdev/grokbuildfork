@@ -3,9 +3,10 @@
 //!
 //! * The row (`⠧ <activity> <phase timer>   <turn timer> [stop]`) sits between the transcript and
 //!   the composer from the first moment until the turn really ends — never a frozen screen.
-//! * While a tool call runs it reads `Run <command>` (or the model's description of the step) and
-//!   counts that call's own seconds, so a long `apt` is visibly under way (the acceptance suite's
-//!   T1 sat 108 s on a still screen). The tool row itself carries the running accent.
+//! * While a tool call runs it names the step — the model's description of a command (`Install
+//!   Ghostty…`, as upstream prefers over the raw command), `Writing hello.txt…` for a file tool —
+//!   and counts that call's own seconds, so a long `apt` is visibly under way (the acceptance
+//!   suite's T1 sat 108 s on a still screen). The tool row itself carries the running accent.
 //! * Between calls it is the wait for the model again (`Waiting for response…`), counting from
 //!   that moment; while text streams it reads `Responding…`.
 //! * The end is the pager's `Worked for <turn time>` marker under the last thing the model did,
@@ -91,10 +92,10 @@ fn status_row_names_the_running_command_and_the_turn_ends_with_the_pagers_marker
     //    being written with the call's timer, above a blank composer.
     wait_for(&mut j.h, WAITING_ROW, 90);
     wait_for(&mut j.h, "Creating /work/hello.txt", 90);
-    let row = wait_for_row(&mut j, "Run /work/hello.txt", 0.0, 5);
+    let row = wait_for_row(&mut j, "Writing /work/hello.txt\u{2026}", 0.0, 5);
     let screen = j.h.screen_contents();
     let tool1 = row_of(&screen, "Creating /work/hello.txt");
-    let status = row_of(&screen, "Run /work/hello.txt");
+    let status = row_of(&screen, "Writing /work/hello.txt");
     assert!(
         status > tool1,
         "the status row is below the transcript (tool {tool1}, row {status}):\n{screen}"
@@ -107,10 +108,11 @@ fn status_row_names_the_running_command_and_the_turn_ends_with_the_pagers_marker
     assert_no_plumbing(&j.h, "first tool call");
     snapshot(&j.h, &j.dir, "01-run-write-status-row");
 
-    // 2. A paragraph and a second call (held 6 s): `Run cat /work/hello.txt` with the call's own
-    //    seconds — a long command is visibly under way — and the turn timer beside `[stop]`.
-    wait_for(&mut j.h, "cat /work/hello.txt", 30);
-    let row = wait_for_row(&mut j, "Run cat /work/hello.txt", 3.0, 10);
+    // 2. A paragraph and a second call (held 6 s): the command's description, `Show the file…`,
+    //    with the call's own seconds — a long command is visibly under way — and the turn timer
+    //    beside `[stop]`. The row for the running command pulses in the transcript.
+    wait_for(&mut j.h, "Show the file", 30);
+    let row = wait_for_row(&mut j, "Show the file\u{2026}", 3.0, 10);
     let secs = timers(&row);
     assert!(
         secs.len() >= 2 && secs[0] >= 3.0 && secs[0] <= 6.5 && secs[1] >= secs[0],
@@ -118,7 +120,15 @@ fn status_row_names_the_running_command_and_the_turn_ends_with_the_pagers_marker
     );
     let screen = j.h.screen_contents();
     let paragraph = row_of(&screen, "Now checking the file.");
-    let tool2 = row_of(&screen, "cat /work/hello.txt");
+    // The transcript row: `◆ Run cat /work/hello.txt` while it runs, `◆ Run Show the file` (the
+    // description as its title) once it finished.
+    let tool2 = screen
+        .lines()
+        .position(|l| {
+            !l.trim_end().ends_with("[stop]")
+                && (l.contains("cat /work/hello.txt") || l.contains("Show the file"))
+        })
+        .unwrap_or_else(|| panic!("the tool row is on screen:\n{screen}"));
     assert!(
         tool1 < paragraph && paragraph < tool2,
         "transcript order is tool, paragraph, tool ({tool1}, {paragraph}, {tool2}):\n{screen}"
@@ -138,7 +148,7 @@ fn status_row_names_the_running_command_and_the_turn_ends_with_the_pagers_marker
         "the phase timer restarts with the new phase: {row:?}"
     );
     assert!(
-        !j.h.screen_contents().contains("Run cat"),
+        !status_row(&j.h.screen_contents()).contains("Show the file"),
         "a finished command is no longer the activity:\n{}",
         j.h.screen_contents()
     );

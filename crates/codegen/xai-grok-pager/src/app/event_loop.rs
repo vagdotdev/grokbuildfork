@@ -4410,18 +4410,16 @@ fn handle_workshop_turn_msg(
                 agent.workshop_turn_started_at = None;
                 agent.workshop_turn_cancelling = false;
                 if cancelled {
-                    agent
-                        .scrollback
-                        .push_block(RenderBlock::session_event(SessionEvent::TurnCancelled {
+                    agent.scrollback.push_block(RenderBlock::session_event(
+                        SessionEvent::TurnCancelled {
                             elapsed,
                             cause: crate::scrollback::blocks::CancelledBy::User,
-                        }));
+                        },
+                    ));
                 } else if !app.workshop_turn_errored {
-                    agent
-                        .scrollback
-                        .push_block(RenderBlock::session_event(SessionEvent::TurnCompleted {
-                            elapsed,
-                        }));
+                    agent.scrollback.push_block(RenderBlock::session_event(
+                        SessionEvent::TurnCompleted { elapsed },
+                    ));
                 }
             }
             app.workshop_turn_active = false;
