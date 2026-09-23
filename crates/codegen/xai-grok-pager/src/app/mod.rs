@@ -15,6 +15,7 @@ pub mod agent_view;
 pub mod app_view;
 /// Workshop overlay: connection picker loading and activation.
 pub mod workshop;
+pub mod workshop_engine_state;
 pub mod bundle;
 pub(crate) mod cancel_latency;
 pub mod cli;

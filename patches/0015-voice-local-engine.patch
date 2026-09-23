@@ -605,7 +605,7 @@ index 2dfa5642..f4c471bf 100644
              "source '{}'; source '{}'; ssh -p 2222 host; env | string match -rq '^ssh='; and exit 9; or exit 0",
              rc.display(),
 diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs b/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
-index 2bf69489..8d8136a5 100644
+index 2bf69489..550e1f16 100644
 --- a/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
 @@ -39,16 +39,23 @@ pub(crate) use model::{
@@ -635,7 +635,7 @@ index 2bf69489..8d8136a5 100644
      match xai_grok_voice::input_device_info() {
          Ok(device) => {
              report.facts.voice = Some(VoiceFacts::Device {
-@@ -71,6 +78,102 @@ pub fn apply_voice_probe(report: &mut DiagnosticReport, emit_missing_issue: bool
+@@ -71,6 +78,103 @@ pub fn apply_voice_probe(report: &mut DiagnosticReport, emit_missing_issue: bool
      }
  }
  
@@ -643,7 +643,8 @@ index 2bf69489..8d8136a5 100644
 +/// version (a `--version` probe, a few hundred ms), macOS quarantine flag, and the last start
 +/// attempt recorded in `$WORKSHOP_HOME/engine/state.json` with its log path.
 +pub fn apply_engine_probe(report: &mut DiagnosticReport) {
-+    use workshop_adapters::opencode_engine::{EngineState, detect_opencode, quarantine_flag, state};
++    use crate::app::workshop_engine_state::{self as state, EngineState};
++    use workshop_adapters::opencode_engine::{detect_opencode, quarantine_flag};
 +    use workshop_adapters::{DetectOptions, Detection};
 +
 +    let home = crate::app::workshop::workshop_home();
@@ -738,7 +739,7 @@ index 2bf69489..8d8136a5 100644
  fn voice_missing_finding(error: String) -> DiagnosticFinding {
      DiagnosticFinding {
          id: VOICE_NO_INPUT_DEVICE_ID,
-@@ -80,7 +183,7 @@ fn voice_missing_finding(error: String) -> DiagnosticFinding {
+@@ -80,7 +184,7 @@ fn voice_missing_finding(error: String) -> DiagnosticFinding {
          automatic_remediation: None,
          note: Some(
              "Connect or select a microphone in your system sound settings. On Linux, install a \
@@ -747,7 +748,7 @@ index 2bf69489..8d8136a5 100644
               doctor` again. Doctor can't detect denied macOS microphone access when the system \
               returns silence; follow the message shown when dictation fails."
                  .to_owned(),
-@@ -120,7 +223,7 @@ pub enum WarningCategory {
+@@ -120,7 +224,7 @@ pub enum WarningCategory {
      /// tmux is attached to a client it believes cannot render 24-bit color, so it rewrites every truecolor cell to the client terminfo's palette.
      TmuxColorReduced,
      SandboxProfileConflict,
@@ -756,7 +757,7 @@ index 2bf69489..8d8136a5 100644
      /// Clipboard forwarding and terminal-mode restore on dropped connections are then not guaranteed.
      /// An informational recommendation, not a breakage.
      SshWithoutWrap,
-@@ -229,8 +332,8 @@ pub(crate) fn collect_startup_warnings_from(
+@@ -229,8 +333,8 @@ pub(crate) fn collect_startup_warnings_from(
              None,
          );
          warning.note = Some(
@@ -767,7 +768,7 @@ index 2bf69489..8d8136a5 100644
               supports OSC 52. You can also use `/copy <file>` or `/minimal`."
                  .to_owned(),
          );
-@@ -260,7 +363,7 @@ pub(crate) fn collect_startup_warnings_from(
+@@ -260,7 +364,7 @@ pub(crate) fn collect_startup_warnings_from(
      {
          let message = match fullscreen_active {
              Some(true) => "Fullscreen may be unreliable in tmux control mode",
@@ -776,7 +777,7 @@ index 2bf69489..8d8136a5 100644
              None => "Display may be limited in tmux control mode",
          };
          let mut warning = TerminalWarning::new(WarningCategory::ControlMode, message, None, None);
-@@ -354,7 +457,7 @@ pub(crate) fn wezterm_kitty_keyboard_warning_from(
+@@ -354,7 +458,7 @@ pub(crate) fn wezterm_kitty_keyboard_warning_from(
              None,
          );
          warning.note = Some(
@@ -785,7 +786,7 @@ index 2bf69489..8d8136a5 100644
               keyboard protocol over SSH yet. `enable_kitty_keyboard = true` applies only to \
               local WezTerm sessions."
                  .to_string(),
-@@ -396,7 +499,7 @@ fn sandbox_profile_conflict_warning_from(conflicts: Vec<String>) -> Option<Termi
+@@ -396,7 +500,7 @@ fn sandbox_profile_conflict_warning_from(conflicts: Vec<String>) -> Option<Termi
          fix: None,
          config_path: None,
          note: Some(format!(
@@ -794,7 +795,7 @@ index 2bf69489..8d8136a5 100644
               or remove the conflicting project profile. Project settings can add profile names \
               but can't redefine a user profile.",
              crate::util::display_user_grok_path(xai_grok_config::SANDBOX_CONFIG_FILENAME)
-@@ -404,7 +507,7 @@ fn sandbox_profile_conflict_warning_from(conflicts: Vec<String>) -> Option<Termi
+@@ -404,7 +508,7 @@ fn sandbox_profile_conflict_warning_from(conflicts: Vec<String>) -> Option<Termi
      })
  }
  
@@ -803,7 +804,7 @@ index 2bf69489..8d8136a5 100644
  /// local machine. Gates (all must hold). This detector only describes the environment. All inputs are injected so
  /// tests never touch ambient env (pattern: [`diagnose_wayland_data_control`]).
  pub fn ssh_wrap_hint(
-@@ -418,7 +521,7 @@ pub fn ssh_wrap_hint(
+@@ -418,7 +522,7 @@ pub fn ssh_wrap_hint(
      let mut warning = TerminalWarning::new(
          WarningCategory::SshWithoutWrap,
          "Use local SSH wrapping for more reliable clipboard copy and terminal recovery",
@@ -812,7 +813,7 @@ index 2bf69489..8d8136a5 100644
          None,
      );
      warning.note = Some(
-@@ -526,7 +629,7 @@ pub(crate) fn collect_notification_warnings_with_method(
+@@ -526,7 +630,7 @@ pub(crate) fn collect_notification_warnings_with_method(
      {
          let mut warning = TerminalWarning::new(
              WarningCategory::NotificationProtocolFallback,
@@ -821,7 +822,7 @@ index 2bf69489..8d8136a5 100644
              None,
              None,
          );
-@@ -865,13 +968,13 @@ pub fn color_support_warning(
+@@ -865,13 +969,13 @@ pub fn color_support_warning(
              None,
              None,
          );
@@ -838,7 +839,7 @@ index 2bf69489..8d8136a5 100644
      if color_passthrough == TmuxColorPassthrough::Reduced {
          let mut warning = TerminalWarning::new(
              WarningCategory::TmuxColorReduced,
-@@ -882,7 +985,7 @@ pub fn color_support_warning(
+@@ -882,7 +986,7 @@ pub fn color_support_warning(
          warning.note = Some(format!(
              "Run `tmux source-file {tmux_config_path}`, then detach and reattach: the server \
               reads the option only on reload, and a client fixes its color depth only at attach. \
@@ -847,7 +848,7 @@ index 2bf69489..8d8136a5 100644
               default-terminal \"tmux-256color\"` and `export COLORTERM=truecolor` to your shell \
               startup file."
          ));
-@@ -921,7 +1024,7 @@ pub fn color_support_warning(
+@@ -921,7 +1025,7 @@ pub fn color_support_warning(
          warning.note = Some(format!(
              "In the same tmux config, also add `set -g default-terminal \"tmux-256color\"`. Add \
               `export COLORTERM=truecolor` to your shell startup file. Then reload tmux with \
@@ -856,7 +857,7 @@ index 2bf69489..8d8136a5 100644
          ));
          return Some(warning);
      }
-@@ -934,7 +1037,7 @@ pub fn color_support_warning(
+@@ -934,7 +1038,7 @@ pub fn color_support_warning(
      );
      warning.note = Some(
          "Add this export to your shell startup file, such as `~/.zshrc` or `~/.bashrc`, then \
@@ -865,7 +866,7 @@ index 2bf69489..8d8136a5 100644
              .to_string(),
      );
      Some(warning)
-@@ -2061,7 +2164,7 @@ mod tests {
+@@ -2061,7 +2165,7 @@ mod tests {
          // is_ssh, no sink, not VS Code remote: recommend wrap
          let w = ssh_wrap_hint(true, false, false).expect("hint must fire");
          assert_eq!(w.category, WarningCategory::SshWithoutWrap);
@@ -874,7 +875,7 @@ index 2bf69489..8d8136a5 100644
          assert!(
              w.config_path.is_none(),
              "fix is a command, not a config line"
-@@ -2082,7 +2185,7 @@ mod tests {
+@@ -2082,7 +2186,7 @@ mod tests {
  
      #[test]
      fn ssh_wrap_hint_suppressed_when_sink_active() {
@@ -883,7 +884,7 @@ index 2bf69489..8d8136a5 100644
          assert!(ssh_wrap_hint(true, true, false).is_none());
      }
  
-@@ -2431,7 +2534,7 @@ mod tests {
+@@ -2431,7 +2535,7 @@ mod tests {
          assert!(finding.automatic_remediation.is_none());
          assert!(finding.note.as_deref().is_some_and(|note| {
              note.contains("install a supported audio recorder")
@@ -892,7 +893,7 @@ index 2bf69489..8d8136a5 100644
                  && note.contains("can't detect denied macOS microphone access")
          }));
      }
-@@ -2911,7 +3014,7 @@ mod tests {
+@@ -2911,7 +3015,7 @@ mod tests {
          );
      }
  

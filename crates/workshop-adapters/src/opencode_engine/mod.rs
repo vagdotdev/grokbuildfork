@@ -46,7 +46,11 @@ pub use install::{
     InstallError, InstallOptions, InstallTarget, OFFICIAL_INSTALLER_URL, detect_opencode,
     ensure_opencode, install_opencode, is_workshop_managed, workshop_tools_dir,
 };
-pub use state::{EngineState, quarantine_flag};
+pub use state::{clear_quarantine, quarantine_flag};
+
+/// Receives one line of `opencode serve` stdout/stderr (or a start marker); the host decides where
+/// it goes. Keeps file I/O out of this crate.
+pub type LogSink = Arc<dyn Fn(&str) + Send + Sync>;
 
 use crate::adapter::{Adapter, AdapterId, PermissionPolicy, PinStatus, Terminal};
 use crate::detect::InstalledCli;
@@ -89,9 +93,9 @@ pub struct EngineOptions {
     pub cancel_grace: Duration,
     pub permission_handler: Option<PermissionHandler>,
     pub allow_untested_versions: bool,
-    /// Append the server's stdout and stderr lines here (see [`state::log_path`]) so a failed
-    /// start on a machine we cannot see still leaves the actual cause on disk.
-    pub log_path: Option<PathBuf>,
+    /// Receives the server's stdout and stderr lines so a failed start on a machine we cannot
+    /// see still leaves the actual cause somewhere the host chooses (a log file).
+    pub log_sink: Option<LogSink>,
 }
 
 impl EngineOptions {
@@ -104,7 +108,7 @@ impl EngineOptions {
             cancel_grace: Duration::from_secs(10),
             permission_handler: None,
             allow_untested_versions: true,
-            log_path: None,
+            log_sink: None,
         }
     }
 }
@@ -285,19 +289,16 @@ impl OpenCodeEngine {
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
         let (addr_tx, addr_rx) = oneshot::channel();
-        if let Some(log) = &opts.log_path {
-            state::append_log(
-                log,
-                &format!(
-                    "start: {} serve --hostname 127.0.0.1 --port {port} (version {}, workspace {})",
-                    cli.path.display(),
-                    cli.version,
-                    opts.workspace.display()
-                ),
-            );
+        if let Some(log) = &opts.log_sink {
+            log(&format!(
+                "start: {} serve --hostname 127.0.0.1 --port {port} (version {}, workspace {})",
+                cli.path.display(),
+                cli.version,
+                opts.workspace.display()
+            ));
         }
-        tokio::spawn(watch_stdout(stdout, addr_tx, opts.log_path.clone()));
-        let stderr_tail = tokio::spawn(collect_tail(stderr, 16 * 1024, opts.log_path.clone()));
+        tokio::spawn(watch_stdout(stdout, addr_tx, opts.log_sink.clone()));
+        let stderr_tail = tokio::spawn(collect_tail(stderr, 16 * 1024, opts.log_sink.clone()));
 
         let mut process = ServerProcess {
             child,
@@ -600,14 +601,14 @@ async fn pick_free_port() -> std::io::Result<u16> {
 async fn watch_stdout(
     stdout: tokio::process::ChildStdout,
     addr_tx: oneshot::Sender<SocketAddr>,
-    log: Option<PathBuf>,
+    log: Option<LogSink>,
 ) {
     let mut lines = BufReader::new(stdout).lines();
     let mut addr_tx = Some(addr_tx);
     while let Ok(Some(line)) = lines.next_line().await {
         tracing::debug!(target: "opencode_serve", "{line}");
         if let Some(log) = &log {
-            state::append_log(log, &format!("stdout: {line}"));
+            log(&format!("stdout: {line}"));
         }
         if let Some(tx) = addr_tx.take_if(|_| line.contains("listening on"))
             && let Some(addr) = parse_listening_line(&line)
@@ -620,7 +621,7 @@ async fn watch_stdout(
 async fn collect_tail(
     mut stderr: tokio::process::ChildStderr,
     limit: usize,
-    log: Option<PathBuf>,
+    log: Option<LogSink>,
 ) -> String {
     let mut tail: Vec<u8> = Vec::new();
     let mut buf = vec![0u8; 8192];
@@ -630,7 +631,7 @@ async fn collect_tail(
             Ok(n) => {
                 if let Some(log) = &log {
                     for line in String::from_utf8_lossy(&buf[..n]).lines() {
-                        state::append_log(log, &format!("stderr: {line}"));
+                        log(&format!("stderr: {line}"));
                     }
                 }
                 tail.extend_from_slice(&buf[..n]);

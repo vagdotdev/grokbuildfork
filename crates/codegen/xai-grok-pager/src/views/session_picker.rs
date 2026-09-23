@@ -209,7 +209,7 @@ pub enum SourceFilter {
 impl SourceFilter {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Grok => "Grok",
+            Self::Grok => "Workshop",
             Self::Headless => "Headless",
             Self::Local => "Local",
             Self::Remote => "Remote",

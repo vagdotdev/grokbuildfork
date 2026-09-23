@@ -1285,6 +1285,19 @@ index b47e6c6e..67366419 100644
      let mut pty_reader = pair.master.try_clone_reader()?;
  
      // We deliberately do NOT block SIGWINCH here
+diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/toggle_mouse_reporting.rs b/crates/codegen/xai-grok-pager/src/slash/commands/toggle_mouse_reporting.rs
+index 3ce5efa8..0859cdbf 100644
+--- a/crates/codegen/xai-grok-pager/src/slash/commands/toggle_mouse_reporting.rs
++++ b/crates/codegen/xai-grok-pager/src/slash/commands/toggle_mouse_reporting.rs
+@@ -32,7 +32,7 @@ impl SlashCommand for ToggleMouseReportingCommand {
+         } else {
+             CommandResult::Message(
+                 "Mouse reporting toggle is off. Set `[ui] mouse_reporting_toggle = true` \
+-                 in ~/.grok/config.toml to enable it."
++                 in ~/.workshop/config.toml to enable it."
+                     .to_string(),
+             )
+         }
 diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/tutorial.rs b/crates/codegen/xai-grok-pager/src/slash/commands/tutorial.rs
 index ec8c0820..39911587 100644
 --- a/crates/codegen/xai-grok-pager/src/slash/commands/tutorial.rs
@@ -1298,6 +1311,19 @@ index ec8c0820..39911587 100644
          usage: "/tutorial",
          // Gated off rather than merely hidden: minimal has no modal host, so the overlay's input intercept would freeze the session invisibly.
          mode_support: ModeSupport::FullscreenOnly(Remedy::SwitchMode {
+diff --git a/crates/codegen/xai-grok-pager/src/views/import_claude_modal.rs b/crates/codegen/xai-grok-pager/src/views/import_claude_modal.rs
+index 1a517d92..1144391d 100644
+--- a/crates/codegen/xai-grok-pager/src/views/import_claude_modal.rs
++++ b/crates/codegen/xai-grok-pager/src/views/import_claude_modal.rs
+@@ -702,7 +702,7 @@ fn build_rows(
+     if !plan.global_items.is_empty() {
+         let scope_start = flat_index;
+         let scope_key = format!("scope:{:?}", Scope::Global);
+-        let label = "Global  ~/.grok/config.toml".to_string();
++        let label = "Global  ~/.workshop/config.toml".to_string();
+         // Placeholder header; flat_indices filled after children are pushed.
+         let scope_header_pos = rows.len();
+         rows.push(Row::ScopeHeader {
 diff --git a/crates/codegen/xai-grok-pager/src/views/memory_modal.rs b/crates/codegen/xai-grok-pager/src/views/memory_modal.rs
 index ef7c763c..3ccb81f8 100644
 --- a/crates/codegen/xai-grok-pager/src/views/memory_modal.rs
@@ -1415,6 +1441,19 @@ index c23cc0b5..457fd535 100644
  //! Then flip `scroll_mode`, `scroll_lines`, `invert_scroll`, or `scroll_speed` in `/settings` to compare variants live.
  //! This HUD samples once per frame; `GROK_SCROLL_LOG=1` additionally records every event as JSONL (`input::scroll_log` in xai-grok-pager-render).
  //!
+diff --git a/crates/codegen/xai-grok-pager/src/views/session_picker.rs b/crates/codegen/xai-grok-pager/src/views/session_picker.rs
+index 628ed80b..020f190f 100644
+--- a/crates/codegen/xai-grok-pager/src/views/session_picker.rs
++++ b/crates/codegen/xai-grok-pager/src/views/session_picker.rs
+@@ -209,7 +209,7 @@ pub enum SourceFilter {
+ impl SourceFilter {
+     pub fn label(self) -> &'static str {
+         match self {
+-            Self::Grok => "Grok",
++            Self::Grok => "Workshop",
+             Self::Headless => "Headless",
+             Self::Local => "Local",
+             Self::Remote => "Remote",
 diff --git a/crates/codegen/xai-grok-pager/src/views/settings_modal/render.rs b/crates/codegen/xai-grok-pager/src/views/settings_modal/render.rs
 index bc5d1a55..7310dac4 100644
 --- a/crates/codegen/xai-grok-pager/src/views/settings_modal/render.rs

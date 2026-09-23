@@ -12,9 +12,11 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
 use workshop_adapters::opencode_engine::{
-    EngineOptions, EngineState, InstallOptions, OpenCodeEngine, PermissionHandler,
-    PermissionReply, TurnHandle, TurnRequest, detect_opencode, install_opencode, state,
+    EngineOptions, InstallOptions, OpenCodeEngine, PermissionHandler, PermissionReply,
+    TurnHandle, TurnRequest, clear_quarantine, detect_opencode, install_opencode,
 };
+
+use crate::app::workshop_engine_state::{self as state, EngineState};
 use workshop_adapters::supervisor::{RunHandle, SupervisorOptions, spawn};
 use workshop_adapters::{
     AdapterEvent, AdapterId, DetectOptions, Detection, PermissionPolicy, RunRequest, detect,
@@ -579,7 +581,7 @@ async fn start_engine(
                 &log,
                 &format!("repair: `{}` failed verification: {reason}", path.display()),
             );
-            state::clear_quarantine(&path);
+            clear_quarantine(&path);
             match detect_opencode(&detect_opts, Some(&install)).await {
                 Detection::Installed(cli) => cli,
                 _ => {
@@ -634,7 +636,8 @@ async fn start_engine(
 
     let mut opts = EngineOptions::new(workspace);
     opts.permission_handler = Some(engine_permission_handler(tx, slot.always_approve.clone()));
-    opts.log_path = Some(log.clone());
+    let sink_path = log.clone();
+    opts.log_sink = Some(Arc::new(move |line: &str| state::append_log(&sink_path, line)));
     // `opencode serve` is up in a couple of seconds on any laptop; a server that has not bound
     // its port after this long is broken, and the user should hear so instead of waiting.
     opts.startup_timeout = ENGINE_START_TIMEOUT;

@@ -82,7 +82,8 @@ pub fn apply_voice_probe(report: &mut DiagnosticReport, emit_missing_issue: bool
 /// version (a `--version` probe, a few hundred ms), macOS quarantine flag, and the last start
 /// attempt recorded in `$WORKSHOP_HOME/engine/state.json` with its log path.
 pub fn apply_engine_probe(report: &mut DiagnosticReport) {
-    use workshop_adapters::opencode_engine::{EngineState, detect_opencode, quarantine_flag, state};
+    use crate::app::workshop_engine_state::{self as state, EngineState};
+    use workshop_adapters::opencode_engine::{detect_opencode, quarantine_flag};
     use workshop_adapters::{DetectOptions, Detection};
 
     let home = crate::app::workshop::workshop_home();

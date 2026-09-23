@@ -2227,19 +2227,20 @@ index eda61b3c..a5e26479 100644
      effs: Vec<super::actions::Effect>,
      tasks: &mut JoinSet<TaskResult>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/mod.rs b/crates/codegen/xai-grok-pager/src/app/mod.rs
-index 60fe34f9..e1784570 100644
+index 60fe34f9..bd8ee5b4 100644
 --- a/crates/codegen/xai-grok-pager/src/app/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/mod.rs
-@@ -13,6 +13,8 @@ pub mod actions;
+@@ -13,6 +13,9 @@ pub mod actions;
  pub mod agent;
  pub mod agent_view;
  pub mod app_view;
 +/// Workshop overlay: connection picker loading and activation.
 +pub mod workshop;
++pub mod workshop_engine_state;
  pub mod bundle;
  pub(crate) mod cancel_latency;
  pub mod cli;
-@@ -1255,9 +1257,9 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
+@@ -1255,9 +1258,9 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
      }
      let _ = writeln!(w, "Resume this session with:");
      if info.minimal {
@@ -2251,7 +2252,7 @@ index 60fe34f9..e1784570 100644
      }
  }
  /// Screen-mode relaunch failure fallback (same quit tail as plain resume).
-@@ -1671,10 +1673,10 @@ pub(crate) fn set_terminal_title(title: &str) {
+@@ -1671,10 +1674,10 @@ pub(crate) fn set_terminal_title(title: &str) {
  fn terminal_title_string(title: &str) -> String {
      let sanitized: String = title.chars().filter(|c| !c.is_control()).collect();
      if sanitized.is_empty() {
@@ -2265,7 +2266,7 @@ index 60fe34f9..e1784570 100644
      }
  }
  #[cfg(test)]
-@@ -1724,11 +1726,11 @@ mod tests {
+@@ -1724,11 +1727,11 @@ mod tests {
      fn terminal_title_strips_control_characters() {
          assert_eq!(
              terminal_title_string("evil\x07\x1b]52;c;payload\x07title"),
@@ -2281,7 +2282,7 @@ index 60fe34f9..e1784570 100644
      }
      #[test]
      fn hunk_tracker_mode_nothing_set_is_none() {
-@@ -2245,9 +2247,9 @@ mod tests {
+@@ -2245,9 +2248,9 @@ mod tests {
          assert!(!args.no_alt_screen);
      }
      #[test]
@@ -2293,7 +2294,7 @@ index 60fe34f9..e1784570 100644
      }
      #[test]
      fn cli_help_output_header() {
-@@ -2257,9 +2259,9 @@ mod tests {
+@@ -2257,9 +2260,9 @@ mod tests {
          assert_eq!(
              first_5,
              vec![
@@ -2305,7 +2306,7 @@ index 60fe34f9..e1784570 100644
                  "",
                  "Arguments:",
              ]
-@@ -2305,7 +2307,7 @@ mod tests {
+@@ -2305,7 +2308,7 @@ mod tests {
          print_exit_resume_hint(&bare_exit_info("sess-abc", false), 80, &mut buf);
          assert_eq!(
              String::from_utf8(buf).unwrap(),
@@ -2314,7 +2315,7 @@ index 60fe34f9..e1784570 100644
          );
      }
      #[test]
-@@ -2314,7 +2316,7 @@ mod tests {
+@@ -2314,7 +2317,7 @@ mod tests {
          print_exit_resume_hint(&bare_exit_info("sess-abc", true), 80, &mut buf);
          assert_eq!(
              String::from_utf8(buf).unwrap(),
@@ -2323,7 +2324,7 @@ index 60fe34f9..e1784570 100644
          );
      }
      #[test]
-@@ -2339,7 +2341,7 @@ mod tests {
+@@ -2339,7 +2342,7 @@ mod tests {
                  "  Pinned the seed; 200 consecutive green runs.\n",
                  "\n",
                  "Resume this session with:\n",
@@ -2332,7 +2333,7 @@ index 60fe34f9..e1784570 100644
              )
          );
      }
-@@ -2360,7 +2362,7 @@ mod tests {
+@@ -2360,7 +2363,7 @@ mod tests {
          assert!(out.contains(&format!("\n{}…\n", "t".repeat(19))));
          assert!(out.contains(&format!("\n> {}…\n", "p".repeat(17))));
          assert!(out.contains(&format!("\n  {}…\n", "r".repeat(17))));
@@ -2343,10 +2344,10 @@ index 60fe34f9..e1784570 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..306a657e
+index 00000000..299556b6
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1010 @@
+@@ -0,0 +1,1013 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -2361,9 +2362,11 @@ index 00000000..306a657e
 +
 +use tokio::sync::{mpsc, watch};
 +use workshop_adapters::opencode_engine::{
-+    EngineOptions, EngineState, InstallOptions, OpenCodeEngine, PermissionHandler,
-+    PermissionReply, TurnHandle, TurnRequest, detect_opencode, install_opencode, state,
++    EngineOptions, InstallOptions, OpenCodeEngine, PermissionHandler, PermissionReply,
++    TurnHandle, TurnRequest, clear_quarantine, detect_opencode, install_opencode,
 +};
++
++use crate::app::workshop_engine_state::{self as state, EngineState};
 +use workshop_adapters::supervisor::{RunHandle, SupervisorOptions, spawn};
 +use workshop_adapters::{
 +    AdapterEvent, AdapterId, DetectOptions, Detection, PermissionPolicy, RunRequest, detect,
@@ -2928,7 +2931,7 @@ index 00000000..306a657e
 +                &log,
 +                &format!("repair: `{}` failed verification: {reason}", path.display()),
 +            );
-+            state::clear_quarantine(&path);
++            clear_quarantine(&path);
 +            match detect_opencode(&detect_opts, Some(&install)).await {
 +                Detection::Installed(cli) => cli,
 +                _ => {
@@ -2983,7 +2986,8 @@ index 00000000..306a657e
 +
 +    let mut opts = EngineOptions::new(workspace);
 +    opts.permission_handler = Some(engine_permission_handler(tx, slot.always_approve.clone()));
-+    opts.log_path = Some(log.clone());
++    let sink_path = log.clone();
++    opts.log_sink = Some(Arc::new(move |line: &str| state::append_log(&sink_path, line)));
 +    // `opencode serve` is up in a couple of seconds on any laptop; a server that has not bound
 +    // its port after this long is broken, and the user should hear so instead of waiting.
 +    opts.startup_timeout = ENGINE_START_TIMEOUT;
