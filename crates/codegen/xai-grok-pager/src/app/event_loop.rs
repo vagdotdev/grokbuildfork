@@ -1137,7 +1137,7 @@ pub(crate) async fn run(
     let remote_permission_mode = remote_settings
         .as_ref()
         .and_then(|s| s.permission_mode.as_deref());
-    let launch_yolo = xai_grok_shell::util::config::effective_yolo_for_launch(
+    let mut launch_yolo = xai_grok_shell::util::config::effective_yolo_for_launch(
         args.yolo,
         args.permission_mode_flag.as_deref(),
         remote_permission_mode,
@@ -1165,6 +1165,19 @@ pub(crate) async fn run(
         .and_then(xai_grok_shell::util::config::permission_mode_from_ui_if_set)
         .is_some();
     app.permission_mode_from_soft_default = !cli_owns_mode && !toml_owns_mode;
+    // Workshop: nothing chose a mode (no CLI flag, no `[ui]` permission key, no remote setting),
+    // so the launch is always-approve. Plan and the asking mode stay one Shift+Tab away, and that
+    // pick persists as an explicit `[ui] permission_mode`, which wins on every later launch. A
+    // managed policy that pins bypass off still wins here too (the launch stays in the asking
+    // mode, as upstream).
+    if app.permission_mode_from_soft_default
+        && remote_permission_mode.is_none()
+        && !launch_auto
+        && launch_yolo.policy_block.is_none()
+    {
+        launch_yolo.yolo = true;
+        app.default_yolo = true;
+    }
     app.yolo_policy_block = launch_yolo.policy_block;
     if let Some(warning) = launch_yolo.blocked_warning {
         tracing::warn!("{warning}");
@@ -1716,6 +1729,9 @@ pub(crate) async fn run(
     let (workshop_turn_tx, mut workshop_turn_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::app::workshop::WorkshopTurnMsg>();
     app.workshop_turn_tx = Some(workshop_turn_tx);
+    // Workshop: with an engine model active (a first run, or a home that last used one), the
+    // engine starts now, in the background, so the first message finds it ready.
+    maybe_warm_engine_at_launch(&mut app);
     let voice_auth_factory = connection.auth_manager.clone();
     let mut tick_interval = tick_interval;
     let mut animation_tick_at: Option<Instant> = None;
@@ -4425,10 +4441,20 @@ fn typed_character(event: &Event) -> bool {
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
 }
 
-/// Workshop: the OpenCode engine is brought up (installed on first run, `opencode serve`) the
-/// moment the user starts typing a *message*, never on launch and never for a slash command —
-/// a fresh home that is opened, browsed with `/model` and `/auth`, and quit makes no network call
-/// and gains no `tools/` directory, while a typed first message only waits for the model.
+/// Workshop: the OpenCode engine is brought up (installed on a first run, then `opencode serve`)
+/// in the background the moment the composer opens with an engine model active, so it is ready
+/// by the time the first message is sent. Nothing is drawn and nothing waits: the composer is live
+/// while the engine starts, and a message sent before it is ready joins the same start. Only the
+/// vendor's installer and the loopback server are contacted — never a model host.
+fn maybe_warm_engine_at_launch(app: &mut AppView) {
+    if !app.workshop_connection.is_engine() {
+        return;
+    }
+    spawn_engine_warm_up(app);
+}
+
+/// Workshop: the engine model was picked after launch (`/model` on a home that opened on another
+/// connection) — the first typed *message* character brings the engine up, never a slash command.
 fn maybe_warm_engine_on_first_message_keystroke(app: &mut AppView) {
     if app.workshop_engine_warm_started || !app.workshop_connection.is_engine() {
         return;
@@ -4443,6 +4469,14 @@ fn maybe_warm_engine_on_first_message_keystroke(app: &mut AppView) {
     };
     let text = composer.trim_start();
     if text.is_empty() || text.starts_with('/') {
+        return;
+    }
+    spawn_engine_warm_up(app);
+}
+
+/// One warm-up per process: `warm_engine` on the shared engine slot, quiet (no progress lines).
+fn spawn_engine_warm_up(app: &mut AppView) {
+    if app.workshop_engine_warm_started {
         return;
     }
     let Some(tx) = app.workshop_turn_tx.clone() else { return };

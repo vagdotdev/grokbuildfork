@@ -71,8 +71,10 @@ workshop doctor           # terminal, clipboard, voice and engine checks with co
 
 ## Privacy
 
-- Nothing is fetched on launch. The first message installs and starts the OpenCode engine; `/model`
-  fetches the keyless catalogs (Kilo, OpenRouter, NVIDIA) when you open it.
+- On launch, only the OpenCode engine is brought up: a first run fetches the vendor's installer
+  from opencode.ai and starts the engine on this machine; later launches just start it. Nothing
+  is sent to a model before your first message; `/model` fetches the keyless catalogs (Kilo,
+  OpenRouter, NVIDIA) when you open it.
 - Free pools are shared services: prompts sent through them may be logged by the operator. The
   row's detail line says so.
 - Telemetry is off and no analytics token is baked in. Auto-update is off unless you opt in with

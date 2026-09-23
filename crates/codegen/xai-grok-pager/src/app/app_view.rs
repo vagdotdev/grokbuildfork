@@ -1034,7 +1034,8 @@ pub struct AppView {
     /// first message reuses the server the warm-up started (or waits for it) instead of starting
     /// a second one.
     pub workshop_engine_slot: crate::app::workshop::EngineSlot,
-    /// Set once the first typed character has started the engine warm-up for this process.
+    /// Set once the engine warm-up has started for this process (at launch with an engine model
+    /// active, else on the first typed character after one is picked).
     pub workshop_engine_warm_started: bool,
     pub workshop_engine_session: Option<String>,
     /// The bring-up status line ("Installing the OpenCode engine…") of the current turn; replaced

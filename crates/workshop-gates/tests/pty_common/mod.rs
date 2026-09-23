@@ -131,24 +131,28 @@ pub fn spawn_in(
 /// with the given failure `mode`; returns the directory to prepend to `PATH`.
 pub fn fake_opencode(mode: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
+    install_fake_opencode_into(dir.path(), mode);
+    dir
+}
+
+/// Write the fixture fake `opencode` (and its `serve` stand-in + `mode` file) into an existing
+/// `bin/`. A gate that spawns a fresh HOME without one would have the launch-time engine warm-up
+/// run the real vendor installer; the fake keeps it hermetic.
+pub fn install_fake_opencode_into(bin: &Path, mode: &str) {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     for (src, dst) in [
         ("fake-opencode.sh", "opencode"),
         ("fake-opencode-serve.py", "fake-opencode-serve.py"),
     ] {
-        std::fs::copy(fixtures.join(src), dir.path().join(dst)).expect("copy fixture");
+        std::fs::copy(fixtures.join(src), bin.join(dst)).expect("copy fixture");
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(
-            dir.path().join("opencode"),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
+        std::fs::set_permissions(bin.join("opencode"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
     }
-    std::fs::write(dir.path().join("mode"), mode).unwrap();
-    dir
+    std::fs::write(bin.join("mode"), mode).unwrap();
 }
 
 /// First run (type and go): the composer is up with the OpenCode engine active; no picker.

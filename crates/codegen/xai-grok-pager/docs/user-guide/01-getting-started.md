@@ -49,9 +49,11 @@ workshop
 You land in the composer. The footer names the active connection, **OpenCode · Big Pickle**: the
 OpenCode engine's free default model, no sign-in, no key. Type a sentence and press `Enter`.
 
-The first message installs the OpenCode engine (the official `opencode` CLI, about a minute, with
-progress shown) and starts it; every later message answers within seconds. Nothing is downloaded
-until you send that first message.
+The OpenCode engine (the official `opencode` CLI) is installed on your first launch and started in
+the background every time Workshop opens, so it is usually ready by the time you press `Enter`; a
+message sent before it is ready simply waits for it. The install (about a minute on a slow
+connection) reaches only opencode.ai, the vendor's installer; every later message answers within
+seconds.
 
 Two commands are all you need to know on day one:
 
@@ -106,8 +108,11 @@ Prefix with `!` to search hidden files:
 
 ### Permissions
 
-`Shift+Tab` cycles the session mode: **Normal** asks before risky commands and edits, **Plan**
-explores read-only and presents a plan first, **Always-approve** skips the prompts. You can also:
+Workshop starts in **Always-approve**: commands and edits run without prompts, and the composer
+border says so (`Big Pickle · always-approve`). `Shift+Tab` cycles the session mode: **Normal**
+asks before risky commands and edits, **Plan** explores read-only and presents a plan first,
+**Always-approve** skips the prompts. The mode you pick is remembered for later launches. You can
+also:
 
 - Press `Ctrl+O` to toggle always-approve mode
 - Use the `--always-approve` flag at launch: `workshop --always-approve`
