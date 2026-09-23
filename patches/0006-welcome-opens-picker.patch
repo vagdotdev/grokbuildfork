@@ -1711,7 +1711,7 @@ index b00317f2..9684cc8e 100644
                  app.auth_code_input.reset();
              }
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
-index 0cbf3632..fd4aa496 100644
+index 0cbf3632..26385c75 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 @@ -394,7 +394,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
@@ -1723,7 +1723,7 @@ index 0cbf3632..fd4aa496 100644
      let seq = authenticating_seq(&app);
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -554,34 +554,529 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
+@@ -554,34 +554,593 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
      );
  }
  
@@ -1988,6 +1988,70 @@ index 0cbf3632..fd4aa496 100644
 +        &mut app,
 +    );
 +    assert!(!app.connection_picker.as_ref().unwrap().refresh_pending);
++}
++
++/// A load that leaves a signed-in rail `Loading models…` (nothing cached yet: `/auth`, after a
++/// sign-in) asks the CLIs for their models, once; a `/model` refresh already queued covers it, and
++/// a rail that lists its models needs nothing.
++#[test]
++fn a_loading_rail_after_a_load_queues_one_rail_models_refresh() {
++    use workshop_auth::{PickerSnapshot, PickerTab};
++    use workshop_detect::{Pill, Rail, RailModels, RailState, SubscriptionModels};
++    let rails = |state: RailModels| -> Vec<RailState> {
++        Rail::ALL
++            .iter()
++            .map(|r| RailState {
++                pill: Pill::Ready,
++                installed: true,
++                subscription: state.clone(),
++                ..RailState::detecting(*r)
++            })
++            .collect()
++    };
++    let loaded = |state: RailModels| {
++        Action::TaskComplete(TaskResult::WorkshopPickerLoaded(PickerSnapshot {
++            rails: rails(state),
++            ..PickerSnapshot::default()
++        }))
++    };
++    let mut app = test_app();
++    dispatch(
++        Action::OpenConnectionPicker(PickerTab::Subscriptions),
++        &mut app,
++    );
++    let effects = dispatch(loaded(RailModels::Loading), &mut app);
++    assert!(
++        matches!(effects.as_slice(), [Effect::WorkshopRefreshRailModels]),
++        "got {effects:?}"
++    );
++    let listed = RailModels::Listed {
++        list: SubscriptionModels {
++            rail: Rail::Claude,
++            models: Vec::new(),
++            account: None,
++            documented_aliases: false,
++            fetched_at_secs: 0,
++        },
++        cached: false,
++        error: None,
++    };
++    assert!(dispatch(loaded(listed), &mut app).is_empty());
++    let failed = RailModels::Failed {
++        reason: "timed out".into(),
++    };
++    assert!(
++        dispatch(loaded(failed), &mut app).is_empty(),
++        "a failed rail waits for Ctrl+R"
++    );
++
++    // `/model`: the queued live refresh asks the CLIs itself; no second probe.
++    app.connection_picker = None;
++    dispatch(Action::OpenConnectionPicker(PickerTab::Models), &mut app);
++    let effects = dispatch(loaded(RailModels::Loading), &mut app);
++    assert!(
++        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs { .. }]),
++        "got {effects:?}"
++    );
 +}
 +
 +/// The OpenCode engine could not start for a turn: one system line, the Kilo keyless pool becomes
@@ -2264,7 +2328,7 @@ index 0cbf3632..fd4aa496 100644
  }
  
  /// Puts the app in `Authenticating` with a live task's abort handle installed, as the event loop would.
-@@ -591,7 +1086,7 @@ fn install_live_auth_task(
+@@ -591,7 +1150,7 @@ fn install_live_auth_task(
      app: &mut AppView,
      rt: &tokio::runtime::Runtime,
  ) -> (tokio::task::JoinHandle<()>, u64) {
@@ -2273,7 +2337,7 @@ index 0cbf3632..fd4aa496 100644
      let task = rt.spawn(std::future::pending::<()>());
      match &mut app.auth_state {
          AuthState::Authenticating {
-@@ -621,7 +1116,7 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -621,7 +1180,7 @@ fn login_while_authenticating_aborts_prior_task() {
      let mut app = test_app_with_agent();
      let (prior_task, first_seq) = install_live_auth_task(&mut app, &rt);
  
@@ -2282,7 +2346,7 @@ index 0cbf3632..fd4aa496 100644
  
      rt.block_on(async {
          assert!(
-@@ -651,12 +1146,12 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -651,12 +1210,12 @@ fn login_while_authenticating_aborts_prior_task() {
  #[test]
  fn stale_auth_complete_after_relogin_is_ignored() {
      let mut app = test_app_with_agent();
@@ -2297,7 +2361,7 @@ index 0cbf3632..fd4aa496 100644
  
      dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -722,7 +1217,7 @@ fn cancel_login_aborts_prior_task() {
+@@ -722,7 +1281,7 @@ fn cancel_login_aborts_prior_task() {
  #[test]
  fn cancel_login_restores_view() {
      let mut app = test_app_with_agent();
