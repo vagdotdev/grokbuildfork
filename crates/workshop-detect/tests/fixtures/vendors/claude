@@ -1,7 +1,18 @@
 #!/bin/sh
 # Fake Claude Code CLI for Workshop detection tests.
-# Output shapes copied from Claude Code 2.1.278 (`claude --version`, `claude auth status`).
-[ -n "$FAKE_CLI_STATE_DIR" ] && { echo "claude $*" >> "$FAKE_CLI_STATE_DIR/calls.claude"; env > "$FAKE_CLI_STATE_DIR/env.claude"; }
+# Output shapes copied from Claude Code 2.1.278 (`claude --version`, `claude auth status`) and
+# 2.1.280 (the stream-json `initialize` control response).
+if [ -n "$FAKE_CLI_STATE_DIR" ]; then
+  echo "claude $*" >> "$FAKE_CLI_STATE_DIR/calls.claude"; env > "$FAKE_CLI_STATE_DIR/env.claude"; pwd > "$FAKE_CLI_STATE_DIR/cwd.claude"
+  # One claude child at a time: another one still alive when this starts is an overlap. The pid
+  # check tells a live holder from one that was SIGKILLed before its trap could run.
+  lock="$FAKE_CLI_STATE_DIR/claude.running"
+  if ! mkdir "$lock" 2>/dev/null && kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then
+    echo "claude $*" >> "$FAKE_CLI_STATE_DIR/overlap.claude"
+  fi
+  mkdir -p "$lock"; echo $$ > "$lock/pid"
+  trap 'rm -rf "$lock"' EXIT
+fi
 case "$1" in
   --version|-v) echo "2.1.278 (Claude Code)"; exit 0 ;;
   --help|-h)
@@ -18,6 +29,40 @@ case "$1" in
           *) printf '{\n  "loggedIn": false,\n  "authMethod": "none",\n  "apiProvider": "firstParty"\n}\n'; exit 1 ;;
         esac ;;
       login) echo "fake claude login"; exit 0 ;;
+    esac ;;
+esac
+case "$*" in
+  *--input-format\ stream-json*)
+    mode="${FAKE_MODELS_CLAUDE:-ok}"
+    if [ "$mode" = hang_once ]; then
+      if [ -f "$FAKE_CLI_STATE_DIR/claude.hung" ]; then mode=ok; else
+        touch "$FAKE_CLI_STATE_DIR/claude.hung"
+        # A child mid-way through an OAuth refresh: ignores stdin EOF until it is done.
+        IFS= read -r _req
+        sleep "${FAKE_HANG_SECS:-2}"
+        touch "$FAKE_CLI_STATE_DIR/claude.finished"
+        exit 0
+      fi
+    fi
+    case "$mode" in
+      unsupported) echo "error: unknown option '--input-format'" >&2; exit 1 ;;
+      ok)
+        IFS= read -r req
+        case "$req" in
+          *'"subtype":"initialize"'*) ;;
+          *) echo "fake claude: expected initialize, got: $req" >&2; exit 65 ;;
+        esac
+        id=$(printf '%s' "$req" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+        printf '%s\n' '{"type":"system","subtype":"status","status":"starting"}'
+        if [ "${FAKE_LOGIN_CLAUDE:-out}" = in ]; then
+          account='{"email":"user@example.com","subscriptionType":"max","tokenSource":"claude.ai","apiProvider":"firstParty"}'
+        else
+          account='{"tokenSource":"none","apiProvider":"firstParty"}'
+        fi
+        printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","pending_permission_requests":[],"response":{"commands":[],"agents":[],"models":[{"value":"default","resolvedModel":"claude-opus-5-5[1m]","displayName":"Default (recommended)","description":"Use the default model"},{"value":"opus[1m]","displayName":"Opus (1M context)","description":"Opus 5.5 with 1M context"},{"value":"claude-fable-5-1","displayName":"Fable","description":"Fable 5.1"},{"value":"sonnet","displayName":"Sonnet","description":"Sonnet 5"},{"value":"haiku","displayName":"Haiku","description":"Haiku 4.5"}],"account":%s,"pid":%s}}}\n' "$id" "$account" "$$"
+        # Like the real CLI: stay up until stdin closes, then exit.
+        while IFS= read -r _; do :; done
+        exit 0 ;;
     esac ;;
 esac
 echo "fake claude: unsupported args: $*" >&2

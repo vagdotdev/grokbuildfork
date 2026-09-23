@@ -1013,6 +1013,15 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                         engine: app.workshop_engine.clone(),
                     }];
                 }
+                // Nothing live is queued (`/auth`, after a sign-in) but a signed-in rail has no
+                // cached list yet: ask its CLI. That snapshot never comes back `Loading`.
+                if !picker.refresh_pending
+                    && picker.rails.iter().any(|r| {
+                        matches!(r.subscription, workshop_detect::RailModels::Loading)
+                    })
+                {
+                    return vec![Effect::WorkshopRefreshRailModels];
+                }
             }
             vec![]
         }

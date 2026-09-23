@@ -23,6 +23,11 @@ pub struct DetectConfig {
     pub extra_dirs: Vec<PathBuf>,
     /// Per-child timeout for `--version`, `--help`, and status commands.
     pub timeout: Duration,
+    /// Budget for one rail's model-list probe ([`crate::models::subscription_models`]).
+    pub models_timeout: Duration,
+    /// How long a `claude` child that outlived its budget may keep running before it is killed.
+    /// Never shorten this in production: see [`crate::process::VendorSlot`].
+    pub claude_kill_grace: Duration,
     /// Extra environment for children (fixtures only; credential-like names are rejected).
     pub extra_env: Vec<(OsString, OsString)>,
     /// Run the official status command. `false` is a presence-only scan (the user declined the
@@ -40,6 +45,9 @@ impl Default for DetectConfig {
             include_known_dirs: true,
             extra_dirs: Vec::new(),
             timeout: Duration::from_secs(8),
+            models_timeout: Duration::from_secs(6),
+            // Traycer's OAUTH_REFRESH_SAFE_TEARDOWN_GRACE_MS (`ephemeral-probe.ts`).
+            claude_kill_grace: Duration::from_secs(30),
             extra_env: Vec::new(),
             check_login: true,
             cursor_app_paths: None,
@@ -56,6 +64,15 @@ impl DetectConfig {
             include_known_dirs: false,
             cursor_app_paths: Some(Vec::new()),
             ..Self::default()
+        }
+    }
+
+    /// Kill grace for a vendor child that outlived its budget: [`Self::claude_kill_grace`] for
+    /// Claude, none for the others (their group is killed at the deadline).
+    pub fn kill_grace(&self, vendor: Vendor) -> Duration {
+        match vendor {
+            Vendor::Claude => self.claude_kill_grace,
+            Vendor::Codex | Vendor::Cursor | Vendor::OpenCode => Duration::ZERO,
         }
     }
 

@@ -14,6 +14,12 @@ pub const CURSOR_DESKTOP_ONLY: &str = "Cursor runs in the desktop app";
 pub const CURSOR_APP_WITHOUT_CLI: &str =
     "Cursor app found — install Agent CLI to use this subscription";
 pub const NO_MODELS: &str = "No models for this harness";
+/// A signed-in rail whose CLI has not answered with its model list yet.
+pub const LOADING_MODELS: &str = "Loading models…";
+/// A signed-in rail whose CLI could not list its models, with nothing cached. Enter on that rail
+/// retries: every terminal delivers it, while Ctrl+R is the composer's session picker and a chord
+/// prefix some VS Code-family terminals keep from the app.
+pub const MODELS_FAILED: &str = "Couldn't load models — press Enter to retry";
 
 /// Tab labels.
 pub const TAB_MODELS: &str = "Models";

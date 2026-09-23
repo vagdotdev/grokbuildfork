@@ -1,7 +1,18 @@
 #!/bin/sh
 # Fake Cursor Agent CLI for Workshop detection tests.
-# Output shapes copied from Cursor Agent 2026.09.18-9a7762b (`agent --version`, `agent status --format json`).
-[ -n "$FAKE_CLI_STATE_DIR" ] && { echo "cursor $*" >> "$FAKE_CLI_STATE_DIR/calls.cursor"; env > "$FAKE_CLI_STATE_DIR/env.cursor"; }
+# Output shapes copied from Cursor Agent 2026.09.18-9a7762b (`agent --version`, `agent status --format json`,
+# `agent models`: the listing format of its `src/commands/models.ts`, the signed-out error verbatim).
+if [ -n "$FAKE_CLI_STATE_DIR" ]; then
+  echo "cursor $*" >> "$FAKE_CLI_STATE_DIR/calls.cursor"; env > "$FAKE_CLI_STATE_DIR/env.cursor"
+  # One cursor child at a time: another one still alive when this starts is an overlap. The pid
+  # check tells a live holder from one that was SIGKILLed before its trap could run.
+  lock="$FAKE_CLI_STATE_DIR/cursor.running"
+  if ! mkdir "$lock" 2>/dev/null && kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then
+    echo "cursor $*" >> "$FAKE_CLI_STATE_DIR/overlap.cursor"
+  fi
+  mkdir -p "$lock"; echo $$ > "$lock/pid"
+  trap 'rm -rf "$lock"' EXIT
+fi
 case "$1" in
   --version|-v) echo "2026.09.18-9a7762b"; exit 0 ;;
   --help|-h)
@@ -15,6 +26,18 @@ case "$1" in
       garbage) echo "Logged in as someone"; exit 0 ;;
       *) printf '{\n  "status": "unauthenticated",\n  "isAuthenticated": false,\n  "hasAccessToken": false,\n  "hasRefreshToken": false,\n  "message": "Not logged in"\n}\n'; exit 0 ;;
     esac ;;
+  models|--list-models)
+    mode="${FAKE_MODELS_CURSOR:-ok}"
+    [ "${FAKE_LOGIN_CURSOR:-out}" = in ] || mode=signed_out
+    case "$mode" in
+      signed_out) echo "Error: Authentication required. Run 'agent login', pass --api-key/--auth-token, or set CURSOR_API_KEY/CURSOR_AUTH_TOKEN." >&2; exit 1 ;;
+      fail) echo "Failed to load models: network down" >&2; exit 1 ;;
+      empty) echo "No models available for this account."; exit 0 ;;
+      hang) sleep 30; exit 0 ;;
+    esac
+    printf 'Available models\n\nauto - Auto (current)\ncomposer-2.5 - Composer 2.5 (default)\ngpt-6-sol - GPT-6 Sol\nclaude-opus-5-5-thinking - Claude Opus 5.5 (Thinking)\n\n'
+    printf "Tip: use --model <id> (or /model <id> in interactive mode) to switch. Parameterized models also accept quoted overrides, e.g. --model 'claude-opus-4-8[context=1m,effort=high,fast=false]'.\n"
+    exit 0 ;;
   login) echo "fake cursor login"; exit 0 ;;
 esac
 echo "fake cursor-agent: unsupported args: $*" >&2

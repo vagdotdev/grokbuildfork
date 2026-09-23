@@ -1804,6 +1804,10 @@ pub enum Effect {
         force: bool,
         engine: Option<std::sync::Arc<workshop_adapters::opencode_engine::OpenCodeEngine>>,
     },
+    /// Workshop: a signed-in rail is still `Loading models…` after a picker load with no live
+    /// refresh queued (`/auth`, after a sign-in): ask those CLIs for their models, then reload the
+    /// picker. Child processes only; Workshop itself makes no request.
+    WorkshopRefreshRailModels,
     /// Workshop: a `[model.<key>]` was written; ask the shell to reload its model list, authenticate
     /// with the non-interactive method, and switch the active session (if any) to `model_id`.
     WorkshopActivateModel {
