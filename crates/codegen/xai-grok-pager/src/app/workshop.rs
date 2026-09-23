@@ -927,7 +927,9 @@ fn engine_config(log: &Path) -> serde_json::Value {
         Some(path) => instructions_config(&[path]),
         None => serde_json::json!({}),
     };
-    config["agent"] = agent_prompts(WORKSHOP_AGENT_PROMPT);
+    if let Some(fields) = config.as_object_mut() {
+        fields.insert("agent".into(), agent_prompts(WORKSHOP_AGENT_PROMPT));
+    }
     config
 }
 

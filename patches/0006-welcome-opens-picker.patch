@@ -3553,10 +3553,10 @@ index 60fe34f9..d5845f2c 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..5ec50ca0
+index 00000000..911648e1
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1486 @@
+@@ -0,0 +1,1488 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -4486,7 +4486,9 @@ index 00000000..5ec50ca0
 +        Some(path) => instructions_config(&[path]),
 +        None => serde_json::json!({}),
 +    };
-+    config["agent"] = agent_prompts(WORKSHOP_AGENT_PROMPT);
++    if let Some(fields) = config.as_object_mut() {
++        fields.insert("agent".into(), agent_prompts(WORKSHOP_AGENT_PROMPT));
++    }
 +    config
 +}
 +
