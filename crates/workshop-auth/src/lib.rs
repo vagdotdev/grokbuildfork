@@ -1080,8 +1080,19 @@ impl PickerState {
             RowKind::Engine(m) => PickerOutcome::SelectEngine(m),
             RowKind::RailModel { rail, model } => PickerOutcome::SelectRailModel(rail, model),
             RowKind::RailSignIn(rail) => PickerOutcome::RailConnect(rail),
-            // Signed in, list not here: nothing to pick yet.
-            RowKind::RailNote(..) => PickerOutcome::Changed,
+            // Signed in, list not here: a failed list is asked for again; a loading one has
+            // nothing to pick yet.
+            RowKind::RailNote(rail, _) => {
+                let failed = self.rails.iter().any(|r| {
+                    r.rail == rail
+                        && matches!(r.subscription, workshop_detect::RailModels::Failed { .. })
+                });
+                if failed {
+                    PickerOutcome::RetryRailModels
+                } else {
+                    PickerOutcome::Changed
+                }
+            }
         }
     }
 
@@ -1519,6 +1530,87 @@ mod tests {
             ..PickerSnapshot::default()
         });
         assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
+    }
+
+    /// On the Models view a signed-in rail whose list is still loading or failed to load is its
+    /// own status row (`Loading models…` / `Couldn't load models — press Enter to retry`), never
+    /// a sign-in row; Enter on the failed one asks the CLIs again, on the loading one does nothing.
+    #[test]
+    fn models_view_shows_a_signed_in_rails_status_never_a_sign_in_row() {
+        use workshop_detect::{RailModels, copy};
+        let ready = |rail: Rail, subscription: RailModels, empty_copy| RailState {
+            pill: Pill::Ready,
+            installed: true,
+            empty_copy: Some(empty_copy),
+            subscription,
+            ..RailState::detecting(rail)
+        };
+        let rails = vec![
+            ready(Rail::Claude, RailModels::Loading, copy::LOADING_MODELS),
+            ready(
+                Rail::Codex,
+                RailModels::Failed {
+                    reason: "the CLI did not answer in time".into(),
+                },
+                copy::MODELS_FAILED,
+            ),
+        ];
+        let rows = models_rows(
+            &workshop_providers::Catalog::builtin(),
+            |_| false,
+            &[],
+            &rails,
+        );
+        let claude: Vec<&ModelsRow> = rows
+            .iter()
+            .filter(|r| r.provider_id() == Some(Rail::Claude.vendor().id()))
+            .collect();
+        let codex: Vec<&ModelsRow> = rows
+            .iter()
+            .filter(|r| r.provider_id() == Some(Rail::Codex.vendor().id()))
+            .collect();
+        assert!(
+            matches!(claude.as_slice(), [row] if matches!(&row.kind, RowKind::RailNote(Rail::Claude, c) if c == copy::LOADING_MODELS)),
+            "one Loading status row for Claude: {claude:?}"
+        );
+        assert!(
+            matches!(codex.as_slice(), [row] if matches!(&row.kind, RowKind::RailNote(Rail::Codex, c) if c == copy::MODELS_FAILED)),
+            "one Failed status row for Codex: {codex:?}"
+        );
+        for row in claude.iter().chain(&codex) {
+            assert!(
+                !matches!(row.kind, RowKind::RailSignIn(_)) && !row.badge.contains("not signed in"),
+                "a signed-in rail never reads as signed out: {row:?}"
+            );
+            assert!(row.badge.starts_with("Signed in"), "{row:?}");
+        }
+
+        let mut p = PickerState::new().with_tab(PickerTab::Models);
+        p.apply_snapshot(PickerSnapshot {
+            rows,
+            rails,
+            ..PickerSnapshot::default()
+        });
+        let mut outcomes = std::collections::BTreeMap::new();
+        for _ in 0..p.visible_models().len() {
+            if let Some(row) = p.selected_row()
+                && let RowKind::RailNote(rail, _) = &row.kind
+            {
+                let rail = *rail;
+                outcomes.insert(rail.vendor().id(), p.handle(PickerInput::Enter));
+            }
+            p.handle(PickerInput::Down);
+        }
+        assert_eq!(
+            outcomes.get(Rail::Codex.vendor().id()),
+            Some(&PickerOutcome::RetryRailModels),
+            "Enter on the failed list asks the CLIs again: {outcomes:?}"
+        );
+        assert_eq!(
+            outcomes.get(Rail::Claude.vendor().id()),
+            Some(&PickerOutcome::Changed),
+            "Enter on a loading list has nothing to pick yet: {outcomes:?}"
+        );
     }
 
     /// Kilo Gateway is the silent fallback, never a row: not on `/model`, not on `/auth`, and no
