@@ -116,7 +116,7 @@ waitshell() { # the shell prompt is back as the last non-empty line
   done
   ev shell_timeout; return 1
 }
-TURN_BASE=0
+TURN_BASE=0; WF_BASE=0
 waitturn() {
   local limit="${1:-$TURN_TIMEOUT}" start=$SECONDS prev="" cur still=0 stalled=0 n active=$SECONDS
   while [ $((SECONDS - start)) -lt "$limit" ]; do
@@ -127,7 +127,12 @@ waitturn() {
     if [ "$n" -gt "$TURN_BASE" ] && [ $still -ge 6 ] && ! busy; then
       ev turn_end "record $n after $((SECONDS - start))s"; TURN_BASE="$n"; return 0
     fi
-    # No engine record (a non-engine connection answered): 120 s still, and for the last 30 s nothing
+    # No engine record (the silent fallback answered on the shell path): v0.2.2's done line
+    # (`Worked for 22s`) that appeared after the prompt ends the turn.
+    if [ "$n" -le "$TURN_BASE" ] && [ $still -ge 6 ] && ! busy && [ "$(screen | grep -c 'Worked for')" -gt "$WF_BASE" ]; then
+      ev turn_end "done line without a record after $((SECONDS - start))s"; return 0
+    fi
+    # No engine record and no done line: 120 s still, and for the last 30 s nothing
     # busy on screen and no tool process running, ends the turn.
     if [ $still -ge 240 ] && [ $((SECONDS - active)) -ge 30 ] && [ "$n" -le "$TURN_BASE" ]; then
       ev turn_end "idle 120s without a record after $((SECONDS - start))s"; return 0
@@ -226,7 +231,7 @@ while IFS= read -r raw || [ -n "$raw" ]; do
       if screen_has 'always-approve'; then ev mode_on_screen always-approve; else ev mode_on_screen "not shown"; fi
       screen > "$OUT/probes/composer.txt"
       TURN_BASE="$(turns_total)" ;;
-    type) TURN_BASE="$(turns_total)"; type_text "$arg"; "${T[@]}" send-keys -t "$SESSION" Enter; ev prompt_sent "$arg" ;;
+    type) TURN_BASE="$(turns_total)"; WF_BASE="$(screen | grep -c 'Worked for')"; type_text "$arg"; "${T[@]}" send-keys -t "$SESSION" Enter; ev prompt_sent "$arg" ;;
     waitturn) waitturn ${arg:+"$arg"}; screen > "$OUT/probes/turn-end-$(grep -c '"turn_end"\|"turn_timeout"' "$EVENTS").txt" ;;
     line) type_line "$arg"; ev line "$arg" ;;
     key) # shellcheck disable=SC2086
