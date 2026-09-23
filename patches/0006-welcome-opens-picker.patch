@@ -2733,7 +2733,7 @@ index 1c507697..6b5e925c 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..bedc9ce0 100644
+index eda61b3c..87e0f568 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -3029,7 +3029,7 @@ index eda61b3c..bedc9ce0 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4061,351 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4061,360 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -3100,6 +3100,15 @@ index eda61b3c..bedc9ce0 100644
 +            // seconds, the cancel hint) until the first real output replaces it.
 +            app.workshop_turn_progress = Some(text);
 +            app.repaint_workshop_progress()
++        }
++        // A model the user picked in /model is kept; only a connection still on the default follows it.
++        M::EngineDefaultResolved { .. }
++            if !matches!(
++                &app.workshop_connection,
++                crate::app::workshop::WorkshopConnection::Engine { model } if model.is_default
++            ) =>
++        {
++            false
 +        }
 +        M::EngineDefaultResolved { model } => {
 +            // OpenCode's live default replaces the pinned seed the first run activated.

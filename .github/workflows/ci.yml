@@ -205,8 +205,8 @@ jobs:
         # reports usage, then `8.6K / 200K`; queued prompts are separate turns; no reasoning text
         # on screen by default (`/settings` → Show thinking blocks brings it back as a block);
         # "what are you?" / "who made you?" answer as Workshop, never opencode, in Normal and Plan;
-        # `--resume`/`-c`/the pickers replay the engine conversation and an idle launch prints no
-        # resume hint.
+        # a model picked in /model survives the next launch's warm-up; `--resume`/`-c`/the
+        # pickers replay the engine conversation and an idle launch prints no resume hint.
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test engine_trust -- --nocapture --include-ignored --test-threads=2

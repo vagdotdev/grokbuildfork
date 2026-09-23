@@ -24,6 +24,8 @@
 //! * `engine_answers_as_workshop` — "what are you?" / "who made you?" answer as Workshop's
 //!   assistant, never as "opencode", in Normal and Plan mode (the `build` and `plan` agents open
 //!   their system prompt with Workshop's identity; the instructions file follows).
+//! * `picked_model_survives_the_next_warm_up` — a model picked in `/model` is still the one the
+//!   next launch's turns run on after the engine warm-up reads OpenCode's live default.
 //!
 //! Evidence (text + HTML screenshots) lands in `WORKSHOP_PTY_EVIDENCE_DIR/engine-trust/*`.
 
@@ -61,6 +63,7 @@ if [ "$*" = "auth list" ]; then
   printf '%s\n' '┌  Credentials ~/.local/share/opencode/auth.json' '│' '└  0 credentials'; exit 0
 fi
 if [ "$1" = "serve" ]; then
+  [ -f '{delay}' ] && sleep "$(cat '{delay}')"
   exec python3 '{serve}' --port "$5" --providers '{providers}' --log '{log}'
 fi
 echo "fake opencode: unexpected $*" >&2
@@ -69,6 +72,7 @@ exit 2
         serve = serve_py.display(),
         providers = providers.display(),
         log = log.display(),
+        delay = bin.join("start-delay").display(),
     );
     let path = bin.join("opencode");
     std::fs::write(&path, script).unwrap();
@@ -763,6 +767,62 @@ fn live_engine_trust_journey() {
     std::fs::write(j.dir.join("06-quit-hint.txt"), &after).unwrap();
     assert!(after.contains("workshop --resume ses_"), "{after}");
     eprintln!("evidence: {}", j.dir.display());
+}
+
+/// A model picked in `/model` stays picked: the next launch's engine warm-up, which reads
+/// OpenCode's live default, does not put the connection back on Big Pickle.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn picked_model_survives_the_next_warm_up() {
+    const LING: &str = "OpenCode \u{b7} Ling 3.0 Flash Fin Free";
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/picked-model-survives-warm-up", &bin, &fx);
+    send_prompt(&mut j, "hello");
+    wait_for(&mut j.h, "Echo: hello", 60);
+    send_prompt(&mut j, "/model");
+    wait_for(&mut j.h, "Tab: Subscriptions", 15);
+    j.h.inject_keys(b"fin free").unwrap();
+    wait_for(&mut j.h, "Ling 3.0 Flash Fin Free", 15);
+    j.h.update(Duration::from_millis(400));
+    j.h.inject_keys(b"\r").unwrap();
+    wait_for(&mut j.h, LING, 15);
+    quit(&mut j);
+
+    // A real `opencode serve` takes seconds to come up, so the warm-up the first keystroke starts
+    // finishes while that first turn is already waiting on the engine.
+    std::fs::write(fx.bin.join("start-delay"), "2").unwrap();
+    let mut j = pty_common::spawn_in(
+        "engine-trust/picked-model-survives-warm-up",
+        &bin,
+        OFFLINE,
+        Some(&fx.bin),
+        j.home,
+    );
+    wait_for(&mut j.h, LING, 45);
+    send_prompt(&mut j, "first after relaunch");
+    wait_for(&mut j.h, "Echo: first after relaunch", 60);
+    send_prompt(&mut j, "second after relaunch");
+    wait_for(&mut j.h, "Echo: second after relaunch", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "01-relaunch-keeps-ling");
+    let screen = j.h.screen_contents();
+    assert!(screen.contains(LING), "the label keeps the pick:\n{screen}");
+    let models: Vec<String> = engine_log(&fx.log)
+        .iter()
+        .filter(|v| {
+            v.get("text")
+                .and_then(|t| t.as_str())
+                .is_some_and(|t| t.contains("after relaunch"))
+        })
+        .map(|v| v["model"].to_string())
+        .collect();
+    assert_eq!(models.len(), 2, "{models:?}");
+    assert!(
+        models.iter().all(|m| m.contains("ling-3.0-flash-fin-free")),
+        "both turns ran on the picked model: {models:?}"
+    );
+    quit(&mut j);
 }
 
 /// The engine conversation is what resume finds, replays and continues.
