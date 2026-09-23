@@ -1057,7 +1057,7 @@ fn row_detail_lines(row: &ModelsRow, xai_armed: bool, list_note: Option<String>)
         }
         RowKind::Engine(_) => {
             lines.push(
-                "Free shared pool via the official opencode CLI, installed on your first message."
+                "Free shared pool via the official opencode CLI, set up in the background when Workshop opens."
                     .into(),
             );
             lines.push(

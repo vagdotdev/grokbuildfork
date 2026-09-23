@@ -625,7 +625,7 @@ pub enum WorkshopTurnMsg {
         engine: Arc<OpenCodeEngine>,
         session: String,
     },
-    /// The first-keystroke warm-up finished: the engine is up before the first message.
+    /// The launch warm-up finished: the engine is up before the first message.
     EngineWarm { engine: Arc<OpenCodeEngine> },
     /// The engine's live catalog names a different default than the pinned seed the first run
     /// activated: the connection follows OpenCode's default (composer label, persisted file).
@@ -693,7 +693,7 @@ enum TurnStartError {
     Other(String),
 }
 
-/// The one `opencode serve` this process owns, shared by the first-keystroke warm-up and every
+/// The one `opencode serve` this process owns, shared by the launch warm-up and every
 /// turn so two callers never start two servers: whoever holds the lock starts it, the other
 /// reuses it. `phase` carries the live bring-up status so a turn that waits on the lock can show
 /// what the other task is doing ("Installing…") instead of a generic line.
@@ -1185,10 +1185,11 @@ async fn acquire_engine(
     }
 }
 
-/// Warm-up on the user's first typed character (never on launch): install (first run) and start
-/// `opencode serve` while the user is still typing, so the first message only waits for the
-/// model. Also resolves OpenCode's live default model. Failures are recorded for `workshop
-/// doctor` and surface on the first real turn, which reports the cause and falls back.
+/// Warm-up in the background as soon as the composer opens with an engine model active (or, if
+/// the engine model is picked later, on the first typed character): install (first run) and
+/// start `opencode serve` while the user is still reading or typing, so the first message only
+/// waits for the model. Also resolves OpenCode's live default model. Failures are recorded for
+/// `workshop doctor` and surface on the first real turn, which reports the cause and falls back.
 pub async fn warm_engine(
     slot: EngineSlot,
     workspace: PathBuf,

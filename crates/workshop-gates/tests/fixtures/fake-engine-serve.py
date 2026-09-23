@@ -24,7 +24,8 @@ from the real server:
 
 Every turn ends with a step-finish carrying tokens (total 8627 -> "8.6K") and goes idle. Every
 prompt_async body and permission reply is appended to the `--log` file (JSON lines) so a gate can
-pin the agent that was sent and the answer Workshop posted.
+pin the agent that was sent and the answer Workshop posted; the server's own start is the first
+line (`{"started": true, "time": <unix seconds>}`) so a gate can pin *when* Workshop brought it up.
 """
 import json
 import os
@@ -356,5 +357,6 @@ class H(BaseHTTPRequestHandler):
 
 srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
 srv.daemon_threads = True
+log({"started": True, "port": PORT, "time": time.time()})
 print("opencode server listening on http://127.0.0.1:%d" % PORT, flush=True)
 srv.serve_forever()

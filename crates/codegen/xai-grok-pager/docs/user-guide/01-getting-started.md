@@ -49,9 +49,11 @@ workshop
 You land in the composer. The footer names the active connection, **OpenCode · Big Pickle**: the
 OpenCode engine's free default model, no sign-in, no key. Type a sentence and press `Enter`.
 
-The first message installs the OpenCode engine (the official `opencode` CLI, about a minute, with
-progress shown) and starts it; every later message answers within seconds. Nothing is downloaded
-until you send that first message.
+The OpenCode engine (the official `opencode` CLI) is installed on your first launch and started in
+the background every time Workshop opens, so it is usually ready by the time you press `Enter`; a
+message sent before it is ready simply waits for it. The install (about a minute on a slow
+connection) reaches only opencode.ai, the vendor's installer; every later message answers within
+seconds.
 
 Two commands are all you need to know on day one:
 

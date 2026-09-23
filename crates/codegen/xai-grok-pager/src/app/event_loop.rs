@@ -1716,6 +1716,9 @@ pub(crate) async fn run(
     let (workshop_turn_tx, mut workshop_turn_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::app::workshop::WorkshopTurnMsg>();
     app.workshop_turn_tx = Some(workshop_turn_tx);
+    // Workshop: with an engine model active (a first run, or a home that last used one), the
+    // engine starts now, in the background, so the first message finds it ready.
+    maybe_warm_engine_at_launch(&mut app);
     let voice_auth_factory = connection.auth_manager.clone();
     let mut tick_interval = tick_interval;
     let mut animation_tick_at: Option<Instant> = None;
@@ -4415,10 +4418,20 @@ fn typed_character(event: &Event) -> bool {
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
 }
 
-/// Workshop: the OpenCode engine is brought up (installed on first run, `opencode serve`) the
-/// moment the user starts typing a *message*, never on launch and never for a slash command —
-/// a fresh home that is opened, browsed with `/model` and `/auth`, and quit makes no network call
-/// and gains no `tools/` directory, while a typed first message only waits for the model.
+/// Workshop: the OpenCode engine is brought up (installed on a first run, then `opencode serve`)
+/// in the background the moment the composer opens with an engine model active, so it is ready
+/// by the time the first message is sent. Nothing is drawn and nothing waits: the composer is live
+/// while the engine starts, and a message sent before it is ready joins the same start. Only the
+/// vendor's installer and the loopback server are contacted — never a model host.
+fn maybe_warm_engine_at_launch(app: &mut AppView) {
+    if !app.workshop_connection.is_engine() {
+        return;
+    }
+    spawn_engine_warm_up(app);
+}
+
+/// Workshop: the engine model was picked after launch (`/model` on a home that opened on another
+/// connection) — the first typed *message* character brings the engine up, never a slash command.
 fn maybe_warm_engine_on_first_message_keystroke(app: &mut AppView) {
     if app.workshop_engine_warm_started || !app.workshop_connection.is_engine() {
         return;
@@ -4433,6 +4446,14 @@ fn maybe_warm_engine_on_first_message_keystroke(app: &mut AppView) {
     };
     let text = composer.trim_start();
     if text.is_empty() || text.starts_with('/') {
+        return;
+    }
+    spawn_engine_warm_up(app);
+}
+
+/// One warm-up per process: `warm_engine` on the shared engine slot, quiet (no progress lines).
+fn spawn_engine_warm_up(app: &mut AppView) {
+    if app.workshop_engine_warm_started {
         return;
     }
     let Some(tx) = app.workshop_turn_tx.clone() else { return };

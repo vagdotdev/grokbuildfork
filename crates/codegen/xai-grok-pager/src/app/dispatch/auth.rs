@@ -295,9 +295,10 @@ fn set_workshop_connection(app: &mut AppView, conn: crate::app::workshop::Worksh
 }
 
 /// First run (nothing connected yet): land in the composer with the OpenCode engine's default free
-/// model active — no picker, no network until the first message (`opencode` installs itself
-/// then). The placeholder shell model + anonymous session are established in-process exactly as
-/// selecting the row in `/model` would; `/model` and `/auth` remain the only doors afterwards.
+/// model active — no picker; the event loop then installs and starts `opencode` in the background
+/// (the vendor's installer is the only host contacted). The placeholder shell model + anonymous
+/// session are established in-process exactly as selecting the row in `/model` would; `/model`
+/// and `/auth` remain the only doors afterwards.
 pub(super) fn dispatch_workshop_first_run(app: &mut AppView) -> Vec<Effect> {
     set_workshop_connection(app, crate::app::workshop::first_run_connection());
     match crate::app::workshop::activate_placeholder_session(&app.workshop_connection) {

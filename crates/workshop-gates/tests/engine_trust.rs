@@ -27,6 +27,9 @@
 //!   glued to the answer text.
 //! * `engine_answers_as_workshop` — "what are you?" answers as Workshop's assistant, never as
 //!   "opencode" (the server received Workshop's instructions file).
+//! * `engine_starts_at_launch_not_on_enter` — the engine is installed (fresh home, stub installer)
+//!   and started the moment the composer opens, before a key is pressed and with nothing on
+//!   screen; a returning home starts it at launch too; Enter then reuses that server.
 //!
 //! Evidence (text + HTML screenshots) lands in `WORKSHOP_PTY_EVIDENCE_DIR/engine-trust/*`.
 
@@ -672,6 +675,251 @@ fn engine_answers_as_workshop() {
         "nothing is written into the user's project"
     );
     quit(&mut j);
+}
+
+/// Unix seconds at which each `opencode serve` the fake ran came up (its first log line).
+fn engine_starts(log: &Path) -> Vec<f64> {
+    engine_log(log)
+        .iter()
+        .filter(|v| v.get("started").is_some())
+        .filter_map(|v| v.get("time").and_then(|t| t.as_f64()))
+        .collect()
+}
+
+/// Poll until the fake engine has started `n` times (without touching the keyboard); returns the
+/// `n`th start's unix seconds.
+fn wait_for_engine_start(
+    h: &mut xai_grok_pager_pty_harness::PtyHarness,
+    log: &Path,
+    n: usize,
+    secs: u64,
+) -> f64 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    loop {
+        let starts = engine_starts(log);
+        if let Some(at) = n.checked_sub(1).and_then(|i| starts.get(i)) {
+            return *at;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the engine did not start (start #{n}) within {secs}s of launch; starts so far: {starts:?}\nscreen:\n{}",
+            h.screen_contents()
+        );
+        h.update(Duration::from_millis(200));
+    }
+}
+
+fn unix_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+/// The engine is brought up at launch, silently — never on Enter. A fresh home installs it (the
+/// vendor installer stubbed by a `curl` that "downloads" a script placing the fake engine where
+/// the real one lands) and starts `opencode serve` before a single key is pressed; a returning
+/// home starts it before a single key is pressed and installs nothing; in both cases the first
+/// answer arrives within seconds of Enter, with no bring-up line first.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve, stub installer); run with --include-ignored"]
+fn engine_starts_at_launch_not_on_enter() {
+    let Some(bin) = bin_from_env() else { return };
+    let fakes = tempfile::tempdir().expect("fakes dir");
+    // The fake engine lives *off* PATH so a fresh home has to "install" it.
+    let engine_dir = fakes.path().join("engine");
+    let log = install_fake_engine(&engine_dir);
+    let path_dir = fakes.path().join("bin");
+    std::fs::create_dir_all(&path_dir).unwrap();
+    let curl_log = fakes.path().join("curl-calls.log");
+    let curl = format!(
+        r#"#!/bin/sh
+# The vendor installer, stubbed: record the call, then print the script `bash -s` runs. It puts
+# the fake engine exactly where the real installer would (`$HOME/.opencode/bin/opencode`, HOME
+# being Workshop's tools tree for the installer process).
+python3 -c 'import time; print(time.time())' >> '{curl_log}'
+case "$*" in
+  *opencode.ai/install*) ;;
+  *) echo "stub curl: unexpected $*" >&2; exit 2 ;;
+esac
+cat <<'EOS'
+mkdir -p "$HOME/.opencode/bin" && cp '{engine}' "$HOME/.opencode/bin/opencode" && chmod 755 "$HOME/.opencode/bin/opencode"
+EOS
+"#,
+        curl_log = curl_log.display(),
+        engine = engine_dir.join("opencode").display(),
+    );
+    std::fs::write(path_dir.join("curl"), curl).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            path_dir.join("curl"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    let curl_calls = |log: &Path| -> Vec<f64> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.trim().parse::<f64>().ok())
+            .collect()
+    };
+
+    let home = tempfile::tempdir().expect("home");
+    let cwd = tempfile::tempdir().expect("cwd");
+    std::process::Command::new("git")
+        .args(["init", "-q", "."])
+        .current_dir(cwd.path())
+        .status()
+        .unwrap();
+    let dir = pty_common::evidence_dir("engine-trust/engine-starts-at-launch");
+    let spawn = || {
+        let inherited = std::env::var("PATH").unwrap_or_default();
+        let path_s = format!("{}:{inherited}", path_dir.display());
+        let home_s = home.path().to_string_lossy().to_string();
+        let wh_s = home.path().join(".workshop").to_string_lossy().to_string();
+        let mut env: Vec<(&str, &str)> = vec![
+            ("HOME", home_s.as_str()),
+            ("WORKSHOP_HOME", wh_s.as_str()),
+            ("PATH", path_s.as_str()),
+            ("TERM", "xterm-256color"),
+            ("NO_COLOR", "1"),
+            ("GROK_DISABLE_AUTOUPDATER", "1"),
+        ];
+        env.extend_from_slice(OFFLINE);
+        let mut h = xai_grok_pager_pty_harness::PtyHarness::new_inherited_env(
+            &bin,
+            45,
+            140,
+            &[],
+            &env,
+            Some(cwd.path()),
+        )
+        .expect("spawn workshop in pty");
+        h.set_respond_to_queries(true);
+        h
+    };
+    let no_plumbing = |screen: &str, when: &str| {
+        for text in [
+            "Installing",
+            "Starting the OpenCode engine",
+            "Thinking",
+            "opencode serve",
+            "Waiting for",
+        ] {
+            assert!(
+                !screen.contains(text),
+                "{when}: the engine bring-up must not show on screen ({text:?}):\n{screen}"
+            );
+        }
+    };
+    let installed = home
+        .path()
+        .join(".workshop/tools/opencode/.opencode/bin/opencode");
+
+    // 1. Fresh home: the installer runs and the server starts before anything is typed.
+    let launched = unix_now();
+    let mut h = spawn();
+    wait_for(&mut h, FIRST_RUN_LABEL, 45);
+    let started = wait_for_engine_start(&mut h, &log, 1, 60);
+    assert!(
+        started >= launched,
+        "the start belongs to this launch ({started} < {launched})"
+    );
+    let calls = curl_calls(&curl_log);
+    assert_eq!(
+        calls.len(),
+        1,
+        "the vendor installer ran exactly once, at launch: {calls:?}"
+    );
+    assert!(installed.is_file(), "installed into Workshop's tools tree");
+    h.update(Duration::from_millis(600));
+    let screen = h.screen_contents();
+    no_plumbing(&screen, "fresh launch, engine up, nothing typed");
+    assert!(
+        screen.contains(FIRST_RUN_LABEL) && !screen.contains("connect a model"),
+        "the composer was live throughout:\n{screen}"
+    );
+    snapshot(&h, &dir, "01-fresh-launch-engine-up-silently");
+    // The first message: the answer, within seconds of Enter, from the server that started at
+    // launch (still exactly one start).
+    h.inject_keys(b"ping").unwrap();
+    h.update(Duration::from_millis(300));
+    let enter = std::time::Instant::now();
+    h.inject_keys(b"\r").unwrap();
+    wait_for(&mut h, "Echo: ping", 30);
+    let first_answer = enter.elapsed();
+    h.update(Duration::from_millis(400));
+    snapshot(&h, &dir, "02-fresh-launch-first-answer");
+    assert_eq!(
+        engine_starts(&log).len(),
+        1,
+        "Enter reused the server started at launch, it started none"
+    );
+    assert!(
+        first_answer < Duration::from_secs(10),
+        "the first answer waited on no bring-up: {first_answer:?}"
+    );
+    let (fresh_up, fresh_answer) = (started - launched, first_answer.as_secs_f64());
+    eprintln!(
+        "fresh home: launch\u{2192}engine up {fresh_up:.2}s (install + start), Enter\u{2192}answer {fresh_answer:.2}s"
+    );
+    h.inject_keys(b"\x03").unwrap();
+    h.update(Duration::from_millis(400));
+    h.inject_keys(b"\x03").unwrap();
+    let _ = h.wait_exit_code(Duration::from_secs(10));
+
+    // 2. Returning home: the server starts at launch again, nothing is installed, and the first
+    //    message is answered at once.
+    let launched = unix_now();
+    let mut h = spawn();
+    wait_for(&mut h, FIRST_RUN_LABEL, 45);
+    let started = wait_for_engine_start(&mut h, &log, 2, 60);
+    assert!(
+        started >= launched,
+        "the second start belongs to the second launch"
+    );
+    assert_eq!(
+        curl_calls(&curl_log).len(),
+        1,
+        "a returning launch installs nothing"
+    );
+    h.update(Duration::from_millis(600));
+    no_plumbing(
+        &h.screen_contents(),
+        "returning launch, engine up, nothing typed",
+    );
+    snapshot(&h, &dir, "03-returning-launch-engine-up-silently");
+    h.inject_keys(b"ping").unwrap();
+    h.update(Duration::from_millis(300));
+    let enter = std::time::Instant::now();
+    h.inject_keys(b"\r").unwrap();
+    wait_for(&mut h, "Echo: ping", 30);
+    let first_answer = enter.elapsed();
+    h.update(Duration::from_millis(400));
+    snapshot(&h, &dir, "04-returning-launch-first-answer");
+    assert_eq!(engine_starts(&log).len(), 2, "one server per launch");
+    assert!(
+        first_answer < Duration::from_secs(10),
+        "the first answer waited on no bring-up: {first_answer:?}"
+    );
+    let (again_up, again_answer) = (started - launched, first_answer.as_secs_f64());
+    eprintln!(
+        "returning home: launch\u{2192}engine up {again_up:.2}s, Enter\u{2192}answer {again_answer:.2}s"
+    );
+    std::fs::write(
+        dir.join("timings.txt"),
+        format!(
+            "fresh home: engine up {fresh_up:.2}s after launch (stub install + start); first answer {fresh_answer:.2}s after Enter\nreturning home: engine up {again_up:.2}s after launch; first answer {again_answer:.2}s after Enter\n"
+        ),
+    )
+    .unwrap();
+    h.inject_keys(b"\x03").unwrap();
+    h.update(Duration::from_millis(400));
+    h.inject_keys(b"\x03").unwrap();
+    let _ = h.wait_exit_code(Duration::from_secs(10));
+    eprintln!("evidence: {}", dir.display());
 }
 
 /// The same promises against the real `opencode` (keyless Big Pickle, network): the proof run
