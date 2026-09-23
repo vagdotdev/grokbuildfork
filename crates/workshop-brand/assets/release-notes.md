@@ -25,6 +25,9 @@ Install or update: `curl -fsSL https://raw.githubusercontent.com/vagdotdev/grokb
 - Help, tutorial and the bundled guides describe Workshop: `workshop --help`, `~/.workshop`,
   `WORKSHOP_*` environment variables (the old names keep working), `/docs` Getting Started tells the
   real install and first-run story.
+- A subscription whose CLI is missing is one keypress away: its `/auth` rail says `Install`, Enter
+  runs the vendor's official installer behind one status line and then that vendor's own sign-in.
+  Nothing ever installs on its own, and Workshop never reads another app's login files.
 - `/feedback` says where the note is saved and drafts a prefilled GitHub issue.
 - The installer downloads one thing, `workshop` — no voice helper or speech model up front
   (`WORKSHOP_VOICE=1` installs voice right away) — reads like a product (`Verifying… done`,

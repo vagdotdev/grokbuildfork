@@ -255,9 +255,9 @@ pub enum RowKind {
     XaiOptional,
 }
 
-/// What a signed-in rail shows while its CLI's model list has not arrived (the detect layer
-/// sets the rail's `empty_copy` to this, or to its failure copy).
-pub const LOADING_MODELS: &str = "Loading models\u{2026}";
+/// What a signed-in rail shows while its CLI's model list has not arrived: the detect layer's
+/// own copy (it sets the rail's `empty_copy` to this, or to its failure copy).
+pub const LOADING_MODELS: &str = workshop_detect::copy::LOADING_MODELS;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelsRow {
@@ -591,6 +591,9 @@ pub enum PickerOutcome {
     SelectEngine(EngineModel),
     /// A subscription rail's Connect: run the official CLI login in the user's terminal.
     RailConnect(Rail),
+    /// Enter on a rail whose official CLI is not installed: run the vendor's official installer,
+    /// then its sign-in (`RailConnect`). Never started on its own.
+    RailInstall(Rail),
     /// A model on a Ready rail: route turns through that vendor's adapter.
     SelectRailModel(Rail, workshop_detect::ModelRef),
     /// Re-run the loaders.
@@ -1023,6 +1026,9 @@ impl PickerState {
                 let Some(rail) = self.selected_rail().cloned() else {
                     return PickerOutcome::Changed;
                 };
+                if !rail.installed && rail.pill == Pill::Install {
+                    return PickerOutcome::RailInstall(rail.rail);
+                }
                 if rail.is_ready() && !rail.models.is_empty() {
                     if !self.detail_open {
                         self.detail_open = true;
@@ -1240,10 +1246,23 @@ fn rail_detail_lines(rail: &RailState, selected_model: usize) -> Vec<String> {
     if rail.pill == Pill::Detecting {
         lines.push("Looking for the official CLI on PATH and in the usual install folders…".into());
     } else if !rail.installed {
-        lines.push(format!(
-            "Workshop looks for `{}`; it never reads another app's login files.",
-            rail.rail.vendor().binary_names().join("` or `")
-        ));
+        // Three short lines: the detail area is three rows tall and must not wrap the command.
+        match workshop_detect::official_install_command(rail.rail.vendor()) {
+            Some(cmd) => {
+                lines.push(format!(
+                    "Enter runs {}'s official installer, then its sign-in.",
+                    rail.rail.vendor().display_name()
+                ));
+                lines.push(format!("  {cmd}"));
+            }
+            None => lines.push(format!(
+                "Workshop looks for `{}`.",
+                rail.rail.vendor().binary_names().join("` or `")
+            )),
+        }
+        lines.push(
+            "Nothing installs on its own; Workshop never reads another app's login files.".into(),
+        );
     } else if !rail.is_ready() {
         lines.push(format!(
             "Enter runs the official login in your terminal:  {}",
@@ -1851,7 +1870,13 @@ mod tests {
     fn rail(rail: Rail, installed: bool, ready: bool) -> RailState {
         let mut st = RailState::detecting(rail);
         st.installed = installed;
-        st.pill = if ready { Pill::Ready } else { Pill::SignIn };
+        st.pill = if ready {
+            Pill::Ready
+        } else if installed {
+            Pill::SignIn
+        } else {
+            Pill::Install
+        };
         st.models = if ready {
             let p = rail.provider_id();
             ["Claude Opus", "Claude Sonnet", "Claude Haiku"]
@@ -2024,6 +2049,53 @@ mod tests {
         assert_eq!(p.models_selected, 0);
         // The Subscriptions view still lists every rail, installed or not.
         assert_eq!(p.rails.len(), 3);
+    }
+
+    /// A rail whose CLI is not installed offers one action: Enter runs the vendor's official
+    /// installer (`RailInstall`), and the detail names that installer and promises nothing runs
+    /// on its own. Signed-out-but-installed still offers `Sign in` (`RailConnect`).
+    #[test]
+    fn a_missing_cli_is_one_install_keypress_never_manual_steps() {
+        let rails = [
+            rail(Rail::Claude, false, false),
+            rail(Rail::Codex, true, false),
+            rail(Rail::Cursor, false, false),
+        ];
+        assert_eq!(rails[0].pill, Pill::Install);
+        assert_eq!(rails[0].pill.label(), "Install");
+        let mut p = PickerState::new();
+        p.apply_snapshot(PickerSnapshot {
+            rows: models_rows(
+                &workshop_providers::Catalog::builtin(),
+                |_| false,
+                &[],
+                &rails,
+            ),
+            rails: rails.to_vec(),
+            ..PickerSnapshot::default()
+        });
+        p.tab = PickerTab::Subscriptions;
+        p.rail_selected = 0;
+        let detail = p.detail_lines().join("\n");
+        assert!(
+            detail.contains("curl -fsSL https://claude.ai/install.sh | bash")
+                && detail.contains("Nothing installs on its own"),
+            "{detail}"
+        );
+        assert_eq!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::RailInstall(Rail::Claude)
+        );
+        p.rail_selected = 2;
+        assert_eq!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::RailInstall(Rail::Cursor)
+        );
+        p.rail_selected = 1;
+        assert_eq!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::RailConnect(Rail::Codex)
+        );
     }
 
     #[test]

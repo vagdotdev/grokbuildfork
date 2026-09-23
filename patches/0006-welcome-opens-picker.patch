@@ -43,7 +43,7 @@ index d63bea59..5663ad57 100644
          });
          let (needs, label, method_id, mode) = startup_auth_metadata(&built.methods);
 diff --git a/crates/codegen/xai-grok-pager/src/app/actions.rs b/crates/codegen/xai-grok-pager/src/app/actions.rs
-index f1602289..44a15fff 100644
+index f1602289..4e5c3fe5 100644
 --- a/crates/codegen/xai-grok-pager/src/app/actions.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/actions.rs
 @@ -618,7 +618,23 @@ pub enum Action {
@@ -70,7 +70,7 @@ index f1602289..44a15fff 100644
      /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
      /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
      CancelLogin,
-@@ -1772,9 +1788,35 @@ pub enum Effect {
+@@ -1772,9 +1788,41 @@ pub enum Effect {
          method_id: acp::AuthMethodId,
          use_oauth: bool,
          force_interactive: bool,
@@ -103,10 +103,16 @@ index f1602289..44a15fff 100644
 +    },
 +    /// Workshop: OpenRouter PKCE sign-in (browser + loopback callback), then save the key.
 +    WorkshopOpenRouterSignIn,
++    /// Workshop: run a vendor CLI's official installer (the user pressed Enter on an `Install`
++    /// rail); its latest output line lands in `progress` for the picker's status line.
++    WorkshopInstallRail {
++        rail: workshop_detect::Rail,
++        progress: std::sync::Arc<std::sync::Mutex<String>>,
++    },
      /// Submit a manually-pasted auth code (ext request).
      SubmitAuthCode { request_seq: u64, code: String },
      /// Fetch MCP server list from the shell (x.ai/mcp/list).
-@@ -2659,6 +2701,19 @@ pub enum TaskResult {
+@@ -2659,6 +2707,25 @@ pub enum TaskResult {
          /// Forwarded from `Effect::SwitchModel.prev_model_id` for rollback on `IncompatibleAgent`.
          prev_model_id: Option<acp::ModelId>,
      },
@@ -116,6 +122,12 @@ index f1602289..44a15fff 100644
 +    WorkshopConnectDone {
 +        provider_id: String,
 +        result: Result<&'static str, String>,
++    },
++    /// Workshop: a vendor CLI's official installer finished (`Ok`) or failed with a plain reason
++    /// that names the log.
++    WorkshopRailInstallDone {
++        rail: workshop_detect::Rail,
++        result: Result<(), String>,
 +    },
 +    /// Workshop: the terminal login command exited; the rails must be re-probed unless the user
 +    /// cancelled it (Ctrl+C), which leaves them as they were.
@@ -127,7 +139,7 @@ index f1602289..44a15fff 100644
      ChangelogFetched {
          markdown: Option<String>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..dcb74465 100644
+index fc9a4553..30d686a1 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -142,17 +154,20 @@ index fc9a4553..dcb74465 100644
  /// Whether a subscription-tier display name is a tier with restricted commands: the free tier and X Basic.
  /// Free covers no subscription (`None`) or an explicit "Free"; X Basic covers CCP display name "X Basic" with JWT claim fallback "x_basic".
  /// The pager's *cosmetic* slash-command gate treats an absent tier (`None`) as restricted (it recovers live on the next settings update).
-@@ -746,6 +747,9 @@ pub struct AppView {
+@@ -746,6 +747,12 @@ pub struct AppView {
      /// When true the event loop ensures the pager renders raw control codes (`less -R`) so the colors show instead of literal escapes.
      /// Plain-text transcripts (`/export` markdown) leave this false.
      pub pending_pager_ansi: bool,
 +    /// Workshop: a vendor CLI login (`claude auth login`, …) to run attached to the user's terminal
 +    /// through the same suspend/resume path as the external editor; consumed by the event loop.
 +    pub pending_workshop_login: Option<(workshop_detect::Rail, Vec<String>)>,
++    /// Workshop: the vendor CLI installer the user pressed Enter on, while it runs (one at a time);
++    /// the picker's status line follows its output every tick.
++    pub workshop_rail_install: Option<crate::app::workshop::RailInstall>,
      /// Minimal mode only: the Ctrl+T **force-show** pin for the todo panel.
      /// Minimal-mode-only per-session state, consolidated into a single field so the central `AppView` isn't peppered with loose minimal flags.
      /// Default-empty and inert outside `--minimal`; the `xai-grok-pager-minimal` crate reads/mutates it through the `crate::minimal_api` accessors.
-@@ -754,9 +758,15 @@ pub struct AppView {
+@@ -754,9 +761,15 @@ pub struct AppView {
      pub welcome_menu_index: Option<usize>,
      /// Hit-test rects for welcome menu items (populated during render).
      pub welcome_menu_rects: Vec<ratatui::layout::Rect>,
@@ -169,7 +184,7 @@ index fc9a4553..dcb74465 100644
      /// Hit-test rect for the import-claude banner on the welcome screen.
      pub welcome_import_banner_rect: Option<ratatui::layout::Rect>,
      /// Last known mouse position (column, row), updated on every Mouse event.
-@@ -954,7 +964,7 @@ pub struct AppView {
+@@ -954,7 +967,7 @@ pub struct AppView {
      /// One-shot gate for the small-screen `/compact-mode` tip: set after the first evaluation at a stable agent-view draw (regardless of outcome).
      /// Later resizes thus can never re-trigger the tip within this run.
      pub small_screen_tip_evaluated: bool,
@@ -178,7 +193,7 @@ index fc9a4553..dcb74465 100644
      /// The environment gates are process-constant, so one evaluation decides the run.
      pub ssh_wrap_tip_evaluated: bool,
      /// State for the clipboard-image tip, polled opportunistically and only while the terminal is focused.
-@@ -1009,6 +1019,63 @@ pub struct AppView {
+@@ -1009,6 +1022,63 @@ pub struct AppView {
      pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
      /// Whether deferred welcome-screen login should force OAuth.
      pub auth_use_oauth: bool,
@@ -242,11 +257,12 @@ index fc9a4553..dcb74465 100644
      /// Delivery state from the last clipboard copy during auth.
      pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
      /// Generation of the current auth copy feedback and its clear timer.
-@@ -1429,11 +1496,14 @@ impl AppView {
+@@ -1429,11 +1499,15 @@ impl AppView {
              pending_effects: Vec::new(),
              pending_editor: None,
              pending_pager_path: None,
 +            pending_workshop_login: None,
++            workshop_rail_install: None,
              pending_pager_ansi: false,
              minimal_state: crate::minimal_api::MinimalState::default(),
              welcome_menu_index: None,
@@ -257,7 +273,7 @@ index fc9a4553..dcb74465 100644
              welcome_import_banner_rect: None,
              last_mouse_pos: None,
              last_scroll_pos: None,
-@@ -1543,6 +1613,26 @@ impl AppView {
+@@ -1543,6 +1617,26 @@ impl AppView {
              auth_url_poll_handle: None,
              deferred_startup: Default::default(),
              auth_use_oauth: false,
@@ -284,7 +300,7 @@ index fc9a4553..dcb74465 100644
              auth_clipboard_delivery: None,
              auth_clipboard_feedback_generation: 0,
              team_id: None,
-@@ -1709,11 +1799,15 @@ impl AppView {
+@@ -1709,11 +1803,15 @@ impl AppView {
      pub(super) fn consumer_account(&self) -> bool {
          !self.backend_billed && !self.is_api_key_auth && !self.has_external_auth_provider
      }
@@ -303,7 +319,7 @@ index fc9a4553..dcb74465 100644
      }
      /// Draw-time expiry can flip the live-announcement predicate between pushes.
      /// Resync the slash gate only when it diverges from the stored flags (checked per frame, fan-out runs only on change).
-@@ -2404,6 +2498,15 @@ impl AppView {
+@@ -2404,6 +2502,15 @@ impl AppView {
              }
              return InputOutcome::Changed;
          }
@@ -319,7 +335,7 @@ index fc9a4553..dcb74465 100644
          let zdr_blocked = self.is_zdr_blocked();
          let has_access = self.has_access();
          let welcome_pinned_upgrade_cta = crate::views::announcements::promo_cta(
-@@ -2442,7 +2545,12 @@ impl AppView {
+@@ -2442,7 +2549,12 @@ impl AppView {
                      menu_count: if zdr_blocked {
                          2
                      } else {
@@ -333,7 +349,7 @@ index fc9a4553..dcb74465 100644
                              + if self.welcome_show_changelog_action {
                                  1
                              } else {
-@@ -2483,6 +2591,7 @@ impl AppView {
+@@ -2483,6 +2595,7 @@ impl AppView {
                      welcome_doc_viewer: &mut self.welcome_doc_viewer,
                      changelog_markdown: &self.changelog_markdown,
                      show_changelog_action: self.welcome_show_changelog_action,
@@ -341,7 +357,7 @@ index fc9a4553..dcb74465 100644
                      has_pending_update: self.pending_update_version.is_some(),
                      has_foreign_resume,
                      cwd_has_git_ancestor: self.cwd_has_git_ancestor,
-@@ -3143,8 +3252,10 @@ struct WelcomeInputCtx<'a> {
+@@ -3143,8 +3256,10 @@ struct WelcomeInputCtx<'a> {
      import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
      welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
      changelog_markdown: &'a Option<String>,
@@ -353,7 +369,7 @@ index fc9a4553..dcb74465 100644
      has_pending_update: bool,
      /// A recent foreign session is available to resume when no update is pending.
      has_foreign_resume: bool,
-@@ -3171,6 +3282,73 @@ struct WelcomeInputCtx<'a> {
+@@ -3171,6 +3286,73 @@ struct WelcomeInputCtx<'a> {
      #[cfg(feature = "local-workspace")]
      session_picker_open: bool,
  }
@@ -427,7 +443,7 @@ index fc9a4553..dcb74465 100644
  /// Welcome view input: overlays first, then composer, then the menu.
  fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
      if let Some(modal) = ctx.import_claude_modal.as_mut() {
-@@ -3750,6 +3928,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3750,6 +3932,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                  return dispatch_menu_action(
                      idx,
                      ctx.has_claude_import,
@@ -435,7 +451,7 @@ index fc9a4553..dcb74465 100644
                      ctx.show_changelog_action,
                      ctx.changelog_markdown.as_deref(),
                  );
-@@ -3888,6 +4067,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3888,6 +4071,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                          return dispatch_menu_action(
                              i,
                              ctx.has_claude_import,
@@ -443,7 +459,7 @@ index fc9a4553..dcb74465 100644
                              ctx.show_changelog_action,
                              ctx.changelog_markdown.as_deref(),
                          );
-@@ -4138,39 +4318,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
+@@ -4138,39 +4322,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
      }
  }
  /// Dispatch an action for a welcome menu item by index.
@@ -502,7 +518,7 @@ index fc9a4553..dcb74465 100644
      }
      if index == quit_idx {
          return InputOutcome::Action(Action::Quit);
-@@ -4477,11 +4660,39 @@ impl AppView {
+@@ -4477,11 +4664,39 @@ impl AppView {
                              } else {
                                  self.tip.as_deref()
                              };
@@ -547,7 +563,7 @@ index fc9a4553..dcb74465 100644
                              };
                              let hero_cta = crate::views::announcements::promo_cta(
                                  &self.active_announcements,
-@@ -4495,7 +4706,14 @@ impl AppView {
+@@ -4495,7 +4710,14 @@ impl AppView {
                                          &self.hidden_announcement_ids,
                                      )
                                  })
@@ -563,7 +579,7 @@ index fc9a4553..dcb74465 100644
                              let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                  prompt_focus: if self.welcome_prompt_focused {
                                      WelcomePromptFocus::Focused
-@@ -4508,6 +4726,7 @@ impl AppView {
+@@ -4508,6 +4730,7 @@ impl AppView {
                                  consent_state: &self.consent_state,
                                  consent_hover_link: self.welcome_consent_hover_link,
                                  login_label: self.login_label.as_deref(),
@@ -571,7 +587,7 @@ index fc9a4553..dcb74465 100644
                                  auth_code_input: self.auth_code_input.text(),
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
-@@ -4520,6 +4739,7 @@ impl AppView {
+@@ -4520,6 +4743,7 @@ impl AppView {
                                  team_name: self.team_name.as_deref(),
                                  has_access,
                                  has_claude_import: self.has_claude_import,
@@ -579,7 +595,7 @@ index fc9a4553..dcb74465 100644
                                  mouse_pos: self.last_mouse_pos,
                                  is_zdr_blocked: zdr_blocked_for_draw,
                                  session_picker: self.session_picker_entries.as_deref(),
-@@ -4577,6 +4797,7 @@ impl AppView {
+@@ -4577,6 +4801,7 @@ impl AppView {
                              );
                              self.welcome_menu_rects = result.menu_rects;
                              self.welcome_show_changelog_action = result.changelog_action_present;
@@ -587,7 +603,7 @@ index fc9a4553..dcb74465 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4824,6 +5045,25 @@ impl AppView {
+@@ -4824,6 +5049,25 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -613,7 +629,7 @@ index fc9a4553..dcb74465 100644
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5072,16 @@ impl AppView {
+@@ -4832,13 +5076,16 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
@@ -631,7 +647,7 @@ index fc9a4553..dcb74465 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5363,7 @@ impl AppView {
+@@ -5120,6 +5367,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -639,7 +655,7 @@ index fc9a4553..dcb74465 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5411,7 @@ impl AppView {
+@@ -5167,7 +5415,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -648,15 +664,16 @@ index fc9a4553..dcb74465 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5526,7 @@ impl AppView {
+@@ -5282,6 +5530,8 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
 +        needs_redraw |= self.tick_workshop_progress();
++        needs_redraw |= self.tick_rail_install();
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5637,6 +5882,10 @@ impl AppView {
+@@ -5637,6 +5887,14 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -664,10 +681,14 @@ index fc9a4553..dcb74465 100644
 +        if self.workshop_turn_active && self.workshop_turn_progress.is_some() {
 +            return TickDemand::Fast;
 +        }
++        // Workshop: an installer's one status line follows its output while it runs.
++        if self.workshop_rail_install.is_some() {
++            return TickDemand::Slow;
++        }
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5784,6 +6033,69 @@ impl AppView {
+@@ -5784,6 +6042,84 @@ impl AppView {
              ActiveView::Welcome => TickDemand::Slow,
          }
      }
@@ -696,6 +717,21 @@ index fc9a4553..dcb74465 100644
 +            return false;
 +        }
 +        self.repaint_workshop_progress()
++    }
++    /// Workshop: keep the picker's status line on the running installer — `Installing Claude
++    /// Code… 12s · <its latest output line>` — until it finishes.
++    fn tick_rail_install(&mut self) -> bool {
++        let Some(install) = &self.workshop_rail_install else {
++            return false;
++        };
++        let line = install.status_line();
++        match self.connection_picker.as_mut() {
++            Some(picker) if picker.status.as_deref() != Some(line.as_str()) => {
++                picker.set_status(line);
++                true
++            }
++            _ => false,
++        }
 +    }
 +    /// Workshop: (re)paint the waiting line from `workshop_turn_progress` — in place when its
 +    /// scrollback entry exists, else as a new system block at the end of the transcript.
@@ -737,7 +773,7 @@ index fc9a4553..dcb74465 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6117,9 @@ impl AppView {
+@@ -5805,7 +6141,9 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -749,7 +785,7 @@ index fc9a4553..dcb74465 100644
              } else {
                  (None, None, None, false, None, false)
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-index 483296d4..48918636 100644
+index 483296d4..a8c462f5 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 @@ -169,6 +169,26 @@ pub(crate) fn test_app() -> AppView {
@@ -788,15 +824,16 @@ index 483296d4..48918636 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -278,6 +300,7 @@ pub(crate) fn test_app() -> AppView {
+@@ -278,6 +300,8 @@ pub(crate) fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
 +        pending_workshop_login: None,
++        workshop_rail_install: None,
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -616,6 +639,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
+@@ -616,6 +640,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
      );
  }
  #[test]
@@ -804,7 +841,7 @@ index 483296d4..48918636 100644
  fn needs_animation_gates_prompt_history_tick_delivery() {
      let mut app = test_app_with_agent();
      let id = super::super::agent::AgentId(0);
-@@ -2268,16 +2292,26 @@ fn is_restricted_tier_classification() {
+@@ -2268,16 +2293,26 @@ fn is_restricted_tier_classification() {
      assert!(!is_restricted_tier(Some("X Premium+")));
      assert!(!is_restricted_tier(Some("SomeFutureTier")));
  }
@@ -835,7 +872,7 @@ index 483296d4..48918636 100644
      let meta = xai_grok_login::AuthMeta {
          subscription_tier: Some("SuperGrok".into()),
          ..Default::default()
-@@ -3198,15 +3232,15 @@ fn welcome_ctrl_d_requires_confirmation() {
+@@ -3198,15 +3233,15 @@ fn welcome_ctrl_d_requires_confirmation() {
  #[test]
  fn menu_action_indices_without_changelog() {
      assert!(matches!(
@@ -854,7 +891,7 @@ index 483296d4..48918636 100644
          InputOutcome::Action(Action::Quit)
      ));
  }
-@@ -3214,46 +3248,69 @@ fn menu_action_indices_without_changelog() {
+@@ -3214,46 +3249,69 @@ fn menu_action_indices_without_changelog() {
  fn menu_action_changelog_sits_above_quit() {
      let md = Some("# notes");
      assert!(matches!(
@@ -1162,7 +1199,7 @@ index 87f63aef..96f1e81d 100644
          let explicit = self.sandbox.as_deref().filter(|s| !s.is_empty());
          Self::resolve_startup_sandbox(explicit, saved.map(String::from))
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
-index 769d63a9..c7004c46 100644
+index 769d63a9..02e5e310 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 @@ -10,6 +10,7 @@ use crate::app::agent_view::AgentView;
@@ -1173,7 +1210,7 @@ index 769d63a9..c7004c46 100644
  
  /// `/logout`: ask the shell to clear auth, then return to the login screen.
  pub(super) fn dispatch_logout(_app: &mut AppView) -> Vec<Effect> {
-@@ -203,22 +204,329 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
+@@ -203,22 +204,345 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
      }
  }
  
@@ -1435,6 +1472,22 @@ index 769d63a9..c7004c46 100644
 +            app.pending_workshop_login = Some((rail, argv));
 +            vec![]
 +        }
++        PickerOutcome::RailInstall(rail) => {
++            // One keypress: the vendor's official installer runs in the background with one
++            // status line; when it is done the vendor's own sign-in follows (the Connect path).
++            if let Some(running) = &app.workshop_rail_install {
++                picker.set_status(format!(
++                    "Still installing {}; one at a time.",
++                    running.rail.vendor().display_name()
++                ));
++                return vec![];
++            }
++            let install = crate::app::workshop::RailInstall::new(rail);
++            picker.set_status(install.status_line());
++            let progress = install.progress.clone();
++            app.workshop_rail_install = Some(install);
++            vec![Effect::WorkshopInstallRail { rail, progress }]
++        }
 +        PickerOutcome::SelectRailModel(rail, model) => {
 +            set_workshop_connection(
 +                app,
@@ -1444,7 +1497,9 @@ index 769d63a9..c7004c46 100644
 +        }
 +    }
 +}
-+
+ 
+-    // Show the auth UI when triggered from inside a session
+-    // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
 +/// An Engine/Adapter connection routes turns through workshop-adapters, not the shell model — but
 +/// the shell still needs a model + auth method to open the ACP session that backs the agent view.
 +/// Write a keyless placeholder model and reuse the same anonymous activation Direct/Local uses, so
@@ -1496,9 +1551,7 @@ index 769d63a9..c7004c46 100644
 +        session,
 +    }]
 +}
- 
--    // Show the auth UI when triggered from inside a session
--    // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
++
 +/// The only path to the inherited xAI OIDC flow: the user selected the labeled optional xAI card
 +/// (and confirmed). Sends `grok.com` with `workshop_xai_opt_in`, which the shell requires before it
 +/// attaches the xAI OAuth2 provider when none is configured.
@@ -1514,7 +1567,7 @@ index 769d63a9..c7004c46 100644
          show_welcome(app);
      }
  
-@@ -240,6 +548,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
+@@ -240,6 +564,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
              method_id,
              use_oauth: app.auth_use_oauth,
              force_interactive: true,
@@ -1522,7 +1575,7 @@ index 769d63a9..c7004c46 100644
          },
          Effect::PollAuthUrl { request_seq },
      ]
-@@ -263,6 +572,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
+@@ -263,6 +588,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
      app.auth_state = AuthState::Done;
      app.auth_show_raw_url = false;
      app.auth_code_input.reset();
@@ -1531,7 +1584,7 @@ index 769d63a9..c7004c46 100644
      restore_auth_return_view(app, return_view);
      // This runs on all agents because the login may have been started from the dashboard
      // Clearing the stash alone is not enough
-@@ -314,6 +625,15 @@ pub(super) fn handle_auth_complete(
+@@ -314,6 +641,15 @@ pub(super) fn handle_auth_complete(
          app.welcome_prompt_focused = !app.is_access_blocked();
          app.auth_code_input.reset();
  
@@ -1547,7 +1600,7 @@ index 769d63a9..c7004c46 100644
          // Mid-session re-auth (`/login` or a 401 prompt): restore the view the user was on instead of running the startup load-session flow
          // The session state lives in `app.agents`, independent of `active_view`, so it is preserved across the auth detour
          if let Some(return_view) = app.auth_return_view.take() {
-@@ -327,6 +647,19 @@ pub(super) fn handle_auth_complete(
+@@ -327,6 +663,19 @@ pub(super) fn handle_auth_complete(
              // Auth is global, so handle every agent (the login may have been started from the dashboard, not the agent that 401'd)
              let mut retry_effects = Vec::new();
              let mut page_flips = Vec::new();
@@ -1655,7 +1708,7 @@ index 89c36b27..fd0b2022 100644
          Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
          Action::CopyAuthUrl => {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
-index b00317f2..9684cc8e 100644
+index b00317f2..1005d302 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 @@ -281,7 +281,7 @@ pub(super) fn maybe_show_x11_primary_paste_hint(
@@ -1667,7 +1720,7 @@ index b00317f2..9684cc8e 100644
  /// Every other failure (`TextRead`, `TargetInsertion`, `AlreadyReported`) is a real dead end and must keep toasting.
  pub(super) fn wrap_host_image_request_eligible(completion: ClipboardPasteCompletion) -> bool {
      matches!(
-@@ -999,6 +999,77 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -999,6 +999,104 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              }
              vec![]
          }
@@ -1715,6 +1768,33 @@ index b00317f2..9684cc8e 100644
 +            }
 +            vec![]
 +        }
++        TaskResult::WorkshopRailInstallDone { rail, result } => {
++            app.workshop_rail_install = None;
++            let name = rail.vendor().display_name();
++            let Some(picker) = app.connection_picker.as_mut() else {
++                // The picker was closed meanwhile: the rails re-probe on the next open.
++                if let Err(e) = result {
++                    tracing::warn!(vendor = rail.vendor().id(), error = %e, "workshop: installer failed");
++                }
++                return vec![];
++            };
++            match result {
++                Ok(()) => {
++                    // Installed: flow straight into the vendor's own sign-in — the Connect
++                    // path, attached to the terminal — with no further keypress.
++                    let argv = crate::app::workshop::rail_login_argv(rail);
++                    picker.set_status(format!("Installed {name} \u{b7} signing you in\u{2026}"));
++                    app.pending_workshop_login = Some((rail, argv));
++                    vec![]
++                }
++                Err(reason) => {
++                    picker.set_status(format!(
++                        "Couldn't install {name} \u{2014} {reason} \u{b7} Enter to retry"
++                    ));
++                    vec![]
++                }
++            }
++        }
 +        TaskResult::WorkshopLoginTerminalDone { rail, exit } => {
 +            use workshop_detect::process::InteractiveExit;
 +            if let Some(picker) = app.connection_picker.as_mut() {
@@ -1745,7 +1825,7 @@ index b00317f2..9684cc8e 100644
          TaskResult::ChangelogFetched { markdown, entries } => {
              app.changelog_markdown = markdown;
              app.changelog_bullets =
-@@ -1172,6 +1243,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1172,6 +1270,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              } = &app.auth_state
                  && *current_seq == request_seq
              {
@@ -2453,7 +2533,7 @@ index 2049a2d9..3ec2aebf 100644
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-index bf64193d..8cc3b5dd 100644
+index bf64193d..c1262a86 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 @@ -181,6 +181,26 @@ fn test_app() -> AppView {
@@ -2492,15 +2572,16 @@ index bf64193d..8cc3b5dd 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -289,6 +311,7 @@ fn test_app() -> AppView {
+@@ -289,6 +311,8 @@ fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
 +        pending_workshop_login: None,
++        workshop_rail_install: None,
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -585,6 +608,25 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
+@@ -585,6 +609,25 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
      std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
      sess_dir
  }
@@ -2691,7 +2772,7 @@ index ac5de69d..bb7f2994 100644
      match acp_send(req, tx).await {
          Ok(resp) => {
 diff --git a/crates/codegen/xai-grok-pager/src/app/effects/mod.rs b/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
-index 1c507697..ba619492 100644
+index 1c507697..9e373317 100644
 --- a/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
 @@ -214,7 +214,7 @@ pub(crate) fn execute(
@@ -2711,7 +2792,7 @@ index 1c507697..ba619492 100644
          } => {
              let tx = acp_tx.clone();
              let abort_handle = tasks
-@@ -2327,11 +2328,95 @@ pub(crate) fn execute(
+@@ -2327,11 +2328,105 @@ pub(crate) fn execute(
                              method_id,
                              use_oauth,
                              force_interactive,
@@ -2803,6 +2884,16 @@ index 1c507697..ba619492 100644
 +                        result,
 +                    }
 +                });
++        }
++        Effect::WorkshopInstallRail { rail, progress } => {
++            tasks.spawn(async move {
++                let result = tokio::task::spawn_blocking(move || {
++                    crate::app::workshop::run_rail_installer(rail, progress)
++                })
++                .await
++                .unwrap_or_else(|e| Err(format!("installer task: {e}")));
++                TaskResult::WorkshopRailInstallDone { rail, result }
++            });
 +        }
          Effect::PollAuthUrl { request_seq } => {
              let tx = acp_tx.clone();
@@ -3415,10 +3506,10 @@ index 60fe34f9..14e8431b 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..b272b549
+index 00000000..29fe2c4e
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1313 @@
+@@ -0,0 +1,1401 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -4707,6 +4798,94 @@ index 00000000..b272b549
 +    }
 +}
 +
++/// A vendor CLI installer the user started from an `Install` rail, while it runs: one at a time,
++/// its latest output line shared with the runner task for the picker's status line.
++#[derive(Debug, Clone)]
++pub struct RailInstall {
++    pub rail: workshop_detect::Rail,
++    pub started: std::time::Instant,
++    pub progress: Arc<std::sync::Mutex<String>>,
++}
++
++impl RailInstall {
++    pub fn new(rail: workshop_detect::Rail) -> Self {
++        Self {
++            rail,
++            started: std::time::Instant::now(),
++            progress: Arc::new(std::sync::Mutex::new(String::new())),
++        }
++    }
++
++    /// `Installing Claude Code… 12s · <latest installer line>` — one line, no plumbing.
++    pub fn status_line(&self) -> String {
++        let name = self.rail.vendor().display_name();
++        let secs = self.started.elapsed().as_secs();
++        let latest = self
++            .progress
++            .lock()
++            .map(|l| l.clone())
++            .unwrap_or_default();
++        let latest: String = latest.chars().take(60).collect();
++        match (secs >= 3, latest.is_empty()) {
++            (false, true) => format!("Installing {name}\u{2026}"),
++            (true, true) => format!("Installing {name}\u{2026} {secs}s"),
++            (false, false) => format!("Installing {name}\u{2026} \u{b7} {latest}"),
++            (true, false) => format!("Installing {name}\u{2026} {secs}s \u{b7} {latest}"),
++        }
++    }
++}
++
++/// Run `rail`'s official installer to completion (blocking; the effect runs it on the blocking
++/// pool), streaming its lines into `progress` and appending them to
++/// `<workshop home>/logs/install-<vendor>.log`. `Err` is the plain reason for the status line;
++/// it names the log, never the command's internals.
++pub fn run_rail_installer(
++    rail: workshop_detect::Rail,
++    progress: Arc<std::sync::Mutex<String>>,
++) -> Result<(), String> {
++    use std::io::Write as _;
++    use workshop_detect::install::InstallOutcome;
++    let vendor = rail.vendor();
++    let command = workshop_detect::install_command(vendor)
++        .ok_or_else(|| format!("{} has no installer to run", vendor.display_name()))?;
++    let log_path = workshop_detect::install_log_path(&workshop_home(), vendor);
++    if let Some(dir) = log_path.parent() {
++        let _ = std::fs::create_dir_all(dir);
++    }
++    let mut log = std::fs::OpenOptions::new()
++        .create(true)
++        .append(true)
++        .open(&log_path)
++        .map_err(|e| format!("could not open {}: {e}", log_path.display()))?;
++    let _ = writeln!(log, "$ {command}");
++    tracing::info!(vendor = vendor.id(), log = %log_path.display(), "workshop: running the official installer");
++    let outcome = workshop_detect::run_installer(
++        &command,
++        workshop_detect::install::INSTALL_TIMEOUT,
++        |line| {
++            let _ = writeln!(log, "{line}");
++            if let Ok(mut p) = progress.lock() {
++                *p = line.to_owned();
++            }
++        },
++    )?;
++    let _ = writeln!(log, "[workshop] {outcome:?}");
++    match outcome {
++        InstallOutcome::Installed => Ok(()),
++        InstallOutcome::Failed { status } => Err(format!(
++            "the installer exited with {} (details: {})",
++            status
++                .map(|c| format!("status {c}"))
++                .unwrap_or_else(|| "a signal".to_owned()),
++            log_path.display()
++        )),
++        InstallOutcome::Hung => Err(format!(
++            "the installer stopped responding (details: {})",
++            log_path.display()
++        )),
++    }
++}
++
 +/// The official CLI login command for a rail, to run attached to the user's terminal.
 +pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
 +    let vendor = rail.vendor();
@@ -4927,10 +5106,10 @@ index 51c3c5f1..aa5c8e13 100644
      fn run_set_default_model_resolves_case_insensitively() {
 diff --git a/crates/codegen/xai-grok-pager/src/views/connection_picker.rs b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
 new file mode 100644
-index 00000000..a491b147
+index 00000000..131b3a92
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
-@@ -0,0 +1,425 @@
+@@ -0,0 +1,426 @@
 +//! Workshop connection picker overlay (ratatui view over `workshop_auth::PickerState`).
 +//!
 +//! `/model` opens the **Models** view: one line per usable model (`name  provider  badge`), the
@@ -5169,6 +5348,7 @@ index 00000000..a491b147
 +        Pill::Detecting => Style::default().fg(theme.gray_bright),
 +        Pill::Ready => Style::default().fg(theme.accent_success),
 +        Pill::SignIn => Style::default().fg(theme.warning),
++        Pill::Install => Style::default().fg(theme.accent_tool),
 +    }
 +}
 +

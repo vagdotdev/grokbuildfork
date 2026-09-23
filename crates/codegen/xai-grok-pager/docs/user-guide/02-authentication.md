@@ -11,7 +11,7 @@ Nothing on this page happens until you choose it.
 | Connection | How | Where the secret lives |
 |---|---|---|
 | **OpenCode free models** (default) | Nothing to do. `/model` lists OpenCode's live free list; the official `opencode` CLI runs on your machine and talks to opencode.ai itself. | No secret. |
-| **Claude Code / Codex / Cursor subscriptions** | `/auth`, pick the rail, `Enter` runs that vendor's own login command in your terminal (`claude auth login`, `codex login`, `cursor-agent login`). Turns then run through the official CLI. | In the vendor CLI's own store. Workshop never reads or copies it. |
+| **Claude Code / Codex / Cursor subscriptions** | `/auth`, pick the rail, `Enter`. If the CLI is not installed, the rail says `Install` and Enter runs that vendor's official installer (`curl -fsSL https://claude.ai/install.sh \| bash`, `npm install -g @openai/codex`, `curl https://cursor.com/install -fsS \| bash`) behind one status line, then goes straight into its sign-in. If it is installed, Enter runs that vendor's own login command in your terminal (`claude auth login`, `codex login`, `cursor-agent login`). Turns then run through the official CLI. | In the vendor CLI's own store. Workshop never reads or copies it. |
 | **API keys** — OpenRouter, Google AI Studio, NVIDIA, OpenAI, Anthropic, OpenCode Zen | `/auth`, pick `Provider — API key` and paste the key (or `Provider — Sign in` for OpenRouter's browser sign-in). | Your OS keyring (macOS Keychain, Secret Service, Windows Credential Manager); if none is available, an owner-only file under `~/.workshop/secrets/`. Never in `config.toml`. |
 | **Local servers** — Ollama, LM Studio, llama.cpp, vLLM | Start the server; `/model` lists its models once it answers on loopback. | No secret. |
 | **xAI account** (optional) | Last row of `/auth`, labeled `xAI — Sign in · optional`. Press `Enter` twice; the browser opens `auth.x.ai`. | The inherited sign-in store under `~/.workshop`. This is the only Workshop path that ever contacts x.ai. |
@@ -42,12 +42,16 @@ The choice persists across launches in `~/.workshop/active-connection.json`.
 ## `/auth`
 
 The **Subscriptions** view: the Claude / Codex / Cursor rails with a `Detecting` / `Ready` /
-`Sign in` pill, then the API-key providers, then the optional xAI row.
+`Sign in` / `Install` pill, then the API-key providers, then the optional xAI row.
 
 - A rail is **Ready** when the official CLI is installed and signed in. Workshop only checks that
-  the binary is present and answers; it never opens another app's credential files.
+  the binary is present and answers; it never opens another app's credential files. Its models are
+  the ones the CLI itself lists (`Loading models…` until it has answered).
 - **Sign in** on a rail runs the vendor's login command attached to your terminal and re-probes when
   it exits.
+- **Install** on a rail runs the vendor's official installer — one keypress, nothing ever installs
+  on its own — with one status line while it works, then the sign-in above follows by itself. The
+  installer's output is kept in `~/.workshop/logs/install-<vendor>.log`.
 - **API key** rows open a masked field: the count of characters typed is shown, never the key.
   `Enter` saves it to the OS keyring (the line says which backend was used), `Esc` cancels.
   Links to the key pages: [OpenRouter](https://openrouter.ai/settings/keys),

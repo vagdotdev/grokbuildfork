@@ -1286,6 +1286,94 @@ pub fn rail_adapter_id(rail: workshop_detect::Rail) -> AdapterId {
     }
 }
 
+/// A vendor CLI installer the user started from an `Install` rail, while it runs: one at a time,
+/// its latest output line shared with the runner task for the picker's status line.
+#[derive(Debug, Clone)]
+pub struct RailInstall {
+    pub rail: workshop_detect::Rail,
+    pub started: std::time::Instant,
+    pub progress: Arc<std::sync::Mutex<String>>,
+}
+
+impl RailInstall {
+    pub fn new(rail: workshop_detect::Rail) -> Self {
+        Self {
+            rail,
+            started: std::time::Instant::now(),
+            progress: Arc::new(std::sync::Mutex::new(String::new())),
+        }
+    }
+
+    /// `Installing Claude Code… 12s · <latest installer line>` — one line, no plumbing.
+    pub fn status_line(&self) -> String {
+        let name = self.rail.vendor().display_name();
+        let secs = self.started.elapsed().as_secs();
+        let latest = self
+            .progress
+            .lock()
+            .map(|l| l.clone())
+            .unwrap_or_default();
+        let latest: String = latest.chars().take(60).collect();
+        match (secs >= 3, latest.is_empty()) {
+            (false, true) => format!("Installing {name}\u{2026}"),
+            (true, true) => format!("Installing {name}\u{2026} {secs}s"),
+            (false, false) => format!("Installing {name}\u{2026} \u{b7} {latest}"),
+            (true, false) => format!("Installing {name}\u{2026} {secs}s \u{b7} {latest}"),
+        }
+    }
+}
+
+/// Run `rail`'s official installer to completion (blocking; the effect runs it on the blocking
+/// pool), streaming its lines into `progress` and appending them to
+/// `<workshop home>/logs/install-<vendor>.log`. `Err` is the plain reason for the status line;
+/// it names the log, never the command's internals.
+pub fn run_rail_installer(
+    rail: workshop_detect::Rail,
+    progress: Arc<std::sync::Mutex<String>>,
+) -> Result<(), String> {
+    use std::io::Write as _;
+    use workshop_detect::install::InstallOutcome;
+    let vendor = rail.vendor();
+    let command = workshop_detect::install_command(vendor)
+        .ok_or_else(|| format!("{} has no installer to run", vendor.display_name()))?;
+    let log_path = workshop_detect::install_log_path(&workshop_home(), vendor);
+    if let Some(dir) = log_path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("could not open {}: {e}", log_path.display()))?;
+    let _ = writeln!(log, "$ {command}");
+    tracing::info!(vendor = vendor.id(), log = %log_path.display(), "workshop: running the official installer");
+    let outcome = workshop_detect::run_installer(
+        &command,
+        workshop_detect::install::INSTALL_TIMEOUT,
+        |line| {
+            let _ = writeln!(log, "{line}");
+            if let Ok(mut p) = progress.lock() {
+                *p = line.to_owned();
+            }
+        },
+    )?;
+    let _ = writeln!(log, "[workshop] {outcome:?}");
+    match outcome {
+        InstallOutcome::Installed => Ok(()),
+        InstallOutcome::Failed { status } => Err(format!(
+            "the installer exited with {} (details: {})",
+            status
+                .map(|c| format!("status {c}"))
+                .unwrap_or_else(|| "a signal".to_owned()),
+            log_path.display()
+        )),
+        InstallOutcome::Hung => Err(format!(
+            "the installer stopped responding (details: {})",
+            log_path.display()
+        )),
+    }
+}
+
 /// The official CLI login command for a rail, to run attached to the user's terminal.
 pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
     let vendor = rail.vendor();

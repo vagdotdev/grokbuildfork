@@ -750,6 +750,9 @@ pub struct AppView {
     /// Workshop: a vendor CLI login (`claude auth login`, …) to run attached to the user's terminal
     /// through the same suspend/resume path as the external editor; consumed by the event loop.
     pub pending_workshop_login: Option<(workshop_detect::Rail, Vec<String>)>,
+    /// Workshop: the vendor CLI installer the user pressed Enter on, while it runs (one at a time);
+    /// the picker's status line follows its output every tick.
+    pub workshop_rail_install: Option<crate::app::workshop::RailInstall>,
     /// Minimal mode only: the Ctrl+T **force-show** pin for the todo panel.
     /// Minimal-mode-only per-session state, consolidated into a single field so the central `AppView` isn't peppered with loose minimal flags.
     /// Default-empty and inert outside `--minimal`; the `xai-grok-pager-minimal` crate reads/mutates it through the `crate::minimal_api` accessors.
@@ -1497,6 +1500,7 @@ impl AppView {
             pending_editor: None,
             pending_pager_path: None,
             pending_workshop_login: None,
+            workshop_rail_install: None,
             pending_pager_ansi: false,
             minimal_state: crate::minimal_api::MinimalState::default(),
             welcome_menu_index: None,
@@ -5527,6 +5531,7 @@ impl AppView {
         needs_redraw |= self.minimal_state.transcript.is_some();
         needs_redraw |= self.poll_clipboard_focus_tip();
         needs_redraw |= self.tick_workshop_progress();
+        needs_redraw |= self.tick_rail_install();
         if matches!(self.active_view, ActiveView::Welcome) {
             self.welcome_tick = self.welcome_tick.wrapping_add(1);
             if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
@@ -5886,6 +5891,10 @@ impl AppView {
         if self.workshop_turn_active && self.workshop_turn_progress.is_some() {
             return TickDemand::Fast;
         }
+        // Workshop: an installer's one status line follows its output while it runs.
+        if self.workshop_rail_install.is_some() {
+            return TickDemand::Slow;
+        }
         if self.minimal_state.transcript.is_some() {
             return TickDemand::Fast;
         }
@@ -6058,6 +6067,21 @@ impl AppView {
             return false;
         }
         self.repaint_workshop_progress()
+    }
+    /// Workshop: keep the picker's status line on the running installer — `Installing Claude
+    /// Code… 12s · <its latest output line>` — until it finishes.
+    fn tick_rail_install(&mut self) -> bool {
+        let Some(install) = &self.workshop_rail_install else {
+            return false;
+        };
+        let line = install.status_line();
+        match self.connection_picker.as_mut() {
+            Some(picker) if picker.status.as_deref() != Some(line.as_str()) => {
+                picker.set_status(line);
+                true
+            }
+            _ => false,
+        }
     }
     /// Workshop: (re)paint the waiting line from `workshop_turn_progress` — in place when its
     /// scrollback entry exists, else as a new system block at the end of the transcript.

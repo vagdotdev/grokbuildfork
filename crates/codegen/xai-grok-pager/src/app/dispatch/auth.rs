@@ -454,6 +454,22 @@ pub(super) fn dispatch_connection_picker(
             app.pending_workshop_login = Some((rail, argv));
             vec![]
         }
+        PickerOutcome::RailInstall(rail) => {
+            // One keypress: the vendor's official installer runs in the background with one
+            // status line; when it is done the vendor's own sign-in follows (the Connect path).
+            if let Some(running) = &app.workshop_rail_install {
+                picker.set_status(format!(
+                    "Still installing {}; one at a time.",
+                    running.rail.vendor().display_name()
+                ));
+                return vec![];
+            }
+            let install = crate::app::workshop::RailInstall::new(rail);
+            picker.set_status(install.status_line());
+            let progress = install.progress.clone();
+            app.workshop_rail_install = Some(install);
+            vec![Effect::WorkshopInstallRail { rail, progress }]
+        }
         PickerOutcome::SelectRailModel(rail, model) => {
             set_workshop_connection(
                 app,

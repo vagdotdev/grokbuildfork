@@ -1174,10 +1174,10 @@ index ab27a76d..15f378e2 100644
  | [Slash Commands](04-slash-commands.md) | All available `/` commands |
  | [Configuration](05-configuration.md) | config.toml, pager.toml, environment variables |
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md b/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
-index 5e321a67..5f55d879 100644
+index 5e321a67..e0b5ac15 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
-@@ -1,368 +1,96 @@
+@@ -1,368 +1,100 @@
  # Authentication
  
 -Grok supports several authentication methods, including interactive browser login, enterprise single sign-on (SSO), and headless CI/CD runners.
@@ -1194,7 +1194,7 @@ index 5e321a67..5f55d879 100644
 +| Connection | How | Where the secret lives |
 +|---|---|---|
 +| **OpenCode free models** (default) | Nothing to do. `/model` lists OpenCode's live free list; the official `opencode` CLI runs on your machine and talks to opencode.ai itself. | No secret. |
-+| **Claude Code / Codex / Cursor subscriptions** | `/auth`, pick the rail, `Enter` runs that vendor's own login command in your terminal (`claude auth login`, `codex login`, `cursor-agent login`). Turns then run through the official CLI. | In the vendor CLI's own store. Workshop never reads or copies it. |
++| **Claude Code / Codex / Cursor subscriptions** | `/auth`, pick the rail, `Enter`. If the CLI is not installed, the rail says `Install` and Enter runs that vendor's official installer (`curl -fsSL https://claude.ai/install.sh \| bash`, `npm install -g @openai/codex`, `curl https://cursor.com/install -fsS \| bash`) behind one status line, then goes straight into its sign-in. If it is installed, Enter runs that vendor's own login command in your terminal (`claude auth login`, `codex login`, `cursor-agent login`). Turns then run through the official CLI. | In the vendor CLI's own store. Workshop never reads or copies it. |
 +| **API keys** — OpenRouter, Google AI Studio, NVIDIA, OpenAI, Anthropic, OpenCode Zen | `/auth`, pick `Provider — API key` and paste the key (or `Provider — Sign in` for OpenRouter's browser sign-in). | Your OS keyring (macOS Keychain, Secret Service, Windows Credential Manager); if none is available, an owner-only file under `~/.workshop/secrets/`. Never in `config.toml`. |
 +| **Local servers** — Ollama, LM Studio, llama.cpp, vLLM | Start the server; `/model` lists its models once it answers on loopback. | No secret. |
 +| **xAI account** (optional) | Last row of `/auth`, labeled `xAI — Sign in · optional`. Press `Enter` twice; the browser opens `auth.x.ai`. | The inherited sign-in store under `~/.workshop`. This is the only Workshop path that ever contacts x.ai. |
@@ -1229,34 +1229,24 @@ index 5e321a67..5f55d879 100644
 -| `--device-auth` (alias `--device-code`) | Sign in with the device-code flow for headless or remote environments. |
 -
 -To sign out, run `grok logout`. It takes no flags and clears your cached credentials.
-+The composer's bottom border reads `<model> (<effort>) · <mode>`: the active model by name
-+(`Big Pickle`, `Claude Sonnet`, or an API-key provider's model — never a provider or runtime
-+name), its effort level in parentheses when the model offers levels and you picked one on
-+`/model` (`Ling 3.0 Flash Fin Free (high)`; a model without levels shows none), then the current
-+mode when it is not the default (`· plan`, `· auto`, `· always-approve`).
- 
- ---
- 
+-
+----
+-
 -## API Key
-+## `/model`
- 
+-
 -For CI/CD, automation, or environments without browser access, use an API key from [console.x.ai](https://console.x.ai):
-+One list of the models you can use right now, in groups: **OpenCode**'s free models first, then
-+each coding subscription whose CLI is installed — **Claude**, **Codex**, **Cursor** — with its
-+models when the CLI is signed in or one `Sign in` row when it is not (a CLI that is not installed
-+is not listed here; it stays on `/auth`), then every API-key provider that has a key configured,
-+and detected local servers. Type to filter (Esc clears the filter, then closes), `Enter` selects,
-+`Tab` switches to `/auth`, `Ctrl+R` refreshes the live lists, `Ctrl+A` shows the non-chat rows
-+(classifiers, routers) that are hidden by default. Every row says where its list came from and
-+how old it is (`fetched 2 min ago`, or `cached list from <date>` when the fetch failed).
- 
+-
 -```bash
 -export XAI_API_KEY="xai-..."
 -grok
 -```
 -
 -Grok uses the API key as a fallback when no session token is active. If you have already signed in interactively, the stored session token takes precedence. To fall back to the API key, run `grok logout` or delete `~/.grok/auth.json`.
-+The choice persists across launches in `~/.workshop/active-connection.json`.
++The composer's bottom border reads `<model> (<effort>) · <mode>`: the active model by name
++(`Big Pickle`, `Claude Sonnet`, or an API-key provider's model — never a provider or runtime
++name), its effort level in parentheses when the model offers levels and you picked one on
++`/model` (`Ling 3.0 Flash Fin Free (high)`; a model without levels shows none), then the current
++mode when it is not the default (`· plan`, `· auto`, `· always-approve`).
  
  ---
  
@@ -1295,35 +1285,18 @@ index 5e321a67..5f55d879 100644
 -```
 -
 -### 3. Run `grok`
-+## `/auth`
- 
+-
 -The CLI discovers endpoints via `{issuer}/.well-known/openid-configuration`, opens the IdP login page, and stores tokens in `~/.grok/auth.json`. Tokens auto-refresh silently via the stored `refresh_token`.
-+The **Subscriptions** view: the Claude / Codex / Cursor rails with a `Detecting` / `Ready` /
-+`Sign in` pill, then the API-key providers, then the optional xAI row.
- 
+-
 -### Optional fields
-+- A rail is **Ready** when the official CLI is installed and signed in. Workshop only checks that
-+  the binary is present and answers; it never opens another app's credential files.
-+- **Sign in** on a rail runs the vendor's login command attached to your terminal and re-probes when
-+  it exits.
-+- **API key** rows open a masked field: the count of characters typed is shown, never the key.
-+  `Enter` saves it to the OS keyring (the line says which backend was used), `Esc` cancels.
-+  Links to the key pages: [OpenRouter](https://openrouter.ai/settings/keys),
-+  [Google AI Studio](https://aistudio.google.com/apikey), [NVIDIA](https://build.nvidia.com),
-+  [OpenAI](https://platform.openai.com/api-keys),
-+  [Anthropic](https://console.anthropic.com/settings/keys), [OpenCode Zen](https://opencode.ai/auth).
- 
+-
 -| Field | Default | Notes |
 -|-------|---------|-------|
 -| `scopes` | `["openid", "profile", "email", "offline_access", "api:access"]` | `offline_access` enables silent token refresh |
 -| `audience` | None | Required by some IdPs (e.g., Auth0) |
-+Selecting an API-key model writes a `[model.<key>]` entry to `~/.workshop/config.toml` whose
-+`env_key` names the variable Workshop exports at runtime (`WORKSHOP_<PROVIDER>_API_KEY`, for
-+example `WORKSHOP_ANTHROPIC_API_KEY`); the key itself stays in the keyring. Setting that variable
-+yourself in the environment also works, which is how CI runs use API keys.
- 
- ---
- 
+-
+----
+-
 -## External Auth Provider
 -
 -When browser-based login isn't possible -- for example, on sandboxed VMs, CI runners, or air-gapped networks -- delegate authentication to an external binary or script.
@@ -1372,14 +1345,23 @@ index 5e321a67..5f55d879 100644
 -Use JSON if your tokens expire and you want Grok to automatically re-run the binary before expiry.
 -
 -JSON fields:
--
++## `/model`
+ 
 -| Field | Required | Meaning |
 -|-------|----------|---------|
 -| `access_token` | yes | Bearer token Grok sends to the xAI API |
 -| `refresh_token` | no | Stored for reference. Grok refreshes by re-running your binary, not with an OAuth refresh grant |
 -| `expires_in` | no | Token lifetime in seconds; enables proactive refresh before expiry |
 -| `issuer` | no | Identifies the token's issuer |
--
++One list of the models you can use right now, in groups: **OpenCode**'s free models first, then
++each coding subscription whose CLI is installed — **Claude**, **Codex**, **Cursor** — with its
++models when the CLI is signed in or one `Sign in` row when it is not (a CLI that is not installed
++is not listed here; it stays on `/auth`), then every API-key provider that has a key configured,
++and detected local servers. Type to filter (Esc clears the filter, then closes), `Enter` selects,
++`Tab` switches to `/auth`, `Ctrl+R` refreshes the live lists, `Ctrl+A` shows the non-chat rows
++(classifiers, routers) that are hidden by default. Every row says where its list came from and
++how old it is (`fetched 2 min ago`, or `cached list from <date>` when the fetch failed).
+ 
 -### Configuration
 -
 -Via config file:
@@ -1393,19 +1375,13 @@ index 5e321a67..5f55d879 100644
 -```
 -
 -Or via environment variables:
-+## From the command line
- 
- ```bash
+-
+-```bash
 -export GROK_AUTH_PROVIDER_COMMAND="/usr/local/bin/my-auth-provider"
 -export GROK_AUTH_PROVIDER_LABEL="Acme Corp"
 -export GROK_AUTH_TOKEN_TTL=3600
-+workshop login            # the /model and /auth lists as text, plus the next steps
-+workshop login --xai      # optional xAI account sign-in only (opens auth.x.ai); never the default
-+workshop logout           # clear the cached xAI sign-in, if you ever used it
-+workshop models           # list the models the active connection offers
-+workshop doctor           # terminal, clipboard, voice and free-model checks with concrete fixes
- ```
- 
+-```
+-
 -### Token Refresh
 -
 -Grok runs your binary on two different contracts, and `GROK_AUTH_EXPIRED` is how
@@ -1468,12 +1444,12 @@ index 5e321a67..5f55d879 100644
 -| `GROK_AUTH_TOKEN_TTL` | Token lifetime in seconds (for bare-string tokens without `expires_in`) |
 -| `GROK_AUTH_EXPIRED` | Set to `1` on a headless refresh: don't prompt, and don't hand back a cached token. Unset on a sign-in, where a user is attached |
 -| `GROK_AUTH_EARLY_INVALIDATION_SECS` | Seconds before expiry to proactively refresh (default: 300) |
--
++The choice persists across launches in `~/.workshop/active-connection.json`.
+ 
  ---
  
 -## Device Code Flow
-+## Privacy
- 
+-
 -For headless environments (SSH sessions, Docker containers, remote VMs) where no browser is available locally:
 -
 -```bash
@@ -1483,9 +1459,33 @@ index 5e321a67..5f55d879 100644
 -This prints a URL and code to the terminal. Open the URL on any device, enter the code, and complete authentication. Grok polls until the login is confirmed.
 -
 -You can also implement the device-code flow through an [External Auth Provider](#external-auth-provider) for full control.
--
-----
--
++## `/auth`
++
++The **Subscriptions** view: the Claude / Codex / Cursor rails with a `Detecting` / `Ready` /
++`Sign in` / `Install` pill, then the API-key providers, then the optional xAI row.
++
++- A rail is **Ready** when the official CLI is installed and signed in. Workshop only checks that
++  the binary is present and answers; it never opens another app's credential files. Its models are
++  the ones the CLI itself lists (`Loading models…` until it has answered).
++- **Sign in** on a rail runs the vendor's login command attached to your terminal and re-probes when
++  it exits.
++- **Install** on a rail runs the vendor's official installer — one keypress, nothing ever installs
++  on its own — with one status line while it works, then the sign-in above follows by itself. The
++  installer's output is kept in `~/.workshop/logs/install-<vendor>.log`.
++- **API key** rows open a masked field: the count of characters typed is shown, never the key.
++  `Enter` saves it to the OS keyring (the line says which backend was used), `Esc` cancels.
++  Links to the key pages: [OpenRouter](https://openrouter.ai/settings/keys),
++  [Google AI Studio](https://aistudio.google.com/apikey), [NVIDIA](https://build.nvidia.com),
++  [OpenAI](https://platform.openai.com/api-keys),
++  [Anthropic](https://console.anthropic.com/settings/keys), [OpenCode Zen](https://opencode.ai/auth).
++
++Selecting an API-key model writes a `[model.<key>]` entry to `~/.workshop/config.toml` whose
++`env_key` names the variable Workshop exports at runtime (`WORKSHOP_<PROVIDER>_API_KEY`, for
++example `WORKSHOP_ANTHROPIC_API_KEY`); the key itself stays in the keyring. Setting that variable
++yourself in the environment also works, which is how CI runs use API keys.
+ 
+ ---
+ 
 -## Automatic Credential Refresh
 -
 -Grok automatically refreshes expired credentials:
@@ -1495,19 +1495,26 @@ index 5e321a67..5f55d879 100644
 -- **OIDC:** If a `refresh_token` is available, Grok silently refreshes via your IdP without re-opening the browser.
 -
 -Tune the refresh buffer:
--
--```bash
++## From the command line
+ 
+ ```bash
 -# Refresh 5 minutes before expiry (default)
 -export GROK_AUTH_EARLY_INVALIDATION_SECS=300
 -
 -# Disable the proactive buffer: refresh at expiry or on a 401 (set to 0)
 -export GROK_AUTH_EARLY_INVALIDATION_SECS=0
--```
--
-----
--
++workshop login            # the /model and /auth lists as text, plus the next steps
++workshop login --xai      # optional xAI account sign-in only (opens auth.x.ai); never the default
++workshop logout           # clear the cached xAI sign-in, if you ever used it
++workshop models           # list the models the active connection offers
++workshop doctor           # terminal, clipboard, voice and free-model checks with concrete fixes
+ ```
+ 
+ ---
+ 
 -## Hot Reload
--
++## Privacy
+ 
 -Grok picks up changes to `~/.grok/auth.json` automatically. If you update credentials externally (for example, with a script that writes new tokens), Grok uses the new credentials on the next API call without a restart.
 -
 ----

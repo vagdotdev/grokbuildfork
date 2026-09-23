@@ -1817,6 +1817,12 @@ pub enum Effect {
     },
     /// Workshop: OpenRouter PKCE sign-in (browser + loopback callback), then save the key.
     WorkshopOpenRouterSignIn,
+    /// Workshop: run a vendor CLI's official installer (the user pressed Enter on an `Install`
+    /// rail); its latest output line lands in `progress` for the picker's status line.
+    WorkshopInstallRail {
+        rail: workshop_detect::Rail,
+        progress: std::sync::Arc<std::sync::Mutex<String>>,
+    },
     /// Submit a manually-pasted auth code (ext request).
     SubmitAuthCode { request_seq: u64, code: String },
     /// Fetch MCP server list from the shell (x.ai/mcp/list).
@@ -2707,6 +2713,12 @@ pub enum TaskResult {
     WorkshopConnectDone {
         provider_id: String,
         result: Result<&'static str, String>,
+    },
+    /// Workshop: a vendor CLI's official installer finished (`Ok`) or failed with a plain reason
+    /// that names the log.
+    WorkshopRailInstallDone {
+        rail: workshop_detect::Rail,
+        result: Result<(), String>,
     },
     /// Workshop: the terminal login command exited; the rails must be re-probed unless the user
     /// cancelled it (Ctrl+C), which leaves them as they were.

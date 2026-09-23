@@ -236,6 +236,7 @@ fn pill_style(theme: &Theme, pill: Pill) -> Style {
         Pill::Detecting => Style::default().fg(theme.gray_bright),
         Pill::Ready => Style::default().fg(theme.accent_success),
         Pill::SignIn => Style::default().fg(theme.warning),
+        Pill::Install => Style::default().fg(theme.accent_tool),
     }
 }
 
