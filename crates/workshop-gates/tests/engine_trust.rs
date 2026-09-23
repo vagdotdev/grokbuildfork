@@ -30,6 +30,10 @@
 //! * `engine_starts_at_launch_not_on_enter` — the engine is installed (fresh home, stub installer)
 //!   and started the moment the composer opens, before a key is pressed and with nothing on
 //!   screen; a returning home starts it at launch too; Enter then reuses that server.
+//! * `first_run_starts_in_always_approve_and_a_pick_persists` — with no mode chosen anywhere the
+//!   composer opens in always-approve (`Big Pickle · always-approve`, a command runs unprompted);
+//!   Shift+Tab reaches the asking mode, the pick is written to the config and the next launch
+//!   opens in it.
 //!
 //! Evidence (text + HTML screenshots) lands in `WORKSHOP_PTY_EVIDENCE_DIR/engine-trust/*`.
 
@@ -473,9 +477,10 @@ fn edit_row_expands_to_diff() {
     // Expanded by default (the collapsed-edit-blocks setting is off): the diff is inline, with
     // the engine's removed and added lines.
     // Rendered as `1  hi` (removed) / `1  hello` (added); colours carry the sign, NO_COLOR here.
+    // The block's accent rail (`┃`, flashed for 400 ms after a tool finishes) may still stand.
     let numbered = |want: &str| {
         screen.lines().any(|l| {
-            let words: Vec<&str> = l.split_whitespace().collect();
+            let words: Vec<&str> = l.split_whitespace().filter(|w| *w != "\u{2503}").collect();
             words == ["1", want]
         })
     };
@@ -920,6 +925,81 @@ EOS
     h.inject_keys(b"\x03").unwrap();
     let _ = h.wait_exit_code(Duration::from_secs(10));
     eprintln!("evidence: {}", dir.display());
+}
+
+/// Workshop starts in always-approve when nothing chose a mode: a fresh home's composer reads
+/// `Big Pickle · always-approve` and a command runs with no prompt; one Shift+Tab reaches the
+/// asking mode, the pick lands in the home's config, and the next launch opens in it (a command
+/// prompts again). A home whose config already names a mode keeps it.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn first_run_starts_in_always_approve_and_a_pick_persists() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/always-approve-default", &bin, &fx);
+    wait_for(&mut j.h, "Big Pickle \u{b7} always-approve", 10);
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "01-fresh-home-always-approve");
+    std::fs::create_dir_all(j.cwd.path().join("tmp")).unwrap();
+    std::fs::write(j.cwd.path().join("tmp/junk"), "x").unwrap();
+    send_prompt(&mut j, "rm -rf tmp");
+    wait_for_without(&mut j, "Removed tmp.", &["Run this command?"], 60);
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "02-default-runs-without-prompt");
+    assert!(
+        !j.cwd.path().join("tmp").exists(),
+        "always-approve is in force: the command ran"
+    );
+    assert_eq!(
+        permission_replies(&fx.log),
+        vec!["once"],
+        "the engine's ask was answered for the user"
+    );
+
+    // One Shift+Tab: the asking mode, and the pick is written to the home's config.
+    set_mode(&mut j, "normal");
+    let config_path = j.workshop_home().join("config.toml");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline
+        && !std::fs::read_to_string(&config_path)
+            .unwrap_or_default()
+            .contains("permission_mode = \"ask\"")
+    {
+        j.h.update(Duration::from_millis(200));
+    }
+    let config = std::fs::read_to_string(&config_path).unwrap_or_default();
+    assert!(
+        config.contains("permission_mode = \"ask\""),
+        "the mode pick persists as an explicit choice:\n{config}"
+    );
+    snapshot(&j.h, &j.dir, "03-shift-tab-to-asking-mode");
+    quit(&mut j);
+
+    // Next launch on the same home: the asking mode — the same command now prompts.
+    let mut j = pty_common::spawn_in(
+        "engine-trust/always-approve-default",
+        &bin,
+        OFFLINE,
+        Some(&fx.bin),
+        j.home,
+    );
+    pty_common::connect_big_pickle(&mut j);
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains(FIRST_RUN_LABEL) && !screen.contains("always-approve"),
+        "the picked (asking) mode is what the next launch opens in:\n{screen}"
+    );
+    std::fs::create_dir_all(j.cwd.path().join("tmp")).unwrap();
+    std::fs::write(j.cwd.path().join("tmp/junk"), "x").unwrap();
+    send_prompt(&mut j, "rm -rf tmp");
+    wait_for(&mut j.h, "Run this command?", 60);
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "04-relaunch-in-asking-mode-prompts");
+    j.h.inject_keys(b"3").unwrap(); // No
+    wait_for(&mut j.h, "tmp was left alone", 30);
+    assert!(j.cwd.path().join("tmp").exists());
+    assert_eq!(permission_replies(&fx.log), vec!["once", "reject"]);
+    quit(&mut j);
 }
 
 /// The same promises against the real `opencode` (keyless Big Pickle, network): the proof run

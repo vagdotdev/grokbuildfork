@@ -2840,7 +2840,7 @@ index 1c507697..5f4a9b72 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..542b2b45 100644
+index eda61b3c..403d9e37 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -2962,7 +2962,36 @@ index eda61b3c..542b2b45 100644
  ) -> anyhow::Result<RunResult> {
      crate::unified_log::init(connection.tx.clone());
      crate::unified_log::info("pager started", None, None);
-@@ -1271,19 +1333,35 @@ pub(crate) async fn run(
+@@ -1075,7 +1137,7 @@ pub(crate) async fn run(
+     let remote_permission_mode = remote_settings
+         .as_ref()
+         .and_then(|s| s.permission_mode.as_deref());
+-    let launch_yolo = xai_grok_shell::util::config::effective_yolo_for_launch(
++    let mut launch_yolo = xai_grok_shell::util::config::effective_yolo_for_launch(
+         args.yolo,
+         args.permission_mode_flag.as_deref(),
+         remote_permission_mode,
+@@ -1103,6 +1165,19 @@ pub(crate) async fn run(
+         .and_then(xai_grok_shell::util::config::permission_mode_from_ui_if_set)
+         .is_some();
+     app.permission_mode_from_soft_default = !cli_owns_mode && !toml_owns_mode;
++    // Workshop: nothing chose a mode (no CLI flag, no `[ui]` permission key, no remote setting),
++    // so the launch is always-approve. Plan and the asking mode stay one Shift+Tab away, and that
++    // pick persists as an explicit `[ui] permission_mode`, which wins on every later launch. A
++    // managed policy that pins bypass off still wins here too (the launch stays in the asking
++    // mode, as upstream).
++    if app.permission_mode_from_soft_default
++        && remote_permission_mode.is_none()
++        && !launch_auto
++        && launch_yolo.policy_block.is_none()
++    {
++        launch_yolo.yolo = true;
++        app.default_yolo = true;
++    }
+     app.yolo_policy_block = launch_yolo.policy_block;
+     if let Some(warning) = launch_yolo.blocked_warning {
+         tracing::warn!("{warning}");
+@@ -1271,19 +1346,35 @@ pub(crate) async fn run(
              "auto-triggering login at startup"
          );
      }
@@ -3005,7 +3034,7 @@ index eda61b3c..542b2b45 100644
      };
      app.has_external_auth_provider =
          crate::slash::commands::usage::detect_external_auth_provider(&app.auth_methods);
-@@ -1632,6 +1710,15 @@ pub(crate) async fn run(
+@@ -1632,6 +1723,15 @@ pub(crate) async fn run(
      let (progress_tx, mut progress_rx) =
          tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
      let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
@@ -3021,7 +3050,7 @@ index eda61b3c..542b2b45 100644
      let voice_auth_factory = connection.auth_manager.clone();
      let mut tick_interval = tick_interval;
      let mut animation_tick_at: Option<Instant> = None;
-@@ -1759,6 +1846,16 @@ pub(crate) async fn run(
+@@ -1759,6 +1859,16 @@ pub(crate) async fn run(
                  git_ref: args.worktree_ref.clone(),
              })
          }
@@ -3038,7 +3067,7 @@ index eda61b3c..542b2b45 100644
          MaterializedStartup::NewAuto => None,
      };
      if let Some(action) = startup_action {
-@@ -1892,7 +1989,7 @@ pub(crate) async fn run(
+@@ -1892,7 +2002,7 @@ pub(crate) async fn run(
          if process_effects(workspace_effects, &mut tasks, &mut app, &progress_tx) {
              break;
          }
@@ -3047,7 +3076,7 @@ index eda61b3c..542b2b45 100644
              &mut app,
              terminal,
              &input_paused,
-@@ -1902,9 +1999,16 @@ pub(crate) async fn run(
+@@ -1902,9 +2012,16 @@ pub(crate) async fn run(
              &mut suspend_retry_after,
              &mut suspend_wait_reports,
          ) {
@@ -3067,7 +3096,7 @@ index eda61b3c..542b2b45 100644
          }
          if run_pending_mode_switch(
              &mut app,
-@@ -2314,6 +2418,7 @@ pub(crate) async fn run(
+@@ -2314,6 +2431,7 @@ pub(crate) async fn run(
              maybe_ev = input_rx.recv() => {
                  // `None` means the dedicated terminal reader thread has ended.
                  let Some(ev) = maybe_ev else { break };
@@ -3075,7 +3104,7 @@ index eda61b3c..542b2b45 100644
                  let handled_at = std::time::Instant::now();
                  let waited =
                      super::event_loop_stall::input_wait(ev.arrived_at, handled_at, loop_entry);
-@@ -2331,6 +2436,9 @@ pub(crate) async fn run(
+@@ -2331,6 +2449,9 @@ pub(crate) async fn run(
                  if result.should_quit {
                      break;
                  }
@@ -3085,7 +3114,7 @@ index eda61b3c..542b2b45 100644
                  if !app.pending_effects.is_empty() {
                      let effs = std::mem::take(&mut app.pending_effects);
                      if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
-@@ -2885,6 +2993,23 @@ pub(crate) async fn run(
+@@ -2885,6 +3006,23 @@ pub(crate) async fn run(
                  presenter.request(false);
              }
  
@@ -3109,7 +3138,7 @@ index eda61b3c..542b2b45 100644
              // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
              // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
              // Voice is only serviced when nothing else is pending
-@@ -3096,6 +3221,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3096,6 +3234,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
      app.abandon_startup();
      let exit_info = app.active_agent().and_then(|agent| {
          let sid = agent.session.session_id.as_ref()?;
@@ -3119,7 +3148,7 @@ index eda61b3c..542b2b45 100644
          let summary = if app.screen_mode.is_fullscreen() {
              use crate::views::session_title;
              let last_prompt = session_title::last_user_prompt_line(agent);
-@@ -3109,7 +3237,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3109,7 +3250,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
              None
          };
          Some(super::ExitInfo {
@@ -3128,7 +3157,7 @@ index eda61b3c..542b2b45 100644
              minimal: app.screen_mode.is_minimal(),
              summary,
          })
-@@ -3143,7 +3271,9 @@ struct RoutedInputEvent {
+@@ -3143,7 +3284,9 @@ struct RoutedInputEvent {
      is_startup_replay: bool,
  }
  fn tty_suspend_armed(app: &AppView) -> bool {
@@ -3139,7 +3168,7 @@ index eda61b3c..542b2b45 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4064,408 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4077,408 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.

@@ -108,8 +108,11 @@ Prefix with `!` to search hidden files:
 
 ### Permissions
 
-`Shift+Tab` cycles the session mode: **Normal** asks before risky commands and edits, **Plan**
-explores read-only and presents a plan first, **Always-approve** skips the prompts. You can also:
+Workshop starts in **Always-approve**: commands and edits run without prompts, and the composer
+border says so (`Big Pickle · always-approve`). `Shift+Tab` cycles the session mode: **Normal**
+asks before risky commands and edits, **Plan** explores read-only and presents a plan first,
+**Always-approve** skips the prompts. The mode you pick is remembered for later launches. You can
+also:
 
 - Press `Ctrl+O` to toggle always-approve mode
 - Use the `--always-approve` flag at launch: `workshop --always-approve`

@@ -1137,7 +1137,7 @@ pub(crate) async fn run(
     let remote_permission_mode = remote_settings
         .as_ref()
         .and_then(|s| s.permission_mode.as_deref());
-    let launch_yolo = xai_grok_shell::util::config::effective_yolo_for_launch(
+    let mut launch_yolo = xai_grok_shell::util::config::effective_yolo_for_launch(
         args.yolo,
         args.permission_mode_flag.as_deref(),
         remote_permission_mode,
@@ -1165,6 +1165,19 @@ pub(crate) async fn run(
         .and_then(xai_grok_shell::util::config::permission_mode_from_ui_if_set)
         .is_some();
     app.permission_mode_from_soft_default = !cli_owns_mode && !toml_owns_mode;
+    // Workshop: nothing chose a mode (no CLI flag, no `[ui]` permission key, no remote setting),
+    // so the launch is always-approve. Plan and the asking mode stay one Shift+Tab away, and that
+    // pick persists as an explicit `[ui] permission_mode`, which wins on every later launch. A
+    // managed policy that pins bypass off still wins here too (the launch stays in the asking
+    // mode, as upstream).
+    if app.permission_mode_from_soft_default
+        && remote_permission_mode.is_none()
+        && !launch_auto
+        && launch_yolo.policy_block.is_none()
+    {
+        launch_yolo.yolo = true;
+        app.default_yolo = true;
+    }
     app.yolo_policy_block = launch_yolo.policy_block;
     if let Some(warning) = launch_yolo.blocked_warning {
         tracing::warn!("{warning}");
