@@ -347,7 +347,7 @@ index a80f3faf..43b3a91b 100644
      agent.prompt.adopt_slash_mru(slash_mru);
      agent.prompt.adopt_command_tags(command_tags);
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/load.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/load.rs
-index 23ab562f..7f66db07 100644
+index 23ab562f..b000bda9 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/load.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/session/load.rs
 @@ -39,6 +39,33 @@ pub(in crate::app::dispatch) fn dispatch_load_session(
@@ -384,6 +384,28 @@ index 23ab562f..7f66db07 100644
      if !app.session_startup_allowed() {
          #[cfg(feature = "local-workspace")]
          {
+@@ -410,6 +437,10 @@ pub(in crate::app::dispatch) fn dispatch_pick_session(
+     if chat_kind {
+         return dispatch_load_session(app, session_id, None, true);
+     }
++    // Workshop: an engine conversation row (recorded under the home, not a shell session dir).
++    if crate::app::workshop_sessions::load(&session_id).is_some() {
++        return dispatch_load_session(app, session_id, None, false);
++    }
+     let local_cwd = app.cwd.to_string_lossy().to_string();
+     if xai_grok_shell::session::resolve_local_session(&session_id, &local_cwd).is_some() {
+         return dispatch_load_session(app, session_id, None, false);
+@@ -1029,6 +1060,10 @@ pub(in crate::app::dispatch) fn dispatch_pick_content_session(
+     if chat_kind {
+         return dispatch_load_session(app, session_id, None, true);
+     }
++    // Workshop: an engine conversation row (recorded under the home, not a shell session dir).
++    if crate::app::workshop_sessions::load(&session_id).is_some() {
++        return dispatch_load_session(app, session_id, None, false);
++    }
+     let local_cwd = app.cwd.to_string_lossy().to_string();
+     if xai_grok_shell::session::resolve_local_session(&session_id, &local_cwd).is_some() {
+         return dispatch_load_session(app, session_id, None, false);
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs
 index f2985d30..b9ce17d2 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs
@@ -571,10 +593,10 @@ index 00000000..69653ffb
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_permissions.rs b/crates/codegen/xai-grok-pager/src/app/workshop_permissions.rs
 new file mode 100644
-index 00000000..e4d06953
+index 00000000..c3d86a17
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_permissions.rs
-@@ -0,0 +1,311 @@
+@@ -0,0 +1,318 @@
 +//! Workshop overlay: the engine's permission asks in the pager's own approval prompt.
 +//!
 +//! `opencode serve` runs with an `ask` policy for edits and commands (see
@@ -707,7 +729,11 @@ index 00000000..e4d06953
 +        acp::ToolCallId::new(req.call_id.clone().unwrap_or_else(|| req.id.clone())),
 +        fields,
 +    );
-+    acp::RequestPermissionRequest::new(acp::SessionId::new(session_id.to_owned()), tool_call, options)
++    acp::RequestPermissionRequest::new(
++        acp::SessionId::new(session_id.to_owned()),
++        tool_call,
++        options,
++    )
 +}
 +
 +/// The changed lines of an `edit` ask's diff, for the prompt body (capped).
@@ -875,7 +901,10 @@ index 00000000..e4d06953
 +        rejected.meta = Some(meta);
 +        assert_eq!(
 +            reply_for_response(Some(&rejected)),
-+            (PermissionReply::Reject, Some("use trash instead".to_owned()))
++            (
++                PermissionReply::Reject,
++                Some("use trash instead".to_owned())
++            )
 +        );
 +        let cancelled =
 +            acp::RequestPermissionResponse::new(acp::RequestPermissionOutcome::Cancelled);
@@ -888,10 +917,10 @@ index 00000000..e4d06953
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs b/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs
 new file mode 100644
-index 00000000..82eb8f2f
+index 00000000..81275072
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs
-@@ -0,0 +1,515 @@
+@@ -0,0 +1,527 @@
 +//! Workshop overlay: engine conversations on disk, so they can be resumed.
 +//!
 +//! An Engine (OpenCode) turn never enters the shell's session store — the shell session behind
@@ -979,7 +1008,13 @@ index 00000000..82eb8f2f
 +    pub fn message_count(&self) -> usize {
 +        self.turns
 +            .iter()
-+            .map(|t| 1 + t.items.iter().filter(|i| matches!(i, Item::Text { .. })).count())
++            .map(|t| {
++                1 + t
++                    .items
++                    .iter()
++                    .filter(|i| matches!(i, Item::Text { .. }))
++                    .count()
++            })
 +            .sum()
 +    }
 +}
@@ -1237,7 +1272,9 @@ index 00000000..82eb8f2f
 +        for item in &turn.items {
 +            match item {
 +                Item::Thinking { text } => {
-+                    let id = agent.scrollback.push_block(RenderBlock::thinking(text.as_str()));
++                    let id = agent
++                        .scrollback
++                        .push_block(RenderBlock::thinking(text.as_str()));
 +                    agent.scrollback.finish_running(id);
 +                    stamp(agent, id);
 +                }
@@ -1295,7 +1332,10 @@ index 00000000..82eb8f2f
 +    // A resumed conversation continues on the model it used; the picker can still switch it.
 +    if engine_model.is_some_and(|m| m != session.model_ref) {
 +        let cached = crate::app::workshop::cached_engine_models();
-+        if let Some(model) = cached.into_iter().find(|m| m.model_ref == session.model_ref) {
++        if let Some(model) = cached
++            .into_iter()
++            .find(|m| m.model_ref == session.model_ref)
++        {
 +            let conn = crate::app::workshop::WorkshopConnection::Engine { model };
 +            crate::app::workshop::save_active_connection(&conn);
 +            app.workshop_connection = conn;
@@ -1314,9 +1354,7 @@ index 00000000..82eb8f2f
 +pub fn exit_resume_id(app: &AppView, agent: &AgentView, shell_session_id: &str) -> Option<String> {
 +    if app.workshop_connection.is_engine() {
 +        let id = app.workshop_engine_session.as_deref()?;
-+        return load(id)
-+            .filter(|s| !s.turns.is_empty())
-+            .map(|s| s.id);
++        return load(id).filter(|s| !s.turns.is_empty()).map(|s| s.id);
 +    }
 +    crate::views::session_title::last_user_prompt_line(agent).map(|_| shell_session_id.to_owned())
 +}
@@ -1404,15 +1442,18 @@ index 00000000..82eb8f2f
 +        assert_eq!(a2.turns.len(), 2);
 +        assert_eq!(a2.context_used, Some(9000));
 +        assert!(!root.join("ses_none.json").exists());
-+        assert!(!plausible_id("0199-shell-uuid"), "shell ids never hit the store");
++        assert!(
++            !plausible_id("0199-shell-uuid"),
++            "shell ids never hit the store"
++        );
 +    }
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs b/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs
 new file mode 100644
-index 00000000..6a035a29
+index 00000000..aeee3b77
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs
-@@ -0,0 +1,356 @@
+@@ -0,0 +1,360 @@
 +//! Workshop overlay: the engine's tool calls as the pager's own tool rows, with the work inside
 +//! them once the result lands — the diff an edit applied, the output and exit code of a command,
 +//! the text a read returned — so a row can be opened (`Enter`, fold keys) like any ACP tool row.
@@ -1668,7 +1709,11 @@ index 00000000..6a035a29
 +        );
 +        let later = hunks_from_unified_diff("@@ -40,3 +40,4 @@\n a\n+b\n c\n d\n");
 +        assert_eq!(later[0][0].lo, 40, "hunk header start is honoured");
-+        assert!(later[0].iter().any(|l| l.tag == ChangeTag::Insert && l.text == "b\n"));
++        assert!(
++            later[0]
++                .iter()
++                .any(|l| l.tag == ChangeTag::Insert && l.text == "b\n")
++        );
 +        assert!(hunks_from_unified_diff("").is_empty());
 +    }
 +

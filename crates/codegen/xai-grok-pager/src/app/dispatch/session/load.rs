@@ -437,6 +437,10 @@ pub(in crate::app::dispatch) fn dispatch_pick_session(
     if chat_kind {
         return dispatch_load_session(app, session_id, None, true);
     }
+    // Workshop: an engine conversation row (recorded under the home, not a shell session dir).
+    if crate::app::workshop_sessions::load(&session_id).is_some() {
+        return dispatch_load_session(app, session_id, None, false);
+    }
     let local_cwd = app.cwd.to_string_lossy().to_string();
     if xai_grok_shell::session::resolve_local_session(&session_id, &local_cwd).is_some() {
         return dispatch_load_session(app, session_id, None, false);
@@ -1055,6 +1059,10 @@ pub(in crate::app::dispatch) fn dispatch_pick_content_session(
     invalidate_picker_fetch_on_dismiss(app);
     if chat_kind {
         return dispatch_load_session(app, session_id, None, true);
+    }
+    // Workshop: an engine conversation row (recorded under the home, not a shell session dir).
+    if crate::app::workshop_sessions::load(&session_id).is_some() {
+        return dispatch_load_session(app, session_id, None, false);
     }
     let local_cwd = app.cwd.to_string_lossy().to_string();
     if xai_grok_shell::session::resolve_local_session(&session_id, &local_cwd).is_some() {
