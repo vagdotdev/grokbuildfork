@@ -47,6 +47,35 @@ def sha(p):
     return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 
 
+def panthera_photos():
+    """The curated photos as (species, Commons title, cached file), downloaded once. A cached copy that
+    does not decode at its pinned pixel size is fetched again; Wikimedia re-encodes thumbnails, so the
+    bytes (and sha256) are not pinned."""
+    from PIL import Image
+
+    def ok(f, size):
+        try:
+            with Image.open(f) as im:
+                im.load()
+                return f"{im.size[0]}x{im.size[1]}" == size
+        except Exception:  # noqa: BLE001 — anything unreadable is refetched
+            return False
+
+    photos = []
+    for line in (HERE / "fixtures/panthera.tsv").read_text().splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        species, title, url, size = line.split("\t")
+        f = CACHE / "panthera" / (hashlib.sha1(url.encode()).hexdigest()[:16] + ".jpg")
+        if not ok(f, size):
+            f.parent.mkdir(parents=True, exist_ok=True)
+            sh(f"curl -fsSL -A 'workshop-acceptance/1.0' -o '{f}' '{url}'", check=True)
+            if not ok(f, size):
+                sys.exit(f"fixture {title}: does not decode as a {size} image")
+        photos.append((species, title, f))
+    return photos
+
+
 def apt_purge(pkgs):
     sh("sudo DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq " + " ".join(pkgs))
 
@@ -97,38 +126,22 @@ if TASK == "T1":
     fixture["ghostty_before"] = sh("command -v ghostty").stdout.strip()
 
 elif TASK == "T2v":
-    rows = [l.split("\t") for l in (HERE / "fixtures/panthera.tsv").read_text().splitlines()
-            if l.strip() and not l.startswith("#")]
-    photos = []
-    for species, title, url, digest in rows:
-        f = CACHE / "panthera" / digest
-        if not f.exists() or sha(f) != digest:
-            f.parent.mkdir(parents=True, exist_ok=True)
-            sh(f"curl -fsSL -A 'workshop-acceptance/1.0' -o '{f}' '{url}'", check=True)
-            if sha(f) != digest:
-                sys.exit(f"fixture {title}: sha256 mismatch")
-        photos.append((species, title, f, digest))
+    photos = panthera_photos()
     order = list(range(len(photos)))
     random.Random(OUT.name).shuffle(order)
     fixture["photos"] = {}
     for n, i in enumerate(order, 1):
-        species, title, f, digest = photos[i]
+        species, title, f = photos[i]
         stage(f"Desktop/img{n:02d}.jpg", src=f)
-        fixture["photos"][digest] = {"name": f"img{n:02d}.jpg", "species": species, "source": title}
+        fixture["photos"][sha(f)] = {"name": f"img{n:02d}.jpg", "species": species, "source": title}
 
 elif TASK == "TV":
-    rows = {}
-    for l in (HERE / "fixtures/panthera.tsv").read_text().splitlines():
-        if l.strip() and not l.startswith("#"):
-            species, title, url, digest = l.split("\t")
-            rows.setdefault(species, []).append((url, digest))
+    first = {}
+    for species, title, f in panthera_photos():
+        first.setdefault(species, f)
     fixture["photos"] = {}
     for n, species in enumerate(("snow leopard", "lion", "tiger"), 1):
-        url, digest = rows[species][0]
-        f = CACHE / "panthera" / digest
-        if not f.exists() or sha(f) != digest:
-            f.parent.mkdir(parents=True, exist_ok=True)
-            sh(f"curl -fsSL -A 'workshop-acceptance/1.0' -o '{f}' '{url}'", check=True)
+        f = first[species]
         stage(f"Desktop/img{n:02d}.jpg", src=f)
         fixture["photos"][f"img{n:02d}.jpg"] = species
 
