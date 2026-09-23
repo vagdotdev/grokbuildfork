@@ -5138,17 +5138,19 @@ impl AppView {
                                 // composer while one of the engine's commands waits for it.
                                 if let Some(ask) = self.workshop_password_ask.as_ref() {
                                     let theme = crate::theme::Theme::current();
+                                    let margin: u16 = if compact { 1 } else { 4 };
+                                    // Ends one row above the composer's top border.
                                     let above_composer = ratatui::layout::Rect {
+                                        x: view_area.x + margin,
                                         y: view_area.y + 2,
-                                        height: view_area.height.saturating_sub(7),
-                                        ..view_area
+                                        width: view_area.width.saturating_sub(margin * 2),
+                                        height: view_area.height.saturating_sub(8),
                                     };
                                     crate::views::workshop_password::render(
                                         above_composer,
                                         f.buffer_mut(),
                                         &theme,
                                         ask,
-                                        if compact { 1 } else { 4 },
                                     );
                                 }
                                 if let Some(fps) = &fps_overlay {

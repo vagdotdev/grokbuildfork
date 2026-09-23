@@ -136,7 +136,7 @@ index f1602289..fb4370d2 100644
      ChangelogFetched {
          markdown: Option<String>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..bf4a2993 100644
+index fc9a4553..1b2032ca 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -666,7 +666,7 @@ index fc9a4553..bf4a2993 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4824,6 +5115,42 @@ impl AppView {
+@@ -4824,6 +5115,44 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -693,23 +693,25 @@ index fc9a4553..bf4a2993 100644
 +                                // composer while one of the engine's commands waits for it.
 +                                if let Some(ask) = self.workshop_password_ask.as_ref() {
 +                                    let theme = crate::theme::Theme::current();
++                                    let margin: u16 = if compact { 1 } else { 4 };
++                                    // Ends one row above the composer's top border.
 +                                    let above_composer = ratatui::layout::Rect {
++                                        x: view_area.x + margin,
 +                                        y: view_area.y + 2,
-+                                        height: view_area.height.saturating_sub(7),
-+                                        ..view_area
++                                        width: view_area.width.saturating_sub(margin * 2),
++                                        height: view_area.height.saturating_sub(8),
 +                                    };
 +                                    crate::views::workshop_password::render(
 +                                        above_composer,
 +                                        f.buffer_mut(),
 +                                        &theme,
 +                                        ask,
-+                                        if compact { 1 } else { 4 },
 +                                    );
 +                                }
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5159,16 @@ impl AppView {
+@@ -4832,13 +5161,16 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
@@ -727,7 +729,7 @@ index fc9a4553..bf4a2993 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5450,7 @@ impl AppView {
+@@ -5120,6 +5452,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -735,7 +737,7 @@ index fc9a4553..bf4a2993 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5498,7 @@ impl AppView {
+@@ -5167,7 +5500,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -744,7 +746,7 @@ index fc9a4553..bf4a2993 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5613,7 @@ impl AppView {
+@@ -5282,6 +5615,7 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
@@ -752,7 +754,7 @@ index fc9a4553..bf4a2993 100644
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5637,6 +5969,10 @@ impl AppView {
+@@ -5637,6 +5971,10 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -763,7 +765,7 @@ index fc9a4553..bf4a2993 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5784,6 +6120,54 @@ impl AppView {
+@@ -5784,6 +6122,54 @@ impl AppView {
              ActiveView::Welcome => TickDemand::Slow,
          }
      }
@@ -818,7 +820,7 @@ index fc9a4553..bf4a2993 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6189,8 @@ impl AppView {
+@@ -5805,7 +6191,8 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -3877,10 +3879,10 @@ index 60fe34f9..c057affc 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..bc6082ef
+index 00000000..51ccbdc0
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1834 @@
+@@ -0,0 +1,1838 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -5057,9 +5059,13 @@ index 00000000..bc6082ef
 +    // The engine asks before edits and commands; what happens next is the agent's permission
 +    // mode (Plan/Normal prompt, Auto/Always-approve allow), decided on the UI thread per ask.
 +    opts.permission = Some(ask_before_edit_and_bash());
-+    // `sudo` in the engine's commands asks Workshop for the password (`SUDO_ASKPASS` helper →
-+    // this process's socket → one masked prompt), never the model or a terminal it has not got.
-+    if let Some(askpass) = askpass_server(slot, &ui_tx) {
++    // `sudo` in the engine's commands has no terminal to ask on. Grok Build's shell tool defers
++    // to the user's own `SUDO_ASKPASS` helper when one is set; so does the engine (the variable
++    // passes through). With none, Workshop is the helper: `SUDO_ASKPASS` → this process's socket
++    // → one masked prompt, never the model.
++    if std::env::var_os(crate::app::workshop_askpass::HELPER_ENV).is_none_or(|v| v.is_empty())
++        && let Some(askpass) = askpass_server(slot, &ui_tx)
++    {
 +        opts.extra_env = askpass.env();
 +    }
 +    opts.permission_handler = Some(engine_permission_handler(ui_tx));

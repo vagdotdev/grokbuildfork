@@ -1,72 +1,98 @@
-//! Workshop: the one masked prompt for a `sudo` password (see `app::workshop_askpass`). A small
-//! bordered box just above the composer: what needs the password, a masked field, and the two
-//! keys. The typed characters are never drawn; the field shows one dot per character.
+//! Workshop: the one masked prompt for a `sudo` password (see `app::workshop_askpass`), drawn in
+//! the style of the permission prompt (`views::permission_view`): the raised card background, the
+//! accent bar on the left, a bold title, a `❯` input row with the block caret, and the key hints.
+//! The typed characters are never drawn; the input shows one dot per character.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
 use crate::app::workshop_askpass::PendingPassword;
 use crate::theme::Theme;
 
-/// Widest the box gets; narrower terminals shrink it.
-const MAX_WIDTH: u16 = 100;
-/// Borders (2) + title + field + key line.
+/// One blank row, the title, the input row, the key line, one blank row.
 pub const HEIGHT: u16 = 5;
 
-/// Draw the box at the bottom of `area` (right above the composer), inset by `h_margin`.
-pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, ask: &PendingPassword, h_margin: u16) {
-    let avail = Rect {
-        x: area.x + h_margin,
-        y: area.y,
-        width: area.width.saturating_sub(h_margin * 2),
-        height: area.height,
-    };
-    if avail.width < 24 || avail.height < HEIGHT {
+/// Draw the card across the bottom of `area` (right above the composer).
+pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, ask: &PendingPassword) {
+    if area.width < 24 || area.height < HEIGHT {
         return;
     }
-    let width = avail.width.min(MAX_WIDTH);
-    let overlay = Rect {
-        x: avail.x + (avail.width - width) / 2,
-        y: avail.y + avail.height - HEIGHT,
-        width,
+    let card = Rect {
+        x: area.x,
+        y: area.y + area.height - HEIGHT,
+        width: area.width,
         height: HEIGHT,
     };
-    Clear.render(overlay, buf);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.warning))
-        .title(Span::styled(
-            " Password ",
+    buf.set_style(card, Style::default().bg(theme.bg_light));
+    let accent = Style::default().fg(theme.accent_user);
+    for row in card.y..card.y + card.height {
+        if let Some(cell) = buf.cell_mut((card.x, row)) {
+            cell.set_symbol(crate::glyphs::accent_bar());
+            cell.set_style(accent);
+        }
+    }
+    let content_x = card.x + 3;
+    let content_width = card.width.saturating_sub(5);
+
+    let title = fit(&ask.title, content_width as usize);
+    buf.set_line(
+        content_x,
+        card.y + 1,
+        &Line::from(Span::styled(
+            title,
             Style::default()
                 .fg(theme.text_primary)
                 .add_modifier(Modifier::BOLD),
-        ));
-    let inner = block.inner(overlay);
-    block.render(overlay, buf);
-    buf.set_style(inner, Style::default().bg(theme.bg_base));
-    let inner = Rect {
-        x: inner.x + 1,
-        width: inner.width.saturating_sub(2),
-        ..inner
-    };
-    let title = fit(&ask.title, inner.width as usize);
-    let dots: String =
-        "\u{2022}".repeat(ask.typed_len().min(inner.width.saturating_sub(2) as usize));
-    let lines = vec![
-        Line::from(Span::styled(title, Style::default().fg(theme.text_primary))),
-        Line::from(vec![
-            Span::styled(dots, Style::default().fg(theme.text_primary)),
-            Span::styled("\u{2588}", Style::default().fg(theme.warning)),
-        ]),
-        Line::from(Span::styled(
-            "Enter: send to sudo \u{b7} Esc: skip \u{b7} goes only to sudo, never to the model, transcript or logs",
-            Style::default().fg(theme.gray_dim),
         )),
-    ];
-    Paragraph::new(lines).render(inner, buf);
+        content_width,
+    );
+
+    // `❯ ••••••█`: the permission prompt's input row, with dots for the characters.
+    buf.set_span(content_x, card.y + 2, &Span::styled("\u{276f} ", accent), 2);
+    let window = content_width.saturating_sub(3) as usize;
+    let dots = ask.typed_len().min(window);
+    let text_style = Style::default().fg(theme.text_primary);
+    for col in 0..dots {
+        buf.set_span(
+            content_x + 2 + col as u16,
+            card.y + 2,
+            &Span::styled("\u{2022}", text_style),
+            1,
+        );
+    }
+    let caret_style = if theme.is_bandless() {
+        theme.block_cursor_over(theme.bg_light)
+    } else {
+        Style::default().fg(theme.bg_light).bg(theme.accent_user)
+    };
+    if dots < window {
+        buf.set_span(
+            content_x + 2 + dots as u16,
+            card.y + 2,
+            &Span::styled(" ", caret_style),
+            1,
+        );
+    }
+
+    let dim = Style::default()
+        .fg(theme.text_secondary)
+        .add_modifier(Modifier::DIM);
+    let sep = Span::styled("  \u{00b7}  ", dim);
+    let hints = Line::from(vec![
+        Span::styled("Enter", accent),
+        Span::styled(" send to sudo", dim),
+        sep.clone(),
+        Span::styled("Esc", accent),
+        Span::styled(" skip", dim),
+        sep,
+        Span::styled(
+            "only sudo sees it \u{2014} never the model, transcript or logs",
+            dim,
+        ),
+    ]);
+    buf.set_line(content_x, card.y + 3, &hints, content_width);
 }
 
 /// Cut `text` to `width` columns with an ellipsis, keeping the start (the command's verb).

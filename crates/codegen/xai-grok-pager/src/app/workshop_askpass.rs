@@ -1,13 +1,22 @@
-//! Workshop: `sudo` passwords for the engine's commands, the way Grok Build handles them — a
-//! `SUDO_ASKPASS` helper — but asked in Workshop's own UI.
+//! Workshop: `sudo` passwords for the engine's commands, the way Grok Build handles them.
 //!
-//! The engine's commands run without a terminal, so `sudo` cannot ask for a password itself; with
-//! `SUDO_ASKPASS` set it runs that helper instead and reads the password from its stdout. Workshop
-//! points the engine at a one-line script that runs `workshop askpass <prompt>`; that process
-//! connects to a Unix socket this process listens on, the UI shows one masked prompt ("Needs your
-//! password for: sudo …"), and the answer travels socket → helper stdout → sudo. Nothing else
-//! sees it: not the model, not the transcript, not the logs, not the disk. Esc skips: the helper
-//! exits non-zero with "Skipped — needs your password" on stderr, which is what the model reads.
+//! Grok Build's own shell tool runs commands with a null stdin and no PTY
+//! (`xai-grok-tools/src/computer/local/terminal.rs`, the `.stdin(xai_tty_utils::null_stdio())`
+//! spawns), so `sudo` there cannot ask on a terminal either; its one accommodation is the user's
+//! `SUDO_ASKPASS`: when that is set, the persistent shell gets `alias sudo='sudo -A'`
+//! (`computer/local/shell_state.rs::sudo_alias_injection`, `static_shell.rs`) and sudo runs that
+//! helper. Grok Build ships no helper and no password prompt of its own; without one, sudo fails
+//! with "a terminal is required to read the password".
+//!
+//! The engine's commands are in the same position (no tty; with `SUDO_ASKPASS` set, sudo runs the
+//! helper on its own — no alias needed). Workshop mirrors upstream: a user's `SUDO_ASKPASS` passes
+//! through untouched. Only when there is none does Workshop stand in as the helper: it points the
+//! engine at a one-line script that runs `workshop askpass <prompt>`; that process connects to a
+//! Unix socket this process listens on, the UI shows one masked prompt in the permission prompt's
+//! style ("Needs your password for: sudo …"), and the answer travels socket → helper stdout →
+//! sudo. Nothing else sees it: not the model, not the transcript, not the logs, not the disk. Esc
+//! skips: the helper exits non-zero with "Skipped — needs your password" on stderr, which is what
+//! sudo's caller — the model — reads.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};

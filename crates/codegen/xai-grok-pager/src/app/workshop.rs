@@ -1174,9 +1174,13 @@ async fn start_engine(
     // The engine asks before edits and commands; what happens next is the agent's permission
     // mode (Plan/Normal prompt, Auto/Always-approve allow), decided on the UI thread per ask.
     opts.permission = Some(ask_before_edit_and_bash());
-    // `sudo` in the engine's commands asks Workshop for the password (`SUDO_ASKPASS` helper →
-    // this process's socket → one masked prompt), never the model or a terminal it has not got.
-    if let Some(askpass) = askpass_server(slot, &ui_tx) {
+    // `sudo` in the engine's commands has no terminal to ask on. Grok Build's shell tool defers
+    // to the user's own `SUDO_ASKPASS` helper when one is set; so does the engine (the variable
+    // passes through). With none, Workshop is the helper: `SUDO_ASKPASS` → this process's socket
+    // → one masked prompt, never the model.
+    if std::env::var_os(crate::app::workshop_askpass::HELPER_ENV).is_none_or(|v| v.is_empty())
+        && let Some(askpass) = askpass_server(slot, &ui_tx)
+    {
         opts.extra_env = askpass.env();
     }
     opts.permission_handler = Some(engine_permission_handler(ui_tx));
