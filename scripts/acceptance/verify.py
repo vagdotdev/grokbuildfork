@@ -130,8 +130,8 @@ NOISE = [re.compile(r"[\u2800-\u28ff]"), re.compile(r"\b\d{1,2}:\d{2}( [AP]M)?\b
 
 
 def cast_analysis():
-    """Every distinct screen line ever shown, and the cast times at which the screen really changed
-    (spinner frames, clocks and elapsed counters ignored)."""
+    """Every distinct screen line ever shown (with the cast time it first showed), and the cast times at
+    which the screen really changed (spinner frames, clocks and elapsed counters ignored)."""
     import pyte
     p = OUT / "session.cast"
     with open(p, encoding="utf-8", errors="replace") as f:
@@ -144,14 +144,14 @@ def cast_analysis():
                 pass
     sc = pyte.Screen(hdr["width"], hdr["height"])
     st = pyte.Stream(sc)
-    seen, activity, prev, bucket, last_t = set(), [], None, None, 0.0
+    seen, activity, prev, bucket, last_t = {}, [], None, None, 0.0
 
     def sample():
         nonlocal prev
         txt = "\n".join(l.rstrip() for l in sc.display)
         for l in txt.split("\n"):
             if l.strip():
-                seen.add(l.strip())
+                seen.setdefault(l.strip(), last_t)
         for rx in NOISE:
             txt = rx.sub("", txt)
         if txt != prev:
@@ -187,6 +187,20 @@ def turn_windows():
     if cur:
         wins.append((cur[0], cur[1], None, "no end recorded"))
     return wins
+
+
+def workshop_spans():
+    """Cast-time spans while Workshop was on screen: from each launch to the shell prompt coming back."""
+    off, spans, start = cast_offset(), [], None
+    for e in events():
+        if e["ev"] == "launch" or (e["ev"] == "line" and e["text"].startswith("workshop")):
+            start = e["wall"] - off
+        elif e["ev"] == "shell_back" and start is not None:
+            spans.append((start, e["wall"] - off))
+            start = None
+    if start is not None:
+        spans.append((start, float("inf")))
+    return spans
 
 
 def max_gap(activity, a, b):
@@ -454,8 +468,9 @@ def verify():
     c = Checks()
     ts = turns()
     ev = events()
-    ca = cast_analysis() if (OUT / "session.cast").exists() else {"seen": set(), "activity": [], "end": 0}
-    seen = ca["seen"]
+    ca = cast_analysis() if (OUT / "session.cast").exists() else {"seen": {}, "activity": [], "end": 0}
+    spans = workshop_spans()
+    seen = {l for l, t in ca["seen"].items() if any(a <= t <= b for a, b in spans)}
     wins = turn_windows()
     metrics = {"turns_recorded": len(ts), "windows": []}
     for text, a, b, how in wins:
@@ -724,6 +739,19 @@ def verify():
         final_screen = (OUT / "probes/final-screen.txt").read_text() if (OUT / "probes/final-screen.txt").exists() else ""
         c.add("T11.3", bool(echo) and echo[-1]["ev"] == "probe_ok" and not re.search(r"\[sudo\] password", final_screen),
               "the screen stays usable (composer echoes, no stray password prompt)", json.dumps(echo))
+
+    elif TASK == "TV":
+        truth = json.loads((OUT / "fixture.json").read_text())["photos"]
+        final = turn_text(ts[-1]) if ts else ""
+        low = final.lower()
+        spots = {name: [m.start() for m in re.finditer(r"snow ?leopard" if sp == "snow leopard" else rf"(?<!snow ){sp}", low)]
+                 for name, sp in truth.items()}
+        read = sorted({Path(str(i.get("input", {}).get("filePath") or i.get("input", {}).get("path") or "")).name
+                       for t in ts for i in t.get("items", []) if i.get("kind") == "tool" and i.get("name") == "read"})
+        c.add("TV.1", all(read.count(n) for n in truth), "the model opened each photo (read tool)", json.dumps(read))
+        order = [min(v) if v else None for v in spots.values()]
+        c.add("TV.2", all(o is not None for o in order) and order == sorted(order), "it names the right animal for each photo, in order",
+              json.dumps({"truth": truth, "answer": final[:300], "model": RUN.get("model")}))
 
     # U: every run
     approvals = [p for p in prompts_log() if p["kind"] == "approval_shown"]

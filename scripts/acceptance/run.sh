@@ -147,8 +147,15 @@ else
 fi
 # The owner's decision: Workshop starts in always-approve. Seeded until that default ships.
 printf '[ui]\npermission_mode = "always-approve"\n' | "${AS[@]}" tee "$UHOME/.workshop/config.toml" >/dev/null
+# ACC_MODEL_REF/ACC_MODEL_NAME: start on that OpenCode model, as if it had been picked in /model.
+if [ -n "${ACC_MODEL_REF:-}" ]; then
+  printf '\n[model.workshop-connection]\nmodel = "workshop-connection"\nbase_url = "http://127.0.0.1:1"\nname = "%s"\napi_backend = "chat_completions"\nauth_scheme = "bearer"\napi_key = "workshop-anonymous"\n\n[models]\ndefault = "workshop-connection"\n' \
+    "$ACC_MODEL_NAME" | "${AS[@]}" tee -a "$UHOME/.workshop/config.toml" >/dev/null
+  printf '{"kind":"engine","model":{"model_ref":"%s","name":"%s","is_default":false,"tool_call":true}}\n' \
+    "$ACC_MODEL_REF" "$ACC_MODEL_NAME" | "${AS[@]}" tee "$UHOME/.workshop/active-connection.json" >/dev/null
+fi
 RC="$UHOME/.acc-rc"
-printf 'PS1="\\$ "\nexport LANG=C.UTF-8\n' | "${AS[@]}" tee "$RC" >/dev/null
+printf 'PS1="\\$ "\nexport LANG=C.UTF-8\ncd ~\n' | "${AS[@]}" tee "$RC" >/dev/null
 UPATH="$UHOME/.local/bin:$UHOME/.workshop/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 XENV="DISPLAY=$DISPLAY XAUTHORITY=$XAUTH"; [ ${#AS[@]} -gt 0 ] && XENV=""
 INNER="${AS[*]} env -i HOME=$UHOME USER=$RUN_USER LOGNAME=$RUN_USER PATH=$UPATH TERM=xterm-256color LANG=C.UTF-8 SHELL=/bin/bash $XENV bash --noprofile --rcfile $RC -i"
@@ -156,13 +163,13 @@ python3 - "$OUT/run.json" <<EOF
 import json, sys, time
 json.dump({"task": "$TASK", "run_id": "$RUN_ID", "user": "$RUN_USER", "home": "$UHOME", "bin": "$BIN",
            "path": "$UPATH", "desktop": "$DESKTOP" == "--desktop", "started": time.time(),
-           "turn_timeout": $TURN_TIMEOUT, "stall": $STALL}, open(sys.argv[1], "w"), indent=1)
+           "turn_timeout": $TURN_TIMEOUT, "stall": $STALL, "model": "${ACC_MODEL_REF:-}"}, open(sys.argv[1], "w"), indent=1)
 EOF
 python3 "$HERE/verify.py" snap "$TASK" "$OUT" before >> "$LOG" 2>&1
 
 # --- recorded session -------------------------------------------------------------------------
 "${T[@]}" kill-session -t "$SESSION" 2>/dev/null
-"${T[@]}" -f /dev/null new-session -d -s "$SESSION" -x 120 -y 36 \
+"${T[@]}" -f /dev/null new-session -d -s "$SESSION" -x 120 -y 36 -c "$UHOME" \
   "asciinema rec --stdin --overwrite -q -c '$INNER' '$CAST'"
 "${T[@]}" set -g status off >/dev/null; "${T[@]}" set -g window-size manual >/dev/null
 "${T[@]}" set -g escape-time 0 >/dev/null

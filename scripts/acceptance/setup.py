@@ -107,6 +107,22 @@ elif TASK == "T2v":
         stage(f"Desktop/img{n:02d}.jpg", src=f)
         fixture["photos"][digest] = {"name": f"img{n:02d}.jpg", "species": species, "source": title}
 
+elif TASK == "TV":
+    rows = {}
+    for l in (HERE / "fixtures/panthera.tsv").read_text().splitlines():
+        if l.strip() and not l.startswith("#"):
+            species, title, url, digest = l.split("\t")
+            rows.setdefault(species, []).append((url, digest))
+    fixture["photos"] = {}
+    for n, species in enumerate(("snow leopard", "lion", "tiger"), 1):
+        url, digest = rows[species][0]
+        f = CACHE / "panthera" / digest
+        if not f.exists() or sha(f) != digest:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            sh(f"curl -fsSL -A 'workshop-acceptance/1.0' -o '{f}' '{url}'", check=True)
+        stage(f"Desktop/img{n:02d}.jpg", src=f)
+        fixture["photos"][f"img{n:02d}.jpg"] = species
+
 elif TASK == "T4":
     repo = CACHE / "more-itertools"
     if not (repo / ".git").exists():
