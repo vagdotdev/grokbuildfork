@@ -108,12 +108,22 @@ fn needs_help_signal(vendor: Vendor) -> bool {
 }
 
 fn run_probe(
+    vendor: Vendor,
     path: &Path,
     args: &[&str],
     cfg: &DetectConfig,
     env: &[(OsString, OsString)],
 ) -> Result<ChildOutput, IdentifyError> {
-    process::run(path, args, None, env, cfg.timeout).map_err(|e| IdentifyError::Unrunnable {
+    process::run_vendor(
+        vendor,
+        path,
+        args,
+        None,
+        env,
+        cfg.timeout,
+        cfg.kill_grace(vendor),
+    )
+    .map_err(|e| IdentifyError::Unrunnable {
         path: path.to_path_buf(),
         reason: e.to_string(),
     })
@@ -129,7 +139,7 @@ pub fn identify(
         path: path.to_path_buf(),
         reason: e.to_string(),
     })?;
-    let out = run_probe(path, &["--version"], cfg, &env)?;
+    let out = run_probe(vendor, path, &["--version"], cfg, &env)?;
     if out.timed_out {
         return Err(IdentifyError::TimedOut {
             path: path.to_path_buf(),
@@ -154,7 +164,7 @@ pub fn identify(
     let version = version_from_output(vendor, &combined).ok_or_else(not_vendor)?;
 
     if needs_help_signal(vendor) {
-        let help = run_probe(path, &["--help"], cfg, &env)?;
+        let help = run_probe(vendor, path, &["--help"], cfg, &env)?;
         if help.timed_out {
             return Err(IdentifyError::TimedOut {
                 path: path.to_path_buf(),
