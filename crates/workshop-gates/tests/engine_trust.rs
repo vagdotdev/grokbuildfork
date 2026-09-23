@@ -972,6 +972,41 @@ fn image_turn_is_answered_by_a_model_that_sees() {
     quit(&mut j);
 }
 
+/// Images a model that cannot see downloads are checked, before the turn ends, by one that can:
+/// the same engine conversation continues on Muse with the check, silently; the pick is back after.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn downloaded_images_are_checked_by_a_model_that_sees() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/downloaded-images-checked", &bin, &fx);
+    send_prompt(&mut j, "download cat photos to this folder");
+    wait_for(&mut j.h, "Checked: cat1.jpg is a real photo of a cat.", 60);
+    wait_for(&mut j.h, FIRST_RUN_LABEL, 15);
+    snapshot(&j.h, &j.dir, "01-checked");
+    let screen = j.h.screen_contents();
+    assert!(!screen.contains("Continue my request"), "{screen}");
+    let sent = prompts_with_models(&fx.log);
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert_eq!(sent[0].1, "big-pickle");
+    assert!(
+        sent[1]
+            .0
+            .starts_with("Continue my request: open each image you downloaded"),
+        "{sent:?}"
+    );
+    assert_eq!(sent[1].1, "muse-spark-1.3-contributor-free");
+    let log = std::fs::read_to_string(j.workshop_home().join("logs/opencode-engine.log"))
+        .unwrap_or_default();
+    assert!(log.contains("downloaded images it cannot see"), "{log}");
+    // A turn that downloads nothing is not checked.
+    send_prompt(&mut j, "hello");
+    wait_for(&mut j.h, "Echo: hello", 30);
+    j.h.update(Duration::from_secs(1));
+    assert_eq!(prompts_with_models(&fx.log).len(), 3);
+    quit(&mut j);
+}
+
 /// An 8×8 PNG (the composer refuses images under 8×8).
 const TINY_PNG: [u8; 78] = [
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,

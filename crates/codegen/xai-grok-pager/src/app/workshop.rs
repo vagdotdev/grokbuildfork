@@ -1388,6 +1388,28 @@ fn vision_model(live: &[EngineModel]) -> Option<EngineModel> {
 const VISION_CONTINUE_PROMPT: &str =
     "Continue my request. You can now see the image files you opened.";
 
+/// The follow-up sent (never shown) when a model that cannot see images downloaded some: a model
+/// that can checks them before the turn ends.
+const VISION_CHECK_PROMPT: &str = "Continue my request: open each image you downloaded with your \
+read tool, check that it is a real photo of what I asked for and that no two are the same picture \
+(an edited, cropped or resized version of one photo counts as the same), replace any that fail, \
+then finish.";
+
+/// A tool call that fetches image files (a `curl`/`wget`/script download of .jpg/.png/…).
+fn downloads_images(tool: &str, input: &serde_json::Value) -> bool {
+    let Some(command) = input.get("command").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let command = command.to_ascii_lowercase();
+    tool == "bash"
+        && [".jpg", ".jpeg", ".png", ".webp", ".gif"]
+            .iter()
+            .any(|ext| command.contains(ext))
+        && ["curl", "wget", "urllib", "requests", "download"]
+            .iter()
+            .any(|fetch| command.contains(fetch))
+}
+
 /// A `read` of an image file: the engine attaches the picture to the tool result.
 fn reads_an_image(tool: &str, input: &serde_json::Value) -> bool {
     const IMAGE_EXTENSIONS: [&str; 9] = [
@@ -1695,6 +1717,9 @@ pub async fn run_workshop_turn(
     let mut image_reads: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut vision_switch: Option<EngineModel> = None;
     let mut switched = false;
+    // A model that cannot see and downloads images hands them, before the turn ends, to one that
+    // can to check them (once a turn).
+    let mut downloaded_images = false;
     loop {
         let silence = async {
             match first_event_at {
@@ -1738,6 +1763,7 @@ pub async fn run_workshop_turn(
                     if reads_an_image(&name, &input) {
                         image_reads.insert(id.clone());
                     }
+                    downloaded_images |= downloads_images(&name, &input);
                     let _ = tx.send(WorkshopTurnMsg::Tool { id, name, input });
                 }
                 Some(AdapterEvent::ToolDetail { id, title, metadata }) => {
@@ -1801,11 +1827,38 @@ pub async fn run_workshop_turn(
                 }
                 Some(AdapterEvent::Done { .. }) => {}
                 None => {
+                    // Images a model that cannot see downloaded are checked by one that can.
+                    let mut checking = false;
+                    if vision_switch.is_none()
+                        && downloaded_images
+                        && !switched
+                        && !aborted_by_us
+                        && !errored
+                        && permission == PermissionPolicy::WorkspaceWrite
+                        && let Some(f) = &follow_up
+                        && !f.image_input
+                        && let Some(vision) = vision_model(&cached_engine_models())
+                    {
+                        state::append_log(
+                            &engine_log_path(),
+                            &format!(
+                                "vision: {} downloaded images it cannot see on {}; {} checks them",
+                                f.model_ref, f.session, vision.model_ref
+                            ),
+                        );
+                        vision_switch = Some(vision);
+                        checking = true;
+                    }
                     if let Some(vision) = vision_switch.take()
                         && !aborted_by_us
                         && let Some(f) = follow_up.as_mut()
                     {
-                        let mut req = TurnRequest::new(VISION_CONTINUE_PROMPT);
+                        let prompt = if checking {
+                            VISION_CHECK_PROMPT
+                        } else {
+                            VISION_CONTINUE_PROMPT
+                        };
+                        let mut req = TurnRequest::new(prompt);
                         req.model = Some(vision.model_ref.clone());
                         req.permission = permission;
                         match f.engine.prompt(&f.session, req).await {
@@ -1937,9 +1990,19 @@ pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        announces_unfinished_action, asks_to_write_files, ends_with_code_block,
+        announces_unfinished_action, asks_to_write_files, downloads_images, ends_with_code_block,
         engine_question_answers, engine_questions,
     };
+
+    #[test]
+    fn image_downloads_are_recognised() {
+        let bash = |command: &str| downloads_images("bash", &serde_json::json!({ "command": command }));
+        assert!(bash("mkdir -p ~/Desktop/panthera && curl -fsSL -o lion_1.jpg https://upload.wikimedia.org/x.jpg"));
+        assert!(bash("python3 -c \"import urllib.request; urllib.request.urlretrieve(u, 'tiger.png')\""));
+        assert!(!bash("ls ~/Desktop/*.jpg"));
+        assert!(!bash("curl -fsSL https://example.org/api.json"));
+        assert!(!downloads_images("read", &serde_json::json!({ "filePath": "a.jpg" })));
+    }
     use workshop_adapters::opencode_engine::{QuestionChoice, QuestionPrompt, QuestionRequest};
     use xai_grok_tools::implementations::grok_build::ask_user_question::{
         AskUserQuestionExtResponse, QuestionAnnotation,

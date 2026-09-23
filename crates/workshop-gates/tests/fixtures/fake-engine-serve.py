@@ -27,6 +27,9 @@ from the real server:
   * "install the tool"                -> ends the turn on "I'll run the installer:" with no tool call;
     a following "Continue: …" prompt runs `echo installed` and answers "Installed the tool.".
   * "keep announcing"                 -> every turn, continued or not, ends on "Let me run it:".
+  * "download cat photos"             -> a `curl … -o cat1.jpg` bash part and "Downloaded 1 cat photo."; the
+    "Continue my request: open each image …" prompt sent to a model that sees opens it and says
+    "Checked: cat1.jpg is a real photo of a cat.".
   * "create todo.py"                  -> pastes the file in a fenced block and writes nothing; a
     following "Continue: …" prompt writes ./todo.py with a `write` part and answers "Wrote todo.py.".
   * "create stubborn.py"              -> pastes the file every time, continued or not.
@@ -252,6 +255,16 @@ def run_turn(sid, agent, text, model=None):
                             "User has answered your questions." if answers else "The user dismissed this question",
                             "Asked 1 question", {"answers": answers or []}, status="completed" if answers else "error"))
         answer = ("You chose: %s." % answers[0][0]) if answers else "No answer."
+    elif "download cat photos" in text_l:
+        if sees_images and continued:
+            emit_part(tool_part(sid, mid, "read", next_id("call"), {"filePath": os.path.join(CWD, "cat1.jpg")},
+                                "Image read successfully", "cat1.jpg", {"preview": "", "truncated": False}))
+            answer = "Checked: cat1.jpg is a real photo of a cat."
+        else:
+            emit_part(tool_part(sid, mid, "bash", next_id("call"),
+                                {"command": "curl -fsSL -o cat1.jpg https://example.org/cat1.jpg"}, "(no output)",
+                                "curl", {"output": "(no output)", "exit": 0, "truncated": False}))
+            answer = "Downloaded 1 cat photo."
     elif "keep announcing" in text_l:
         answer = "Let me run it:"
     elif "create todo.py" in text_l and continued:
