@@ -126,7 +126,7 @@ def prompts_log():
     return [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
 
 
-BUSY = re.compile(r"Thinking…|Ctrl\+C to cancel|Esc to interrupt")
+BUSY = re.compile(r"Thinking…|Ctrl\+C to cancel|Esc to interrupt|\[stop\]")
 NOISE = [re.compile(r"[\u2800-\u28ff]"), re.compile(r"\b\d{1,2}:\d{2}( [AP]M)?\b"),
          re.compile(r"\b\d+(\.\d+)?\s?(ms|s|m|h|sec|min)\b"), re.compile(r"\.{1,3}(?=\s|$)")]
 

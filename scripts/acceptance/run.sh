@@ -81,8 +81,9 @@ tool_running() {
   for p in $(pgrep -f "$UHOME/.workshop/tools/opencode" 2>/dev/null); do pgrep -P "$p" >/dev/null && return 0; done
   return 1
 }
-# The waiting line (`⠏ Thinking… · 4s · Ctrl+C to cancel`); braille alone is not busy (the hero logo uses it).
-busy() { screen | grep -qE 'Thinking…|Ctrl\+C to cancel|Esc to interrupt'; }
+# The waiting line (`⠏ Thinking… · 4s · Ctrl+C to cancel`, or v0.2.2's `⠼ Run … 13s ⇣1.6k [stop]`); braille
+# alone is not busy (the hero logo uses it).
+busy() { screen | grep -qE 'Thinking…|Ctrl\+C to cancel|Esc to interrupt|\[stop\]'; }
 uread() { "${AS[@]}" cat "$@" 2>/dev/null; }
 turns_total() {
   local f n=0 k
@@ -178,12 +179,13 @@ if [ ${#AS[@]} -gt 0 ]; then # the desktop session's X cookie, as any desktop us
   xauth -f "$XAUTH" extract - "$DISPLAY" 2>/dev/null | "${AS[@]}" xauth -f "$UHOME/.Xauthority" merge - 2>/dev/null
   XENV="DISPLAY=$DISPLAY XAUTHORITY=$UHOME/.Xauthority"
 fi
-INNER="${AS[*]} env -i HOME=$UHOME USER=$RUN_USER LOGNAME=$RUN_USER PATH=$UPATH TERM=xterm-256color LANG=C.UTF-8 SHELL=/bin/bash $XENV bash --noprofile --rcfile $RC -i"
+# ACC_ENV="K=V …": extra variables for the user's shell (e.g. WORKSHOP_DISABLE_AUTOUPDATER=1 before a release publishes).
+INNER="${AS[*]} env -i HOME=$UHOME USER=$RUN_USER LOGNAME=$RUN_USER PATH=$UPATH TERM=xterm-256color LANG=C.UTF-8 SHELL=/bin/bash $XENV ${ACC_ENV:-} bash --noprofile --rcfile $RC -i"
 python3 - "$OUT/run.json" <<EOF
 import json, sys, time
 json.dump({"task": "$TASK", "run_id": "$RUN_ID", "user": "$RUN_USER", "home": "$UHOME", "bin": "$BIN",
            "path": "$UPATH", "desktop": "$DESKTOP" == "--desktop", "started": time.time(),
-           "turn_timeout": $TURN_TIMEOUT, "stall": $STALL, "model": "${ACC_MODEL_REF:-}", "seeded_permission_mode": "${ACC_PERMISSION_MODE:-}"}, open(sys.argv[1], "w"), indent=1)
+           "turn_timeout": $TURN_TIMEOUT, "stall": $STALL, "model": "${ACC_MODEL_REF:-}", "seeded_permission_mode": "${ACC_PERMISSION_MODE:-}", "extra_env": "${ACC_ENV:-}"}, open(sys.argv[1], "w"), indent=1)
 EOF
 python3 "$HERE/verify.py" snap "$TASK" "$OUT" before >> "$LOG" 2>&1
 
