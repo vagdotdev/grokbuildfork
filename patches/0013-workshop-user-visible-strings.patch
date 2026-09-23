@@ -423,6 +423,19 @@ index 596a7556..c5f491a6 100644
      assert!(wrap_host_image_request_eligible(
          ClipboardPasteCompletion::FullMiss
      ));
+diff --git a/crates/codegen/xai-grok-pager/src/app/external_editor.rs b/crates/codegen/xai-grok-pager/src/app/external_editor.rs
+index 2734a491..d85a43f1 100644
+--- a/crates/codegen/xai-grok-pager/src/app/external_editor.rs
++++ b/crates/codegen/xai-grok-pager/src/app/external_editor.rs
+@@ -75,7 +75,7 @@ pub(crate) struct PromptEditorFile {
+ 
+ impl PromptEditorFile {
+     fn create(text: &str) -> std::io::Result<Self> {
+-        let path = std::env::temp_dir().join(format!("grok-prompt-{}.md", uuid::Uuid::new_v4()));
++        let path = std::env::temp_dir().join(format!("workshop-prompt-{}.md", uuid::Uuid::new_v4()));
+         let mut options = OpenOptions::new();
+         options.write(true).create_new(true);
+         #[cfg(unix)]
 diff --git a/crates/codegen/xai-grok-pager/src/app/screen_mode_relaunch.rs b/crates/codegen/xai-grok-pager/src/app/screen_mode_relaunch.rs
 index d8039fa8..e44997dd 100644
 --- a/crates/codegen/xai-grok-pager/src/app/screen_mode_relaunch.rs
@@ -1151,6 +1164,66 @@ index ef7c763c..3ccb81f8 100644
  turning it back on."
          }
      }
+diff --git a/crates/codegen/xai-grok-pager/src/views/modal.rs b/crates/codegen/xai-grok-pager/src/views/modal.rs
+index 8217e5b1..5a2f120a 100644
+--- a/crates/codegen/xai-grok-pager/src/views/modal.rs
++++ b/crates/codegen/xai-grok-pager/src/views/modal.rs
+@@ -1028,11 +1028,11 @@ fn fit_docs_ask_grok_tip(docs_path: &str, width: usize) -> String {
+         return String::new();
+     }
+     let long =
+-        format!("Tip · Ask Grok about the docs ({docs_path}), e.g. \"how do I set up MCP?\"");
++        format!("Tip · Ask the model about the docs ({docs_path}), e.g. \"how do I set up MCP?\"");
+     if long.width() <= width {
+         return long;
+     }
+-    let short = format!("Tip · Ask Grok about the docs · {docs_path}");
++    let short = format!("Tip · Ask the model about the docs · {docs_path}");
+     if short.width() <= width {
+         return short;
+     }
+@@ -1520,8 +1520,8 @@ mod doc_picker_tip_tests {
+     #[test]
+     fn fit_docs_tip_prefers_path_and_never_overflows() {
+         let path = crate::util::display_user_grok_path(DOCS_USER_GUIDE_REL);
+-        let long = format!("Tip · Ask Grok about the docs ({path}), e.g. \"how do I set up MCP?\"");
+-        let short = format!("Tip · Ask Grok about the docs · {path}");
++        let long = format!("Tip · Ask the model about the docs ({path}), e.g. \"how do I set up MCP?\"");
++        let short = format!("Tip · Ask the model about the docs · {path}");
+         let path_only = format!("Tip · {path}");
+         assert_eq!(fit_docs_ask_grok_tip(&path, long.width()), long);
+         assert_eq!(fit_docs_ask_grok_tip(&path, short.width()), short);
+@@ -1562,7 +1562,7 @@ mod doc_picker_tip_tests {
+             all.push('\n');
+         }
+         assert!(
+-            all.contains("Tip") && all.contains("Ask Grok"),
++            all.contains("Tip") && all.contains("Ask the model"),
+             "missing tip footer:\n{all}"
+         );
+         assert!(
+diff --git a/crates/codegen/xai-grok-pager/src/views/modal_window.rs b/crates/codegen/xai-grok-pager/src/views/modal_window.rs
+index cdad7a77..4b22deba 100644
+--- a/crates/codegen/xai-grok-pager/src/views/modal_window.rs
++++ b/crates/codegen/xai-grok-pager/src/views/modal_window.rs
+@@ -1199,7 +1199,7 @@ mod tests {
+         use ratatui::layout::Rect;
+ 
+         let theme = Theme::current();
+-        const TEXT: &str = "Tip · Ask Grok about the docs";
++        const TEXT: &str = "Tip · Ask the model about the docs";
+         let row_text = |width: u16| {
+             let area = Rect {
+                 x: 0,
+@@ -1218,7 +1218,7 @@ mod tests {
+         let start = wide.find("Tip").expect("Tip");
+         let trailing = wide.chars().rev().take_while(|c| *c == ' ').count();
+         assert!(start.abs_diff(trailing) <= 1, "not centered: {wide:?}");
+-        assert!(wide.contains("Ask Grok about the docs"));
++        assert!(wide.contains("Ask the model about the docs"));
+ 
+         let tiny = row_text(10);
+         assert!(tiny.contains("Tip"));
 diff --git a/crates/codegen/xai-grok-pager/src/views/question_view.rs b/crates/codegen/xai-grok-pager/src/views/question_view.rs
 index da83963f..3e6301e1 100644
 --- a/crates/codegen/xai-grok-pager/src/views/question_view.rs
@@ -1178,18 +1251,42 @@ index c23cc0b5..457fd535 100644
  //! This HUD samples once per frame; `GROK_SCROLL_LOG=1` additionally records every event as JSONL (`input::scroll_log` in xai-grok-pager-render).
  //!
 diff --git a/crates/codegen/xai-grok-pager/src/views/settings_modal/render.rs b/crates/codegen/xai-grok-pager/src/views/settings_modal/render.rs
-index bc5d1a55..116a9439 100644
+index bc5d1a55..7310dac4 100644
 --- a/crates/codegen/xai-grok-pager/src/views/settings_modal/render.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/settings_modal/render.rs
-@@ -427,7 +427,7 @@ pub(super) fn render_row_list_with_search_bar(
+@@ -427,8 +427,8 @@ pub(super) fn render_row_list_with_search_bar(
  
  pub(super) fn render_docs_footer(buf: &mut Buffer, area: Rect, theme: &Theme) {
      const LONG: &str =
 -        "Tip · Ask Grok: \"change theme to grokday\" or \"what does compact mode do?\"";
+-    const SHORT: &str = "Tip · Ask Grok to change a setting";
 +        "Tip · Ask the model: \"change theme to day\" or \"what does compact mode do?\"";
-     const SHORT: &str = "Tip · Ask Grok to change a setting";
++    const SHORT: &str = "Tip · Ask the model to change a setting";
      let text = modal_window::fit_tip_line(&[LONG, SHORT], area.width as usize);
      modal_window::render_centered_tip_footer(buf, area, theme, text.as_ref());
+ }
+diff --git a/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs b/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs
+index 788104bb..652383c9 100644
+--- a/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs
++++ b/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs
+@@ -5797,7 +5797,7 @@ fn docs_footer_tip_is_centered() {
+     );
+ 
+     // SHORT path: width that fits SHORT but not LONG.
+-    // SHORT is "Tip · Ask Grok to change a setting" (34 cells); LONG is ~73 cells. width=40 lands in the SHORT band.
++    // SHORT is "Tip · Ask the model to change a setting" (39 cells); LONG is ~73 cells. width=40 lands in the SHORT band.
+     let (row_short, tip_start_short, trailing_short) = render(40);
+     assert!(
+         row_short.contains("change a setting"),
+@@ -5845,7 +5845,7 @@ fn tip_line_has_blank_row_above() {
+     let mut tip_y: Option<u16> = None;
+     for y in 0..area.height {
+         let txt = buf_row_text(&buf, y, area.x, area.width);
+-        if txt.contains("Tip") && txt.contains("Ask Grok") {
++        if txt.contains("Tip") && txt.contains("Ask the model") {
+             tip_y = Some(y);
+             break;
+         }
 diff --git a/crates/codegen/xai-grok-pager/src/views/tutorial.rs b/crates/codegen/xai-grok-pager/src/views/tutorial.rs
 index 24e4defb..cd48b497 100644
 --- a/crates/codegen/xai-grok-pager/src/views/tutorial.rs

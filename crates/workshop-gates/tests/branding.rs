@@ -88,3 +88,54 @@ fn settings_labels_and_descriptions_do_not_mention_grok() {
         );
     }
 }
+
+/// The system prompt handed to the model on Workshop's own agent loop (Direct API / Local
+/// connections) carries no Grok / xAI product identity, for every template audience.
+#[test]
+fn system_prompt_carries_no_grok_or_xai_identity() {
+    use std::collections::HashMap;
+    use xai_grok_agent::prompt::context::{PromptAudience, PromptContext, TemplateOverride};
+    use xai_grok_tools::types::template_renderer::TemplateRenderer;
+    use xai_grok_tools::types::tool::ToolKind;
+
+    let tools: HashMap<ToolKind, String> = [
+        (ToolKind::Read, "read_file"),
+        (ToolKind::Edit, "search_replace"),
+        (ToolKind::Execute, "run_terminal_command"),
+        (ToolKind::Search, "grep"),
+        (ToolKind::List, "list_dir"),
+        (ToolKind::Plan, "todo_write"),
+        (ToolKind::Skill, "skill"),
+        (ToolKind::BackgroundTaskAction, "get_command_or_subagent_output"),
+        (ToolKind::KillTaskAction, "kill_command_or_subagent"),
+        (ToolKind::WebSearch, "web_search"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k, v.to_string()))
+    .collect();
+    let renderer = TemplateRenderer::new(tools, HashMap::new());
+
+    let primary = PromptContext::default();
+    let mut subagent = PromptContext::default();
+    subagent.audience = PromptAudience::Subagent;
+    let mut codex = PromptContext::default();
+    codex.system_prompt = TemplateOverride::Codex;
+    for (name, ctx) in [("primary", primary), ("subagent", subagent), ("apply-patch", codex)] {
+        let prompt = ctx
+            .render_with_renderer(&renderer)
+            .unwrap_or_else(|| panic!("{name} prompt renders"));
+        assert!(!prompt.is_empty());
+        for bad in ["Grok", "grok", "xAI", "x.ai"] {
+            let hit = prompt.lines().find(|l| l.contains(bad));
+            assert!(
+                hit.is_none(),
+                "{name} system prompt mentions {bad:?}: {}",
+                hit.unwrap_or_default()
+            );
+        }
+        assert!(
+            prompt.contains("Workshop"),
+            "{name} system prompt names the product"
+        );
+    }
+}

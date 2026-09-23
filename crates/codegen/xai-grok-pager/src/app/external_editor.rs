@@ -75,7 +75,7 @@ pub(crate) struct PromptEditorFile {
 
 impl PromptEditorFile {
     fn create(text: &str) -> std::io::Result<Self> {
-        let path = std::env::temp_dir().join(format!("grok-prompt-{}.md", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("workshop-prompt-{}.md", uuid::Uuid::new_v4()));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]

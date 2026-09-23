@@ -139,8 +139,9 @@ pub struct PromptContext {
     #[serde(default = "default_system_prompt_label")]
     pub system_prompt_label: String,
 }
-/// Default identity on trim-tool-descriptions (`You are Grok released by xAI`).
-pub const DEFAULT_SYSTEM_PROMPT_LABEL: &str = "Grok";
+/// Default identity in the base template (`You are Workshop, a coding agent`). Workshop overlay:
+/// the product, not a vendor model name — connections are third-party models.
+pub const DEFAULT_SYSTEM_PROMPT_LABEL: &str = "Workshop";
 fn default_system_prompt_label() -> String {
     DEFAULT_SYSTEM_PROMPT_LABEL.to_string()
 }

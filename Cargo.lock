@@ -13364,6 +13364,7 @@ dependencies = [
  "workshop-detect",
  "workshop-providers",
  "xai-dirs",
+ "xai-grok-agent",
  "xai-grok-env",
  "xai-grok-login",
  "xai-grok-models",
