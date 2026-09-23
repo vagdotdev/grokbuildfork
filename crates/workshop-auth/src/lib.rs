@@ -779,7 +779,7 @@ fn row_detail_lines(row: &ModelsRow, xai_armed: bool, list_note: Option<String>)
     match &row.kind {
         RowKind::Catalog { model, locked } => {
             lines.push(match &list_note {
-                Some(note) => format!("{} · list {note}", row.badge),
+                Some(note) => format!("{} · {note}", row.badge),
                 None => row.badge.clone(),
             });
             let mut facts = vec![format!("Endpoint: {}", model.endpoint())];
@@ -954,7 +954,10 @@ mod tests {
         // Live Kilo rows: the badge line carries the age.
         select_row(&mut p, "Auto Free");
         let lines = p.detail_lines();
-        assert!(lines[0].ends_with("· list fetched 3 min ago"), "{lines:?}");
+        assert!(
+            lines[0].ends_with("· may log/train · fetched 3 min ago"),
+            "{lines:?}"
+        );
         assert_eq!(p.catalog_note("kilo").as_deref(), Some("fetched 3 min ago"));
         // A failed refresh says so on the seed it fell back to.
         assert_eq!(

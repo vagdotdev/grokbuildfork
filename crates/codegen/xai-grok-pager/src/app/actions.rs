@@ -1794,8 +1794,16 @@ pub enum Effect {
     },
     /// Poll for auth URL from the agent (ext request).
     PollAuthUrl { request_seq: u64 },
-    /// Workshop: load the connection picker's rows and rails (local probe, catalogs, CLI detection).
+    /// Workshop: load the connection picker's rows and rails (local probe, cached catalogs, CLI
+    /// detection). Never the network.
     WorkshopLoadPicker,
+    /// Workshop: refresh the model lists from their live sources (keyless hosted catalogs and,
+    /// when an engine is up, its `/config/providers`), then reload the picker. Emitted only after
+    /// the user acted: an active connection at startup, `/model`, the picker's `r` (`force`).
+    WorkshopRefreshCatalogs {
+        force: bool,
+        engine: Option<std::sync::Arc<workshop_adapters::opencode_engine::OpenCodeEngine>>,
+    },
     /// Workshop: a `[model.<key>]` was written; ask the shell to reload its model list, authenticate
     /// with the non-interactive method, and switch the active session (if any) to `model_id`.
     WorkshopActivateModel {

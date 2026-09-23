@@ -143,6 +143,8 @@ pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState,
         };
         let refresh = if picker.loading {
             " · loading…"
+        } else if picker.refresh_pending {
+            " · refreshing lists…"
         } else {
             " · r refresh"
         };

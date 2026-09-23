@@ -190,6 +190,14 @@ jobs:
         run: |
           cargo test -p workshop-gates --test config_isolation --test models_view -- --nocapture --include-ignored
           cargo test -p workshop-gates --test engine_failures -- --nocapture --include-ignored --test-threads=2
+      - name: PTY smoke — live model lists (hermetic)
+        # Zero egress before the user acts (logging proxy: first run, /auth, `workshop login` ask
+        # for nothing; /model asks exactly the keyless catalog hosts, never xAI), and /model lists
+        # the engine's live free models — not the pinned seed — once a (fake, loopback) `opencode
+        # serve` is up, dated `fetched just now`.
+        env:
+          WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
+        run: cargo test -p workshop-gates --test pty_live_catalogs -- --nocapture --include-ignored
       - name: Upload evidence
         if: always()
         # Evidence upload is diagnostic; an org artifact-storage quota must not fail the required gate.

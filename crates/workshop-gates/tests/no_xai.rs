@@ -462,6 +462,7 @@ fn picker_xai_is_optional_last_and_explicit() {
         rails: Vec::new(),
         default_selection: Some(workshop_providers::select_default(&[], true)),
         secret_backend: Some("memory"),
+        ..PickerSnapshot::default()
     });
     assert!(!p.rows.iter().any(ModelsRow::is_xai), "no xAI on /model");
     for i in 0..p.rows.len() {

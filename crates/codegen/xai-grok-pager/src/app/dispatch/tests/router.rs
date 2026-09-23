@@ -1176,10 +1176,11 @@ fn slash_model_no_args_opens_the_models_overlay() {
     let initial_scrollback = agent_ref(&app, id).scrollback.len();
     let effects = dispatch(Action::SendPrompt("/model".into()), &mut app);
     assert!(
-        effects
-            .iter()
-            .all(|e| matches!(e, Effect::WorkshopLoadPicker)),
-        "only the picker load, got {effects:?}"
+        effects.iter().all(|e| matches!(
+            e,
+            Effect::WorkshopLoadPicker | Effect::WorkshopRefreshCatalogs { force: false, .. }
+        )),
+        "only the picker load and the live-list refresh, got {effects:?}"
     );
     assert_eq!(agent_ref(&app, id).scrollback.len(), initial_scrollback);
     assert_eq!(
