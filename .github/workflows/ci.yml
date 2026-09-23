@@ -199,6 +199,14 @@ jobs:
           cargo test -p workshop-gates --test config_isolation --test models_view -- --nocapture --include-ignored
           cargo test -p workshop-gates --test engine_failures -- --nocapture --include-ignored --test-threads=2
           cargo test -p workshop-gates --test pty_fallback -- --nocapture --include-ignored
+      - name: PTY gate — composer border reads like upstream (`<model> (<effort>) · <mode>`)
+        # `Big Pickle · always-approve` under --yolo; a catalog model with effort levels is one
+        # /model row per level and picking `… (high)` puts `Ling 3.0 Flash Fin Free (high) ·
+        # always-approve` on the border and `variant: high` in the prompt the (fake, loopback)
+        # engine receives; nothing on the first message names OpenCode or a bring-up phase.
+        env:
+          WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
+        run: cargo test -p workshop-gates --test pty_composer_format -- --nocapture --include-ignored
       - name: PTY gates — surface polish (welcome copy, picker filter + key containment, waiting line, title restore)
         # One product name and an invitation to type on the welcome card; `/model` is an overlay
         # whose typed keys filter the list and never reach the composer; the waiting line is

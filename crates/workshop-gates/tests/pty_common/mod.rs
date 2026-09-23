@@ -97,6 +97,35 @@ pub fn spawn_in(
     extra_path: Option<&Path>,
     home: tempfile::TempDir,
 ) -> Journey {
+    spawn_in_with_args(journey, bin, &[], extra_env, extra_path, home)
+}
+
+/// [`spawn`] with command-line arguments for the binary (`--yolo`).
+pub fn spawn_with_args(
+    journey: &str,
+    bin: &Path,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+    extra_path: Option<&Path>,
+) -> Journey {
+    spawn_in_with_args(
+        journey,
+        bin,
+        args,
+        extra_env,
+        extra_path,
+        tempfile::tempdir().expect("tempdir"),
+    )
+}
+
+pub fn spawn_in_with_args(
+    journey: &str,
+    bin: &Path,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+    extra_path: Option<&Path>,
+    home: tempfile::TempDir,
+) -> Journey {
     let cwd = tempfile::tempdir().expect("tempdir");
     std::process::Command::new("git")
         .args(["init", "-q", "."])
@@ -121,7 +150,7 @@ pub fn spawn_in(
         ("GROK_DISABLE_AUTOUPDATER", "1"),
     ];
     env.extend_from_slice(extra_env);
-    let mut h = PtyHarness::new_inherited_env(bin, 45, 140, &[], &env, Some(cwd.path()))
+    let mut h = PtyHarness::new_inherited_env(bin, 45, 140, args, &env, Some(cwd.path()))
         .expect("spawn workshop in pty");
     h.set_respond_to_queries(true);
     Journey { h, dir, home, cwd }
@@ -148,6 +177,48 @@ pub fn fake_opencode(mode: &str) -> tempfile::TempDir {
         .unwrap();
     }
     std::fs::write(dir.path().join("mode"), mode).unwrap();
+    dir
+}
+
+/// A fake `opencode` whose `serve` answers: the shared stand-in
+/// `tests/fixtures/fake-opencode-serve-turn.py` serves the adapter crate's captured
+/// `/config/providers` (eight free models, some with effort variants) and replays its captured
+/// turn; every `prompt_async` body is appended to `record` as one JSON line. Returns the
+/// directory to prepend to `PATH`.
+pub fn fake_opencode_answering(record: &Path) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let adapter_fixtures =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../workshop-adapters/tests/fixtures");
+    let script = format!(
+        r#"#!/bin/sh
+case "$1" in
+  --version) echo '1.18.31'; exit 0 ;;
+  --help) printf 'Commands:\n  opencode run [message..]     run opencode with a message\n' >&2; exit 0 ;;
+esac
+if [ "$*" = "auth list" ]; then
+  printf '%s\n' '┌  Credentials ~/.local/share/opencode/auth.json' '│' '└  0 credentials'; exit 0
+fi
+if [ "$1" = "serve" ]; then
+  exec python3 '{serve}' --port "$5" --providers '{providers}' --turn '{turn}' --record '{record}'
+fi
+echo "fake opencode: unexpected $*" >&2
+exit 2
+"#,
+        serve = fixtures.join("fake-opencode-serve-turn.py").display(),
+        providers = adapter_fixtures
+            .join("opencode_serve_providers.json")
+            .display(),
+        turn = adapter_fixtures.join("opencode_serve_turn.jsonl").display(),
+        record = record.display(),
+    );
+    let path = dir.path().join("opencode");
+    std::fs::write(&path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     dir
 }
 
