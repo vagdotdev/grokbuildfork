@@ -14,12 +14,12 @@ disk), or the workflows run UI (`/workflow runs`).
 
 ## Opening the dashboard
 
-- **`grok dashboard`** — launch the TUI into the dashboard.
+- **`workshop dashboard`** — launch the TUI into the dashboard.
 - **`/dashboard`** (aliases **`/agents-dashboard`**, **`/sessions`**) — open
   from inside a session.
 - **`Ctrl+\`** — same view as the slash command.
 
-Hidden in minimal mode. Set `GROK_AGENT_DASHBOARD=0` or
+Hidden in minimal mode. Set `WORKSHOP_AGENT_DASHBOARD=0` or
 `[dashboard].enabled = false` to disable.
 
 ---
@@ -27,7 +27,7 @@ Hidden in minimal mode. Set `GROK_AGENT_DASHBOARD=0` or
 ## What you see
 
 ```
-  main ~/xai [Choose Ctrl+l]                    ◆ 2 awaiting │ ⋮ 1 working │ ◇ 1 idle
+  main ~/app [Choose Ctrl+l]                    ◆ 2 awaiting │ ⋮ 1 working │ ◇ 1 idle
 
   + New Agent                                Open Previous /resume │ Worktree Ctrl+w
 
@@ -77,7 +77,7 @@ the 8 freshest, plus any active within the last hour. The rest fold into a
 `→` (or click) to expand, `←` to re-fold. The Idle header always shows the
 true total. Folding is suspended while a filter or search is active.
 
-State icons match other session lists in Grok Build:
+State icons match other session lists in Workshop:
 
 - `⋅`/`:`/`⸬`/`⁙` — animated spinner for **Working**
 - `●` — filled circle for **Needs input**, **Completed**, **Failed**,
@@ -139,7 +139,7 @@ until you quit.
 
 Opening a row shows the agent's conversation in the **details view**. The
 session's own header row does the work — no extra title band: the agent's
-name leads it (`name │ main ~/xai`; omitted for an unnamed session), and on
+name leads it (`name │ main ~/app`; omitted for an unnamed session), and on
 the right, after the usual chips, sit `‹ 2/5 ›` (your position among the
 dashboard's agents; hidden when there is only one) and `[Dashboard]`. Keys
 go to the attached agent; `Esc` / `Ctrl+\` (or `[Dashboard]`) return to the
@@ -305,7 +305,7 @@ Prefixes (only inside search mode):
 
 ## Persistence
 
-Per-user preferences under `[dashboard]` in `~/.grok/config.toml`:
+Per-user preferences under `[dashboard]` in `~/.workshop/config.toml`:
 
 ```toml
 [dashboard]

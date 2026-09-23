@@ -1,12 +1,13 @@
 # Your First Prompt
 
-Grok Build is a conversation with an agent that can read your code, run
-commands, and edit files — right here in your terminal.
+Workshop is a conversation with an agent that can read your code, run
+commands, and edit files — right here in your terminal. It starts on a
+free model; `/model` switches, `/auth` connects a subscription or API key.
 
-Type what you want and press `Enter`. Grok streams its work into the
+Type what you want and press `Enter`. Workshop streams its work into the
 **scrollback** above the prompt: responses, shell commands, file edits.
 
-## Keep typing while Grok works
+## Keep typing while Workshop works
 
 While a turn is running, `Enter` **queues** your next message instead of
 interrupting. Change your mind? Press `Enter` on the empty prompt to stop

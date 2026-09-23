@@ -46,7 +46,7 @@ pub enum McpTransport {
 /// Which config file an MCP server definition is written to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum McpScope {
-    /// `~/.grok/config.toml`, available in all your projects
+    /// `~/.workshop/config.toml`, available in all your projects
     User,
     /// `./.grok/config.toml`, shared with everyone working in this directory
     Project,
@@ -112,7 +112,7 @@ pub struct AddArgs {
     command_or_url: Option<String>,
 
     /// Arguments passed to the server command.
-    /// Place them after `--` so flags such as `-y` are passed to the server instead of grok.
+    /// Place them after `--` so flags such as `-y` are passed to the server instead of workshop.
     #[arg(value_name = "ARGS")]
     args: Vec<String>,
 
@@ -120,7 +120,7 @@ pub struct AddArgs {
     #[arg(short = 't', long, value_enum)]
     transport: Option<McpTransport>,
 
-    /// Config to write to: user (~/.grok/config.toml) or project (./.grok/config.toml)
+    /// Config to write to: user (~/.workshop/config.toml) or project (./.grok/config.toml)
     #[arg(short = 's', long, value_enum, default_value = "user")]
     scope: McpScope,
 

@@ -1,6 +1,6 @@
 # Coming from Claude, Cursor, or Codex?
 
-Fear not — your settings, rules, and skills come with you. Grok Build
+Fear not — your settings, rules, and skills come with you. Workshop
 reads the same project conventions other agents use, and imports the rest.
 
 ## Picked up automatically
@@ -20,7 +20,7 @@ reads the same project conventions other agents use, and imports the rest.
 
 **`/import-claude`** scans your `~/.claude` settings — permissions, env
 vars, MCP servers, hooks — and shows a checkbox preview; confirming
-writes the items you selected into your `.grok` config. Re-run it anytime.
+writes the items you selected into your `~/.workshop` config. Re-run it anytime.
 
 ## Pick up where you left off
 
@@ -29,8 +29,8 @@ skills continue a recent session from those tools right here.
 
 ## Check what was discovered
 
-Run **`grok inspect`** in a repo to see every rules file, skill, and MCP
-server Grok picked up, tagged with where it came from. Each compat source
+Run **`workshop inspect`** in a repo to see every rules file, skill, and MCP
+server Workshop picked up, tagged with where it came from. Each compat source
 can be toggled in `[compat.claude]` / `[compat.cursor]` config sections.
 
 And a few things you might have missed elsewhere: `/btw` asks a side

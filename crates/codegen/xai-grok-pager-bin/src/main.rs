@@ -2037,6 +2037,61 @@ fn isolate_from_grok_build_env() {
             std::env::remove_var(cell.env_var());
         }
     }
+    workshop_env_aliases();
+}
+
+/// Environment variables Workshop owns outright; they are never mirrored onto a `GROK_*` name.
+const WORKSHOP_NATIVE_ENV: &[&str] = &[
+    "WORKSHOP_HOME",
+    "WORKSHOP_VERSION",
+    "WORKSHOP_CHANNEL",
+    "WORKSHOP_RELEASE_REPO",
+    "WORKSHOP_MANIFEST_URL",
+    "WORKSHOP_DOWNLOAD_BASE",
+    "WORKSHOP_ENABLE_AUTOUPDATE",
+    "WORKSHOP_HERO_ART",
+    "WORKSHOP_BIN",
+    "WORKSHOP_PTY_EVIDENCE_DIR",
+];
+
+/// `WORKSHOP_<X>` is the documented spelling of every `GROK_<X>` switch the inherited code reads
+/// (`WORKSHOP_AGENT_DASHBOARD=0`, `WORKSHOP_SANDBOX=strict`, `WORKSHOP_DISABLE_AUTOUPDATER=1`, …).
+/// Each set `WORKSHOP_<X>` is mirrored onto the unset `GROK_<X>` so the readers stay untouched,
+/// and the clap-bound switches (`--sandbox`, `agent serve --secret`) are mirrored the other way
+/// so their old names keep working as hidden aliases. Workshop-native names (`WORKSHOP_HOME`, credentials) are skipped.
+fn workshop_env_aliases() {
+    let mirrored: Vec<(String, std::ffi::OsString)> = std::env::vars_os()
+        .filter_map(|(key, value)| {
+            let key = key.to_str()?;
+            let rest = key.strip_prefix("WORKSHOP_")?;
+            if rest.is_empty()
+                || WORKSHOP_NATIVE_ENV.contains(&key)
+                || key.starts_with("WORKSHOP_VOICE")
+                || key.ends_with("_API_KEY")
+            {
+                return None;
+            }
+            Some((format!("GROK_{rest}"), value))
+        })
+        .collect();
+    // SAFETY: still single-threaded (called from `isolate_from_grok_build_env` at the top of `main`).
+    unsafe {
+        for (grok_name, value) in mirrored {
+            if std::env::var_os(&grok_name).is_none() {
+                std::env::set_var(&grok_name, value);
+            }
+        }
+        for (old, new) in [
+            ("GROK_SANDBOX", "WORKSHOP_SANDBOX"),
+            ("GROK_AGENT_SECRET", "WORKSHOP_AGENT_SECRET"),
+        ] {
+            if let Some(value) = std::env::var_os(old)
+                && std::env::var_os(new).is_none()
+            {
+                std::env::set_var(new, value);
+            }
+        }
+    }
 }
 
 fn main() {
