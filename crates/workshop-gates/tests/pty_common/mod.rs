@@ -186,6 +186,14 @@ pub fn fake_opencode(mode: &str) -> tempfile::TempDir {
 /// turn; every `prompt_async` body is appended to `record` as one JSON line. Returns the
 /// directory to prepend to `PATH`.
 pub fn fake_opencode_answering(record: &Path) -> tempfile::TempDir {
+    let turn = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../workshop-adapters/tests/fixtures/opencode_serve_turn.jsonl");
+    fake_opencode_answering_with(record, &turn, 0.01)
+}
+
+/// [`fake_opencode_answering`] replaying the given turn (JSON lines of `opencode serve` events)
+/// with `pace` seconds between events, so a gate can watch the transcript mid-turn.
+pub fn fake_opencode_answering_with(record: &Path, turn: &Path, pace: f64) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let adapter_fixtures =
@@ -200,7 +208,7 @@ if [ "$*" = "auth list" ]; then
   printf '%s\n' '┌  Credentials ~/.local/share/opencode/auth.json' '│' '└  0 credentials'; exit 0
 fi
 if [ "$1" = "serve" ]; then
-  exec python3 '{serve}' --port "$5" --providers '{providers}' --turn '{turn}' --record '{record}'
+  exec python3 '{serve}' --port "$5" --providers '{providers}' --turn '{turn}' --record '{record}' --pace {pace}
 fi
 echo "fake opencode: unexpected $*" >&2
 exit 2
@@ -209,7 +217,7 @@ exit 2
         providers = adapter_fixtures
             .join("opencode_serve_providers.json")
             .display(),
-        turn = adapter_fixtures.join("opencode_serve_turn.jsonl").display(),
+        turn = turn.display(),
         record = record.display(),
     );
     let path = dir.path().join("opencode");

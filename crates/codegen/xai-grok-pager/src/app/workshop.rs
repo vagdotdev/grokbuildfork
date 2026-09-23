@@ -638,6 +638,19 @@ pub fn waiting_line(text: &str, elapsed: Duration, frame: usize) -> String {
     line
 }
 
+/// The quiet end of a turn, under the last thing the model did: how long the whole turn took.
+pub fn done_line(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    let took = if secs == 0 {
+        "<1s".to_owned()
+    } else if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m {:02}s", secs / 60, secs % 60)
+    };
+    format!("Done \u{b7} {took}")
+}
+
 /// The first-run download, once the vendor script has started writing: still `Thinking…`, with
 /// the honest byte count so a minute-long first message never looks hung.
 pub fn install_progress_line(bytes: u64) -> String {
@@ -1145,6 +1158,9 @@ pub async fn run_workshop_turn(
             cancelled,
         });
     };
+    // The waiting line is up from the first moment on every backend (the engine bring-up refines
+    // it with its own phases) and stays under the latest block until the turn ends.
+    engine_progress(&tx, THINKING);
     // Ctrl-C must work while the engine is still installing or starting, not only once events
     // flow: race the bring-up against the cancel signal.
     let built = tokio::select! {

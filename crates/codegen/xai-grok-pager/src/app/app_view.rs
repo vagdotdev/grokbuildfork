@@ -1040,8 +1040,9 @@ pub struct AppView {
     /// Set once the first typed character has started the engine warm-up for this process.
     pub workshop_engine_warm_started: bool,
     pub workshop_engine_session: Option<String>,
-    /// The waiting line (`Thinking…`) of the current turn; replaced by each newer status and
-    /// removed once the turn produces output or ends.
+    /// The waiting line (`Thinking…`) of the current turn: kept under the latest block for the
+    /// whole turn (each new block lifts it and puts it back underneath), removed when the turn
+    /// fails or ends.
     pub workshop_turn_progress_entry: Option<crate::scrollback::EntryId>,
     /// The phase text behind `workshop_turn_progress_entry` (`Thinking…`, or the first-time
     /// download progress); the entry is repainted every few ticks with the spinner frame and the
@@ -1049,6 +1050,8 @@ pub struct AppView {
     pub workshop_turn_progress: Option<String>,
     /// When the current Workshop turn was submitted (the waiting line's elapsed clock).
     pub workshop_turn_started: Option<Instant>,
+    /// The current Workshop turn has shown a failure line: its end gets no `Done · Ns`.
+    pub workshop_turn_errored: bool,
     /// Tick counter driving the waiting line's spinner.
     pub workshop_progress_tick: u64,
     /// Workshop: the prompt of the last Engine/Adapter turn, kept so Enter on an empty composer
@@ -1626,6 +1629,7 @@ impl AppView {
             workshop_turn_progress_entry: None,
             workshop_turn_progress: None,
             workshop_turn_started: None,
+            workshop_turn_errored: false,
             workshop_progress_tick: 0,
             workshop_last_prompt: None,
             workshop_turn_active: false,

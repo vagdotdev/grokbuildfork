@@ -2,10 +2,11 @@
 """A loopback stand-in for `opencode serve` that answers.
 
 Serves health, a captured `/config/providers` (--providers), session create, the `/event`
-stream, and a prompt that replays a captured turn (--turn, JSON lines of events). With --record
-every `prompt_async` body is appended to that file as one JSON line, so a gate can check what
-reached the engine boundary (model, variant, agent). Started by a fake `opencode` binary's
-`serve` subcommand: `serve --hostname 127.0.0.1 --port N`.
+stream, and a prompt that replays a captured turn (--turn, JSON lines of events, --pace seconds
+between them so a gate can watch the turn mid-way). With --record every `prompt_async` body is
+appended to that file as one JSON line, so a gate can check what reached the engine boundary
+(model, variant, agent). Started by a fake `opencode` binary's `serve` subcommand:
+`serve --hostname 127.0.0.1 --port N`.
 """
 import argparse
 import json
@@ -19,6 +20,7 @@ ap.add_argument("--port", type=int, required=True)
 ap.add_argument("--providers", required=True)
 ap.add_argument("--turn", required=True)
 ap.add_argument("--record", default=None)
+ap.add_argument("--pace", type=float, default=0.01)
 a = ap.parse_args()
 PROVIDERS = open(a.providers, "rb").read()
 TURN = [json.loads(l) for l in open(a.turn) if l.strip()]
@@ -37,7 +39,7 @@ def replay():
     time.sleep(0.05)
     for ev in TURN:
         broadcast(ev)
-        time.sleep(0.01)
+        time.sleep(a.pace)
 
 
 class H(BaseHTTPRequestHandler):

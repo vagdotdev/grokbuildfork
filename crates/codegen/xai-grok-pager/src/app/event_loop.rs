@@ -4064,24 +4064,17 @@ fn handle_workshop_turn_msg(
     let Some(agent_id) = app.workshop_turn_agent else {
         return (false, vec![]);
     };
-    // Bring-up status is transient: the first real output, a fallback, or the end of the turn
-    // removes it.
-    let clears_progress = matches!(
+    // The waiting line stays under the latest block for the whole turn; a failure or the end of
+    // the turn removes it.
+    if matches!(
         msg,
-        M::Delta(_)
-            | M::Tool { .. }
-            | M::Permission { .. }
-            | M::Error(_)
-            | M::EngineUnavailable { .. }
-            | M::Done { .. }
-    );
-    if clears_progress {
+        M::Error(_) | M::EngineUnavailable { .. } | M::Done { .. }
+    ) {
         app.workshop_turn_progress = None;
-        if let Some(id) = app.workshop_turn_progress_entry.take()
-            && let Some(agent) = app.agents.get_mut(&agent_id)
-        {
-            agent.scrollback.remove_entry(id);
-        }
+        lift_workshop_progress(app, agent_id);
+    }
+    if matches!(msg, M::Error(_) | M::EngineUnavailable { .. }) {
+        app.workshop_turn_errored = true;
     }
     if let M::EngineUnavailable { reason, text } = msg {
         let effects = dispatch::dispatch(
@@ -4132,19 +4125,23 @@ fn handle_workshop_turn_msg(
             false
         }
         M::Delta(text) => {
-            let entry = app.workshop_turn_stream_entry;
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                match entry {
-                    Some(id) => {
+            match app.workshop_turn_stream_entry {
+                Some(id) => {
+                    if let Some(agent) = app.agents.get_mut(&agent_id) {
                         agent.scrollback.push_chunk_to_agent(id, &text);
                     }
-                    None => {
+                }
+                None => {
+                    // A new paragraph lands above the waiting line, which moves back underneath.
+                    lift_workshop_progress(app, agent_id);
+                    if let Some(agent) = app.agents.get_mut(&agent_id) {
                         let id = agent
                             .scrollback
                             .push_block(RenderBlock::agent_message_streaming());
                         agent.scrollback.push_chunk_to_agent(id, &text);
                         app.workshop_turn_stream_entry = Some(id);
                     }
+                    app.repaint_workshop_progress();
                 }
             }
             true
@@ -4156,20 +4153,24 @@ fn handle_workshop_turn_msg(
             {
                 agent.scrollback.finish_running(id);
             }
+            lift_workshop_progress(app, agent_id);
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 agent
                     .scrollback
                     .push_block(RenderBlock::tool_call(name, summary, true));
             }
+            app.repaint_workshop_progress();
             true
         }
         M::ToolResult { .. } => false,
         M::Permission { summary, decision } => {
+            lift_workshop_progress(app, agent_id);
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 agent.scrollback.push_block(RenderBlock::system(format!(
                     "Permission: {summary} — {decision}"
                 )));
             }
+            app.repaint_workshop_progress();
             true
         }
         M::Error(line) => {
@@ -4208,6 +4209,16 @@ fn handle_workshop_turn_msg(
                     agent
                         .scrollback
                         .push_block(RenderBlock::system("Turn cancelled."));
+                } else if !app.workshop_turn_errored {
+                    // The quiet end: one dim line with how long the turn took, under the last
+                    // thing the model did (the composer placeholder returns with it).
+                    let elapsed = app
+                        .workshop_turn_started
+                        .map(|t| t.elapsed())
+                        .unwrap_or_default();
+                    agent.scrollback.push_block(RenderBlock::system(
+                        crate::app::workshop::done_line(elapsed),
+                    ));
                 }
             }
             app.workshop_turn_active = false;
@@ -4221,6 +4232,16 @@ fn handle_workshop_turn_msg(
         M::EngineUnavailable { .. } => false,
     };
     (redraw, vec![])
+}
+
+/// Workshop: take the waiting line off the transcript so the block pushed next lands above it;
+/// `AppView::repaint_workshop_progress` puts it back underneath.
+fn lift_workshop_progress(app: &mut AppView, agent_id: crate::app::agent::AgentId) {
+    if let Some(id) = app.workshop_turn_progress_entry.take()
+        && let Some(agent) = app.agents.get_mut(&agent_id)
+    {
+        agent.scrollback.remove_entry(id);
+    }
 }
 
 /// A plain character key press (not a Ctrl/Alt chord, not a release).

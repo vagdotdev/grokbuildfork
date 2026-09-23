@@ -678,6 +678,7 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
     app.workshop_turn_stream_entry = None;
     app.workshop_turn_progress = None;
     app.workshop_turn_started = Some(std::time::Instant::now());
+    app.workshop_turn_errored = false;
     app.workshop_last_prompt = Some(text.clone());
 
     if let Some(agent) = app.agents.get_mut(&id) {

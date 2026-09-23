@@ -187,6 +187,7 @@ pub(crate) fn test_app() -> AppView {
         workshop_turn_progress_entry: None,
         workshop_turn_progress: None,
         workshop_turn_started: None,
+        workshop_turn_errored: false,
         workshop_progress_tick: 0,
         workshop_last_prompt: None,
         auth_clipboard_delivery: None,

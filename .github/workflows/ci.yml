@@ -214,6 +214,14 @@ jobs:
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test pty_composer_format -- --nocapture --include-ignored
+      - name: PTY gate — the waiting line follows the whole turn and the turn ends quietly
+        # Over a two-tool turn (fake, loopback engine, one event a second) the one `Thinking…`
+        # line stays under the latest block — tool row, paragraph, tool row — counting seconds,
+        # and the composer is blank; at the end it is gone, a dim `Done · Ns` sits under the last
+        # paragraph and the composer's `Ask anything…` placeholder is back.
+        env:
+          WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
+        run: cargo test -p workshop-gates --test pty_turn_progress -- --nocapture --include-ignored
       - name: PTY gates — surface polish (welcome copy, picker filter + key containment, waiting line, title restore)
         # One product name and an invitation to type on the welcome card; `/model` is an overlay
         # whose typed keys filter the list and never reach the composer; the waiting line is

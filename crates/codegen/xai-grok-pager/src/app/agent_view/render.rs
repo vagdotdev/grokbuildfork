@@ -741,7 +741,9 @@ impl AgentView {
             } else {
                 None
             },
-            placeholder_when_focused: false,
+            // Workshop: the empty composer reads its invitation whenever nothing is running; a
+            // turn in flight leaves it blank until the turn ends.
+            placeholder_when_focused: !self.stoppable_activity_running(),
             placeholder_override: if let Some(ph) = self
                 .prompt_input_mode
                 .placeholder_override(self.multiline_mode)
