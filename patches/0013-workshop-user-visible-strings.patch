@@ -7097,7 +7097,7 @@ index 82da5ad4..abba426b 100644
 -- **Errors.** Anything your script prints is shown, even when it exits non-zero, so `printf …; [[ -n $dirty ]]` behaves as you would expect. A script that prints nothing and fails shows `[status line: exit N]`, and that stays until the next run succeeds — for a run triggered by session state, which reports its failure at once; a timer run's failure keeps the last output instead (see [Refresh runs](#refresh-runs)). Your script's stderr is never painted, so a debugging `echo` will not disturb the row; run Grok with `--debug` to read it. A script Grok could not start at all shows `[status line: could not start the script: …]`, which is what a file without the execute bit produces, and one the system kills shows `[status line: killed by signal]`. A `#!` line naming a missing interpreter is retried under `sh` instead, so it shows an exit code.
 +- **Errors.** Anything your script prints is shown, even when it exits non-zero, so `printf …; [[ -n $dirty ]]` behaves as you would expect. A script that prints nothing and fails shows `[status line: exit N]`, and that stays until the next run succeeds — for a run triggered by session state, which reports its failure at once; a timer run's failure keeps the last output instead (see [Refresh runs](#refresh-runs)). Your script's stderr is never painted, so a debugging `echo` will not disturb the row; run Workshop with `--debug` to read it. A script Workshop could not start at all shows `[status line: could not start the script: …]`, which is what a file without the execute bit produces, and one the system kills shows `[status line: killed by signal]`. A `#!` line naming a missing interpreter is retried under `sh` instead, so it shows an exit code.
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/26-config-reference.md b/crates/codegen/xai-grok-pager/docs/user-guide/26-config-reference.md
-index fa13551c..0b8f5ec0 100644
+index fa13551c..70524ac1 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/26-config-reference.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/26-config-reference.md
 @@ -1,35 +1,35 @@
@@ -7569,7 +7569,15 @@ index fa13551c..0b8f5ec0 100644
  | `ui.ui_theme` | `string` | `yes` | `user` | Legacy alias for `ui.theme`. |
  | `ui.vim_mode` | `boolean` | `yes` | `user` | Vim keys in the scrollback, not the prompt. Also `/vim-mode`. |
  | `ui.voice_capture_mode` | `hold / toggle` | `yes` | `user` | Hold-to-talk or press-to-toggle voice capture. |
-@@ -673,13 +624,13 @@ One exception to that rule:
+@@ -648,6 +599,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
+ | Key | Type / Values | Requirements | Managed | Details |
+ | --- | --- | --- | --- | --- |
+ | `voice.api_base` | `string` | `yes` | `user` | HTTPS API root for speech-to-text. Unset inherits `[endpoints].xai_api_base_url`. |
++| `voice.auto_download` | `boolean` | `yes` | `user` | Fetch the voice helper and this machine's speech model in the background (after the first reply, or half a minute into a later launch) so `/voice` is ready when first pressed. Default true. `WORKSHOP_VOICE_AUTO=0` also turns it off; a `/voice` press still fetches on request. |
+ | `voice.language` | `string` | `yes` | `user` | Preferred STT language catalog code or `auto`. |
+ | `voice.sample_rate` | `number` | `yes` | `user` | STT capture rate in Hz. |
+ 
+@@ -673,13 +625,13 @@ One exception to that rule:
  | --- | --- |
  | `features.remote_fetch` | The managed value wins over the developer's. |
  
@@ -7585,7 +7593,7 @@ index fa13551c..0b8f5ec0 100644
  
  These keys exist only in `requirements.toml`:
  
-@@ -695,13 +646,13 @@ Policy pins such as `allow_managed_hooks_only` (see [Hooks](10-hooks.md#allow-on
+@@ -695,13 +647,13 @@ Policy pins such as `allow_managed_hooks_only` (see [Hooks](10-hooks.md#allow-on
  
  ## What happens when a setting is refused
  

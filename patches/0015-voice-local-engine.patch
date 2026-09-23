@@ -155,10 +155,10 @@ index e16c9d24..d5305515 100644
          subscription_tier: Some("SuperGrok".into()),
          ..Default::default()
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs
-index ebbefb24..ce9d7edf 100644
+index ebbefb24..0cc4c166 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs
-@@ -80,9 +80,9 @@ pub(super) fn dispatch_enable_voice_mode(app: &mut AppView, from_hold: bool) ->
+@@ -80,19 +80,26 @@ pub(super) fn dispatch_enable_voice_mode(app: &mut AppView, from_hold: bool) ->
      if !app.voice_mode_enabled {
          return vec![];
      }
@@ -170,6 +170,24 @@ index ebbefb24..ce9d7edf 100644
      if app.is_voice_tier_restricted() {
          return open_voice_tier_upsell(app);
      }
+     // Leave home after the flag / tier gates so a disabled or restricted press stays a no-op.
+     // Deliberately before the audio gate: the audio-less Bazel build is the only CI that runs
+     // these dispatch tests, and it must still cover leave-home (Always isolation) from voice.
+-    let effects = super::session::lifecycle::leave_welcome_for_session(app);
++    let mut effects = super::session::lifecycle::leave_welcome_for_session(app);
+     if !xai_grok_voice::AUDIO_SUPPORTED {
+         return effects;
+     }
++    // Workshop: a default install ships no voice helper or model; they arrive in the background.
++    // Until both are here, the press says how far along that is instead of failing.
++    if let Some((line, setup)) = crate::app::workshop::voice_getting_ready(app) {
++        app.show_toast(&line);
++        effects.extend(setup);
++        return effects;
++    }
+ 
+     // Bind the dictation target at press time (the cold-start path defers capture to the event loop, where the view could have changed)
+     // `None` means a view with no box (occluded dashboard, or a welcome the gate kept closed), so stay a silent no-op
 diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs b/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs
 index 4647b2bb..f92323c4 100644
 --- a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs
@@ -1706,10 +1724,10 @@ index be26f22a..0e3f9cfe 100644
  # `audio` = "microphone capture is compiled in". It's enabled on every OS for
  # production builds: macOS/Windows link `cpal`; Linux shells out to a system
 diff --git a/crates/codegen/xai-grok-voice/src/config.rs b/crates/codegen/xai-grok-voice/src/config.rs
-index 8a7f7fb4..fd01a500 100644
+index 8a7f7fb4..130d6772 100644
 --- a/crates/codegen/xai-grok-voice/src/config.rs
 +++ b/crates/codegen/xai-grok-voice/src/config.rs
-@@ -5,12 +5,33 @@ use crate::error::VoiceError;
+@@ -5,12 +5,36 @@ use crate::error::VoiceError;
  /// Default STT capture rate (Hz). Shared with the `__mic-capture` helper's argv default so parent and child agree when `--rate` is omitted.
  pub const DEFAULT_SAMPLE_RATE: u32 = 16_000;
  
@@ -1742,11 +1760,14 @@ index 8a7f7fb4..fd01a500 100644
 +    pub model: Option<String>,
 +    /// Workshop overlay: path of the `voice-engine` helper; unset = beside the running binary.
 +    pub engine_path: Option<String>,
++    /// Workshop overlay: fetch the helper and this machine's speech model in the background so
++    /// `/voice` is ready when first pressed (default on; `WORKSHOP_VOICE_AUTO=0` also turns it off).
++    pub auto_download: bool,
 +    /// HTTPS API root (or bare host) for `provider = "xai"`. Empty for a normal launch.
      /// Bases may end in `/v1` or `/xai/v1`; the default STT path de-duplicates a leading `v1/` so both become `…/v1/stt`.
      pub api_base: String,
      pub stt_ws_path: String,
-@@ -30,7 +51,11 @@ pub struct VoiceConfig {
+@@ -30,7 +54,12 @@ pub struct VoiceConfig {
  impl Default for VoiceConfig {
      fn default() -> Self {
          Self {
@@ -1754,12 +1775,13 @@ index 8a7f7fb4..fd01a500 100644
 +            provider: VoiceProvider::Local,
 +            model: None,
 +            engine_path: None,
++            auto_download: true,
 +            // No hosted endpoint by default (gate:no-xai): the xAI provider requires an explicit base.
 +            api_base: String::new(),
              stt_ws_path: "/v1/stt".into(),
              language: "en".into(),
              sample_rate: DEFAULT_SAMPLE_RATE,
-@@ -48,7 +73,8 @@ impl VoiceConfig {
+@@ -48,7 +77,8 @@ impl VoiceConfig {
          ws_url(&self.api_base, &self.stt_ws_path)
      }
  
@@ -1769,7 +1791,7 @@ index 8a7f7fb4..fd01a500 100644
      ///
      /// `resolved_endpoints_base` carries the caller's env/CLI overrides; it ranks below the raw table so config keeps beating env (shell precedence).
      pub fn from_config_table(root: &toml::Table, resolved_endpoints_base: Option<&str>) -> Self {
-@@ -57,22 +83,26 @@ impl VoiceConfig {
+@@ -57,22 +87,26 @@ impl VoiceConfig {
              .and_then(|t| toml::Value::Table(t.clone()).try_into().ok())
              .unwrap_or_default();
  
@@ -1809,7 +1831,7 @@ index 8a7f7fb4..fd01a500 100644
          cfg
      }
  }
-@@ -92,6 +122,13 @@ fn strip_scheme<'a>(s: &'a str, scheme: &str) -> Option<&'a str> {
+@@ -92,6 +126,13 @@ fn strip_scheme<'a>(s: &'a str, scheme: &str) -> Option<&'a str> {
  fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
      let base = api_base.trim().trim_end_matches('/');
      let path = path.trim().trim_start_matches('/');
@@ -1823,7 +1845,7 @@ index 8a7f7fb4..fd01a500 100644
      if strip_scheme(base, "http://").is_some() || strip_scheme(base, "ws://").is_some() {
          return Err(VoiceError::Config(format!(
              "insecure voice api_base {api_base:?}: voice requires a TLS endpoint \
-@@ -114,42 +151,59 @@ fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
+@@ -114,42 +155,59 @@ fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
  mod tests {
      use super::*;
  
@@ -1903,7 +1925,7 @@ index 8a7f7fb4..fd01a500 100644
              "wss://proxy.example.com/xai/v1/stt"
          );
      }
-@@ -162,24 +216,23 @@ mod tests {
+@@ -162,24 +220,23 @@ mod tests {
              "HTTP://localhost:8080",
              "Ws://localhost:8080",
          ] {
@@ -1933,7 +1955,7 @@ index 8a7f7fb4..fd01a500 100644
          assert_eq!(cfg.api_base, "https://proxy.example.com/xai/v1");
          assert_eq!(
              cfg.stt_ws_url().unwrap(),
-@@ -188,12 +241,30 @@ xai_api_base_url = "https://proxy.example.com/xai/v1"
+@@ -188,12 +245,30 @@ xai_api_base_url = "https://proxy.example.com/xai/v1"
      }
  
      #[test]
@@ -1965,7 +1987,7 @@ index 8a7f7fb4..fd01a500 100644
  api_base = "  "
  language = "fr"
  "#,
-@@ -205,31 +276,30 @@ language = "fr"
+@@ -205,31 +280,30 @@ language = "fr"
      }
  
      #[test]
@@ -2007,7 +2029,7 @@ index 8a7f7fb4..fd01a500 100644
      }
  
      /// config.toml beats the env/CLI fallback, matching the shell's endpoints precedence.
-@@ -239,6 +309,8 @@ api_base = "  "
+@@ -239,6 +313,8 @@ api_base = "  "
              r#"
  [endpoints]
  xai_api_base_url = "https://config.example.com"
@@ -2016,7 +2038,7 @@ index 8a7f7fb4..fd01a500 100644
  "#,
          )
          .unwrap();
-@@ -253,19 +325,20 @@ xai_api_base_url = "https://config.example.com"
+@@ -253,19 +329,20 @@ xai_api_base_url = "https://config.example.com"
  [endpoints]
  xai_api_base_url = "https://proxy.example.com/xai/v1"
  [voice]
@@ -2041,12 +2063,13 @@ index 8a7f7fb4..fd01a500 100644
          let table: toml::Table = toml::from_str(
              r#"
  [voice]
-@@ -273,11 +346,18 @@ enabled = false
+@@ -273,12 +350,25 @@ enabled = false
  client_identifier = "spoofed"
  user_agent = "malicious/9.9"
  language = "es"
 +model = "small"
 +engine_path = "/opt/workshop/voice-engine"
++auto_download = false
  "#,
          )
          .unwrap();
@@ -2057,9 +2080,15 @@ index 8a7f7fb4..fd01a500 100644
 +            cfg.engine_path.as_deref(),
 +            Some("/opt/workshop/voice-engine")
 +        );
++        assert!(!cfg.auto_download);
          assert!(cfg.client_identifier.is_empty());
          assert!(cfg.user_agent.is_empty());
++        assert!(
++            VoiceConfig::default().auto_download,
++            "voice gets ready in the background unless turned off"
++        );
      }
+ }
 diff --git a/crates/codegen/xai-grok-voice/src/event.rs b/crates/codegen/xai-grok-voice/src/event.rs
 index 1f795284..68735fa5 100644
 --- a/crates/codegen/xai-grok-voice/src/event.rs

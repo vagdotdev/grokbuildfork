@@ -1437,6 +1437,14 @@ pub(crate) async fn run(
     }
     app.voice_config.client_identifier = crate::client_identity::HEADLESS_CLIENT_TYPE.to_string();
     app.voice_config.user_agent = crate::client_identity::client_user_agent();
+    // Workshop: on a returning launch voice gets ready in the background half a minute in (a
+    // first run waits for its first reply, see `handle_workshop_turn_msg`).
+    if !needs_interactive_login {
+        post_render_effects.extend(crate::app::workshop::maybe_start_voice_prefetch(
+            &mut app,
+            std::time::Duration::from_secs(30),
+        ));
+    }
     app.zdr_access_enabled = xai_grok_shell::util::config::resolve_zdr_access_enabled(
         requirements.as_ref(),
         user_config.as_ref(),
@@ -4425,13 +4433,22 @@ fn handle_workshop_turn_msg(
             app.workshop_turn_agent = None;
             app.workshop_turn_prompt_entry = None;
             app.workshop_turn_started = None;
+            // The first reply of a first run is when voice starts getting ready in the background
+            // (no-op once started, off, or already in place).
+            let mut effects = crate::app::workshop::maybe_start_voice_prefetch(
+                app,
+                std::time::Duration::ZERO,
+            );
             // Prompts typed during the turn go out now, one turn each, oldest first. A cancel
             // drops them: the user stopped the conversation, not just this answer.
             if cancelled {
                 app.workshop_turn_queue.clear();
-                return (true, vec![]);
+                return (true, effects);
             }
-            let effects = dispatch::dispatch(Action::WorkshopNextQueuedPrompt { agent_id }, app);
+            effects.extend(dispatch::dispatch(
+                Action::WorkshopNextQueuedPrompt { agent_id },
+                app,
+            ));
             return (true, effects);
         }
         // Handled above (needs the dispatcher).
