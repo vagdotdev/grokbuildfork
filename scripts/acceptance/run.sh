@@ -4,7 +4,7 @@
 #
 #   scripts/acceptance/run.sh TASK OUTDIR WORKSHOP_BIN [--desktop]
 #
-# Workshop runs in a real 120x36 PTY (a tmux pane on a private socket, `-L acc`) under
+# Workshop runs in a real 120x36 PTY (a tmux pane on its own server, `-L acc-<run>`) under
 # `asciinema rec --stdin`, so the cast holds every byte drawn and every key typed. With --desktop the
 # pane is also shown in an xfce4-terminal on $DISPLAY and the whole desktop is recorded to
 # OUTDIR/raw-screen.mp4 (render.py cuts the waits afterwards).
@@ -34,10 +34,11 @@ STEPS="$HERE/tasks/$TASK.steps"
 [ -x "$BIN" ] || { echo "no workshop binary at $BIN" >&2; exit 2; }
 RUN_ID="$(basename "$OUT")"
 SESSION="acc-$RUN_ID"
+# One tmux server per run: tmux 3.5a has segfaulted with several sessions on one server.
+T=(tmux -L "$SESSION")
 FFMPEG="${ACC_FFMPEG:-/opt/rec/bin/ffmpeg}"
 export DISPLAY="${DISPLAY:-:1}"
 XAUTH="${XAUTHORITY:-$HOME/.Xauthority}"
-T=(tmux -L acc)
 
 directive() { sed -n "s/^@$1[[:space:]]\+//p" "$STEPS" | head -1; }
 RUN_USER="$(directive user)"; RUN_USER="${RUN_USER:-$(id -un)}"
@@ -165,7 +166,7 @@ python3 "$HERE/verify.py" snap "$TASK" "$OUT" before >> "$LOG" 2>&1
   "asciinema rec --stdin --overwrite -q -c '$INNER' '$CAST'"
 "${T[@]}" set -g status off >/dev/null; "${T[@]}" set -g window-size manual >/dev/null
 "${T[@]}" set -g escape-time 0 >/dev/null
-ACC_SUDO_PASSWORD="$PASSWORD" python3 "$HERE/monitor.py" "$CAST" "$OUT" "$SESSION" > "$OUT/monitor.log" 2>&1 &
+ACC_TMUX_SOCKET="$SESSION" ACC_SUDO_PASSWORD="$PASSWORD" python3 "$HERE/monitor.py" "$CAST" "$OUT" "$SESSION" > "$OUT/monitor.log" 2>&1 &
 MON=$!
 FF=""; TERMW=""
 if [ "$DESKTOP" = "--desktop" ]; then
@@ -174,7 +175,7 @@ if [ "$DESKTOP" = "--desktop" ]; then
     -codec:v libx264 -preset veryfast -pix_fmt yuv420p "$OUT/raw-screen.mp4" > "$OUT/ffmpeg.log" 2>&1 &
   FF=$!
   xfce4-terminal --disable-server --geometry=120x36 --font="JetBrains Mono 14" --hide-menubar \
-    --title Terminal --command "tmux -L acc attach -t $SESSION" > /dev/null 2>&1 &
+    --title Terminal --command "tmux -L $SESSION attach -t $SESSION" > /dev/null 2>&1 &
   TERMW=$!
   for _ in $(seq 1 60); do WID="$(xdotool search --onlyvisible --pid "$TERMW" 2>/dev/null | head -1)"; [ -n "$WID" ] && break; sleep 0.5; done
   [ -n "${WID:-}" ] && { xdotool windowmove "$WID" 40 40; xdotool mousemove 1900 1180; }

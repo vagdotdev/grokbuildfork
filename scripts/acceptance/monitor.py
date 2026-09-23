@@ -37,7 +37,8 @@ PASSWORD = re.compile(r"\[sudo\] password for [^\n:]*:|^\s*Password:\s*$", re.M)
 
 
 def keys(*args):
-    subprocess.run(["tmux", "-L", "acc", "send-keys", "-t", target, *args], capture_output=True)
+    subprocess.run(["tmux", "-L", os.environ.get("ACC_TMUX_SOCKET", "acc"), "send-keys", "-t", target, *args],
+                   capture_output=True)
 
 
 def log(kind, n, text, t):
