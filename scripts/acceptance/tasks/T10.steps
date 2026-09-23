@@ -1,0 +1,7 @@
+# T10 — a long-running command (npm install)
+@timeout 1200
+launch mkdir -p ~/myproject && cd ~/myproject && workshop
+type create a new React app with Vite in a folder called my-app, install its dependencies and make sure it builds
+waitturn
+line /exit
+waitshell 30

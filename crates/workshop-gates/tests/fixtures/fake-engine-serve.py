@@ -16,9 +16,21 @@ from the real server:
   * "make a folder on my desktop"     -> the out-of-folder pair captured live: permission.asked
     (`external_directory`, metadata.command + directories) and, once replied, permission.asked
     (`bash`) for the same tool call, then the completed `bash` part.
-  * "what are you"                    -> answers as Workshop's assistant when the server was given
-    an instructions file naming Workshop (OPENCODE_CONFIG_CONTENT), else as "opencode".
-  * "think"                           -> a reasoning part streamed before the answer part.
+  * "what are you" / "who made you"   -> answers from the identity the system prompt opens with, as
+    the real models do: OpenCode 1.18.31 opens it with the agent's `prompt` from the inline config
+    (OPENCODE_CONFIG_CONTENT) when one is set, else with the model family's prompt ("You are
+    opencode, …", feedback at github.com/anomalyco/opencode), and appends `instructions` after it.
+    Any agent, Plan included.
+  * "think"                           -> a reasoning part streamed before the answer part (and, on
+    "list files", a whitespace-only text part after it and another reasoning part after the tool
+    call — the shapes a real model sends).
+  * "install the tool"                -> ends the turn on "I'll run the installer:" with no tool call;
+    a following "Continue: …" prompt runs `echo installed` and answers "Installed the tool.".
+  * "keep announcing"                 -> every turn, continued or not, ends on "Let me run it:".
+  * "create todo.py"                  -> pastes the file in a fenced block and writes nothing; a
+    following "Continue: …" prompt writes ./todo.py with a `write` part and answers "Wrote todo.py.".
+  * "create stubborn.py"              -> pastes the file every time, continued or not.
+  * "show me a loop"                  -> answers with a fenced example (no file was asked for).
   * "slow"                            -> waits 3 s before answering (to queue prompts behind it).
   * agent == plan                     -> never a tool part, never a permission ask: text only.
 
@@ -75,18 +87,36 @@ def broadcast(ev):
         q.put(ev)
 
 
-def instructions_name_workshop():
-    raw = os.environ.get("OPENCODE_CONFIG_CONTENT")
-    if not raw:
-        return False
+FAMILY_PROMPT = ("You are opencode, an interactive CLI tool that helps users with software engineering tasks.\n"
+                 "- To give feedback, users should report the issue at https://github.com/anomalyco/opencode/issues")
+
+
+def inline_config():
     try:
-        for path in json.loads(raw).get("instructions", []):
+        return json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT") or "{}")
+    except ValueError:
+        return {}
+
+
+def system_prompt(agent):
+    cfg = inline_config()
+    base = ((cfg.get("agent") or {}).get(agent or "build") or {}).get("prompt") or FAMILY_PROMPT
+    parts = [base, "You are powered by the model named big-pickle. The exact model ID is opencode/big-pickle"]
+    for path in cfg.get("instructions", []):
+        try:
             with open(path) as f:
-                if "Workshop" in f.read():
-                    return True
-    except Exception:
-        return False
-    return False
+                parts.append(f.read())
+        except OSError:
+            pass
+    return "\n".join(parts)
+
+
+def identity_answer(agent, text_l):
+    if system_prompt(agent).startswith("You are Workshop's"):
+        return "I'm Workshop's coding assistant, running as big-pickle."
+    if "who made you" in text_l:
+        return "I was made by the OpenCode team (github.com/anomalyco/opencode)."
+    return "I'm opencode, an AI coding assistant that runs in your terminal."
 
 
 def part(sid, mid, ptype, extra):
@@ -157,6 +187,12 @@ def unified_diff(path, old, new):
 
 def run_turn(sid, agent, text):
     text_l = text.lower()
+    # A continuation carries on the request that came before it.
+    continued = text.startswith("Continue:")
+    if continued:
+        first = next((m["text"] for m in reversed(sessions[sid]["messages"])
+                      if m["role"] == "user" and not m["text"].startswith("Continue:")), "")
+        text_l = first.lower()
     user_mid = next_id("msg")
     broadcast({"type": "message.updated", "properties": {"info": {"id": user_mid, "sessionID": sid, "role": "user", "time": {"created": now_ms()}, "agent": agent}}})
     broadcast({"type": "session.status", "properties": {"sessionID": sid, "status": {"type": "busy"}}})
@@ -171,12 +207,33 @@ def run_turn(sid, agent, text):
         items.append(("reasoning", thought))
         stream_text(sid, mid, thought, ptype="reasoning")
     answer = None
-    if agent == "plan":
+    if "what are you" in text_l or "who made you" in text_l:
+        answer = identity_answer(agent, text_l)
+    elif agent == "plan":
         answer = "Plan: I would create the file, but plan mode is read-only. Ready when you exit plan mode."
-    elif "what are you" in text_l:
-        answer = ("I'm Workshop's assistant, a coding agent running in your terminal."
-                  if instructions_name_workshop() else
-                  "I'm opencode, an AI coding assistant that runs in your terminal.")
+    elif "keep announcing" in text_l:
+        answer = "Let me run it:"
+    elif "create todo.py" in text_l and continued:
+        path = os.path.join(CWD, "todo.py")
+        content = 'print("todo")\n'
+        with open(path, "w") as f:
+            f.write(content)
+        emit_part(tool_part(sid, mid, "write", next_id("call"), {"filePath": path, "content": content},
+                            "Wrote file successfully.", "todo.py",
+                            {"diagnostics": {}, "filepath": path, "exists": False, "truncated": False}))
+        answer = "Wrote todo.py."
+    elif "create todo.py" in text_l or "create stubborn.py" in text_l:
+        answer = "Here is the file.\n\n```python\nprint(\"todo\")\n```"
+    elif "show me a loop" in text_l:
+        answer = "```python\nfor i in range(3):\n    print(i)\n```"
+    elif "install the tool" in text_l:
+        if continued:
+            call_id = next_id("call")
+            emit_part(tool_part(sid, mid, "bash", call_id, {"command": "echo installed"}, "installed\n",
+                                "echo installed", {"output": "installed\n", "exit": 0, "truncated": False}))
+            answer = "Installed the tool."
+        else:
+            answer = "Downloaded it. I'll run the installer:"
     elif "create hello.txt" in text_l:
         path = os.path.join(CWD, "hello.txt")
         call_id = next_id("call")
@@ -218,12 +275,18 @@ def run_turn(sid, agent, text):
                             {"diagnostics": {}, "diff": diff, "filediff": {"file": path, "patch": diff, "additions": 1, "deletions": 1}, "truncated": False}))
         answer = "Changed hi to hello in hello.txt."
     elif "list files" in text_l or text_l.strip() == "ls":
+        if "think" in text_l:
+            stream_text(sid, mid, "\n\n")
         call_id = next_id("call")
         reply = ask_permission(sid, mid, call_id, "bash", ["ls -1"], {"command": "ls -1"}, ["ls *"])
         if reply in ("once", "always"):
             out = subprocess.run(["ls", "-1"], cwd=CWD, capture_output=True, text=True).stdout or "(no output)"
             emit_part(tool_part(sid, mid, "bash", call_id, {"command": "ls -1"}, out, "ls -1",
                                 {"output": out, "exit": 0, "truncated": False}))
+            if "think" in text_l:
+                stream_text(sid, mid, "The listing is in. Summarize it.", ptype="reasoning")
+            if "slowly" in text_l:
+                time.sleep(3)
             answer = "Here is the listing."
         else:
             emit_part(tool_part(sid, mid, "bash", call_id, {"command": "ls -1"}, "The user rejected permission to use this specific tool call.", "ls -1", {}, status="error"))
@@ -336,7 +399,8 @@ class H(BaseHTTPRequestHandler):
             sid = path.split("/")[2]
             sessions.setdefault(sid, {"messages": []})
             text = "".join(p.get("text", "") for p in body.get("parts", []))
-            log({"session": sid, "agent": body.get("agent"), "text": text, "model": body.get("model")})
+            log({"session": sid, "agent": body.get("agent"), "text": text, "model": body.get("model"),
+                 "system_head": system_prompt(body.get("agent")).split("\n", 1)[0]})
             threading.Thread(target=run_turn, args=(sid, body.get("agent"), text), daemon=True).start()
             self.send_response(204)
             self.send_header("Content-Length", "0")

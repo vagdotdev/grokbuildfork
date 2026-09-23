@@ -158,6 +158,25 @@ pub fn instructions_config(files: &[PathBuf]) -> Value {
     })
 }
 
+/// Workshop's base system prompt for the engine's agents: OpenCode 1.18.31's generic prompt
+/// (`packages/opencode/src/session/prompt/default.txt`, MIT, © 2025 opencode — see
+/// THIRD-PARTY-NOTICES) with its opening identity, help/feedback and "look yourself up on
+/// opencode.ai" lines rewritten for Workshop; the rest is verbatim.
+pub const WORKSHOP_AGENT_PROMPT: &str = include_str!("workshop_agent_prompt.txt");
+
+/// The `agent` section of an inline OpenCode config that makes `prompt` the base system prompt
+/// of the agents Workshop's turns run on (`build`; `plan` in Plan mode). Without it OpenCode
+/// opens every system prompt with the model family's own identity ("You are opencode, …",
+/// "You are OpenCode, … powered by Muse Spark"), which an appended `instructions` file only
+/// contradicts; an agent `prompt` replaces that text (1.18.31 `LLMRequestPrep.prepare`), and the
+/// environment block and `instructions` files still follow it.
+pub fn agent_prompts(prompt: &str) -> Value {
+    json!({
+        "build": { "prompt": prompt },
+        "plan": { "prompt": prompt },
+    })
+}
+
 impl std::fmt::Debug for EngineOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EngineOptions")
@@ -971,5 +990,20 @@ mod tests {
     #[test]
     fn encodes_directory_param() {
         assert_eq!(percent_encode("/tmp/a b/c"), "/tmp/a%20b/c");
+    }
+
+    /// The base prompt opens with Workshop's identity and names no other product, so no model
+    /// family's "You are opencode" text is left for the instructions file to contradict.
+    #[test]
+    fn agent_prompt_is_workshop_for_build_and_plan() {
+        assert!(WORKSHOP_AGENT_PROMPT.starts_with("You are Workshop's coding assistant"));
+        let lower = WORKSHOP_AGENT_PROMPT.to_lowercase();
+        for other in ["opencode", "anomaly", "grok"] {
+            assert!(!lower.contains(other), "prompt names {other}");
+        }
+        let agents = agent_prompts(WORKSHOP_AGENT_PROMPT);
+        for agent in ["build", "plan"] {
+            assert_eq!(agents[agent]["prompt"], WORKSHOP_AGENT_PROMPT, "{agent}");
+        }
     }
 }

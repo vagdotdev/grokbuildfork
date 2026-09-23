@@ -206,9 +206,15 @@ jobs:
         # Plan sends the read-only agent and writes nothing; Normal shows the approval prompt for
         # `rm -rf tmp` (reject keeps it, `Yes, proceed` posts `once`); Always-approve runs it with no
         # prompt; Edit/Run rows open to their diff/output; the meter is hidden until the engine
-        # reports usage, then `8.6K / 200K`; queued prompts are separate turns; reasoning is a
-        # collapsed block; "what are you?" answers as Workshop; `--resume`/`-c`/the pickers replay
-        # the engine conversation and an idle launch prints no resume hint.
+        # reports usage, then `8.6K / 200K`; queued prompts are separate turns; no reasoning text
+        # on screen by default (`/settings` → Show thinking blocks brings it back as a block), no
+        # empty reply row, and the waiting line is up while hidden thinking runs between tool
+        # calls; a turn that ends on "I'll run the installer:", or that pastes a requested file
+        # instead of writing it, is continued silently
+        # (at most twice, logged); "what are you?" / "who made you?" answer as Workshop, never
+        # opencode, in Normal and Plan;
+        # a model picked in /model survives the next launch's warm-up; `--resume`/`-c`/the
+        # pickers replay the engine conversation and an idle launch prints no resume hint.
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test engine_trust -- --nocapture --include-ignored --test-threads=2

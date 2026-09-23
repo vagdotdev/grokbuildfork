@@ -23,10 +23,18 @@
 //!   (the engine's tokens against the live model's limit), and `/context` says the same.
 //! * `queued_prompts_are_separate` — Enter during a turn queues; each queued prompt becomes its own
 //!   turn with its own bubble and answer.
-//! * `reasoning_is_a_separate_block` — the model's reasoning is a collapsed thinking block, never
-//!   glued to the answer text.
-//! * `engine_answers_as_workshop` — "what are you?" answers as Workshop's assistant, never as
-//!   "opencode" (the server received Workshop's instructions file).
+//! * `reasoning_hidden_by_default` — no reasoning text anywhere by default (inline, glued, as a
+//!   block, after a tool call); `reasoning_shown_when_turned_on_in_settings` — `/settings` → "Show
+//!   thinking blocks" brings it back as its own block, never glued to the answer.
+//! * `engine_answers_as_workshop` — "what are you?" / "who made you?" answer as Workshop's
+//!   assistant, never as "opencode", in Normal and Plan mode (the `build` and `plan` agents open
+//!   their system prompt with Workshop's identity; the instructions file follows).
+//! * `picked_model_survives_the_next_warm_up` — a model picked in `/model` is still the one the
+//!   next launch's turns run on after the engine warm-up reads OpenCode's live default.
+//! * `announced_action_is_carried_out` / `auto_continue_is_bounded` — a turn that ends on an
+//!   announced action with no tool call ("I'll run the installer:") is continued without a word
+//!   on screen and logged; a finished answer never is, and a model that keeps announcing is
+//!   continued at most twice.
 //! * `engine_starts_at_launch_not_on_enter` — the engine is installed (fresh home, stub installer)
 //!   and started the moment the composer opens, before a key is pressed and with nothing on
 //!   screen; a returning home starts it at launch too; Enter then reuses that server.
@@ -74,6 +82,7 @@ if [ "$*" = "auth list" ]; then
   printf '%s\n' '┌  Credentials ~/.local/share/opencode/auth.json' '│' '└  0 credentials'; exit 0
 fi
 if [ "$1" = "serve" ]; then
+  [ -f '{delay}' ] && sleep "$(cat '{delay}')"
   exec python3 '{serve}' --port "$5" --providers '{providers}' --log '{log}'
 fi
 echo "fake opencode: unexpected $*" >&2
@@ -82,6 +91,7 @@ exit 2
         serve = serve_py.display(),
         providers = providers.display(),
         log = log.display(),
+        delay = bin.join("start-delay").display(),
     );
     let path = bin.join("opencode");
     std::fs::write(&path, script).unwrap();
@@ -632,49 +642,342 @@ fn queued_prompts_are_separate() {
     quit(&mut j);
 }
 
-/// Reasoning is a collapsed thinking block, never part of the answer.
+/// Text of the model's reasoning in the fake engine's script (`fixtures/fake-engine-serve.py`).
+const REASONING: [&str; 2] = ["Keep it brief", "Summarize it"];
+
+fn assert_no_thinking(screen: &str) {
+    for text in REASONING.iter().chain(&["Thought", "Thinking"]) {
+        assert!(
+            !screen.contains(text),
+            "no thinking by default ({text:?} on screen):\n{screen}"
+        );
+    }
+}
+
+/// The model's thinking is not shown by default — not inline, not glued to the answer, not as a
+/// block, not after a tool call; the answer and the tool row are.
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
-fn reasoning_is_a_separate_block() {
+fn reasoning_hidden_by_default() {
     let Some(bin) = bin_from_env() else { return };
     let fx = fixture();
-    let mut j = launch("engine-trust/reasoning-is-a-separate-block", &bin, &fx);
+    let mut j = launch("engine-trust/reasoning-hidden-by-default", &bin, &fx);
     send_prompt(&mut j, "think about it");
     wait_for(&mut j.h, "Echo: think about it", 60);
     j.h.update(Duration::from_millis(500));
-    snapshot(&j.h, &j.dir, "01-thinking-block");
+    snapshot(&j.h, &j.dir, "01-answer-only");
+    assert_no_thinking(&j.h.screen_contents());
+
+    send_prompt(&mut j, "think, then list files");
+    wait_for(&mut j.h, "Here is the listing.", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "02-after-tool-call");
+    let screen = j.h.screen_contents();
+    assert!(screen.contains("ls -1"), "the tool row is shown:\n{screen}");
+    assert_no_thinking(&screen);
+    assert!(
+        !screen.lines().any(is_bare_timestamp),
+        "the whitespace-only text part after the thinking opens no empty reply row:\n{screen}"
+    );
+
+    // Hidden thinking after a tool call draws nothing, so the waiting line shows the model is
+    // still at work until its answer lands.
+    send_prompt(&mut j, "think slowly, then list files");
+    let waiting_after_tool = |screen: &str| {
+        let mut lines = screen.lines();
+        lines.any(|l| l.contains("\u{276f} think slowly, then list files"))
+            && lines.any(|l| l.contains("ls -1"))
+            && lines.any(|l| l.contains("Waiting for Big Pickle"))
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !waiting_after_tool(&j.h.screen_contents()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no waiting line under the tool row while the model thinks:\n{}",
+            j.h.screen_contents()
+        );
+        j.h.update(Duration::from_millis(150));
+    }
+    snapshot(&j.h, &j.dir, "03-waiting-line-during-hidden-thinking");
+    assert_no_thinking(&j.h.screen_contents());
+    wait_for(&mut j.h, "Here is the listing.", 30);
+    wait_gone(&mut j, "Waiting for Big Pickle", 30);
+    assert_no_thinking(&j.h.screen_contents());
+    quit(&mut j);
+}
+
+/// A transcript row holding nothing but its timestamp ("9:23 AM"): an empty reply.
+fn is_bare_timestamp(line: &str) -> bool {
+    let t = line.trim().trim_end_matches('\u{2588}').trim();
+    let Some((clock, half)) = t.split_once(' ') else {
+        return false;
+    };
+    (half == "AM" || half == "PM")
+        && clock.split_once(':').is_some_and(|(h, m)| {
+            (1..=2).contains(&h.len())
+                && m.len() == 2
+                && h.chars().chain(m.chars()).all(|c| c.is_ascii_digit())
+        })
+}
+
+/// The prompts the fake engine received, in order.
+fn prompts_sent(log: &Path) -> Vec<String> {
+    engine_log(log)
+        .iter()
+        .filter_map(|v| v.get("text").and_then(|t| t.as_str()).map(str::to_owned))
+        .collect()
+}
+
+/// A turn that ends right after announcing an action ("I'll run the installer:") with no tool
+/// call is continued without a word on screen: the action runs, the answer lands in the same
+/// turn, and the engine log records the continuation.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn announced_action_is_carried_out() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/announced-action-is-carried-out", &bin, &fx);
+    send_prompt(&mut j, "download it and install the tool");
+    wait_for(&mut j.h, "Installed the tool.", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "01-carried-out");
     let screen = j.h.screen_contents();
     assert!(
-        screen.contains("Thought"),
-        "reasoning shows as a thinking block:\n{screen}"
+        screen.contains("echo installed"),
+        "the announced command ran:\n{screen}"
     );
     assert!(
-        !screen.contains("Keep it brief.Echo") && !screen.contains("brief.Echo"),
-        "reasoning is never glued to the answer:\n{screen}"
+        !screen.contains("Continue"),
+        "the continuation is never shown:\n{screen}"
     );
+    let prompts = prompts_sent(&fx.log);
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert!(prompts[1].starts_with("Continue:"), "{prompts:?}");
+    let log = std::fs::read_to_string(j.workshop_home().join("logs/opencode-engine.log"))
+        .unwrap_or_default();
     assert!(
-        !screen.contains("Keep it brief."),
-        "the thinking block is collapsed by default:\n{screen}"
+        log.contains("auto-continue 1/2"),
+        "the continuation is logged for workshop doctor:\n{log}"
     );
     quit(&mut j);
 }
 
-/// "what are you?" answers as Workshop's assistant: the server got Workshop's instructions file.
+/// A finished answer is never continued, and a model that keeps announcing is continued at most
+/// twice before the turn ends.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn auto_continue_is_bounded() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/auto-continue-is-bounded", &bin, &fx);
+    send_prompt(&mut j, "hello");
+    wait_for(&mut j.h, "Echo: hello", 60);
+    send_prompt(&mut j, "keep announcing");
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while prompts_sent(&fx.log).len() < 4 && std::time::Instant::now() < deadline {
+        j.h.update(Duration::from_millis(300));
+    }
+    j.h.update(Duration::from_secs(3));
+    snapshot(&j.h, &j.dir, "01-bounded");
+    let prompts = prompts_sent(&fx.log);
+    assert_eq!(
+        prompts.len(),
+        4,
+        "hello once, keep announcing once plus two continuations: {prompts:?}"
+    );
+    assert_eq!(prompts[0], "hello");
+    assert!(prompts[2].starts_with("Continue:") && prompts[3].starts_with("Continue:"));
+    quit(&mut j);
+}
+
+/// A requested file shown in the chat instead of written is written by one silent continuation
+/// (logged); a code example nobody asked to save is left alone, and a model that keeps pasting is
+/// continued for it only once.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn pasted_file_is_written() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/pasted-file-is-written", &bin, &fx);
+    send_prompt(&mut j, "create todo.py that prints todo");
+    wait_for(&mut j.h, "Wrote todo.py.", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "01-written");
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("Continue"),
+        "the continuation is never shown:\n{screen}"
+    );
+    assert!(j.cwd.path().join("todo.py").exists(), "todo.py is on disk");
+    let prompts = prompts_sent(&fx.log);
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert!(
+        prompts[1].starts_with("Continue: you showed the file contents"),
+        "{prompts:?}"
+    );
+    let log = std::fs::read_to_string(j.workshop_home().join("logs/opencode-engine.log"))
+        .unwrap_or_default();
+    assert!(
+        log.contains("auto-continue 1/2") && log.contains("wrote no file"),
+        "the continuation is logged for workshop doctor:\n{log}"
+    );
+
+    send_prompt(&mut j, "show me a loop");
+    wait_for(&mut j.h, "range(3)", 60);
+    j.h.update(Duration::from_secs(2));
+    assert_eq!(
+        prompts_sent(&fx.log).len(),
+        3,
+        "an example nobody asked to save is not continued"
+    );
+
+    send_prompt(&mut j, "create stubborn.py");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while prompts_sent(&fx.log).len() < 5 && std::time::Instant::now() < deadline {
+        j.h.update(Duration::from_millis(300));
+    }
+    j.h.update(Duration::from_secs(3));
+    snapshot(&j.h, &j.dir, "02-bounded");
+    let prompts = prompts_sent(&fx.log);
+    assert_eq!(
+        prompts.len(),
+        5,
+        "pasting again is continued once: {prompts:?}"
+    );
+    quit(&mut j);
+}
+
+/// `/settings` → "Show thinking blocks" brings the thinking back, as its own block that is never
+/// glued to the answer.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn reasoning_shown_when_turned_on_in_settings() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/reasoning-shown-when-turned-on", &bin, &fx);
+    let row = |screen: &str| {
+        screen
+            .lines()
+            .find(|l| l.contains("Show thinking blocks"))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    send_prompt(&mut j, "/settings");
+    wait_for(&mut j.h, "Space", 20);
+    j.h.inject_keys(b"/").unwrap();
+    j.h.update(Duration::from_millis(300));
+    j.h.inject_keys(b"thinking blocks").unwrap();
+    wait_for(&mut j.h, "search: thinking blocks", 20);
+    j.h.inject_keys(b"\r").unwrap();
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "01-settings-row-off");
+    let screen = j.h.screen_contents();
+    assert!(row(&screen).contains(" off "), "off by default:\n{screen}");
+    j.h.inject_keys(b" ").unwrap();
+    j.h.update(Duration::from_millis(600));
+    snapshot(&j.h, &j.dir, "02-settings-row-on");
+    let screen = j.h.screen_contents();
+    assert!(
+        row(&screen).contains(" on "),
+        "Space turns it on:\n{screen}"
+    );
+    j.h.inject_keys(b"\x1b").unwrap();
+    j.h.update(Duration::from_millis(600));
+    let config = std::fs::read_to_string(j.workshop_home().join("config.toml")).unwrap();
+    assert!(config.contains("show_thinking_blocks = true"), "{config}");
+
+    send_prompt(&mut j, "think about it");
+    wait_for(&mut j.h, "Echo: think about it", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "03-thinking-block");
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains("Thought"),
+        "the setting shows thinking as a block:\n{screen}"
+    );
+    assert!(
+        !screen.contains("brief.Echo"),
+        "thinking is never glued to the answer:\n{screen}"
+    );
+    quit(&mut j);
+}
+
+/// The answer lines containing `needle` (the composer label names the engine, the answers must not).
+fn answer_lines<'a>(screen: &'a str, needle: &str) -> Vec<&'a str> {
+    screen
+        .lines()
+        .filter(|l| l.contains(needle) && !l.contains('\u{276f}'))
+        .collect()
+}
+
+fn assert_answers_as_workshop(j: &mut Journey, question: &str) {
+    const ANSWER: &str = "Workshop's coding assistant";
+    let answered = |screen: &str| {
+        let mut lines = screen.lines();
+        lines.any(|l| l.contains(&format!("\u{276f} {question}")))
+            && lines.any(|l| l.contains(ANSWER))
+    };
+    send_prompt(j, question);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while !answered(&j.h.screen_contents()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{question:?} got no answer as Workshop's assistant:\n{}",
+            j.h.screen_contents()
+        );
+        j.h.update(Duration::from_millis(200));
+    }
+    j.h.update(Duration::from_millis(400));
+    let screen = j.h.screen_contents();
+    let lines = answer_lines(&screen, ANSWER);
+    assert!(!lines.is_empty(), "{screen}");
+    for line in lines {
+        let line = line.to_lowercase();
+        for other in ["opencode", "anomaly", "grok"] {
+            assert!(
+                !line.contains(other),
+                "{question:?} must not name {other}:\n{screen}"
+            );
+        }
+    }
+}
+
+/// "what are you?" and "who made you?" answer as Workshop's assistant, never as "opencode", in
+/// Normal and Plan mode: the agent each turn runs on (`build`, `plan`) opens its system prompt
+/// with Workshop's identity instead of the model family's, and the instructions file follows.
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
 fn engine_answers_as_workshop() {
     let Some(bin) = bin_from_env() else { return };
     let fx = fixture();
     let mut j = launch("engine-trust/engine-answers-as-workshop", &bin, &fx);
-    send_prompt(&mut j, "what are you?");
-    wait_for(&mut j.h, "Workshop's assistant", 60);
-    j.h.update(Duration::from_millis(400));
-    snapshot(&j.h, &j.dir, "01-identity");
-    let screen = j.h.screen_contents();
+    assert_answers_as_workshop(&mut j, "what are you?");
+    snapshot(&j.h, &j.dir, "01-what-are-you");
+    assert_answers_as_workshop(&mut j, "who made you?");
+    snapshot(&j.h, &j.dir, "02-who-made-you");
+    set_mode(&mut j, "plan");
+    assert_answers_as_workshop(&mut j, "what are you? (plan)");
+    snapshot(&j.h, &j.dir, "03-plan-what-are-you");
+
+    let heads: Vec<(String, String)> = engine_log(&fx.log)
+        .iter()
+        .filter_map(|v| {
+            Some((
+                v.get("agent")?.as_str()?.to_owned(),
+                v.get("system_head")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect();
     assert!(
-        !screen.contains("I'm opencode"),
-        "the engine's model must not introduce itself as opencode:\n{screen}"
+        heads.iter().any(|(a, _)| a == "build") && heads.iter().any(|(a, _)| a == "plan"),
+        "{heads:?}"
     );
+    for (agent, head) in &heads {
+        assert!(
+            head.starts_with("You are Workshop's coding assistant"),
+            "{agent}: {head}"
+        );
+    }
     let instructions = j.workshop_home().join("engine").join("instructions.md");
     let text = std::fs::read_to_string(&instructions).expect("instructions file under the home");
     assert!(text.contains("Workshop's coding assistant"), "{text}");
@@ -1248,6 +1551,62 @@ fn live_engine_trust_journey() {
     std::fs::write(j.dir.join("06-quit-hint.txt"), &after).unwrap();
     assert!(after.contains("workshop --resume ses_"), "{after}");
     eprintln!("evidence: {}", j.dir.display());
+}
+
+/// A model picked in `/model` stays picked: the next launch's engine warm-up, which reads
+/// OpenCode's live default, does not put the connection back on Big Pickle.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn picked_model_survives_the_next_warm_up() {
+    const LING: &str = "OpenCode \u{b7} Ling 3.0 Flash Fin Free";
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/picked-model-survives-warm-up", &bin, &fx);
+    send_prompt(&mut j, "hello");
+    wait_for(&mut j.h, "Echo: hello", 60);
+    send_prompt(&mut j, "/model");
+    wait_for(&mut j.h, "Tab: Subscriptions", 15);
+    j.h.inject_keys(b"fin free").unwrap();
+    wait_for(&mut j.h, "Ling 3.0 Flash Fin Free", 15);
+    j.h.update(Duration::from_millis(400));
+    j.h.inject_keys(b"\r").unwrap();
+    wait_for(&mut j.h, LING, 15);
+    quit(&mut j);
+
+    // A real `opencode serve` takes seconds to come up, so the warm-up the first keystroke starts
+    // finishes while that first turn is already waiting on the engine.
+    std::fs::write(fx.bin.join("start-delay"), "2").unwrap();
+    let mut j = pty_common::spawn_in(
+        "engine-trust/picked-model-survives-warm-up",
+        &bin,
+        OFFLINE,
+        Some(&fx.bin),
+        j.home,
+    );
+    wait_for(&mut j.h, LING, 45);
+    send_prompt(&mut j, "first after relaunch");
+    wait_for(&mut j.h, "Echo: first after relaunch", 60);
+    send_prompt(&mut j, "second after relaunch");
+    wait_for(&mut j.h, "Echo: second after relaunch", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "01-relaunch-keeps-ling");
+    let screen = j.h.screen_contents();
+    assert!(screen.contains(LING), "the label keeps the pick:\n{screen}");
+    let models: Vec<String> = engine_log(&fx.log)
+        .iter()
+        .filter(|v| {
+            v.get("text")
+                .and_then(|t| t.as_str())
+                .is_some_and(|t| t.contains("after relaunch"))
+        })
+        .map(|v| v["model"].to_string())
+        .collect();
+    assert_eq!(models.len(), 2, "{models:?}");
+    assert!(
+        models.iter().all(|m| m.contains("ling-3.0-flash-fin-free")),
+        "both turns ran on the picked model: {models:?}"
+    );
+    quit(&mut j);
 }
 
 /// The engine conversation is what resume finds, replays and continues.

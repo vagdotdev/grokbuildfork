@@ -1,0 +1,10 @@
+# T8 — a multi-turn follow-up that refers to the earlier turn
+@timeout 600
+launch mkdir -p ~/myproject && cd ~/myproject && workshop
+type write a small python script that prints the first 20 fibonacci numbers
+waitturn
+snap turn1
+type now change it so I can choose how many numbers it prints, and save the output for 30 numbers to a file called fib30.txt
+waitturn
+line /exit
+waitshell 30

@@ -1,0 +1,7 @@
+# T5 — install a CLI tool with the package manager and use it (ffmpeg: clip.mp4 -> gif)
+@timeout 900
+launch workshop
+type install ffmpeg and use it to turn clip.mp4 on my desktop into a gif
+waitturn
+line /exit
+waitshell 30

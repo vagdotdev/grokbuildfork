@@ -26,6 +26,7 @@ recorded in `docs/workshop/adr/`.
 | `scripts/overlay-paths.txt`, `upstream-lock.toml` | What the upstream sync preserves, and which snapshot the tree is on |
 | `scripts/sync/`, `.github/workflows/sync-upstream.yml` | Upstream auto-sync |
 | `scripts/install.sh`, `scripts/release/`, `.github/workflows/release.yml` | Release pipeline (CLI installer + voice-engine helper and pinned Whisper model) |
+| `scripts/smoke/first-run.py`, `.github/workflows/first-run-smoke.yml` | After each release: public one-liner → `workshop` → one sentence → reply → `/exit` in a PTY on macOS arm64, macOS Intel and Linux |
 | `.github/workflows/ci.yml` | Three jobs: **fmt + check (overlay)**, **no-xai gates** (required; source/binary scans, overlay + touched-upstream tests, full pager lib suite, no-egress + no-theft-fs-audit, PTY picker + rails smokes), **voice-engine** (whisper.cpp helper build + model probe) |
 
 ## Build and run

@@ -1,0 +1,11 @@
+# T11 — a command that needs sudo with a password (Mac-like account `mac`; sudo asks for the password)
+@user mac
+@password workshop
+@timeout 300
+@stall 60
+launch workshop
+type install htop for me
+waitturn
+probe composer-echo
+line /exit
+waitshell 30
