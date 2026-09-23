@@ -18,8 +18,9 @@
 //!   (the engine's tokens against the live model's limit), and `/context` says the same.
 //! * `queued_prompts_are_separate` — Enter during a turn queues; each queued prompt becomes its own
 //!   turn with its own bubble and answer.
-//! * `reasoning_is_a_separate_block` — the model's reasoning is a collapsed thinking block, never
-//!   glued to the answer text.
+//! * `reasoning_hidden_by_default` — no reasoning text anywhere by default (inline, glued, as a
+//!   block, after a tool call); `reasoning_shown_when_turned_on_in_settings` — `/settings` → "Show
+//!   thinking blocks" brings it back as its own block, never glued to the answer.
 //! * `engine_answers_as_workshop` — "what are you?" answers as Workshop's assistant, never as
 //!   "opencode" (the server received Workshop's instructions file).
 //!
@@ -488,29 +489,93 @@ fn queued_prompts_are_separate() {
     quit(&mut j);
 }
 
-/// Reasoning is a collapsed thinking block, never part of the answer.
+/// Text of the model's reasoning in the fake engine's script (`fixtures/fake-engine-serve.py`).
+const REASONING: [&str; 2] = ["Keep it brief", "Summarize it"];
+
+fn assert_no_thinking(screen: &str) {
+    for text in REASONING.iter().chain(&["Thought", "Thinking"]) {
+        assert!(
+            !screen.contains(text),
+            "no thinking by default ({text:?} on screen):\n{screen}"
+        );
+    }
+}
+
+/// The model's thinking is not shown by default — not inline, not glued to the answer, not as a
+/// block, not after a tool call; the answer and the tool row are.
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
-fn reasoning_is_a_separate_block() {
+fn reasoning_hidden_by_default() {
     let Some(bin) = bin_from_env() else { return };
     let fx = fixture();
-    let mut j = launch("engine-trust/reasoning-is-a-separate-block", &bin, &fx);
+    let mut j = launch("engine-trust/reasoning-hidden-by-default", &bin, &fx);
     send_prompt(&mut j, "think about it");
     wait_for(&mut j.h, "Echo: think about it", 60);
     j.h.update(Duration::from_millis(500));
-    snapshot(&j.h, &j.dir, "01-thinking-block");
+    snapshot(&j.h, &j.dir, "01-answer-only");
+    assert_no_thinking(&j.h.screen_contents());
+
+    send_prompt(&mut j, "think, then list files");
+    wait_for(&mut j.h, "Here is the listing.", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "02-after-tool-call");
+    let screen = j.h.screen_contents();
+    assert!(screen.contains("ls -1"), "the tool row is shown:\n{screen}");
+    assert_no_thinking(&screen);
+    quit(&mut j);
+}
+
+/// `/settings` → "Show thinking blocks" brings the thinking back, as its own block that is never
+/// glued to the answer.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn reasoning_shown_when_turned_on_in_settings() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/reasoning-shown-when-turned-on", &bin, &fx);
+    let row = |screen: &str| {
+        screen
+            .lines()
+            .find(|l| l.contains("Show thinking blocks"))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    send_prompt(&mut j, "/settings");
+    wait_for(&mut j.h, "Space", 20);
+    j.h.inject_keys(b"/").unwrap();
+    j.h.update(Duration::from_millis(300));
+    j.h.inject_keys(b"thinking blocks").unwrap();
+    wait_for(&mut j.h, "search: thinking blocks", 20);
+    j.h.inject_keys(b"\r").unwrap();
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "01-settings-row-off");
+    let screen = j.h.screen_contents();
+    assert!(row(&screen).contains(" off "), "off by default:\n{screen}");
+    j.h.inject_keys(b" ").unwrap();
+    j.h.update(Duration::from_millis(600));
+    snapshot(&j.h, &j.dir, "02-settings-row-on");
+    let screen = j.h.screen_contents();
+    assert!(
+        row(&screen).contains(" on "),
+        "Space turns it on:\n{screen}"
+    );
+    j.h.inject_keys(b"\x1b").unwrap();
+    j.h.update(Duration::from_millis(600));
+    let config = std::fs::read_to_string(j.workshop_home().join("config.toml")).unwrap();
+    assert!(config.contains("show_thinking_blocks = true"), "{config}");
+
+    send_prompt(&mut j, "think about it");
+    wait_for(&mut j.h, "Echo: think about it", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "03-thinking-block");
     let screen = j.h.screen_contents();
     assert!(
         screen.contains("Thought"),
-        "reasoning shows as a thinking block:\n{screen}"
+        "the setting shows thinking as a block:\n{screen}"
     );
     assert!(
-        !screen.contains("Keep it brief.Echo") && !screen.contains("brief.Echo"),
-        "reasoning is never glued to the answer:\n{screen}"
-    );
-    assert!(
-        !screen.contains("Keep it brief."),
-        "the thinking block is collapsed by default:\n{screen}"
+        !screen.contains("brief.Echo"),
+        "thinking is never glued to the answer:\n{screen}"
     );
     quit(&mut j);
 }

@@ -4083,16 +4083,17 @@ fn handle_workshop_turn_msg(
     };
     // Bring-up status is transient: the first real output, a fallback, or the end of the turn
     // removes it.
+    // Hidden thinking (the default) draws nothing, so the waiting line stays up through it.
     let clears_progress = matches!(
         msg,
         M::Delta(_)
-            | M::Thinking(_)
             | M::Tool { .. }
             | M::PermissionAsk { .. }
             | M::Error(_)
             | M::EngineUnavailable { .. }
             | M::Done { .. }
-    );
+    ) || (matches!(msg, M::Thinking(_))
+        && crate::appearance::cache::load_show_thinking_blocks());
     if clears_progress {
         app.workshop_turn_progress = None;
         if let Some(id) = app.workshop_turn_progress_entry.take()

@@ -31,7 +31,8 @@ const FOLLOW_UP_BEHAVIOR_DEFAULT: FollowUpBehavior = FollowUpBehavior::Queue;
 const SIMPLE_MODE_DEFAULT: bool = true;
 /// This matches the previous on-disk default.
 const VIM_MODE_DEFAULT: bool = false;
-const SHOW_THINKING_BLOCKS_DEFAULT: bool = true;
+/// Workshop: the model's thinking is not shown unless the user turns it on in `/settings`.
+const SHOW_THINKING_BLOCKS_DEFAULT: bool = false;
 const GROUP_TOOL_VERBS_DEFAULT: bool = true;
 /// Rollout flag; while it is off, edit blocks render as the legacy expanded diffs.
 const COLLAPSED_EDIT_BLOCKS_DEFAULT: bool = false;

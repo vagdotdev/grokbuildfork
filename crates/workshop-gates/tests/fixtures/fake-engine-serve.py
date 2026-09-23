@@ -14,7 +14,8 @@ from the real server:
   * "list files" / "ls"               -> a completed `bash` part (`ls -1`) with real output + exit 0.
   * "what are you"                    -> answers as Workshop's assistant when the server was given
     an instructions file naming Workshop (OPENCODE_CONFIG_CONTENT), else as "opencode".
-  * "think"                           -> a reasoning part streamed before the answer part.
+  * "think"                           -> a reasoning part streamed before the answer part (and
+    another one after the tool call of "list files").
   * "slow"                            -> waits 3 s before answering (to queue prompts behind it).
   * agent == plan                     -> never a tool part, never a permission ask: text only.
 
@@ -214,6 +215,8 @@ def run_turn(sid, agent, text):
         out = subprocess.run(["ls", "-1"], cwd=CWD, capture_output=True, text=True).stdout or "(no output)"
         emit_part(tool_part(sid, mid, "bash", call_id, {"command": "ls -1"}, out, "ls -1",
                             {"output": out, "exit": 0, "truncated": False}))
+        if "think" in text_l:
+            stream_text(sid, mid, "The listing is in. Summarize it.", ptype="reasoning")
         answer = "Here is the listing."
     else:
         answer = "Echo: " + text.strip()
