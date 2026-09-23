@@ -1,0 +1,65 @@
+diff --git a/crates/codegen/xai-grok-config-types/src/lib.rs b/crates/codegen/xai-grok-config-types/src/lib.rs
+index 1213fa19..aa3f68dd 100644
+--- a/crates/codegen/xai-grok-config-types/src/lib.rs
++++ b/crates/codegen/xai-grok-config-types/src/lib.rs
+@@ -762,7 +762,7 @@ pub struct RemoteSettings {
+     pub crash_handler_enabled: Option<bool>,
+     /// Whether the TUI shows agent thinking/reasoning blocks in scrollback.
+     /// `None` defers to local config, env, then the default (`true`); `Some(false)` is a remote kill-switch.
+-    /// `resolve_show_thinking_blocks` resolves it: requirements, env, user, managed, remote, then the default (true).
++    /// `resolve_show_thinking_blocks` resolves it: requirements, env, user, managed, remote, then the default (false).
+     #[serde(default)]
+     pub show_thinking_blocks: Option<bool>,
+     /// Whether the TUI folds runs of consecutive non-destructive tool calls (reads, searches, lists) into one transcript row.
+diff --git a/crates/codegen/xai-grok-pager-render/src/appearance/cache.rs b/crates/codegen/xai-grok-pager-render/src/appearance/cache.rs
+index e3fd2b6b..cadadb8e 100644
+--- a/crates/codegen/xai-grok-pager-render/src/appearance/cache.rs
++++ b/crates/codegen/xai-grok-pager-render/src/appearance/cache.rs
+@@ -31,7 +31,8 @@ const FOLLOW_UP_BEHAVIOR_DEFAULT: FollowUpBehavior = FollowUpBehavior::Queue;
+ const SIMPLE_MODE_DEFAULT: bool = true;
+ /// This matches the previous on-disk default.
+ const VIM_MODE_DEFAULT: bool = false;
+-const SHOW_THINKING_BLOCKS_DEFAULT: bool = true;
++/// Workshop: the model's thinking is not shown unless the user turns it on in `/settings`.
++const SHOW_THINKING_BLOCKS_DEFAULT: bool = false;
+ const GROUP_TOOL_VERBS_DEFAULT: bool = true;
+ /// Rollout flag; while it is off, edit blocks render as the legacy expanded diffs.
+ const COLLAPSED_EDIT_BLOCKS_DEFAULT: bool = false;
+diff --git a/crates/codegen/xai-grok-shell/src/util/config/resolve/ui.rs b/crates/codegen/xai-grok-shell/src/util/config/resolve/ui.rs
+index 186e7304..33cf6798 100644
+--- a/crates/codegen/xai-grok-shell/src/util/config/resolve/ui.rs
++++ b/crates/codegen/xai-grok-shell/src/util/config/resolve/ui.rs
+@@ -37,7 +37,7 @@ pub fn resolve_show_thinking_blocks(
+     resolve_ui_bool(
+         ENV_SHOW_THINKING_BLOCKS,
+         "show_thinking_blocks",
+-        true,
++        false,
+         requirements,
+         user,
+         managed,
+@@ -170,13 +170,22 @@ mod show_thinking_blocks_tests {
+     }
+ 
+     #[test]
+-    fn defaults_on_when_nothing_set() {
++    fn defaults_off_when_nothing_set() {
+         let _g = guard();
+         let r = resolve_show_thinking_blocks(None, None, None, None);
+-        assert!(r.value, "thinking blocks must default ON");
++        assert!(!r.value, "thinking blocks must default OFF");
+         assert_eq!(r.source, ConfigSource::Default);
+     }
+ 
++    #[test]
++    fn user_config_turns_it_on() {
++        let _g = guard();
++        let on = toml_ui(true);
++        let r = resolve_show_thinking_blocks(None, Some(&on), None, None);
++        assert!(r.value);
++        assert_eq!(r.source, ConfigSource::Config);
++    }
++
+     #[test]
+     fn each_layer_can_turn_it_off() {
+         let _g = guard();
