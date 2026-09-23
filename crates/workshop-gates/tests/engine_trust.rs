@@ -870,7 +870,10 @@ fn resume_replays_transcript() {
         .unwrap_or_else(|e| panic!("{}: {e}", sessions_dir.display()))
         .filter_map(|entry| {
             let path = entry.ok()?.path();
-            (path.extension()? == "json").then(|| path.file_stem()?.to_string_lossy().into_owned())
+            if path.extension()? != "json" {
+                return None;
+            }
+            Some(path.file_stem()?.to_string_lossy().into_owned())
         })
         .collect();
     assert_eq!(
