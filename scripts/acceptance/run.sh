@@ -62,7 +62,13 @@ ev() { # ev NAME [TEXT]
 screen() { tail -n +2 "$LIVE" 2>/dev/null; }
 screen_has() { screen | grep -qE -- "$1"; }
 # Screen text without what changes on its own: braille spinner frames, clock times, elapsed counters.
-norm() { screen | sed -E 's/[⠀-⣿]//g; s/[0-9]{1,2}:[0-9]{2}( [AP]M)?//g; s/[0-9]+(\.[0-9]+)?\s?(ms|s|m|min)\b//g'; }
+norm() { screen | LC_ALL=C sed -E $'s/\xe2[\xa0-\xa3][\x80-\xbf]//g; s/[0-9]{1,2}:[0-9]{2}( [AP]M)?//g; s/[0-9]+(\\.[0-9]+)?\\s?(ms|s|m|min)\\b//g'; }
+# A tool call is running: the run's `opencode serve` has a child process.
+tool_running() {
+  local p
+  for p in $(pgrep -f "$UHOME/.workshop/tools/opencode" 2>/dev/null); do pgrep -P "$p" >/dev/null && return 0; done
+  return 1
+}
 # The waiting line (`⠏ Thinking… · 4s · Ctrl+C to cancel`); braille alone is not busy (the hero logo uses it).
 busy() { screen | grep -qE 'Thinking…|Ctrl\+C to cancel|Esc to interrupt'; }
 uread() { "${AS[@]}" cat "$@" 2>/dev/null; }
@@ -107,9 +113,10 @@ waitturn() {
     if [ "$n" -gt "$TURN_BASE" ] && [ $still -ge 6 ] && ! busy; then
       ev turn_end "record $n after $((SECONDS - start))s"; TURN_BASE="$n"; return 0
     fi
-    # No engine record (a non-engine connection answered): a long still, idle screen ends the turn.
-    if [ $still -ge 180 ] && ! busy && [ "$n" -le "$TURN_BASE" ]; then
-      ev turn_end "idle 90s without a record after $((SECONDS - start))s"; return 0
+    # No engine record (a non-engine connection answered): 120 s still, nothing busy on screen and no
+    # tool process running ends the turn.
+    if [ $still -ge 240 ] && ! busy && [ "$n" -le "$TURN_BASE" ] && ! tool_running; then
+      ev turn_end "idle 120s without a record after $((SECONDS - start))s"; return 0
     fi
     if [ $still -ge $((STALL * 2)) ] && [ $stalled -eq 0 ]; then ev stall "screen unchanged ${STALL}s"; stalled=1; fi
     [ $still -eq 0 ] && stalled=0

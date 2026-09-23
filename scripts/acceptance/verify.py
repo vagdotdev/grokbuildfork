@@ -309,8 +309,20 @@ def fib_ok(text, n):
 
 # --- snapshots and probes ----------------------------------------------------------------------
 def listeners():
-    r = subprocess.run(["ss", "-ltnH"], capture_output=True, text=True)
-    return sorted({int(m.group(1)) for l in r.stdout.splitlines() if (m := re.search(r":(\d+)\s", l.split(None, 4)[3] + " "))})
+    """TCP ports listened on by this run's own processes (HOME is the run's), not Workshop's engine."""
+    r = subprocess.run(["sudo", "-n", "ss", "-ltnpH"], capture_output=True, text=True)
+    ports = set()
+    for l in r.stdout.splitlines():
+        port = re.search(r":(\d+)\s", l.split(None, 4)[3] + " ")
+        pids = re.findall(r'\("([^"]+)",pid=(\d+)', l)
+        for name, pid in pids:
+            try:
+                env = subprocess.run(["sudo", "-n", "cat", f"/proc/{pid}/environ"], capture_output=True).stdout
+            except OSError:
+                continue
+            if port and f"HOME={HOME}\0".encode() in env and name not in ("opencode", "workshop"):
+                ports.add(int(port.group(1)))
+    return sorted(ports)
 
 
 def snap(label):
