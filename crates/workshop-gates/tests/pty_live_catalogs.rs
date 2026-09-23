@@ -329,9 +329,11 @@ fn catalogs_are_fetched_only_after_the_user_acts() {
     run.h.inject_keys(b"\x1b").unwrap();
     wait_gone(&mut run.h, "Tab: Subscriptions", 5);
 
-    // 3. `/model`: the user asked for the lists → exactly the keyless catalog hosts, no xAI host.
+    // 3. `/model`: the cached rows first, then — the user asked for the lists — a refresh that
+    //    reaches exactly the keyless catalog hosts, no xAI host.
     slash(&mut run.h, "/model");
     wait_for(&mut run.h, "Tab: Subscriptions", 10);
+    wait_gone(&mut run.h, "loading\u{2026}", 20);
     let hosts = proxy.wait_for_hosts(3, 20);
     assert_eq!(
         hosts,
@@ -552,6 +554,7 @@ fn model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up() {
     slash(&mut run.h, "/model");
     wait_for(&mut run.h, "Tab: Subscriptions", 10);
     wait_for(&mut run.h, "Kilo", 15);
+    wait_gone(&mut run.h, "loading\u{2026}", 20);
     wait_gone(&mut run.h, "refreshing lists", 15);
     let before = overlay_rows_for(&run.h, "OpenCode");
     assert_eq!(before.len(), 1, "seed engine list is one row: {before:?}");
@@ -586,6 +589,7 @@ fn model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up() {
     slash(&mut run.h, "/model");
     wait_for(&mut run.h, "Tab: Subscriptions", 10);
     wait_for(&mut run.h, "Nemotron 3 Ultra Free", 10);
+    wait_gone(&mut run.h, "loading\u{2026}", 20);
     wait_gone(&mut run.h, "refreshing lists", 15);
     let after = overlay_rows_for(&run.h, "OpenCode");
     assert!(

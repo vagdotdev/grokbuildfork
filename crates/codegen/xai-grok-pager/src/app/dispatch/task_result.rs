@@ -1004,6 +1004,15 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 // The cursor lands on the active connection's row (never xAI, never Zen).
                 picker.apply_snapshot(snap);
                 picker.status = None;
+                // `/model` queued a live refresh behind this cached load: start it now, so the
+                // live rows (and any `refresh failed` note) always land after the cached ones.
+                if picker.refresh_pending && !picker.refresh_in_flight {
+                    picker.refresh_in_flight = true;
+                    return vec![Effect::WorkshopRefreshCatalogs {
+                        force: false,
+                        engine: app.workshop_engine.clone(),
+                    }];
+                }
             }
             vec![]
         }

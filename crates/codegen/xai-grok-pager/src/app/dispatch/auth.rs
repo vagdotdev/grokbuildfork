@@ -251,13 +251,32 @@ pub(super) fn dispatch_open_connection_picker(
     }
 }
 
-/// Refresh the model lists from their live sources (the user acted: `/model`, `r`, or a launch
-/// with an active connection). The engine list is re-read only from an engine that is already up;
-/// nothing here installs or starts one. An open picker keeps its cached rows meanwhile and shows
-/// `refreshing lists…` until the live snapshot lands.
+/// `/model`: the Models view, and — because the user asked for the model lists — a live refresh.
+/// A freshly opened picker shows its cached rows first; the refresh is queued behind that load
+/// (`WorkshopPickerLoaded` starts it) so the live rows always land last. A picker that is already
+/// open refreshes right away.
+pub(super) fn dispatch_open_models_view(app: &mut AppView) -> Vec<Effect> {
+    let effects = dispatch_open_connection_picker(app, workshop_auth::PickerTab::Models);
+    let freshly_opened = effects
+        .iter()
+        .any(|e| matches!(e, Effect::WorkshopLoadPicker));
+    if freshly_opened {
+        if let Some(picker) = app.connection_picker.as_mut() {
+            picker.refresh_pending = true;
+        }
+        return effects;
+    }
+    dispatch_refresh_catalogs(app, false)
+}
+
+/// Refresh the model lists from their live sources now (the user acted: `/model`, `r`, or a
+/// launch with an active connection). The engine list is re-read only from an engine that is
+/// already up; nothing here installs or starts one. An open picker keeps its cached rows
+/// meanwhile and shows `refreshing lists…` until the live snapshot lands.
 pub(super) fn dispatch_refresh_catalogs(app: &mut AppView, force: bool) -> Vec<Effect> {
     if let Some(picker) = app.connection_picker.as_mut() {
         picker.refresh_pending = true;
+        picker.refresh_in_flight = true;
     }
     vec![Effect::WorkshopRefreshCatalogs {
         force,

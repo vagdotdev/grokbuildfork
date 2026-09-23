@@ -1,7 +1,7 @@
 //! Top-level action router: maps actions and action results to handlers.
 use super::auth::{
     dispatch_cancel_login, dispatch_connection_picker, dispatch_login, dispatch_logout,
-    dispatch_open_connection_picker, dispatch_refresh_catalogs, dispatch_submit_auth_code,
+    dispatch_open_connection_picker, dispatch_open_models_view, dispatch_submit_auth_code,
     dispatch_switch_account, dispatch_workshop_engine_unavailable, dispatch_workshop_first_run,
 };
 use super::billing::dispatch_open_supergrok_url;
@@ -1243,15 +1243,12 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![]
         }
         Action::Login => dispatch_login(app),
-        Action::OpenConnectionPicker(tab) => {
-            let mut effects = dispatch_open_connection_picker(app, tab);
-            // Workshop: an explicit `/model` is the user asking for the live model lists; the
-            // hermetic doors (`Login`, `/auth`) only show what is cached.
-            if tab == workshop_auth::PickerTab::Models {
-                effects.extend(dispatch_refresh_catalogs(app, false));
-            }
-            effects
+        // Workshop: an explicit `/model` is the user asking for the live model lists; the hermetic
+        // doors (`Login`, `/auth`) only show what is cached.
+        Action::OpenConnectionPicker(workshop_auth::PickerTab::Models) => {
+            dispatch_open_models_view(app)
         }
+        Action::OpenConnectionPicker(tab) => dispatch_open_connection_picker(app, tab),
         Action::ConnectionPicker(input) => dispatch_connection_picker(app, input),
         Action::WorkshopFirstRun => dispatch_workshop_first_run(app),
         Action::WorkshopEngineUnavailable {

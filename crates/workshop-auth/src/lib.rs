@@ -398,8 +398,12 @@ pub struct PickerState {
     pub xai_armed: bool,
     /// Loaders still running (rows may be partial).
     pub loading: bool,
-    /// A live refresh of the model lists is in flight; the rows shown are the cached ones.
+    /// A live refresh of the model lists is wanted (or running); the rows shown are the cached
+    /// ones until the live snapshot lands.
     pub refresh_pending: bool,
+    /// The refresh task has been started (a pending refresh waits for the cached load to land
+    /// first, so the live rows always arrive last).
+    pub refresh_in_flight: bool,
     /// Transient status line (errors, progress).
     pub status: Option<String>,
     pub key_entry: Option<KeyEntry>,
@@ -432,6 +436,7 @@ impl PickerState {
             xai_armed: false,
             loading: true,
             refresh_pending: false,
+            refresh_in_flight: false,
             status: None,
             key_entry: None,
             active_id: None,
@@ -489,6 +494,7 @@ impl PickerState {
         self.catalog_status = snap.catalog_status;
         if snap.live {
             self.refresh_pending = false;
+            self.refresh_in_flight = false;
         }
         self.loading = false;
         self.models_selected = prev_model

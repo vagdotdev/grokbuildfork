@@ -678,32 +678,67 @@ fn model_and_auth_open_their_views_and_switch_while_open() {
     app.workshop_connection = crate::app::workshop::first_run_connection();
     let effects = dispatch(Action::OpenConnectionPicker(PickerTab::Models), &mut app);
     // `/model` loads the cached rows at once and, because the user asked for the model lists,
-    // refreshes them from their live sources (cache age respected; `r` forces).
+    // queues a refresh from their live sources behind that load (cache age respected; `r` forces).
     assert!(
-        matches!(effects.as_slice(), [
-            Effect::WorkshopLoadPicker,
-            Effect::WorkshopRefreshCatalogs { force: false, engine: None }
-        ]),
+        matches!(effects.as_slice(), [Effect::WorkshopLoadPicker]),
         "got {effects:?}"
     );
     let picker = app.connection_picker.as_ref().expect("picker open");
     assert_eq!(picker.tab, PickerTab::Models);
-    assert!(picker.refresh_pending, "the overlay says the lists are refreshing");
+    assert!(
+        picker.refresh_pending && !picker.refresh_in_flight,
+        "the overlay says the lists are refreshing; the fetch waits for the cached load"
+    );
     assert!(
         picker.selected_row().is_some_and(
             |r| matches!(&r.kind, RowKind::Engine(m) if m.is_default) && picker.is_active(r)
         ),
         "the active engine model is the highlighted row"
     );
+    let cached = || workshop_auth::PickerSnapshot {
+        rows: workshop_auth::models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]),
+        ..workshop_auth::PickerSnapshot::default()
+    };
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::WorkshopPickerLoaded(cached())),
+        &mut app,
+    );
+    assert!(
+        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs {
+            force: false,
+            engine: None
+        }]),
+        "the cached load starts the live refresh, got {effects:?}"
+    );
+    let picker = app.connection_picker.as_ref().expect("picker open");
+    assert!(picker.refresh_pending && picker.refresh_in_flight);
+    assert!(
+        picker.selected_row().is_some_and(|r| picker.is_active(r)),
+        "the cached load keeps the active row highlighted"
+    );
+    // A second cached snapshot does not start a second refresh.
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::WorkshopPickerLoaded(cached())),
+        &mut app,
+    );
+    assert!(effects.is_empty(), "got {effects:?}");
     assert!(dispatch(Action::Login, &mut app).is_empty());
     assert_eq!(
         app.connection_picker.as_ref().unwrap().tab,
         PickerTab::Subscriptions
     );
-    dispatch(Action::OpenConnectionPicker(PickerTab::Models), &mut app);
+    // `/model` on an already open picker: switch the view and refresh right away.
+    let effects = dispatch(Action::OpenConnectionPicker(PickerTab::Models), &mut app);
     assert_eq!(
         app.connection_picker.as_ref().unwrap().tab,
         PickerTab::Models
+    );
+    assert!(
+        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs {
+            force: false,
+            ..
+        }]),
+        "got {effects:?}"
     );
 }
 
