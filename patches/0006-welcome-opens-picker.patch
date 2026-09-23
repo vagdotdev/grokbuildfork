@@ -2019,7 +2019,7 @@ index 1c507697..6b5e925c 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..442b245d 100644
+index eda61b3c..4fabf8e2 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -2315,7 +2315,7 @@ index eda61b3c..442b245d 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4061,352 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4061,348 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -2402,12 +2402,8 @@ index eda61b3c..442b245d 100644
 +            true
 +        }
 +        M::EngineReady { engine, session } => {
-+            // Cache the engine + session so the next turn reuses this `opencode serve`, and persist
-+            // the id per workspace for resume across a restart.
-+            if let Some(agent) = app.agents.get(&agent_id) {
-+                let cwd = agent.session.cwd.clone();
-+                crate::app::workshop::save_resume_id("opencode", &cwd, &session);
-+            }
++            // Cache the engine + session so the next turn reuses this `opencode serve` and the same
++            // conversation; the conversation itself is recorded per turn (`workshop_sessions`).
 +            app.workshop_engine = Some(engine);
 +            app.workshop_engine_session = Some(session);
 +            false

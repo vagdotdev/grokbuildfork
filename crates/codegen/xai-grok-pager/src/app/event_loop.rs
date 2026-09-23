@@ -4142,12 +4142,8 @@ fn handle_workshop_turn_msg(
             true
         }
         M::EngineReady { engine, session } => {
-            // Cache the engine + session so the next turn reuses this `opencode serve`, and persist
-            // the id per workspace for resume across a restart.
-            if let Some(agent) = app.agents.get(&agent_id) {
-                let cwd = agent.session.cwd.clone();
-                crate::app::workshop::save_resume_id("opencode", &cwd, &session);
-            }
+            // Cache the engine + session so the next turn reuses this `opencode serve` and the same
+            // conversation; the conversation itself is recorded per turn (`workshop_sessions`).
             app.workshop_engine = Some(engine);
             app.workshop_engine_session = Some(session);
             false
