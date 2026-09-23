@@ -1,0 +1,17 @@
+# T1 — the owner's test: identity, two public-domain books, Ghostty (docs: acceptance-tasks.md)
+@timeout 900
+launch workshop
+type hello, who are you?
+waitturn
+type create a folder on my desktop called iBooks and download two open-source classic books inside of it, and install Ghostty
+waitturn
+snap turn2
+line /exit
+waitshell 30
+line ls -la ~/Desktop/iBooks && file ~/Desktop/iBooks/*
+sleep 3
+line ghostty --version | cat
+sleep 3
+mark protect-start
+probe ghostty-launch
+mark protect-end

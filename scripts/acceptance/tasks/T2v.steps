@@ -1,0 +1,8 @@
+# T2v — the owner's sort prompt on 15 neutral-named photos (img01.jpg…), so the model must look at them
+@timeout 900
+launch workshop
+type On the desktop there are a bunch of photos of the Panthera genus. Look at all of them and then organise them into each species and put all of them in a very organised way under the genus folder
+waitturn
+snap turn1
+line /exit
+waitshell 30

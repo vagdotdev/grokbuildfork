@@ -1,0 +1,10 @@
+# T3 — build and run a small web app on localhost
+@timeout 600
+launch mkdir -p ~/myproject && cd ~/myproject && workshop
+type make me a simple to-do list web page and start it on localhost so I can open it in my browser
+waitturn
+probe t3-server
+sleep 30
+probe t3-server-later
+line /exit
+waitshell 30
