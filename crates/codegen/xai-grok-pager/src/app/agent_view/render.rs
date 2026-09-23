@@ -1314,13 +1314,21 @@ impl AgentView {
                 Line::from(Span::styled(label, mode_style)),
             );
         }
-        let ctx_used = self.context_state.as_ref().map(|c| c.used);
-        let model_window = self.session.models.get_context_window();
-        let ctx_total = self
-            .context_state
-            .as_ref()
-            .and_then(|c| (c.total > 0).then_some(c.total))
-            .or(model_window);
+        // Workshop: an Engine/Adapter connection meters the live model (its own usage and
+        // context window), never the shell placeholder model's numbers; unknown stays hidden.
+        let (ctx_used, ctx_total) = match self.workshop_context {
+            Some((used, limit)) => (used, limit),
+            None => {
+                let model_window = self.session.models.get_context_window();
+                (
+                    self.context_state.as_ref().map(|c| c.used),
+                    self.context_state
+                        .as_ref()
+                        .and_then(|c| (c.total > 0).then_some(c.total))
+                        .or(model_window),
+                )
+            }
+        };
         if let Some(ctx_line) = context_bar::context_bar_line_for_session(
             ctx_used,
             ctx_total,

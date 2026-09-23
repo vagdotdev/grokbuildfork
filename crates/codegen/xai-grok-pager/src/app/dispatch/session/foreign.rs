@@ -167,6 +167,20 @@ pub(in crate::app::dispatch) fn handle_session_list_loaded(
     }
     let chat_mode = app.chat_mode && !dashboard_request;
     let is_browse = query.is_none();
+    // Workshop: engine conversations (OpenCode sessions Workshop recorded) sit in the same
+    // list as the shell's own sessions for this directory, newest first, so a browse finds the
+    // session the user just left.
+    if !dashboard_request {
+        let mut engine = crate::app::workshop_sessions::picker_entries(&app.cwd);
+        if let Some(q) = query.as_deref().map(str::to_lowercase).filter(|q| !q.is_empty()) {
+            engine.retain(|e| e.summary.to_lowercase().contains(&q));
+        }
+        if !engine.is_empty() {
+            engine.retain(|e| !sessions.iter().any(|s| s.id == e.id));
+            sessions.extend(engine);
+            sessions.sort_by_key(|e| std::cmp::Reverse(e.last_active_at.unwrap_or(e.updated_at)));
+        }
+    }
     let notice;
     {
         let Some(mut target) =

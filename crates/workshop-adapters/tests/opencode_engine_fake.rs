@@ -14,7 +14,7 @@ use common::fake_serve::{FakeServe, SESSION_ID, Script};
 use common::{OPENCODE, Sandbox};
 use serde_json::json;
 use workshop_adapters::opencode_engine::{
-    EngineOptions, OpenCodeEngine, PermissionReply, TurnHandle, TurnRequest,
+    EngineOptions, OpenCodeEngine, PermissionDecision, PermissionReply, TurnHandle, TurnRequest,
 };
 use workshop_adapters::vendors;
 use workshop_adapters::{AdapterEvent, Detection, PermissionPolicy, RunOutcome, Usage, detect};
@@ -103,6 +103,11 @@ async fn turn_streams_captured_events_into_normalized_stream() {
                 id: "call_febe5aee77f2467281fdec81".into(),
                 name: "write".into(),
                 input: json!({"filePath": "/work/hello.txt", "content": "hello from workshop"}),
+            },
+            AdapterEvent::ToolDetail {
+                id: "call_febe5aee77f2467281fdec81".into(),
+                title: Some("hello.txt".into()),
+                metadata: json!({"diagnostics": {}, "exists": false, "filepath": "/work/hello.txt", "truncated": false}),
             },
             AdapterEvent::ToolResult {
                 id: "call_febe5aee77f2467281fdec81".into(),
@@ -247,7 +252,7 @@ async fn permission_asks_are_rejected_by_default_and_routed_to_a_handler() {
     let seen_in_handler = seen.clone();
     opts.permission_handler = Some(Arc::new(move |req| {
         seen_in_handler.lock().unwrap().push(req.clone());
-        PermissionReply::Once
+        PermissionDecision::Reply(PermissionReply::Once)
     }));
     let engine = OpenCodeEngine::attach(server.addr, "opencode", "pw", opts)
         .await
@@ -267,6 +272,102 @@ async fn permission_asks_are_rejected_by_default_and_routed_to_a_handler() {
     assert_eq!(seen[0].kind, "bash");
     assert_eq!(seen[0].patterns, vec!["rm -rf *"]);
     assert_eq!(seen[0].title, "rm -rf build");
+    server.stop();
+}
+
+/// The host may answer later (its user is looking at a prompt): the turn waits on the ask
+/// without going idle, then posts whatever the user chose (`always` here) and finishes.
+#[tokio::test]
+async fn deferred_permission_decision_is_posted_when_the_user_answers() {
+    let server = FakeServe::start().await;
+    server.set_script(Script::PermissionThenTurn);
+    let mut opts = EngineOptions::new("/work");
+    // Short enough that a wrongly-idle turn would trip it while the ask is pending.
+    opts.idle_timeout = Some(Duration::from_millis(400));
+    let (asked_tx, asked_rx) =
+        tokio::sync::oneshot::channel::<tokio::sync::oneshot::Sender<PermissionReply>>();
+    let asked_tx = std::sync::Mutex::new(Some(asked_tx));
+    opts.permission_handler = Some(Arc::new(move |_req| {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        if let Some(tx) = asked_tx.lock().unwrap().take() {
+            let _ = tx.send(reply_tx);
+        }
+        PermissionDecision::Pending(reply_rx)
+    }));
+    let engine = OpenCodeEngine::attach(server.addr, "opencode", "pw", opts)
+        .await
+        .unwrap();
+    let mut turn = engine
+        .prompt(SESSION_ID, TurnRequest::new("dangerous"))
+        .await
+        .unwrap();
+    // The "user" takes longer than the idle timeout to decide.
+    let reply_tx = asked_rx.await.expect("handler was asked");
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    assert!(
+        server.state.lock().unwrap().permission_replies.is_empty(),
+        "nothing is posted before the user answers"
+    );
+    reply_tx.send(PermissionReply::Always).unwrap();
+    let events = drain(&mut turn).await;
+    assert_eq!(turn.wait().await, RunOutcome::Completed);
+    assert_eq!(
+        server.state.lock().unwrap().permission_replies,
+        vec![("perm_1".to_string(), "always".to_string())]
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AdapterEvent::Done { .. })),
+        "the turn completed after the deferred answer: {events:?}"
+    );
+    server.stop();
+}
+
+/// Cancelling while a prompt is up answers the ask with `reject` and then aborts, so the tool
+/// ends refused instead of leaving the server waiting on a question nobody will answer.
+#[tokio::test]
+async fn cancel_while_permission_is_pending_rejects_then_aborts() {
+    let server = FakeServe::start().await;
+    server.set_script(Script::PermissionThenTurn);
+    let mut opts = EngineOptions::new("/work");
+    opts.cancel_grace = Duration::from_secs(5);
+    let (asked_tx, asked_rx) = tokio::sync::oneshot::channel::<()>();
+    let asked_tx = std::sync::Mutex::new(Some(asked_tx));
+    let parked: Arc<std::sync::Mutex<Vec<tokio::sync::oneshot::Sender<PermissionReply>>>> =
+        Arc::default();
+    let parked_in_handler = parked.clone();
+    opts.permission_handler = Some(Arc::new(move |_req| {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        parked_in_handler.lock().unwrap().push(reply_tx);
+        if let Some(tx) = asked_tx.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+        PermissionDecision::Pending(reply_rx)
+    }));
+    let engine = OpenCodeEngine::attach(server.addr, "opencode", "pw", opts)
+        .await
+        .unwrap();
+    let mut turn = engine
+        .prompt(SESSION_ID, TurnRequest::new("dangerous"))
+        .await
+        .unwrap();
+    asked_rx.await.unwrap();
+    turn.cancel();
+    drain(&mut turn).await;
+    assert_eq!(turn.wait().await, RunOutcome::Cancelled);
+    let replies = server.state.lock().unwrap().permission_replies.clone();
+    assert_eq!(replies, vec![("perm_1".to_string(), "reject".to_string())]);
+    let requests = server.requests();
+    let reject_at = requests
+        .iter()
+        .position(|r| r.path.contains("/permissions/perm_1"))
+        .expect("reject posted");
+    let abort_at = requests
+        .iter()
+        .position(|r| r.path.contains("/abort"))
+        .expect("abort posted");
+    assert!(reject_at < abort_at, "reject before abort: {requests:?}");
     server.stop();
 }
 
@@ -310,7 +411,7 @@ async fn start_spawns_the_binary_parses_listening_line_and_shuts_down() {
     assert_eq!(password.len(), 48, "random hex password");
     assert!(
         !env.iter().any(|l| l.starts_with("OPENCODE_PERMISSION=")),
-        "OPENCODE_PERMISSION must never reach opencode (it trips the free-tier 403)"
+        "an inherited OPENCODE_PERMISSION never reaches opencode; only the host's own policy does"
     );
     assert!(!env.iter().any(|l| l.starts_with("OPENAI_API_KEY=")));
 
@@ -328,6 +429,40 @@ async fn start_spawns_the_binary_parses_listening_line_and_shuts_down() {
 
     let catalog = engine.free_models().await.unwrap();
     assert_eq!(catalog.models.len(), 8);
+    engine.shutdown().await;
+
+    // The host's own ask policy is the one permission config the server sees, verbatim.
+    let mut opts = EngineOptions::new(sandbox.work());
+    let mut env = sandbox.probe_env();
+    env.insert("OPENCODE_PERMISSION".into(), "{\"edit\":\"allow\"}".into());
+    opts.env = Some(env);
+    opts.permission = Some(workshop_adapters::opencode_engine::ask_before_edit_and_bash());
+    opts.config = Some(workshop_adapters::opencode_engine::instructions_config(&[
+        std::path::PathBuf::from("/home/u/.workshop/engine/instructions.md"),
+    ]));
+    let engine = OpenCodeEngine::start(&cli, opts)
+        .await
+        .expect("engine start with an ask policy");
+    let env = sandbox.serve_env();
+    let policy: serde_json::Value = env
+        .iter()
+        .find_map(|l| l.strip_prefix("OPENCODE_PERMISSION="))
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or_else(|| panic!("the child sees Workshop's ask policy: {env:?}"));
+    assert_eq!(
+        policy,
+        json!({"edit": "ask", "bash": "ask"}),
+        "Workshop's policy, not the inherited grant"
+    );
+    let config: serde_json::Value = env
+        .iter()
+        .find_map(|l| l.strip_prefix("OPENCODE_CONFIG_CONTENT="))
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or_else(|| panic!("the child sees Workshop's inline config: {env:?}"));
+    assert_eq!(
+        config,
+        json!({"instructions": ["/home/u/.workshop/engine/instructions.md"]}),
+    );
     engine.shutdown().await;
     server.stop();
 }

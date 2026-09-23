@@ -16,17 +16,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use workshop_adapters::opencode_engine::{
-    EngineOptions, InstallOptions, InstallProgress, OpenCodeEngine, PermissionHandler,
-    PermissionReply, TurnHandle, TurnRequest, clear_quarantine, detect_opencode, format_bytes,
-    install_opencode,
+    EngineOptions, InstallOptions, InstallProgress, OpenCodeEngine, PermissionDecision,
+    PermissionHandler, PermissionReply, PermissionRequest, TurnHandle, TurnRequest,
+    ask_before_edit_and_bash, clear_quarantine, detect_opencode, format_bytes, install_opencode,
+    instructions_config,
 };
 
 use crate::app::workshop_engine_state::{self as state, EngineState};
 use workshop_adapters::supervisor::{RunHandle, SupervisorOptions, spawn};
 use workshop_adapters::{
-    AdapterEvent, AdapterId, DetectOptions, Detection, PermissionPolicy, RunRequest, detect,
+    AdapterEvent, AdapterId, DetectOptions, Detection, PermissionPolicy, RunRequest, Usage,
+    detect,
 };
 use workshop_auth::{ENGINE_PROVIDER_ID, EngineModel, PickerSnapshot, models_rows};
 use workshop_providers::catalog::live::{self as live_catalogs, HostedCatalogs};
@@ -69,6 +71,29 @@ impl WorkshopConnection {
     pub fn is_engine(&self) -> bool {
         matches!(self, Self::Engine { .. })
     }
+    /// The live model's context window, from the engine's catalog (`200K` for Big Pickle).
+    /// `None` when the connection does not report one — the meter then stays hidden instead of
+    /// showing a guess.
+    pub fn context_limit(&self) -> Option<u64> {
+        match self {
+            Self::Engine { model } => model.context_limit.filter(|n| *n > 0),
+            Self::Shell | Self::Adapter { .. } => None,
+        }
+    }
+    /// The model's plain display name (`Big Pickle`, `claude-sonnet-4-5`) for places that show
+    /// one name, not a composer label. `None` for Shell (the shell model's own name shows).
+    pub fn model_display_name(&self) -> Option<String> {
+        match self {
+            Self::Shell => None,
+            Self::Engine { model } => Some(model.name.clone()),
+            Self::Adapter { model, .. } => Some(
+                model
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| model.model.clone()),
+            ),
+        }
+    }
     /// Picker row id of the active connection (Engine rows only; rails are not Models rows and a
     /// Shell connection is the shell's own default model).
     pub fn active_row_id(&self) -> Option<String> {
@@ -76,6 +101,72 @@ impl WorkshopConnection {
             Self::Engine { model } => Some(model.row_id()),
             Self::Shell | Self::Adapter { .. } => None,
         }
+    }
+}
+
+/// The context meter's numbers for the active connection: `None` for Shell (the shell's own
+/// numbers show), else `(engine usage so far, live model's context window)`.
+pub fn context_meter(app: &crate::app::app_view::AppView) -> Option<(Option<u64>, Option<u64>)> {
+    if app.workshop_connection.is_shell() {
+        None
+    } else {
+        Some((
+            app.workshop_context_used,
+            app.workshop_connection.context_limit(),
+        ))
+    }
+}
+
+/// The `/context` text for an Engine/Adapter connection: the live model's usage against its
+/// window when the engine has reported one, else that it is not known yet — never the shell
+/// placeholder's numbers. `None` for Shell (the shell's own snapshot shows). Lines starting with
+/// `·` render muted.
+pub fn context_lines(app: &crate::app::app_view::AppView) -> Option<Vec<String>> {
+    use crate::views::context_bar::fmt_tokens;
+    let (used, limit) = context_meter(app)?;
+    let model = app
+        .workshop_connection
+        .composer_label()
+        .unwrap_or_else(|| "this connection".to_owned());
+    let mut lines = vec!["Context".to_owned(), String::new()];
+    match (used, limit) {
+        (Some(used), Some(limit)) => {
+            let pct = if limit > 0 {
+                used as f64 * 100.0 / limit as f64
+            } else {
+                0.0
+            };
+            lines.push(format!(
+                "{} / {} tokens ({pct:.1}%)",
+                fmt_tokens(used),
+                fmt_tokens(limit)
+            ));
+            lines.push(model);
+            lines.push(String::new());
+            lines.push("· Engine-reported after the last step (prompt + cached + output).".to_owned());
+        }
+        (None, Some(limit)) => {
+            lines.push(format!("{model} · {} token window", fmt_tokens(limit)));
+            lines.push(String::new());
+            lines.push("· No usage yet — the engine reports it after the first message.".to_owned());
+        }
+        (_, None) => {
+            lines.push(model);
+            lines.push(String::new());
+            lines.push("· This connection does not report context usage.".to_owned());
+        }
+    }
+    Some(lines)
+}
+
+/// Stamp every agent with the active connection's composer label and context meter numbers
+/// (after a connection change, a resolved live default, or a new usage report).
+pub fn sync_agent_views(app: &mut crate::app::app_view::AppView) {
+    let label = app.workshop_connection.composer_label();
+    let context = context_meter(app);
+    for agent in app.agents.values_mut() {
+        agent.workshop_model_label = label.clone();
+        agent.workshop_context = context;
     }
 }
 
@@ -349,9 +440,62 @@ async fn build_picker_snapshot(
 /// non-interactive auth method to open an ACP session (the agent view that renders the streamed
 /// turn). The placeholder is never contacted: `dispatch_workshop_turn` intercepts prompts and
 /// routes them to the engine/adapter. Delegates to `workshop-auth` (which owns the config schema).
-pub fn activate_placeholder_session() -> Result<String, String> {
-    workshop_auth::config_write::activate_placeholder_session(&workshop_auth::config_path())
-        .map_err(|e| e.to_string())
+pub fn activate_placeholder_session(conn: &WorkshopConnection) -> Result<String, String> {
+    let placeholder = workshop_auth::config_write::PlaceholderModel {
+        display_name: conn
+            .model_display_name()
+            .unwrap_or_else(|| "Workshop connection".to_owned()),
+        context_window: conn.context_limit(),
+    };
+    workshop_auth::config_write::activate_placeholder_session(
+        &workshop_auth::config_path(),
+        &placeholder,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// `workshop models` for an Engine/Adapter connection: the live model and the models the
+/// connection actually offers, instead of the shell's placeholder ids. Returns `None` for a
+/// Shell connection (the shell's own list applies).
+pub fn connection_models_text() -> Option<String> {
+    let conn = load_active_connection();
+    let mut out = String::new();
+    match &conn {
+        WorkshopConnection::Shell => return None,
+        WorkshopConnection::Engine { model } => {
+            out.push_str(&format!(
+                "Model: {} ({}) — free, no key\n\nAvailable models ({}):\n",
+                model.name,
+                workshop_auth::ENGINE_DISPLAY_NAME,
+                workshop_auth::ENGINE_DISPLAY_NAME
+            ));
+            let mut rows = cached_engine_models();
+            if rows.is_empty() {
+                rows.push(model.clone());
+            }
+            for m in rows {
+                let marker = if m.model_ref == model.model_ref {
+                    "*"
+                } else {
+                    "-"
+                };
+                let active = if m.model_ref == model.model_ref {
+                    " (active)"
+                } else {
+                    ""
+                };
+                out.push_str(&format!("  {marker} {} — {}{active}\n", m.model_ref, m.name));
+            }
+            out.push_str("\nSwitch with /model inside workshop.\n");
+        }
+        WorkshopConnection::Adapter { rail, model } => {
+            out.push_str(&format!(
+                "Model: {}\n\nSwitch with /model inside workshop.\n",
+                workshop_detect::composer_label(*rail, model)
+            ));
+        }
+    }
+    Some(out)
 }
 
 /// What activating a Direct API / Local row needs the process to do.
@@ -487,12 +631,46 @@ pub enum WorkshopTurnMsg {
     /// activated: the connection follows OpenCode's default (composer label, persisted file).
     EngineDefaultResolved { model: EngineModel },
     Delta(String),
-    Tool { name: String, summary: String },
-    ToolResult { ok: bool },
-    /// A permission ask the backend escalated; `decision` is what Workshop answered (asks are
-    /// answered from the pager's permission mode — a synchronous vendor hook, so it is surfaced,
-    /// not blocking-interactive).
-    Permission { summary: String, decision: &'static str },
+    /// A chunk of the model's reasoning: rendered as the pager's collapsed thinking block, never
+    /// as part of the answer.
+    Thinking(String),
+    /// The agent started a tool call; `input` is the tool's full argument object (the path and
+    /// content of a `write`, the `command` of a `bash`), from which the row's summary and, once
+    /// the result lands, its expandable body are built.
+    Tool {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    /// The tool call finished: `output` is the tool's text (stdout+stderr for `bash`), `title`
+    /// and `metadata` the backend's detail (`exit`, `diff`, `filediff`, …) when it reports any.
+    ToolResult {
+        id: String,
+        ok: bool,
+        output: String,
+        title: Option<String>,
+        metadata: serde_json::Value,
+    },
+    /// The engine asks before an edit or a command (its `ask` policy): the UI thread decides
+    /// from the agent's live permission mode — auto-approve modes answer at once, Normal and Plan
+    /// show the approval prompt — and sends the answer on `reply`. Dropping `reply` is a reject.
+    PermissionAsk {
+        request: PermissionRequest,
+        reply: oneshot::Sender<PermissionReply>,
+    },
+    /// The user answered a prompt for tool call `call_id`; the same call's next ask (the engine
+    /// asks `external_directory` and then `bash` for one out-of-folder command) gets the same
+    /// answer without a second prompt.
+    PermissionDecided {
+        call_id: String,
+        decision: PermissionReply,
+    },
+    /// Token accounting the backend reported for a finished step (the engine's `step-finish`);
+    /// the last one of a turn is the model's current context usage.
+    Usage(Usage),
+    /// A message the user typed while declining a permission ("No, and tell Workshop what to do
+    /// differently"): sent as the next turn once this one ends.
+    FollowUp(String),
     Error(String),
     /// The OpenCode engine could not be started for this turn (offline, installer failed, no
     /// verified `opencode`). `text` is the prompt that never ran; the UI falls back to the Kilo
@@ -522,9 +700,6 @@ enum TurnStartError {
 pub struct EngineSlotInner {
     engine: tokio::sync::Mutex<Option<Arc<OpenCodeEngine>>>,
     phase: watch::Sender<String>,
-    /// The pager's always-approve mode as of the current turn; the engine's permission hook is
-    /// installed once per `opencode serve` and reads this live instead of a start-time snapshot.
-    always_approve: Arc<std::sync::atomic::AtomicBool>,
     /// The warm-up's failure, so a turn typed right after it reports that cause at once instead
     /// of silently repeating a 30 s bring-up that just failed. Cleared by the next attempt.
     recent_failure: std::sync::Mutex<Option<(std::time::Instant, String)>>,
@@ -536,9 +711,30 @@ pub fn new_engine_slot() -> EngineSlot {
     Arc::new(EngineSlotInner {
         engine: tokio::sync::Mutex::new(None),
         phase: watch::channel(String::new()).0,
-        always_approve: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         recent_failure: std::sync::Mutex::new(None),
     })
+}
+
+/// The pager's permission mode as it applies to one Engine/Adapter turn (Shift+Tab cycle,
+/// `/plan`, `/auto`, `/always-approve`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkshopPermissionMode {
+    /// Read-only: the engine runs OpenCode's `plan` agent, which cannot edit files or run
+    /// destructive commands.
+    Plan,
+    /// The engine asks before every edit and command; the user answers in the approval prompt.
+    Normal,
+    /// Asks are approved without a prompt (the shell's classifier does not run on engine turns).
+    Auto,
+    /// Asks are approved without a prompt.
+    AlwaysApprove,
+}
+
+impl WorkshopPermissionMode {
+    /// Whether asks are answered without showing a prompt.
+    pub fn auto_approves(self) -> bool {
+        matches!(self, Self::Auto | Self::AlwaysApprove)
+    }
 }
 
 /// How long a warm-up failure is reported to the next turn as-is before it retries.
@@ -602,11 +798,14 @@ pub struct WorkshopTurnSpec {
     pub kind: WorkshopTurnKind,
     pub cwd: PathBuf,
     pub text: String,
-    /// The pager's always-approve mode; maps to `WorkspaceWrite` (else `ReadOnly`).
-    pub always_approve: bool,
+    /// The agent's permission mode when the prompt was sent. Engine: Plan → the read-only
+    /// `plan` agent, everything else → `build` with the engine asking before edits/commands.
+    /// Vendor CLIs: AlwaysApprove → `WorkspaceWrite`, else their read-only default.
+    pub mode: WorkshopPermissionMode,
 }
 
-fn summarize_tool_input(input: &serde_json::Value) -> String {
+/// One-line summary of a tool call for its transcript row: the path, command, pattern or URL.
+pub fn summarize_tool_input(input: &serde_json::Value) -> String {
     for key in ["filePath", "path", "command", "pattern", "query", "url"] {
         if let Some(v) = input.get(key).and_then(serde_json::Value::as_str) {
             return v.to_owned();
@@ -668,26 +867,20 @@ pub fn save_resume_id(backend: &str, cwd: &Path, session_id: &str) {
     }
 }
 
-/// Build the engine permission hook: surface each ask to the UI and answer it from the pager's
-/// permission mode *at the time of the ask* (the hook outlives the turn that started the engine).
-/// `PermissionHandler` is synchronous (it cannot await the user), so this is a surfaced
-/// auto-decision, not a blocking prompt.
-fn engine_permission_handler(
-    tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
-    always_approve: Arc<std::sync::atomic::AtomicBool>,
-) -> PermissionHandler {
+/// Build the engine permission hook: every ask goes to the UI thread, which answers from the
+/// agent's permission mode *at the time of the ask* (the hook outlives the turn that started the
+/// engine): auto-approve modes reply at once, Normal/Plan show the approval prompt and reply
+/// when the user picks. A UI that is gone (channel closed) fails closed: the ask is rejected.
+fn engine_permission_handler(tx: mpsc::UnboundedSender<WorkshopTurnMsg>) -> PermissionHandler {
     Arc::new(move |req| {
-        let approve = always_approve.load(std::sync::atomic::Ordering::Relaxed);
-        let decision = if approve {
-            PermissionReply::Once
-        } else {
-            PermissionReply::Reject
-        };
-        let _ = tx.send(WorkshopTurnMsg::Permission {
-            summary: format!("{} ({})", req.title, req.kind),
-            decision: if approve { "allowed" } else { "rejected" },
-        });
-        decision
+        let (reply_tx, reply_rx) = oneshot::channel();
+        match tx.send(WorkshopTurnMsg::PermissionAsk {
+            request: req.clone(),
+            reply: reply_tx,
+        }) {
+            Ok(()) => PermissionDecision::Pending(reply_rx),
+            Err(_) => PermissionDecision::Reply(PermissionReply::Reject),
+        }
     })
 }
 
@@ -737,6 +930,45 @@ pub fn engine_log_path() -> PathBuf {
     state::log_path(&workshop_home())
 }
 
+/// `$WORKSHOP_HOME/engine/instructions.md`: the identity the engine's models are given.
+pub fn engine_instructions_path() -> PathBuf {
+    workshop_home().join("engine").join("instructions.md")
+}
+
+/// What the engine's models are told about where they run. Appended by OpenCode to every system
+/// prompt it builds for Workshop's server (all agents), like a project `AGENTS.md` — but kept
+/// under `$WORKSHOP_HOME`, so nothing is written into the user's project.
+pub const ENGINE_INSTRUCTIONS: &str = "\
+# Workshop
+
+You are Workshop's coding assistant. Workshop is the terminal application the user launched; you \
+are the model working inside it. When asked who or what you are, say you are Workshop's assistant \
+(name the model you are running as if you know it). Do not introduce yourself as \"opencode\" or \
+\"OpenCode\": the user chose Workshop, and the engine underneath is a detail they can see with /model.
+
+Everything else about how you work — tools, conventions, permissions — is as instructed above.
+";
+
+/// Write the identity file for this launch (idempotent) and return it as the engine's inline
+/// config. A home that cannot be written leaves the model with OpenCode's own identity rather
+/// than failing the turn; the cause goes to the engine log.
+fn engine_instructions(log: &Path) -> Option<serde_json::Value> {
+    let path = engine_instructions_path();
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        state::append_log(log, &format!("instructions: cannot create {}: {e}", parent.display()));
+        return None;
+    }
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(ENGINE_INSTRUCTIONS)
+        && let Err(e) = workshop_providers::atomic_write_private(&path, ENGINE_INSTRUCTIONS.as_bytes())
+    {
+        state::append_log(log, &format!("instructions: cannot write {}: {e}", path.display()));
+        return None;
+    }
+    Some(instructions_config(&[path]))
+}
+
 fn engine_progress(tx: &mpsc::UnboundedSender<WorkshopTurnMsg>, text: impl Into<String>) {
     let _ = tx.send(WorkshopTurnMsg::Progress(text.into()));
 }
@@ -760,10 +992,13 @@ fn engine_fail(st: &mut EngineState, home: &Path, cause: String) -> String {
 /// Bring the engine up, one visible step at a time: detect → (install) → start. Every step has a
 /// hard timeout (installer 300 s, `serve` ready [`ENGINE_START_TIMEOUT`]), every failure returns
 /// one line with the actual cause, and each phase is recorded in `$WORKSHOP_HOME/engine/`.
+/// `tx` carries the bring-up progress lines; `ui_tx` is the interactive loop's channel, where the
+/// server's permission asks go for as long as this `opencode serve` lives.
 async fn start_engine(
     slot: &EngineSlot,
     workspace: &Path,
     tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
+    ui_tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
 ) -> Result<OpenCodeEngine, String> {
     let home = workshop_home();
     let log = state::log_path(&home);
@@ -857,7 +1092,12 @@ async fn start_engine(
     );
 
     let mut opts = EngineOptions::new(workspace);
-    opts.permission_handler = Some(engine_permission_handler(tx, slot.always_approve.clone()));
+    // The engine asks before edits and commands; what happens next is the agent's permission
+    // mode (Plan/Normal prompt, Auto/Always-approve allow), decided on the UI thread per ask.
+    opts.permission = Some(ask_before_edit_and_bash());
+    opts.permission_handler = Some(engine_permission_handler(ui_tx));
+    // The models answer as Workshop's assistant, not as "opencode".
+    opts.config = engine_instructions(&log);
     let sink_path = log.clone();
     opts.log_sink = Some(Arc::new(move |line: &str| state::append_log(&sink_path, line)));
     // `opencode serve` is up in a couple of seconds on any laptop; a server that has not bound
@@ -883,7 +1123,7 @@ async fn acquire_engine(
     slot: &EngineSlot,
     workspace: &Path,
     tx: &mpsc::UnboundedSender<WorkshopTurnMsg>,
-    always_approve: bool,
+    ui_tx: &mpsc::UnboundedSender<WorkshopTurnMsg>,
 ) -> Result<Arc<OpenCodeEngine>, String> {
     let mut guard = match slot.engine.try_lock() {
         Ok(guard) => guard,
@@ -913,8 +1153,6 @@ async fn acquire_engine(
             }
         }
     };
-    slot.always_approve
-        .store(always_approve, std::sync::atomic::Ordering::Relaxed);
     if let Some(engine) = guard.as_ref() {
         return Ok(engine.clone());
     }
@@ -927,7 +1165,7 @@ async fn acquire_engine(
     if let Some((_, line)) = recent {
         return Err(line);
     }
-    match start_engine(slot, workspace, tx.clone()).await {
+    match start_engine(slot, workspace, tx.clone(), ui_tx.clone()).await {
         Ok(engine) => {
             let engine = Arc::new(engine);
             // Every engine start refreshes the engine's free list for `/model` (a loopback GET);
@@ -957,8 +1195,9 @@ pub async fn warm_engine(
     tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
 ) {
     // Progress lines of the warm-up have no turn to attach to; only the outcome is reported.
+    // The server's permission asks still need the live loop, so `tx` is what the engine keeps.
     let (quiet_tx, _quiet_rx) = mpsc::unbounded_channel();
-    match acquire_engine(&slot, &workspace, &quiet_tx, false).await {
+    match acquire_engine(&slot, &workspace, &quiet_tx, &tx).await {
         Ok(engine) => {
             if let Some(live) = live_engine_default(&cached_engine_models()) {
                 let _ = tx.send(WorkshopTurnMsg::EngineDefaultResolved { model: live });
@@ -995,7 +1234,7 @@ async fn build_stream(
             model,
         } => {
             let mut model = model.clone();
-            let engine = acquire_engine(slot, &spec.cwd, tx, spec.always_approve)
+            let engine = acquire_engine(slot, &spec.cwd, tx, tx)
                 .await
                 .map_err(TurnStartError::EngineUnavailable)?;
             // The default engine model is whichever model OpenCode's live catalog (read at
@@ -1075,13 +1314,20 @@ pub async fn run_workshop_turn(
     tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
     mut cancel_rx: watch::Receiver<bool>,
 ) {
-    // A coding tool edits code: the engine always runs OpenCode's `build` agent (the `plan` agent
-    // cannot touch files), and each edit/command shows up in the scrollback as it happens. The
-    // vendor CLIs keep their own read-only default until always-approve is on, as before.
-    let permission = match spec.kind {
-        WorkshopTurnKind::Engine { .. } => PermissionPolicy::WorkspaceWrite,
-        WorkshopTurnKind::Adapter { .. } if spec.always_approve => PermissionPolicy::WorkspaceWrite,
-        WorkshopTurnKind::Adapter { .. } => PermissionPolicy::ReadOnly,
+    // The agent's mode is real on the engine: Plan runs OpenCode's read-only `plan` agent (it
+    // cannot edit files or run destructive commands); every other mode runs `build`, where the
+    // server asks before each edit/command and the UI answers per its mode (Normal prompts,
+    // Auto/Always-approve allow). The vendor CLIs keep their own read-only default until
+    // always-approve is on, as before.
+    let permission = match (&spec.kind, spec.mode) {
+        (WorkshopTurnKind::Engine { .. }, WorkshopPermissionMode::Plan) => {
+            PermissionPolicy::ReadOnly
+        }
+        (WorkshopTurnKind::Engine { .. }, _) => PermissionPolicy::WorkspaceWrite,
+        (WorkshopTurnKind::Adapter { .. }, WorkshopPermissionMode::AlwaysApprove) => {
+            PermissionPolicy::WorkspaceWrite
+        }
+        (WorkshopTurnKind::Adapter { .. }, _) => PermissionPolicy::ReadOnly,
     };
     let finish = |tx: &mpsc::UnboundedSender<WorkshopTurnMsg>, cancelled: bool| {
         let _ = tx.send(WorkshopTurnMsg::Done {
@@ -1125,6 +1371,10 @@ pub async fn run_workshop_turn(
     // connection's; the hard ceiling above still ends the turn with the cause.
     let mut still_connecting_at: Option<tokio::time::Instant> =
         Some(tokio::time::Instant::now() + CONNECT_TIMEOUT);
+    // The backend's detail for a tool call (title, exit code, diff) arrives right before its
+    // result; hold it so the UI gets one message per finished call.
+    let mut tool_details: std::collections::HashMap<String, (Option<String>, serde_json::Value)> =
+        std::collections::HashMap::new();
     loop {
         let silence = async {
             match first_event_at {
@@ -1159,16 +1409,25 @@ pub async fn run_workshop_turn(
                     still_connecting_at = None;
                     let _ = tx.send(WorkshopTurnMsg::Delta(text));
                 }
-                Some(AdapterEvent::ToolCall { name, input, .. }) => {
+                Some(AdapterEvent::ToolCall { id, name, input }) => {
                     first_event_at = None;
                     still_connecting_at = None;
-                    let _ = tx.send(WorkshopTurnMsg::Tool {
-                        name,
-                        summary: summarize_tool_input(&input),
-                    });
+                    let _ = tx.send(WorkshopTurnMsg::Tool { id, name, input });
                 }
-                Some(AdapterEvent::ToolResult { is_error, .. }) => {
-                    let _ = tx.send(WorkshopTurnMsg::ToolResult { ok: !is_error });
+                Some(AdapterEvent::ToolDetail { id, title, metadata }) => {
+                    tool_details.insert(id, (title, metadata));
+                }
+                Some(AdapterEvent::ToolResult { id, output, is_error }) => {
+                    let (title, metadata) = tool_details
+                        .remove(&id)
+                        .unwrap_or((None, serde_json::Value::Null));
+                    let _ = tx.send(WorkshopTurnMsg::ToolResult {
+                        id,
+                        ok: !is_error,
+                        output,
+                        title,
+                        metadata,
+                    });
                 }
                 Some(AdapterEvent::Error { message }) => {
                     first_event_at = None;
@@ -1179,11 +1438,15 @@ pub async fn run_workshop_turn(
                         let _ = tx.send(WorkshopTurnMsg::Error(message));
                     }
                 }
-                Some(AdapterEvent::Thinking { .. }) => {
+                Some(AdapterEvent::Thinking { text }) => {
                     first_event_at = None;
                     still_connecting_at = None;
+                    let _ = tx.send(WorkshopTurnMsg::Thinking(text));
                 }
-                Some(AdapterEvent::Usage(_)) | Some(AdapterEvent::Done { .. }) => {}
+                Some(AdapterEvent::Usage(usage)) => {
+                    let _ = tx.send(WorkshopTurnMsg::Usage(usage));
+                }
+                Some(AdapterEvent::Done { .. }) => {}
                 None => break,
             },
             _ = wait_cancelled(&mut cancel_rx), if !aborted_by_us => {

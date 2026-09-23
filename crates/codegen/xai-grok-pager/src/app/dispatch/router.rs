@@ -1256,6 +1256,9 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
             reason,
             text,
         } => dispatch_workshop_engine_unavailable(app, agent_id, reason, text),
+        Action::WorkshopNextQueuedPrompt { agent_id } => {
+            super::prompt::dispatch_workshop_next_queued(app, agent_id)
+        }
         Action::CancelLogin => dispatch_cancel_login(app),
         Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
         Action::CopyAuthUrl => {

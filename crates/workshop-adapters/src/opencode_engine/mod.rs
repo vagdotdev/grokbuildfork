@@ -16,9 +16,11 @@
 //! Both work keyless for OpenCode's free tier because the requests to
 //! `opencode.ai/zen` are made by the real OpenCode binary; Workshop only
 //! talks to `127.0.0.1`. Nothing here reads OpenCode's `auth.json` or its
-//! database, and `OPENCODE_PERMISSION` is never set (it is not in the env
-//! allowlist); the agent (`plan` / `build`) carries the permission policy the
-//! way OpenCode expects.
+//! database. The parent's `OPENCODE_PERMISSION` never reaches the child (it
+//! is not in the env allowlist); the only permission policy the server sees
+//! is the one the host passes in [`EngineOptions::permission`], and the agent
+//! (`plan` / `build`) carries the read-only / read-write split the way
+//! OpenCode expects.
 
 mod catalog;
 mod events;
@@ -26,7 +28,7 @@ mod http;
 mod install;
 pub mod state;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -38,6 +40,7 @@ use ::http::Method;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio::task::JoinSet;
 
 pub use catalog::{FreeCatalog, FreeModel, parse_free_catalog};
 pub use events::{PermissionRequest, ServeTurn};
@@ -77,9 +80,27 @@ impl PermissionReply {
     }
 }
 
+/// What a [`PermissionHandler`] returns for one ask.
+#[derive(Debug)]
+pub enum PermissionDecision {
+    /// Answer now (an auto-approve mode, or a policy the host applies itself).
+    Reply(PermissionReply),
+    /// The host is asking its user; the answer arrives on the channel. A dropped sender counts
+    /// as `Reject` (fail closed). The turn keeps streaming and stays cancellable meanwhile.
+    Pending(oneshot::Receiver<PermissionReply>),
+}
+
 /// UI hook that answers permission prompts. Without one, every ask is
 /// rejected (fail closed) and the agent continues with that answer.
-pub type PermissionHandler = Arc<dyn Fn(&PermissionRequest) -> PermissionReply + Send + Sync>;
+pub type PermissionHandler = Arc<dyn Fn(&PermissionRequest) -> PermissionDecision + Send + Sync>;
+
+/// The permission policy Workshop hands `opencode serve` (`OPENCODE_PERMISSION`), so the agent
+/// *asks* before it edits files or runs commands and the host decides per ask through its
+/// [`PermissionHandler`]. `edit` also governs `write`/`patch`; the `plan` agent denies edits on
+/// its own. Verified live on 1.18.31: the keyless free tier accepts turns with this policy set.
+pub fn ask_before_edit_and_bash() -> Value {
+    json!({ "edit": "ask", "bash": "ask" })
+}
 
 #[derive(Clone)]
 pub struct EngineOptions {
@@ -93,6 +114,15 @@ pub struct EngineOptions {
     /// After `abort`, how long to wait for the server to report idle.
     pub cancel_grace: Duration,
     pub permission_handler: Option<PermissionHandler>,
+    /// OpenCode permission config for the server (`OPENCODE_PERMISSION`), e.g.
+    /// [`ask_before_edit_and_bash`]. `None` leaves OpenCode's defaults (allow), in which case
+    /// the handler is only consulted for asks OpenCode raises on its own.
+    pub permission: Option<Value>,
+    /// Inline OpenCode config for the server (`OPENCODE_CONFIG_CONTENT`), merged over the user's
+    /// own config by OpenCode itself — e.g. [`instructions_config`] to append an identity file to
+    /// the system prompt. `instructions` lists are unioned with the user's, never replaced
+    /// (verified in 1.18.31's `mergeConfigConcatArrays`).
+    pub config: Option<Value>,
     pub allow_untested_versions: bool,
     /// Receives the server's stdout and stderr lines so a failed start on a machine we cannot
     /// see still leaves the actual cause somewhere the host chooses (a log file).
@@ -108,10 +138,24 @@ impl EngineOptions {
             idle_timeout: Some(Duration::from_secs(600)),
             cancel_grace: Duration::from_secs(10),
             permission_handler: None,
+            permission: None,
+            config: None,
             allow_untested_versions: true,
             log_sink: None,
         }
     }
+}
+
+/// Inline OpenCode config that appends the given instruction files to every system prompt the
+/// server builds (all agents), the way a project's `AGENTS.md` would — without writing anything
+/// into the user's project. Paths should be absolute.
+pub fn instructions_config(files: &[PathBuf]) -> Value {
+    json!({
+        "instructions": files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    })
 }
 
 impl std::fmt::Debug for EngineOptions {
@@ -122,6 +166,8 @@ impl std::fmt::Debug for EngineOptions {
             .field("idle_timeout", &self.idle_timeout)
             .field("cancel_grace", &self.cancel_grace)
             .field("permission_handler", &self.permission_handler.is_some())
+            .field("permission", &self.permission)
+            .field("config", &self.config)
             .field("allow_untested_versions", &self.allow_untested_versions)
             .finish_non_exhaustive()
     }
@@ -265,7 +311,21 @@ impl OpenCodeEngine {
             OsString::from("OPENCODE_SERVER_PASSWORD"),
             OsString::from(&password),
         );
+        // The allowlist dropped any inherited OPENCODE_PERMISSION; only the host's own policy
+        // (if any) reaches the server.
         debug_assert!(!env.contains_key(&OsString::from("OPENCODE_PERMISSION")));
+        if let Some(policy) = &opts.permission {
+            env.insert(
+                OsString::from("OPENCODE_PERMISSION"),
+                OsString::from(policy.to_string()),
+            );
+        }
+        if let Some(config) = &opts.config {
+            env.insert(
+                OsString::from("OPENCODE_CONFIG_CONTENT"),
+                OsString::from(config.to_string()),
+            );
+        }
 
         let port = pick_free_port().await.map_err(EngineError::Spawn)?;
         let mut cmd = tokio::process::Command::new(&cli.path);
@@ -753,6 +813,12 @@ impl TurnDriver {
         let mut cancel_requested = false;
         let mut abort_deadline: Option<tokio::time::Instant> = None;
         let idle = self.idle_timeout.unwrap_or(NEVER);
+        // Asks the host answers later (its user is looking at a prompt): one task per ask
+        // resolves to `(permission id, reply)`; the ids are kept so a cancel can reject them all
+        // before aborting. The event loop keeps running meanwhile, so Esc/Ctrl-C still work
+        // while a prompt is up and the model's other output keeps streaming.
+        let mut pending: JoinSet<(String, PermissionReply)> = JoinSet::new();
+        let mut pending_ids: HashMap<tokio::task::Id, String> = HashMap::new();
         let outcome = loop {
             let grace = match abort_deadline {
                 Some(deadline) => deadline.saturating_duration_since(tokio::time::Instant::now()),
@@ -764,8 +830,28 @@ impl TurnDriver {
                     if changed.is_err() || *self.cancel_rx.borrow() {
                         cancel_requested = true;
                         abort_deadline = Some(tokio::time::Instant::now() + self.cancel_grace);
+                        // A prompt the user never answered is a "no": tell the server before the
+                        // abort so the tool ends rejected rather than hanging on the ask.
+                        pending.abort_all();
+                        for id in pending_ids.drain().map(|(_, id)| id) {
+                            self.post_reply(&id, PermissionReply::Reject).await;
+                        }
                         if let Err(e) = self.client.call(Method::POST, &self.abort_path(), None).await {
                             tracing::warn!(error = %e, "abort request failed");
+                        }
+                    }
+                }
+                Some(decided) = pending.join_next_with_id(), if !pending.is_empty() => {
+                    match decided {
+                        Ok((task_id, (perm_id, reply))) => {
+                            pending_ids.remove(&task_id);
+                            self.post_reply(&perm_id, reply).await;
+                        }
+                        Err(e) => {
+                            // The decision task itself is gone (panicked/aborted): fail closed.
+                            if let Some(perm_id) = pending_ids.remove(&e.id()) {
+                                self.post_reply(&perm_id, PermissionReply::Reject).await;
+                            }
                         }
                     }
                 }
@@ -780,7 +866,18 @@ impl TurnDriver {
                             self.emit(out).await;
                         }
                         for perm in self.turn.take_permissions() {
-                            self.answer_permission(&perm).await;
+                            match self.decide_permission(&perm) {
+                                PermissionDecision::Reply(reply) => {
+                                    self.post_reply(&perm.id, reply).await;
+                                }
+                                PermissionDecision::Pending(rx) => {
+                                    let perm_id = perm.id.clone();
+                                    let handle = pending.spawn(async move {
+                                        (perm_id, rx.await.unwrap_or(PermissionReply::Reject))
+                                    });
+                                    pending_ids.insert(handle.id(), perm.id.clone());
+                                }
+                            }
                         }
                         if let Some(terminal) = self.turn.terminal().cloned() {
                             break match terminal {
@@ -798,7 +895,8 @@ impl TurnDriver {
                     self.emit(AdapterEvent::Error { message: "run cancelled".to_string() }).await;
                     break RunOutcome::Cancelled;
                 }
-                _ = tokio::time::sleep(idle), if self.idle_timeout.is_some() && !cancel_requested => {
+                // A turn waiting on the user's answer is not idle: the silence is ours.
+                _ = tokio::time::sleep(idle), if self.idle_timeout.is_some() && !cancel_requested && pending.is_empty() => {
                     let reason = format!("no output for {idle:?}");
                     let _ = self.client.call(Method::POST, &self.abort_path(), None).await;
                     self.emit(AdapterEvent::Error { message: reason.clone() }).await;
@@ -806,6 +904,7 @@ impl TurnDriver {
                 }
             }
         };
+        pending.abort_all();
         self.sse_task.abort();
         outcome
     }
@@ -814,13 +913,20 @@ impl TurnDriver {
         let _ = self.events_tx.send(ev).await;
     }
 
-    async fn answer_permission(&self, perm: &PermissionRequest) {
-        let reply = match &self.permission_handler {
+    fn decide_permission(&self, perm: &PermissionRequest) -> PermissionDecision {
+        match &self.permission_handler {
             Some(handler) => handler(perm),
-            None => PermissionReply::Reject,
-        };
-        tracing::info!(kind = %perm.kind, title = %perm.title, ?reply, "answering opencode permission request");
-        let path = self.permission_path(&perm.id);
+            None => PermissionDecision::Reply(PermissionReply::Reject),
+        }
+    }
+
+    async fn post_reply(&self, permission_id: &str, reply: PermissionReply) {
+        tracing::info!(
+            permission_id,
+            ?reply,
+            "answering opencode permission request"
+        );
+        let path = self.permission_path(permission_id);
         if let Err(e) = self
             .client
             .post_json(&path, &json!({ "response": reply.as_str() }))

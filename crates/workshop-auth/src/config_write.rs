@@ -98,22 +98,44 @@ pub fn model_table(spec: &ModelEntrySpec) -> toml::Table {
     t
 }
 
+/// What the shell's placeholder model says about the live Engine/Adapter connection it stands in
+/// for: the real model's name (so the dashboard, session list and status surfaces show `Big
+/// Pickle`, not an internal label) and its context window (so nothing meters against a made-up
+/// number). `None` for the window falls back to the shell's own default rather than a placeholder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaceholderModel {
+    pub display_name: String,
+    pub context_window: Option<u64>,
+}
+
+/// The shell's default when a model declares no window (`agent/config.rs`).
+const SHELL_DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
+
 /// Write a keyless placeholder model (neutral loopback base URL, anonymous sentinel) and make it
 /// the shell default; return its config key. Engine/Adapter connections route turns through
 /// workshop-adapters, not this model, but the shell needs a model + the non-interactive auth method
 /// to open a session. A turn never reaches the placeholder: the pager intercepts prompts first.
-pub fn activate_placeholder_session(path: &Path) -> Result<String, ConfigWriteError> {
+/// The entry carries the live model's name and window so every shell surface that names the
+/// model shows the real one.
+pub fn activate_placeholder_session(
+    path: &Path,
+    placeholder: &PlaceholderModel,
+) -> Result<String, ConfigWriteError> {
+    let window = placeholder
+        .context_window
+        .filter(|n| *n > 0)
+        .unwrap_or(SHELL_DEFAULT_CONTEXT_WINDOW);
     let spec = ModelEntrySpec {
         id: "workshop:connection".to_owned(),
         model: "workshop-connection".to_owned(),
         // The neutral sentinel host from patch 0003 (`neutral-production-endpoints`).
         base_url: "http://127.0.0.1:1".to_owned(),
-        name: "Workshop connection".to_owned(),
+        name: placeholder.display_name.clone(),
         api_backend: xai_grok_sampling_types::ApiBackend::ChatCompletions,
         auth_scheme: xai_grok_sampler::AuthScheme::Bearer,
         env_key: Vec::new(),
         extra_headers: std::collections::BTreeMap::new(),
-        context_window: std::num::NonZeroU64::new(8192).expect("nonzero"),
+        context_window: std::num::NonZeroU64::new(window).expect("nonzero"),
         max_completion_tokens: None,
         stream_tool_calls: None,
         credential: CredentialInjection::None,
@@ -231,6 +253,42 @@ mod tests {
             Some(false),
             "other tables kept"
         );
+    }
+
+    #[test]
+    fn placeholder_carries_the_live_model_name_and_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        let key = activate_placeholder_session(
+            &path,
+            &PlaceholderModel {
+                display_name: "Big Pickle".into(),
+                context_window: Some(200_000),
+            },
+        )
+        .unwrap();
+        assert_eq!(key, "workshop-connection");
+        let doc: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        let m = &doc["model"]["workshop-connection"];
+        assert_eq!(m["name"].as_str(), Some("Big Pickle"));
+        assert_eq!(m["context_window"].as_integer(), Some(200_000));
+        assert_eq!(m["base_url"].as_str(), Some("http://127.0.0.1:1"));
+        assert_eq!(m["api_key"].as_str(), Some(ANONYMOUS_API_KEY_SENTINEL));
+        // No window reported → the shell's own default, never a made-up small number.
+        activate_placeholder_session(
+            &path,
+            &PlaceholderModel {
+                display_name: "claude-sonnet-4-5".into(),
+                context_window: None,
+            },
+        )
+        .unwrap();
+        let doc: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        let m = &doc["model"]["workshop-connection"];
+        assert_eq!(m["name"].as_str(), Some("claude-sonnet-4-5"));
+        assert_eq!(m["context_window"].as_integer(), Some(200_000));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("8192"), "no placeholder window: {text}");
     }
 
     #[test]
