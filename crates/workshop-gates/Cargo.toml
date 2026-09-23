@@ -31,6 +31,8 @@ tempfile = { workspace = true }
 walkdir = { workspace = true }
 # PTY-driven smoke of the built `workshop` binary (opt-in via WORKSHOP_BIN).
 xai-grok-pager-pty-harness = { path = "../codegen/xai-grok-pager-pty-harness" }
+# The harness's mock inference server runs on a tokio runtime (silent-fallback gate).
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # Branding gate: slash command metadata, settings labels, theme names.
 xai-grok-pager = { path = "../codegen/xai-grok-pager" }
 xai-grok-pager-render = { path = "../codegen/xai-grok-pager-render" }
@@ -40,6 +42,8 @@ xai-grok-agent = { workspace = true }
 # Branding gate: `workshop --help` rendered from the clap definition; the welcome copy.
 clap = { workspace = true }
 workshop-brand = { path = "../workshop-brand" }
+# Voice prefetch gate: the test lock pins a model by SHA-256.
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

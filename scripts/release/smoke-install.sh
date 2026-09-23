@@ -9,11 +9,14 @@
 #
 # Cases: channel manifest install, pinned-version install, tampered checksum is
 # rejected, non-https manifest URL is refused. When <dist> also holds the voice assets
-# (voice-engine-<version>-<platform>.tar.gz, MODEL.lock.json, ggml-*.bin) the install cases
-# verify the helper and model, and further cases prove: a re-run transfers no model bytes,
-# a corrupted model is replaced, a killed download resumes from its .partial, a 404 mirror
-# falls back to the second source, and both sources failing installs nothing and exits 1.
-# Requires python3 (http.server).
+# (voice-engine-<version>-<platform>.tar.gz, MODEL.lock.json, ggml-*.bin) the install cases run
+# with WORKSHOP_VOICE_TIER=base (which opts in to voice) and verify the helper and model, and
+# further cases prove: a re-run transfers no model bytes, a corrupted model is replaced, a
+# killed download resumes from its .partial, a 404 mirror falls back to the second source, and
+# both sources failing installs nothing and exits 1. Always: the default install (no voice
+# opt-in) downloads only `workshop` with product-style output, a re-run says "already
+# installed", a plain file from a manual tar install is replaced, and an older install is
+# reported as "Updated Workshop <old> → <new>". Requires python3 (http.server).
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source-path=SCRIPTDIR
@@ -68,7 +71,7 @@ if [[ -f "$dist/$engine_asset" && -f "$dist/MODEL.lock.json" ]]; then
   voice=true
   cp "$dist/$engine_asset" "$dist/MODEL.lock.json" "$dist"/ggml-*.bin "$www/dl/v$version/" 2>/dev/null || die "voice assets incomplete in $dist"
   # The smallest tier is what CPU runners end up with; the smoke pins it to keep the run bounded.
-  # A forced tier also opts in to downloading the model during install (the default defers it to /voice).
+  # A forced tier also opts in to installing voice now (the default install has no voice at all).
   export WORKSHOP_VOICE_TIER=${WORKSHOP_VOICE_TIER:-base}
   base_file=$(jq -r '.models.base.file' "$dist/MODEL.lock.json")
   base_sha=$(jq -r '.models.base.sha256' "$dist/MODEL.lock.json")
@@ -206,16 +209,65 @@ if $voice; then
     cat "$tmp/h9.err"; report fail "double failure exited for the wrong reason"
   fi
 
-  echo "== 10. voice: a default install (no WORKSHOP_VOICE, no tier) installs the helper and defers the model"
-  before=$(model_gets)
-  if (env -u WORKSHOP_VOICE_TIER WORKSHOP_HOME="$tmp/h10" WORKSHOP_CHANNEL="$channel" WORKSHOP_MANIFEST_URL="$base/$channel.json" sh "$install_sh") 2>"$tmp/h10.err" \
-    && [[ -x "$tmp/h10/bin/voice-engine" ]] && [[ ! -e "$tmp/h10/voice/$base_file" ]] \
-    && grep -q "not downloaded now" "$tmp/h10.err" && grep -q "cd <your-project> && $PRODUCT_BIN" "$tmp/h10.err" \
-    && [[ "$(model_gets)" == "$before" ]]; then
-    report ok "helper installed, no model bytes, first-/voice note and the next command printed"
-  else
-    cat "$tmp/h10.err"; report fail "default install downloaded the model or lost the next-step line"
-  fi
+fi
+
+# The default install (no WORKSHOP_VOICE, no tier) downloads the one `workshop` archive and
+# nothing else: no voice helper, no model, not even their checksum/pin files. Its output reads
+# like a product and ends with the next command.
+voice_gets() { grep -c -E "GET /dl/v$version/(voice-engine-|MODEL\.lock\.json|SHA256SUMS)" "$server_log" || true; }
+check_cli() { # check_cli HOME -> the symlink layout and --version, voice not required
+  local home=$1 out link
+  [[ -L "$home/bin/$PRODUCT_BIN" ]] || { echo "  no symlink at $home/bin/$PRODUCT_BIN"; return 1; }
+  link=$(readlink "$home/bin/$PRODUCT_BIN")
+  [[ "$link" == "../downloads/$(versioned_bin_name "$version" "$platform")" ]] || { echo "  unexpected symlink target: $link"; return 1; }
+  out=$("$home/bin/$PRODUCT_BIN" --version 2>&1) || { echo "  --version failed: $out"; return 1; }
+  [[ "$(tr -d '[:space:]' <"$home/installed-version")" == "$version" ]] || { echo "  installed-version stamp missing or wrong"; return 1; }
+  echo "  $out"
+}
+
+echo "== 10. default install: only workshop, no voice bytes, product-style output, next command"
+before_voice=$(voice_gets)
+if (env -u WORKSHOP_VOICE_TIER WORKSHOP_HOME="$tmp/h10" WORKSHOP_CHANNEL="$channel" WORKSHOP_MANIFEST_URL="$base/$channel.json" sh "$install_sh") 2>"$tmp/h10.err" \
+  && check_cli "$tmp/h10" \
+  && [[ ! -e "$tmp/h10/bin/voice-engine" ]] && [[ ! -e "$tmp/h10/voice" ]] \
+  && [[ "$(voice_gets)" == "$before_voice" ]] \
+  && grep -q "^Installed Workshop $version\.$" "$tmp/h10.err" \
+  && grep -q "^Verifying… done$" "$tmp/h10.err" && grep -q "^Installing… done$" "$tmp/h10.err" \
+  && ! grep -q -E '^\[[0-9]/[0-9]\]|^workshop: ' "$tmp/h10.err" \
+  && grep -q "cd <your-project> && $PRODUCT_BIN" "$tmp/h10.err"; then
+  report ok "only workshop installed; no helper/model/pin requests; 'Installed Workshop $version.'; next command printed"
+else
+  cat "$tmp/h10.err"; report fail "default install fetched voice assets, or the output is not the product copy"
+fi
+
+echo "== 11. re-running the one-liner over the same version says so and keeps the layout"
+if (env -u WORKSHOP_VOICE_TIER WORKSHOP_HOME="$tmp/h10" WORKSHOP_CHANNEL="$channel" WORKSHOP_MANIFEST_URL="$base/$channel.json" sh "$install_sh") 2>"$tmp/h11.err" \
+  && check_cli "$tmp/h10" && grep -q "^Workshop $version was already installed; refreshed\.$" "$tmp/h11.err"; then
+  report ok "re-run: 'already installed; refreshed', symlink intact"
+else
+  cat "$tmp/h11.err"; report fail "re-run over the same version"
+fi
+
+echo "== 12. a manual tar install (plain file at bin/workshop) is replaced cleanly"
+mkdir -p "$tmp/h12/bin" "$tmp/x12"
+tar -xzf "$dist/$asset" -C "$tmp/x12"
+cp "$tmp/x12/$PRODUCT_BIN" "$tmp/h12/bin/$PRODUCT_BIN"
+chmod 755 "$tmp/h12/bin/$PRODUCT_BIN"
+if (env -u WORKSHOP_VOICE_TIER WORKSHOP_HOME="$tmp/h12" WORKSHOP_CHANNEL="$channel" WORKSHOP_MANIFEST_URL="$base/$channel.json" sh "$install_sh") 2>"$tmp/h12.err" \
+  && check_cli "$tmp/h12" && grep -q "^Replaced the existing Workshop with $version\.$" "$tmp/h12.err"; then
+  report ok "plain file replaced by the versioned symlink; 'Replaced the existing Workshop with $version.'"
+else
+  cat "$tmp/h12.err"; report fail "manual tar install was not replaced cleanly"
+fi
+
+echo "== 13. an older installer-made install is updated and says from which version"
+mkdir -p "$tmp/h13/bin"
+ln -s "../downloads/$(versioned_bin_name 0.0.1 "$platform")" "$tmp/h13/bin/$PRODUCT_BIN"
+if (env -u WORKSHOP_VOICE_TIER WORKSHOP_HOME="$tmp/h13" WORKSHOP_CHANNEL="$channel" WORKSHOP_MANIFEST_URL="$base/$channel.json" sh "$install_sh") 2>"$tmp/h13.err" \
+  && check_cli "$tmp/h13" && grep -q "^Updated Workshop 0\.0\.1 → $version\.$" "$tmp/h13.err"; then
+  report ok "'Updated Workshop 0.0.1 → $version.' and the new symlink in place"
+else
+  cat "$tmp/h13.err"; report fail "update over an older install"
 fi
 
 echo

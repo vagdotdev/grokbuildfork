@@ -751,6 +751,17 @@ pub struct AgentView {
     /// flag so the per-agent input layer treats Ctrl+C as a cancellable activity (there is no ACP
     /// turn to detect). Cleared when the turn ends.
     pub(crate) workshop_turn_active: bool,
+    /// Workshop: what the running Engine/Adapter turn is doing, for the pager's own turn-status
+    /// row (`Waiting for response…`, `Thinking…`, `Responding…`, `Run <command>` with its phase
+    /// timer): the event loop sets it from the turn's stream, the way the ACP tracker does for a
+    /// shell turn.
+    pub(crate) workshop_turn_activity: Option<crate::acp::tracker::TurnActivity>,
+    /// Workshop: when the running Engine/Adapter turn was sent — the status row's turn timer and
+    /// the `Worked for …` marker at its end.
+    pub(crate) workshop_turn_started_at: Option<Instant>,
+    /// Workshop: Ctrl+C / `[stop]` asked the running Engine/Adapter turn to end; the status row
+    /// reads `Cancelling…` until it does.
+    pub(crate) workshop_turn_cancelling: bool,
     /// Workshop: the prompt whose Engine/Adapter turn failed; Enter on an empty composer resends it.
     pub(crate) workshop_retry_prompt: Option<String>,
     /// Sticky: once the user types in the prompt, hide the tip for the session.

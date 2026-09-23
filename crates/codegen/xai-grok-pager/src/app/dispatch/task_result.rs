@@ -1043,6 +1043,37 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
+        TaskResult::WorkshopRailInstallDone { rail, result } => {
+            app.workshop_rail_install = None;
+            let name = rail.vendor().display_name();
+            let Some(picker) = app.connection_picker.as_mut() else {
+                // The picker was closed meanwhile: the rails re-probe on the next open.
+                if let Err(e) = result {
+                    tracing::warn!(vendor = rail.vendor().id(), error = %e, "workshop: installer failed");
+                }
+                return vec![];
+            };
+            match result {
+                Ok(()) => {
+                    // Installed: flow straight into the vendor's own sign-in — the Connect
+                    // path, attached to the terminal — with no further keypress.
+                    let argv = crate::app::workshop::rail_login_argv(rail);
+                    picker.set_status(format!("Installed {name} \u{b7} signing you in\u{2026}"));
+                    app.pending_workshop_login = Some((rail, argv));
+                    vec![]
+                }
+                Err(reason) => {
+                    picker.set_status(format!(
+                        "Couldn't install {name} \u{2014} {reason} \u{b7} Enter to retry"
+                    ));
+                    vec![]
+                }
+            }
+        }
+        TaskResult::WorkshopVoicePrefetchDone => {
+            // The outcome lives in the shared status `/voice` reads; nothing to draw here.
+            vec![]
+        }
         TaskResult::WorkshopLoginTerminalDone { rail, exit } => {
             use workshop_detect::process::InteractiveExit;
             if let Some(picker) = app.connection_picker.as_mut() {

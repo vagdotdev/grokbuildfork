@@ -15,9 +15,11 @@ pub mod agent_view;
 pub mod app_view;
 /// Workshop overlay: connection picker loading and activation.
 pub mod workshop;
+pub mod workshop_askpass;
 pub mod workshop_engine_state;
 pub mod workshop_permissions;
 pub mod workshop_sessions;
+pub mod workshop_update;
 pub mod workshop_tools;
 pub mod bundle;
 pub(crate) mod cancel_latency;
@@ -1251,7 +1253,7 @@ pub async fn run(
         Err(run_error) => Err(run_error),
     }
 }
-/// Plain-quit "Resume this session with…" lines (after terminal restore).
+/// Plain-quit "Continue later with…" lines (after terminal restore).
 /// Best-effort: closed-pane EIO/BrokenPipe must not panic (`panic = "abort"`).
 /// TODO: extend beyond --minimal by rebuilding resume argv from launch flags (see screen_mode_relaunch)
 fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write) {
@@ -1271,11 +1273,12 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
         }
         let _ = writeln!(w);
     }
-    let _ = writeln!(w, "Resume this session with:");
+    // Workshop: short and human — `-c` continues this directory's most recent session, so the
+    // user never has to carry a session id around.
     if info.minimal {
-        let _ = writeln!(w, "  workshop --minimal --resume {}", info.session_id);
+        let _ = writeln!(w, "Continue later with: workshop --minimal -c");
     } else {
-        let _ = writeln!(w, "  workshop --resume {}", info.session_id);
+        let _ = writeln!(w, "Continue later with: workshop -c");
     }
 }
 /// Screen-mode relaunch failure fallback (same quit tail as plain resume).
@@ -2328,7 +2331,7 @@ mod tests {
         print_exit_resume_hint(&bare_exit_info("sess-abc", false), 80, &mut buf);
         assert_eq!(
             String::from_utf8(buf).unwrap(),
-            "\nResume this session with:\n  workshop --resume sess-abc\n"
+            "\nContinue later with: workshop -c\n"
         );
     }
     #[test]
@@ -2337,7 +2340,7 @@ mod tests {
         print_exit_resume_hint(&bare_exit_info("sess-abc", true), 80, &mut buf);
         assert_eq!(
             String::from_utf8(buf).unwrap(),
-            "\nResume this session with:\n  workshop --minimal --resume sess-abc\n"
+            "\nContinue later with: workshop --minimal -c\n"
         );
     }
     #[test]
@@ -2361,8 +2364,7 @@ mod tests {
                 "> make the suite deterministic\n",
                 "  Pinned the seed; 200 consecutive green runs.\n",
                 "\n",
-                "Resume this session with:\n",
-                "  workshop --resume sess-abc\n",
+                "Continue later with: workshop -c\n",
             )
         );
     }
@@ -2383,7 +2385,7 @@ mod tests {
         assert!(out.contains(&format!("\n{}…\n", "t".repeat(19))));
         assert!(out.contains(&format!("\n> {}…\n", "p".repeat(17))));
         assert!(out.contains(&format!("\n  {}…\n", "r".repeat(17))));
-        assert!(out.contains("  workshop --resume sess-abc\n"));
+        assert!(out.contains("Continue later with: workshop -c\n"));
     }
     #[test]
     fn print_relaunch_failure_hint_writes_expected_lines() {

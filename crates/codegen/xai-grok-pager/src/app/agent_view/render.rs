@@ -741,7 +741,9 @@ impl AgentView {
             } else {
                 None
             },
-            placeholder_when_focused: false,
+            // Workshop: the empty composer reads its invitation whenever nothing is running; a
+            // turn in flight leaves it blank until the turn ends.
+            placeholder_when_focused: !self.stoppable_activity_running(),
             placeholder_override: if let Some(ph) = self
                 .prompt_input_mode
                 .placeholder_override(self.multiline_mode)
@@ -1058,7 +1060,10 @@ impl AgentView {
         };
         let turn_status_parked = if dock_covers_cues { false } else { parked };
         let wake_display_state = self.wake_display_state();
-        let display_state = wake_display_state.unwrap_or(&self.session.state);
+        // Workshop: an Engine/Adapter turn shows the same turn-status row a shell turn does.
+        let display_state = wake_display_state
+            .or_else(|| self.workshop_display_state())
+            .unwrap_or(&self.session.state);
         let send_now_gap = self.send_now_awaiting_current() && display_state.is_idle();
         let status_state = if send_now_gap {
             crate::app::agent::AgentState::TurnRunning

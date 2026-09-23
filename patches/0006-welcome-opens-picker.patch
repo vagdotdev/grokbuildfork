@@ -43,7 +43,7 @@ index d63bea59..5663ad57 100644
          });
          let (needs, label, method_id, mode) = startup_auth_metadata(&built.methods);
 diff --git a/crates/codegen/xai-grok-pager/src/app/actions.rs b/crates/codegen/xai-grok-pager/src/app/actions.rs
-index f1602289..fb4370d2 100644
+index f1602289..7300f065 100644
 --- a/crates/codegen/xai-grok-pager/src/app/actions.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/actions.rs
 @@ -618,7 +618,26 @@ pub enum Action {
@@ -73,7 +73,7 @@ index f1602289..fb4370d2 100644
      /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
      /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
      CancelLogin,
-@@ -1772,9 +1791,39 @@ pub enum Effect {
+@@ -1772,9 +1791,54 @@ pub enum Effect {
          method_id: acp::AuthMethodId,
          use_oauth: bool,
          force_interactive: bool,
@@ -110,10 +110,25 @@ index f1602289..fb4370d2 100644
 +    },
 +    /// Workshop: OpenRouter PKCE sign-in (browser + loopback callback), then save the key.
 +    WorkshopOpenRouterSignIn,
++    /// Workshop: run a vendor CLI's official installer (the user pressed Enter on an `Install`
++    /// rail); its latest output line lands in `progress` for the picker's status line.
++    WorkshopInstallRail {
++        rail: workshop_detect::Rail,
++        progress: std::sync::Arc<std::sync::Mutex<String>>,
++    },
++    /// Workshop: fetch the voice helper and this machine's speech model in the background (after
++    /// `delay`), reporting into `shared` for `/voice`'s `Voice is getting ready — 62%`.
++    WorkshopVoicePrefetch {
++        shared: workshop_voice::prefetch::Shared,
++        delay: std::time::Duration,
++        home: std::path::PathBuf,
++        voice_dir: std::path::PathBuf,
++        tier: Option<String>,
++    },
      /// Submit a manually-pasted auth code (ext request).
      SubmitAuthCode { request_seq: u64, code: String },
      /// Fetch MCP server list from the shell (x.ai/mcp/list).
-@@ -2659,6 +2708,21 @@ pub enum TaskResult {
+@@ -2659,6 +2723,29 @@ pub enum TaskResult {
          /// Forwarded from `Effect::SwitchModel.prev_model_id` for rollback on `IncompatibleAgent`.
          prev_model_id: Option<acp::ModelId>,
      },
@@ -126,6 +141,14 @@ index f1602289..fb4370d2 100644
 +        provider_id: String,
 +        result: Result<&'static str, String>,
 +    },
++    /// Workshop: a vendor CLI's official installer finished (`Ok`) or failed with a plain reason
++    /// that names the log.
++    WorkshopRailInstallDone {
++        rail: workshop_detect::Rail,
++        result: Result<(), String>,
++    },
++    /// Workshop: the background voice setup ended (its outcome is in the shared status).
++    WorkshopVoicePrefetchDone,
 +    /// Workshop: the terminal login command exited; the rails must be re-probed unless the user
 +    /// cancelled it (Ctrl+C), which leaves them as they were.
 +    WorkshopLoginTerminalDone {
@@ -136,7 +159,7 @@ index f1602289..fb4370d2 100644
      ChangelogFetched {
          markdown: Option<String>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..30dd426a 100644
+index fc9a4553..8cbd1df3 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -151,17 +174,23 @@ index fc9a4553..30dd426a 100644
  /// Whether a subscription-tier display name is a tier with restricted commands: the free tier and X Basic.
  /// Free covers no subscription (`None`) or an explicit "Free"; X Basic covers CCP display name "X Basic" with JWT claim fallback "x_basic".
  /// The pager's *cosmetic* slash-command gate treats an absent tier (`None`) as restricted (it recovers live on the next settings update).
-@@ -746,6 +747,9 @@ pub struct AppView {
+@@ -746,6 +747,15 @@ pub struct AppView {
      /// When true the event loop ensures the pager renders raw control codes (`less -R`) so the colors show instead of literal escapes.
      /// Plain-text transcripts (`/export` markdown) leave this false.
      pub pending_pager_ansi: bool,
 +    /// Workshop: a vendor CLI login (`claude auth login`, …) to run attached to the user's terminal
 +    /// through the same suspend/resume path as the external editor; consumed by the event loop.
 +    pub pending_workshop_login: Option<(workshop_detect::Rail, Vec<String>)>,
++    /// Workshop: the vendor CLI installer the user pressed Enter on, while it runs (one at a time);
++    /// the picker's status line follows its output every tick.
++    pub workshop_rail_install: Option<crate::app::workshop::RailInstall>,
++    /// Workshop: the background voice setup (helper, then speech model) once started this
++    /// process; `/voice` reads its status while voice is not ready yet.
++    pub workshop_voice_prefetch: Option<workshop_voice::prefetch::Shared>,
      /// Minimal mode only: the Ctrl+T **force-show** pin for the todo panel.
      /// Minimal-mode-only per-session state, consolidated into a single field so the central `AppView` isn't peppered with loose minimal flags.
      /// Default-empty and inert outside `--minimal`; the `xai-grok-pager-minimal` crate reads/mutates it through the `crate::minimal_api` accessors.
-@@ -754,9 +758,15 @@ pub struct AppView {
+@@ -754,9 +764,15 @@ pub struct AppView {
      pub welcome_menu_index: Option<usize>,
      /// Hit-test rects for welcome menu items (populated during render).
      pub welcome_menu_rects: Vec<ratatui::layout::Rect>,
@@ -178,7 +207,7 @@ index fc9a4553..30dd426a 100644
      /// Hit-test rect for the import-claude banner on the welcome screen.
      pub welcome_import_banner_rect: Option<ratatui::layout::Rect>,
      /// Last known mouse position (column, row), updated on every Mouse event.
-@@ -954,7 +964,7 @@ pub struct AppView {
+@@ -954,7 +970,7 @@ pub struct AppView {
      /// One-shot gate for the small-screen `/compact-mode` tip: set after the first evaluation at a stable agent-view draw (regardless of outcome).
      /// Later resizes thus can never re-trigger the tip within this run.
      pub small_screen_tip_evaluated: bool,
@@ -187,7 +216,7 @@ index fc9a4553..30dd426a 100644
      /// The environment gates are process-constant, so one evaluation decides the run.
      pub ssh_wrap_tip_evaluated: bool,
      /// State for the clipboard-image tip, polled opportunistically and only while the terminal is focused.
-@@ -1009,6 +1019,82 @@ pub struct AppView {
+@@ -1009,6 +1025,90 @@ pub struct AppView {
      pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
      /// Whether deferred welcome-screen login should force OAuth.
      pub auth_use_oauth: bool,
@@ -195,6 +224,9 @@ index fc9a4553..30dd426a 100644
 +    /// welcome `l`, `/login`, `/auth`, `/models` and first run all open it. Rendered on the welcome
 +    /// view; keys are routed to it while open.
 +    pub connection_picker: Option<workshop_auth::PickerState>,
++    /// Workshop: a `sudo` password one of the engine's commands is waiting for — the masked
++    /// prompt above the composer owns every key while it is up.
++    pub workshop_password_ask: Option<crate::app::workshop_askpass::PendingPassword>,
 +    /// Workshop: which runtime prompts are routed through (shell loop, OpenCode engine, or a
 +    /// vendor CLI adapter). Set by the picker; `Shell` is the default.
 +    pub workshop_connection: crate::app::workshop::WorkshopConnection,
@@ -210,16 +242,12 @@ index fc9a4553..30dd426a 100644
 +    /// active, else on the first typed character after one is picked).
 +    pub workshop_engine_warm_started: bool,
 +    pub workshop_engine_session: Option<String>,
-+    /// The bring-up status line ("Installing the OpenCode engine…") of the current turn; replaced
-+    /// by each newer status and removed once the turn produces output or ends.
-+    pub workshop_turn_progress_entry: Option<crate::scrollback::EntryId>,
-+    /// The phase text behind `workshop_turn_progress_entry` ("Waiting for Big Pickle…"); the
-+    /// entry is repainted every few ticks with the spinner frame and the elapsed seconds.
-+    pub workshop_turn_progress: Option<String>,
-+    /// When the current Workshop turn was submitted (the waiting line's elapsed clock).
-+    pub workshop_turn_started: Option<Instant>,
-+    /// Tick counter driving the waiting line's spinner.
-+    pub workshop_progress_tick: u64,
++    /// Tool calls of the current Workshop turn still running, oldest first, as `(call id,
++    /// activity)`: the turn-status row shows the newest one until it finishes, then the wait for
++    /// the model again.
++    pub workshop_turn_running: Vec<(String, crate::acp::tracker::TurnActivity)>,
++    /// The current Workshop turn has shown a failure line: its end gets no `Worked for …` marker.
++    pub workshop_turn_errored: bool,
 +    /// Workshop: the prompt of the last Engine/Adapter turn, kept so Enter on an empty composer
 +    /// can retry it after a failure.
 +    pub workshop_last_prompt: Option<String>,
@@ -227,7 +255,8 @@ index fc9a4553..30dd426a 100644
 +    pub workshop_turn_active: bool,
 +    /// Sender the event loop installs once so submit handlers can stream a turn's events back into
 +    /// the loop's Workshop `select!` arm. `None` outside the interactive loop (headless, tests).
-+    pub workshop_turn_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::app::workshop::WorkshopTurnMsg>>,
++    pub workshop_turn_tx:
++        Option<tokio::sync::mpsc::UnboundedSender<crate::app::workshop::WorkshopTurnMsg>>,
 +    /// Cancel signal for the in-flight turn (Esc / Ctrl-C → abort/kill).
 +    pub workshop_turn_cancel: Option<tokio::sync::watch::Sender<bool>>,
 +    /// The streaming assistant block for the current turn, appended to as deltas arrive.
@@ -240,6 +269,16 @@ index fc9a4553..30dd426a 100644
 +    /// The user bubble of the current Engine/Adapter turn (dropped when the turn is resent on the
 +    /// Kilo fallback).
 +    pub workshop_turn_prompt_entry: Option<crate::scrollback::EntryId>,
++    /// Workshop: the prompt whose OpenCode turn could not start, held until the silent fallback
++    /// model has been activated (`AuthComplete`), then resent through the shell — no notice.
++    pub workshop_resend: Option<(crate::app::agent::AgentId, String)>,
++    /// Workshop: the silent fallback is carrying this session's turns (the OpenCode model could not
++    /// start or answer); holds the answering model's plain name for the composer. Cleared when the
++    /// user picks a connection or the fallback fails too.
++    pub workshop_fallback: Option<String>,
++    /// Workshop: this launch created the home (nothing was ever connected before), so the composer
++    /// carries the `/model to switch · /auth to connect subscriptions` hint.
++    pub workshop_first_launch: bool,
 +    /// Tool rows of the current Engine/Adapter turn by the backend's call id, so the result
 +    /// (diff, output, exit code) lands on the row that announced the call.
 +    pub workshop_turn_tools: std::collections::HashMap<String, crate::scrollback::EntryId>,
@@ -265,16 +304,26 @@ index fc9a4553..30dd426a 100644
 +    pub workshop_turn_record: Vec<crate::app::workshop_sessions::Item>,
 +    /// Workshop: the prompt of the current engine turn, for its record.
 +    pub workshop_turn_prompt_text: Option<String>,
-+    /// A prompt to resend on the shell path once the Kilo fallback activation completes.
-+    pub workshop_resend: Option<(crate::app::agent::AgentId, String, String)>,
      /// Delivery state from the last clipboard copy during auth.
      pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
      /// Generation of the current auth copy feedback and its clear timer.
-@@ -1429,11 +1515,14 @@ impl AppView {
+@@ -1076,6 +1176,9 @@ pub struct AppView {
+     /// Latest version string from a background update check.
+     /// Set when a newer version is detected; rendered as a notification on the welcome screen.
+     pub pending_update_version: Option<String>,
++    /// Workshop: set on the first launch after the silent updater installed this version; the
++    /// welcome screen says "Updated to <version>" once.
++    pub workshop_updated_to: Option<String>,
+     /// When true, the event loop should exit so the user can relaunch to pick up the downloaded update.
+     pub quit_for_update: bool,
+     /// Printed to stderr after terminal restore when Welcome yes could not save trust.
+@@ -1429,11 +1532,16 @@ impl AppView {
              pending_effects: Vec::new(),
              pending_editor: None,
              pending_pager_path: None,
 +            pending_workshop_login: None,
++            workshop_rail_install: None,
++            workshop_voice_prefetch: None,
              pending_pager_ansi: false,
              minimal_state: crate::minimal_api::MinimalState::default(),
              welcome_menu_index: None,
@@ -285,20 +334,19 @@ index fc9a4553..30dd426a 100644
              welcome_import_banner_rect: None,
              last_mouse_pos: None,
              last_scroll_pos: None,
-@@ -1543,6 +1632,33 @@ impl AppView {
+@@ -1543,6 +1651,34 @@ impl AppView {
              auth_url_poll_handle: None,
              deferred_startup: Default::default(),
              auth_use_oauth: false,
 +            connection_picker: None,
++            workshop_password_ask: None,
 +            workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
 +            workshop_engine: None,
 +            workshop_engine_slot: crate::app::workshop::new_engine_slot(),
 +            workshop_engine_warm_started: false,
 +            workshop_engine_session: None,
-+            workshop_turn_progress_entry: None,
-+            workshop_turn_progress: None,
-+            workshop_turn_started: None,
-+            workshop_progress_tick: 0,
++            workshop_turn_running: Vec::new(),
++            workshop_turn_errored: false,
 +            workshop_last_prompt: None,
 +            workshop_turn_active: false,
 +            workshop_turn_tx: None,
@@ -316,10 +364,20 @@ index fc9a4553..30dd426a 100644
 +            workshop_turn_record: Vec::new(),
 +            workshop_turn_prompt_text: None,
 +            workshop_resend: None,
++            workshop_fallback: None,
++            workshop_first_launch: false,
              auth_clipboard_delivery: None,
              auth_clipboard_feedback_generation: 0,
              team_id: None,
-@@ -1709,11 +1825,15 @@ impl AppView {
+@@ -1573,6 +1709,7 @@ impl AppView {
+             startup_warnings: Vec::new(),
+             is_api_key_auth: false,
+             pending_update_version: None,
++            workshop_updated_to: None,
+             foreign_resume_launch_generation: 0,
+             foreign_resume_launch: None,
+             quit_for_update: false,
+@@ -1709,11 +1846,15 @@ impl AppView {
      pub(super) fn consumer_account(&self) -> bool {
          !self.backend_billed && !self.is_api_key_auth && !self.has_external_auth_provider
      }
@@ -338,7 +396,7 @@ index fc9a4553..30dd426a 100644
      }
      /// Draw-time expiry can flip the live-announcement predicate between pushes.
      /// Resync the slash gate only when it diverges from the stored flags (checked per frame, fan-out runs only on change).
-@@ -2404,6 +2524,15 @@ impl AppView {
+@@ -2404,6 +2545,20 @@ impl AppView {
              }
              return InputOutcome::Changed;
          }
@@ -351,20 +409,29 @@ index fc9a4553..30dd426a 100644
 +                picker.key_entry.is_some(),
 +            );
 +        }
++        // Workshop: a `sudo` password prompt owns every key while it is up; the characters go
++        // to the helper's buffer, never to the composer (or its history and drafts).
++        if self.workshop_password_ask.is_some() {
++            return self.handle_workshop_password_input(ev);
++        }
          let zdr_blocked = self.is_zdr_blocked();
          let has_access = self.has_access();
          let welcome_pinned_upgrade_cta = crate::views::announcements::promo_cta(
-@@ -2442,7 +2571,8 @@ impl AppView {
+@@ -2442,7 +2597,12 @@ impl AppView {
                      menu_count: if zdr_blocked {
                          2
                      } else {
 -                        3 + if self.has_claude_import { 1 } else { 0 }
 +                        2 + if self.has_claude_import { 1 } else { 0 }
-+                            + if self.welcome_show_resume_action { 1 } else { 0 }
++                            + if self.welcome_show_resume_action {
++                                1
++                            } else {
++                                0
++                            }
                              + if self.welcome_show_changelog_action {
                                  1
                              } else {
-@@ -2483,6 +2613,7 @@ impl AppView {
+@@ -2483,6 +2643,7 @@ impl AppView {
                      welcome_doc_viewer: &mut self.welcome_doc_viewer,
                      changelog_markdown: &self.changelog_markdown,
                      show_changelog_action: self.welcome_show_changelog_action,
@@ -372,7 +439,7 @@ index fc9a4553..30dd426a 100644
                      has_pending_update: self.pending_update_version.is_some(),
                      has_foreign_resume,
                      cwd_has_git_ancestor: self.cwd_has_git_ancestor,
-@@ -3143,8 +3274,10 @@ struct WelcomeInputCtx<'a> {
+@@ -3143,8 +3304,10 @@ struct WelcomeInputCtx<'a> {
      import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
      welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
      changelog_markdown: &'a Option<String>,
@@ -384,10 +451,56 @@ index fc9a4553..30dd426a 100644
      has_pending_update: bool,
      /// A recent foreign session is available to resume when no update is pending.
      has_foreign_resume: bool,
-@@ -3171,6 +3304,73 @@ struct WelcomeInputCtx<'a> {
+@@ -3171,6 +3334,119 @@ struct WelcomeInputCtx<'a> {
      #[cfg(feature = "local-workspace")]
      session_picker_open: bool,
  }
++impl AppView {
++    /// Workshop: keys while a `sudo` password prompt is up. Printable characters and pastes go to
++    /// the prompt's buffer (masked on screen), Backspace edits it, Enter sends it to the helper
++    /// (`sudo` reads it), Esc / Ctrl+C skip. Nothing reaches the composer.
++    fn handle_workshop_password_input(&mut self, ev: &Event) -> InputOutcome {
++        let Some(ask) = self.workshop_password_ask.as_mut() else {
++            return InputOutcome::Unchanged;
++        };
++        match ev {
++            Event::Paste(text) => {
++                ask.push_str(text.trim_end_matches(['\r', '\n']));
++                InputOutcome::Changed
++            }
++            Event::Key(key) if key.kind != KeyEventKind::Release => {
++                if key!('c', CONTROL).matches(key)
++                    || key!('d', CONTROL).matches(key)
++                    || key.code == KeyCode::Esc
++                {
++                    if let Some(ask) = self.workshop_password_ask.take() {
++                        ask.answer(false);
++                    }
++                    return InputOutcome::Changed;
++                }
++                match key.code {
++                    KeyCode::Enter => {
++                        if let Some(ask) = self.workshop_password_ask.take() {
++                            ask.answer(true);
++                        }
++                    }
++                    KeyCode::Backspace => ask.pop_char(),
++                    KeyCode::Char(c)
++                        if !key
++                            .modifiers
++                            .intersects(crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT | crossterm::event::KeyModifiers::SUPER) =>
++                    {
++                        ask.push_char(c)
++                    }
++                    _ => {}
++                }
++                InputOutcome::Changed
++            }
++            _ => InputOutcome::Unchanged,
++        }
++    }
++}
++
 +/// Workshop: the connection picker (`/model`, `/auth`) owns the keyboard while it is open, on
 +/// every view. Every key is consumed here — printable ones filter the Models view — so nothing
 +/// leaks into the composer behind the overlay. It never starts a login on its own; `Enter`
@@ -458,7 +571,7 @@ index fc9a4553..30dd426a 100644
  /// Welcome view input: overlays first, then composer, then the menu.
  fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
      if let Some(modal) = ctx.import_claude_modal.as_mut() {
-@@ -3750,6 +3950,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3750,6 +4026,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                  return dispatch_menu_action(
                      idx,
                      ctx.has_claude_import,
@@ -466,7 +579,7 @@ index fc9a4553..30dd426a 100644
                      ctx.show_changelog_action,
                      ctx.changelog_markdown.as_deref(),
                  );
-@@ -3888,6 +4089,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3888,6 +4165,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                          return dispatch_menu_action(
                              i,
                              ctx.has_claude_import,
@@ -474,7 +587,7 @@ index fc9a4553..30dd426a 100644
                              ctx.show_changelog_action,
                              ctx.changelog_markdown.as_deref(),
                          );
-@@ -4138,39 +4340,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
+@@ -4138,39 +4416,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
      }
  }
  /// Dispatch an action for a welcome menu item by index.
@@ -533,7 +646,7 @@ index fc9a4553..30dd426a 100644
      }
      if index == quit_idx {
          return InputOutcome::Action(Action::Quit);
-@@ -4477,11 +4682,31 @@ impl AppView {
+@@ -4477,11 +4758,39 @@ impl AppView {
                              } else {
                                  self.tip.as_deref()
                              };
@@ -542,20 +655,28 @@ index fc9a4553..30dd426a 100644
 -                            let model_name = match self.models.reasoning_effort {
 -                                Some(eff) => format!("{model_name_base} ({eff})"),
 -                                None => model_name_base,
-+                            // Workshop: an Engine/Adapter connection names its runtime
-+                            // (`OpenCode · Big Pickle`), never the placeholder shell model, and the
-+                            // home composer carries the two doors as its only hint.
-+                            let workshop_label = self.workshop_connection.composer_label();
++                            // Workshop: an Engine/Adapter connection names its model
++                            // (`Big Pickle`), never the placeholder shell model; on the very first
++                            // launch the home composer carries the two doors as its only hint.
++                            // (field-level borrows: the render closure already holds parts of `self`)
++                            let workshop_label = self
++                                .workshop_fallback
++                                .clone()
++                                .or_else(|| self.workshop_connection.composer_label());
 +                            let model_name = match workshop_label {
 +                                Some(label) => {
-+                                    for text in
-+                                        ["/model to switch", "/auth to connect subscriptions"]
-+                                    {
-+                                        flags_vec.push(crate::views::prompt_widget::PromptFlag {
-+                                            text,
-+                                            color: Some(theme.gray_bright),
-+                                            bold: false,
-+                                        });
++                                    if self.workshop_first_launch {
++                                        for text in
++                                            ["/model to switch", "/auth to connect subscriptions"]
++                                        {
++                                            flags_vec.push(
++                                                crate::views::prompt_widget::PromptFlag {
++                                                    text,
++                                                    color: Some(theme.gray_bright),
++                                                    bold: false,
++                                                },
++                                            );
++                                        }
 +                                    }
 +                                    label
 +                                }
@@ -570,7 +691,7 @@ index fc9a4553..30dd426a 100644
                              };
                              let hero_cta = crate::views::announcements::promo_cta(
                                  &self.active_announcements,
-@@ -4495,7 +4720,15 @@ impl AppView {
+@@ -4495,7 +4804,14 @@ impl AppView {
                                          &self.hidden_announcement_ids,
                                      )
                                  })
@@ -579,15 +700,14 @@ index fc9a4553..30dd426a 100644
 +                                .filter(|a| {
 +                                    workshop_brand::hero_shows_announcement(a.severity.as_deref())
 +                                });
-+                            let has_resumable_sessions = *self
-+                                .welcome_has_resumable_sessions
-+                                .get_or_init(|| {
++                            let has_resumable_sessions =
++                                *self.welcome_has_resumable_sessions.get_or_init(|| {
 +                                    crate::app::workshop::has_resumable_sessions(&self.cwd)
 +                                });
                              let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                  prompt_focus: if self.welcome_prompt_focused {
                                      WelcomePromptFocus::Focused
-@@ -4508,6 +4741,7 @@ impl AppView {
+@@ -4508,6 +4824,7 @@ impl AppView {
                                  consent_state: &self.consent_state,
                                  consent_hover_link: self.welcome_consent_hover_link,
                                  login_label: self.login_label.as_deref(),
@@ -595,7 +715,7 @@ index fc9a4553..30dd426a 100644
                                  auth_code_input: self.auth_code_input.text(),
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
-@@ -4520,6 +4754,7 @@ impl AppView {
+@@ -4520,6 +4837,7 @@ impl AppView {
                                  team_name: self.team_name.as_deref(),
                                  has_access,
                                  has_claude_import: self.has_claude_import,
@@ -603,7 +723,15 @@ index fc9a4553..30dd426a 100644
                                  mouse_pos: self.last_mouse_pos,
                                  is_zdr_blocked: zdr_blocked_for_draw,
                                  session_picker: self.session_picker_entries.as_deref(),
-@@ -4577,6 +4812,7 @@ impl AppView {
+@@ -4534,6 +4852,7 @@ impl AppView {
+                                 pending_hint,
+                                 startup_warnings: &self.startup_warnings,
+                                 pending_update_version: self.pending_update_version.as_deref(),
++                                workshop_updated_to: self.workshop_updated_to.as_deref(),
+                                 foreign_resume_hint: foreign_resume_hint.as_ref(),
+                                 session_picker_content_results: self
+                                     .session_picker_content_results
+@@ -4577,6 +4896,7 @@ impl AppView {
                              );
                              self.welcome_menu_rects = result.menu_rects;
                              self.welcome_show_changelog_action = result.changelog_action_present;
@@ -611,7 +739,7 @@ index fc9a4553..30dd426a 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4824,6 +5060,25 @@ impl AppView {
+@@ -4824,6 +5144,44 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -634,14 +762,34 @@ index fc9a4553..30dd426a 100644
 +                                        if compact { 1 } else { 4 },
 +                                    );
 +                                }
++                                // Workshop: a `sudo` password prompt sits right above the
++                                // composer while one of the engine's commands waits for it.
++                                if let Some(ask) = self.workshop_password_ask.as_ref() {
++                                    let theme = crate::theme::Theme::current();
++                                    let margin: u16 = if compact { 1 } else { 4 };
++                                    // Ends one row above the composer's top border.
++                                    let above_composer = ratatui::layout::Rect {
++                                        x: view_area.x + margin,
++                                        y: view_area.y + 2,
++                                        width: view_area.width.saturating_sub(margin * 2),
++                                        height: view_area.height.saturating_sub(8),
++                                    };
++                                    crate::views::workshop_password::render(
++                                        above_composer,
++                                        f.buffer_mut(),
++                                        &theme,
++                                        ask,
++                                    );
++                                }
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5087,15 @@ impl AppView {
+@@ -4832,13 +5190,17 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
-+                                let picker_open = self.connection_picker.is_some();
++                                let picker_open = self.connection_picker.is_some()
++                                    || self.workshop_password_ask.is_some();
                                  if has_cloud
                                      || self.import_claude_modal.is_some()
                                      || self.tutorial.is_some()
@@ -650,11 +798,12 @@ index fc9a4553..30dd426a 100644
                                      link_spans.clear();
                                  }
 -                                let cursor = if has_cloud || self.tutorial.is_some() {
-+                                let cursor = if has_cloud || self.tutorial.is_some() || picker_open {
++                                let cursor = if has_cloud || self.tutorial.is_some() || picker_open
++                                {
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5377,7 @@ impl AppView {
+@@ -5120,6 +5482,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -662,7 +811,7 @@ index fc9a4553..30dd426a 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5425,7 @@ impl AppView {
+@@ -5167,7 +5530,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -671,99 +820,123 @@ index fc9a4553..30dd426a 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5540,7 @@ impl AppView {
+@@ -5282,6 +5645,7 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
-+        needs_redraw |= self.tick_workshop_progress();
++        needs_redraw |= self.tick_rail_install();
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5637,6 +5896,10 @@ impl AppView {
+@@ -5355,7 +5719,10 @@ impl AppView {
+             }
+             let spinner_frame_tick =
+                 agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
+-            needs_redraw |= !agent.session.state.is_idle() && spinner_frame_tick;
++            // Workshop: an Engine/Adapter turn drives the same turn-status row while the ACP
++            // session stays idle.
++            needs_redraw |= (!agent.session.state.is_idle() || agent.workshop_turn_active)
++                && spinner_frame_tick;
+             needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
+                 && spinner_frame_tick;
+             needs_redraw |= matches!(
+@@ -5637,6 +6004,15 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
-+        // Workshop: the waiting line animates while an Engine/Adapter turn has produced nothing.
-+        if self.workshop_turn_active && self.workshop_turn_progress.is_some() {
++        // Workshop: the turn-status row (spinner, timers) and the running tool row's accent
++        // animate for the whole Engine/Adapter turn, as they do for a shell turn.
++        if self.workshop_turn_active {
 +            return TickDemand::Fast;
++        }
++        // Workshop: an installer's one status line follows its output while it runs.
++        if self.workshop_rail_install.is_some() {
++            return TickDemand::Slow;
 +        }
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5784,6 +6047,54 @@ impl AppView {
+@@ -5784,6 +6160,59 @@ impl AppView {
              ActiveView::Welcome => TickDemand::Slow,
          }
      }
-+    /// Workshop: advance the waiting line of an Engine/Adapter turn (spinner frame, elapsed
-+    /// seconds) while it has produced nothing yet. Every third tick: ~10 frames a second at 30 fps.
-+    fn tick_workshop_progress(&mut self) -> bool {
-+        if !self.workshop_turn_active || self.workshop_turn_progress.is_none() {
-+            return false;
-+        }
-+        self.workshop_progress_tick = self.workshop_progress_tick.wrapping_add(1);
-+        if !self.workshop_progress_tick.is_multiple_of(3) {
-+            return false;
-+        }
-+        self.repaint_workshop_progress()
++    /// Workshop: what the composer calls the active model — the silent fallback's model while it
++    /// carries the session, else the connection's model name. Never a provider or runtime name.
++    pub fn workshop_label(&self) -> Option<String> {
++        self.workshop_fallback
++            .clone()
++            .or_else(|| self.workshop_connection.composer_label())
 +    }
-+    /// Workshop: (re)paint the waiting line from `workshop_turn_progress` — in place when its
-+    /// scrollback entry exists, else as a new system block at the end of the transcript.
-+    pub(crate) fn repaint_workshop_progress(&mut self) -> bool {
-+        use crate::scrollback::block::RenderBlock;
-+        let (Some(agent_id), Some(text)) = (
-+            self.workshop_turn_agent,
-+            self.workshop_turn_progress.as_deref(),
-+        ) else {
++    /// Workshop: the name the failure line uses for the model the user actually chose.
++    pub fn workshop_model_name(&self) -> String {
++        self.workshop_connection
++            .model_name()
++            .or_else(|| self.models.current_model_name())
++            .unwrap_or_else(|| "the model".to_owned())
++    }
++    /// Workshop: keep the picker's status line on the running installer — `Installing Claude
++    /// Code… 12s · <its latest output line>` — until it finishes.
++    fn tick_rail_install(&mut self) -> bool {
++        let Some(install) = &self.workshop_rail_install else {
 +            return false;
 +        };
-+        let elapsed = self
-+            .workshop_turn_started
-+            .map(|t| t.elapsed())
-+            .unwrap_or_default();
-+        let frame = (self.workshop_progress_tick / 3) as usize;
-+        let line = crate::app::workshop::waiting_line(text, elapsed, frame);
-+        let Some(agent) = self.agents.get_mut(&agent_id) else {
-+            return false;
-+        };
-+        if let Some(id) = self.workshop_turn_progress_entry
-+            && let Some(entry) = agent.scrollback.get_by_id_mut(id)
-+            && let RenderBlock::System(block) = &mut entry.block
-+        {
-+            if block.text != line {
-+                block.text = line;
-+                entry.invalidate_cache();
-+                agent.scrollback.mark_height_dirty(id);
++        let line = install.status_line();
++        match self.connection_picker.as_mut() {
++            Some(picker) if picker.status.as_deref() != Some(line.as_str()) => {
++                picker.set_status(line);
++                true
 +            }
-+            return true;
++            _ => false,
 +        }
-+        if let Some(id) = self.workshop_turn_progress_entry.take() {
-+            agent.scrollback.remove_entry(id);
++    }
++    /// Workshop: the turn-status row's activity for the running Engine/Adapter turn — the newest
++    /// tool call still running, else the wait for the model (as the ACP tracker reports the gap
++    /// before the first token and after each tool result).
++    pub(crate) fn set_workshop_turn_activity(
++        &mut self,
++        activity: crate::acp::tracker::TurnActivity,
++    ) {
++        if let Some(agent) = self
++            .workshop_turn_agent
++            .and_then(|id| self.agents.get_mut(&id))
++        {
++            agent.workshop_turn_activity = Some(activity);
 +        }
-+        self.workshop_turn_progress_entry = Some(agent.scrollback.push_block(RenderBlock::system(line)));
-+        true
++    }
++    /// Workshop: the activity after a tool call started or finished.
++    pub(crate) fn sync_workshop_tool_activity(&mut self) {
++        let activity = match self.workshop_turn_running.last() {
++            Some((_, activity)) => activity.clone(),
++            None => crate::acp::tracker::TurnActivity::Waiting(
++                crate::acp::tracker::WaitingReason::Model,
++            ),
++        };
++        self.set_workshop_turn_activity(activity);
 +    }
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6116,8 @@ impl AppView {
+@@ -5805,7 +6234,9 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
 -                let is_busy = agent.session.state.is_busy() && !parked;
 +                // Workshop: an Engine/Adapter turn is busy too (the title spinner shows it).
-+                let is_busy = (agent.session.state.is_busy() || agent.workshop_turn_active) && !parked;
++                let is_busy =
++                    (agent.session.state.is_busy() || agent.workshop_turn_active) && !parked;
                  (name, model, activity, has_perms, elapsed, is_busy)
              } else {
                  (None, None, None, false, None, false)
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-index 483296d4..5e49d16b 100644
+index 483296d4..f0dc43ad 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-@@ -169,6 +169,33 @@ pub(crate) fn test_app() -> AppView {
+@@ -169,6 +169,34 @@ pub(crate) fn test_app() -> AppView {
          auth_url_poll_handle: None,
          deferred_startup: Default::default(),
          auth_use_oauth: false,
 +        connection_picker: None,
++        workshop_password_ask: None,
 +        workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
 +        workshop_engine: None,
 +        workshop_engine_session: None,
@@ -783,17 +956,17 @@ index 483296d4..5e49d16b 100644
 +        workshop_turn_record: Vec::new(),
 +        workshop_turn_prompt_text: None,
 +        workshop_resend: None,
++        workshop_fallback: None,
++        workshop_first_launch: false,
 +        workshop_engine_slot: crate::app::workshop::new_engine_slot(),
 +        workshop_engine_warm_started: false,
-+        workshop_turn_progress_entry: None,
-+        workshop_turn_progress: None,
-+        workshop_turn_started: None,
-+        workshop_progress_tick: 0,
++        workshop_turn_running: Vec::new(),
++        workshop_turn_errored: false,
 +        workshop_last_prompt: None,
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -210,6 +237,8 @@ pub(crate) fn test_app() -> AppView {
+@@ -210,6 +238,8 @@ pub(crate) fn test_app() -> AppView {
          welcome_menu_index: None,
          welcome_menu_rects: Vec::new(),
          welcome_show_changelog_action: false,
@@ -802,15 +975,25 @@ index 483296d4..5e49d16b 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -278,6 +307,7 @@ pub(crate) fn test_app() -> AppView {
+@@ -265,6 +295,7 @@ pub(crate) fn test_app() -> AppView {
+         startup_warnings: Vec::new(),
+         is_api_key_auth: false,
+         pending_update_version: None,
++        workshop_updated_to: None,
+         foreign_resume_launch_generation: 0,
+         foreign_resume_launch: None,
+         quit_for_update: false,
+@@ -278,6 +309,9 @@ pub(crate) fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
 +        pending_workshop_login: None,
++        workshop_rail_install: None,
++        workshop_voice_prefetch: None,
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -616,6 +646,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
+@@ -616,6 +650,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
      );
  }
  #[test]
@@ -818,7 +1001,7 @@ index 483296d4..5e49d16b 100644
  fn needs_animation_gates_prompt_history_tick_delivery() {
      let mut app = test_app_with_agent();
      let id = super::super::agent::AgentId(0);
-@@ -2268,16 +2299,20 @@ fn is_restricted_tier_classification() {
+@@ -2268,16 +2303,26 @@ fn is_restricted_tier_classification() {
      assert!(!is_restricted_tier(Some("X Premium+")));
      assert!(!is_restricted_tier(Some("SomeFutureTier")));
  }
@@ -835,15 +1018,21 @@ index 483296d4..5e49d16b 100644
      let mut app = test_app();
      app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
 -    assert!(app.is_voice_tier_restricted());
-+    assert!(!app.is_voice_tier_restricted(), "local provider: no tier gate");
++    assert!(
++        !app.is_voice_tier_restricted(),
++        "local provider: no tier gate"
++    );
 +    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
-+    assert!(app.is_voice_tier_restricted(), "xAI provider on a free tier is gated");
++    assert!(
++        app.is_voice_tier_restricted(),
++        "xAI provider on a free tier is gated"
++    );
      let mut app = test_app();
 +    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
      let meta = xai_grok_login::AuthMeta {
          subscription_tier: Some("SuperGrok".into()),
          ..Default::default()
-@@ -3198,15 +3233,15 @@ fn welcome_ctrl_d_requires_confirmation() {
+@@ -3198,15 +3243,15 @@ fn welcome_ctrl_d_requires_confirmation() {
  #[test]
  fn menu_action_indices_without_changelog() {
      assert!(matches!(
@@ -862,7 +1051,7 @@ index 483296d4..5e49d16b 100644
          InputOutcome::Action(Action::Quit)
      ));
  }
-@@ -3214,46 +3249,69 @@ fn menu_action_indices_without_changelog() {
+@@ -3214,46 +3259,69 @@ fn menu_action_indices_without_changelog() {
  fn menu_action_changelog_sits_above_quit() {
      let md = Some("# notes");
      assert!(matches!(
@@ -882,8 +1071,7 @@ index 483296d4..5e49d16b 100644
      ));
  }
 +/// Workshop: the release-notes row never dead-ends; without fetched markdown it opens the bundled notes.
- #[test]
--fn menu_action_changelog_before_fetch_is_noop() {
++#[test]
 +fn menu_action_release_notes_before_fetch_opens_bundled_notes() {
 +    match dispatch_menu_action(2, false, true, true, None) {
 +        InputOutcome::Action(Action::ShowReleaseNotes { content, .. }) => {
@@ -893,7 +1081,8 @@ index 483296d4..5e49d16b 100644
 +    }
 +}
 +/// Workshop: with nothing to resume the Resume row is absent and the indices close up.
-+#[test]
+ #[test]
+-fn menu_action_changelog_before_fetch_is_noop() {
 +fn menu_action_indices_without_resume() {
      assert!(matches!(
 -        dispatch_menu_action(2, false, true, None),
@@ -1170,7 +1359,7 @@ index 87f63aef..96f1e81d 100644
          let explicit = self.sandbox.as_deref().filter(|s| !s.is_empty());
          Self::resolve_startup_sandbox(explicit, saved.map(String::from))
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
-index 769d63a9..9eacb9bf 100644
+index 769d63a9..73ddc022 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 @@ -10,6 +10,7 @@ use crate::app::agent_view::AgentView;
@@ -1181,7 +1370,7 @@ index 769d63a9..9eacb9bf 100644
  
  /// `/logout`: ask the shell to clear auth, then return to the login screen.
  pub(super) fn dispatch_logout(_app: &mut AppView) -> Vec<Effect> {
-@@ -203,22 +204,329 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
+@@ -203,22 +204,347 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
      }
  }
  
@@ -1277,10 +1466,12 @@ index 769d63a9..9eacb9bf 100644
 +    }]
 +}
 +
-+/// Make `conn` the active connection and remember it for the next launch.
++/// Make `conn` the active connection and remember it for the next launch. A silent fallback that
++/// was carrying the session ends here: the user chose.
 +fn set_workshop_connection(app: &mut AppView, conn: crate::app::workshop::WorkshopConnection) {
 +    crate::app::workshop::save_active_connection(&conn);
 +    app.workshop_connection = conn;
++    app.workshop_fallback = None;
 +}
 +
 +/// First run (nothing connected yet): land in the composer with the OpenCode engine's default free
@@ -1289,6 +1480,7 @@ index 769d63a9..9eacb9bf 100644
 +/// session are established in-process exactly as selecting the row in `/model` would; `/model`
 +/// and `/auth` remain the only doors afterwards.
 +pub(super) fn dispatch_workshop_first_run(app: &mut AppView) -> Vec<Effect> {
++    app.workshop_first_launch = true;
 +    set_workshop_connection(app, crate::app::workshop::first_run_connection());
 +    match crate::app::workshop::activate_placeholder_session(&app.workshop_connection) {
 +        Ok(key) => start_workshop_activation(app, key),
@@ -1301,51 +1493,49 @@ index 769d63a9..9eacb9bf 100644
 +    }
 +}
 +
-+/// The OpenCode engine could not start for a turn (offline, installer failed): say so in one
-+/// line, switch to the Kilo keyless pool, and resend the prompt once the switch has completed
-+/// (`handle_auth_complete` drains `workshop_resend`).
++/// The OpenCode model could not start for a turn (offline, installer failed, `opencode serve`
++/// down): fall back *silently* to the keyless community pool — activate its model as the shell's,
++/// resend the prompt once the switch has completed (`handle_auth_complete` drains
++/// `workshop_resend`), and let the composer name the model that answers. The cause goes to the
++/// log; the user sees a failure line only if this fallback cannot even be set up.
 +pub(super) fn dispatch_workshop_engine_unavailable(
 +    app: &mut AppView,
 +    agent_id: AgentId,
 +    reason: String,
 +    text: String,
 +) -> Vec<Effect> {
++    crate::app::workshop::log_failure_cause(&reason);
++    let failed = |app: &mut AppView, cause: String| {
++        crate::app::workshop::log_failure_cause(&format!("fallback unavailable: {cause}"));
++        let line = crate::app::workshop::failure_line(&app.workshop_model_name());
++        if let Some(agent) = app.agents.get_mut(&agent_id) {
++            agent.scrollback.push_block(RenderBlock::system_error(line));
++            agent.workshop_retry_prompt = Some(text.clone());
++        }
++        Vec::new()
++    };
 +    let Some(kilo) = crate::app::workshop::kilo_fallback_model() else {
-         return vec![];
-     };
-+    let reason = reason.lines().next().unwrap_or_default().trim().to_owned();
++        return failed(app, "no fallback model in the catalog".into());
++    };
 +    let plan = match crate::app::workshop::activate_catalog_model(&kilo) {
 +        Ok(plan) => plan,
-+        Err(e) => {
-+            if let Some(agent) = app.agents.get_mut(&agent_id) {
-+                agent.scrollback.push_block(RenderBlock::system(format!(
-+                    "OpenCode unavailable ({reason}); the Kilo fallback failed too: {e}. /model to pick another model."
-+                )));
-+            }
-+            return vec![];
-+        }
++        Err(e) => return failed(app, e),
 +    };
 +    if let Some(agent) = app.agents.get_mut(&agent_id) {
-+        // The engine attempt's bubble is re-rendered by the resend; drop it so the prompt shows once.
++        // The first attempt's bubble is re-rendered by the resend; drop it so the prompt shows once.
 +        if let Some(entry) = app.workshop_turn_prompt_entry.take() {
 +            agent.scrollback.remove_entry(entry);
 +        }
 +    }
 +    crate::app::workshop::export_env(&plan.env);
-+    set_workshop_connection(app, crate::app::workshop::WorkshopConnection::Shell);
-+    // The notice is rendered right under the resent prompt (after the page flip the resend
-+    // causes), so the cause is on screen with the message it applies to.
-+    let notice = format!(
-+        "OpenCode unavailable ({reason}) — using {} (Kilo · free shared pool) instead.",
-+        plan.display_name
-+    );
-+    app.workshop_resend = Some((agent_id, text, notice));
++    // The connection stays what the user has (the next launch tries it again); only this
++    // process routes through the fallback, and the composer names the model that answers.
++    app.workshop_fallback = Some(workshop_auth::plain_model_name(&plan.display_name));
++    app.workshop_resend = Some((agent_id, text));
 +    app.auth_return_view = Some(ActiveView::Agent(agent_id));
 +    start_workshop_activation(app, plan.key)
 +}
- 
--    // Show the auth UI when triggered from inside a session
--    // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
++
 +/// Close the picker and return to the view it was opened from.
 +fn close_connection_picker(app: &mut AppView) {
 +    app.connection_picker = None;
@@ -1361,8 +1551,8 @@ index 769d63a9..9eacb9bf 100644
 +) -> Vec<Effect> {
 +    use workshop_auth::PickerOutcome;
 +    let Some(picker) = app.connection_picker.as_mut() else {
-+        return vec![];
-+    };
+         return vec![];
+     };
 +    match picker.handle(input) {
 +        PickerOutcome::Changed => vec![],
 +        PickerOutcome::Refresh => {
@@ -1405,9 +1595,8 @@ index 769d63a9..9eacb9bf 100644
 +        }
 +        PickerOutcome::ConnectProvider(provider_id) => {
 +            if provider_id == "openrouter" {
-+                picker.set_status(
-+                    "Opening OpenRouter sign-in in your browser (loopback callback)…",
-+                );
++                picker
++                    .set_status("Opening OpenRouter sign-in in your browser (loopback callback)…");
 +                vec![Effect::WorkshopOpenRouterSignIn]
 +            } else {
 +                let label = crate::app::workshop::key_prompt_label(&provider_id);
@@ -1448,6 +1637,22 @@ index 769d63a9..9eacb9bf 100644
 +            app.pending_workshop_login = Some((rail, argv));
 +            vec![]
 +        }
++        PickerOutcome::RailInstall(rail) => {
++            // One keypress: the vendor's official installer runs in the background with one
++            // status line; when it is done the vendor's own sign-in follows (the Connect path).
++            if let Some(running) = &app.workshop_rail_install {
++                picker.set_status(format!(
++                    "Still installing {}; one at a time.",
++                    running.rail.vendor().display_name()
++                ));
++                return vec![];
++            }
++            let install = crate::app::workshop::RailInstall::new(rail);
++            picker.set_status(install.status_line());
++            let progress = install.progress.clone();
++            app.workshop_rail_install = Some(install);
++            vec![Effect::WorkshopInstallRail { rail, progress }]
++        }
 +        PickerOutcome::SelectRailModel(rail, model) => {
 +            set_workshop_connection(
 +                app,
@@ -1475,13 +1680,15 @@ index 769d63a9..9eacb9bf 100644
 +        }
 +    }
 +}
-+
+ 
+-    // Show the auth UI when triggered from inside a session
+-    // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
 +/// After config.toml gained `[model.<key>]`: reload the shell's model list, authenticate with the
 +/// non-interactive `xai.api_key` method (the anonymous sentinel or a real key counts), and switch
 +/// the active session. Completion arrives as `AuthComplete` / `AuthFailed` for `request_seq`.
 +fn start_workshop_activation(app: &mut AppView, model_id: String) -> Vec<Effect> {
-+    // Stamp the composer label from the active connection: `None` for Direct/Local (Shell) → the
-+    // shell model name shows; `OpenCode · Big Pickle` / `Claude · {model}` for Engine/Adapter.
++    // Stamp the composer label: `None` for Direct/Local (Shell) → the shell model name shows; the
++    // model's name for Engine/Adapter; the answering model's name while the fallback carries it.
 +    crate::app::workshop::sync_agent_views(app);
 +    abort_prior_auth(app);
 +    let request_seq = app.next_auth_request_seq;
@@ -1522,7 +1729,7 @@ index 769d63a9..9eacb9bf 100644
          show_welcome(app);
      }
  
-@@ -240,6 +548,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
+@@ -240,6 +566,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
              method_id,
              use_oauth: app.auth_use_oauth,
              force_interactive: true,
@@ -1530,7 +1737,7 @@ index 769d63a9..9eacb9bf 100644
          },
          Effect::PollAuthUrl { request_seq },
      ]
-@@ -263,6 +572,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
+@@ -263,6 +590,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
      app.auth_state = AuthState::Done;
      app.auth_show_raw_url = false;
      app.auth_code_input.reset();
@@ -1539,7 +1746,7 @@ index 769d63a9..9eacb9bf 100644
      restore_auth_return_view(app, return_view);
      // This runs on all agents because the login may have been started from the dashboard
      // Clearing the stash alone is not enough
-@@ -314,6 +625,18 @@ pub(super) fn handle_auth_complete(
+@@ -314,6 +643,15 @@ pub(super) fn handle_auth_complete(
          app.welcome_prompt_focused = !app.is_access_blocked();
          app.auth_code_input.reset();
  
@@ -1548,30 +1755,27 @@ index 769d63a9..9eacb9bf 100644
 +        // the picker and hand the user back to the home prompt. The composer label is stamped at
 +        // session creation from `workshop_connection` (see `configure_agent_composer`).
 +        if app.connection_picker.take().is_some() {
-+            let label = app
-+                .workshop_connection
-+                .composer_label()
-+                .unwrap_or_else(|| "model".to_owned());
++            let label = app.workshop_label().unwrap_or_else(|| "model".to_owned());
 +            app.show_toast(&format!("Connected: {label}"));
 +        }
 +
          // Mid-session re-auth (`/login` or a 401 prompt): restore the view the user was on instead of running the startup load-session flow
          // The session state lives in `app.agents`, independent of `active_view`, so it is preserved across the auth detour
          if let Some(return_view) = app.auth_return_view.take() {
-@@ -327,6 +650,19 @@ pub(super) fn handle_auth_complete(
+@@ -327,6 +665,19 @@ pub(super) fn handle_auth_complete(
              // Auth is global, so handle every agent (the login may have been started from the dashboard, not the agent that 401'd)
              let mut retry_effects = Vec::new();
              let mut page_flips = Vec::new();
-+            // Workshop: the prompt whose OpenCode turn could not start goes out again on the Kilo
-+            // fallback that has just been activated (`dispatch_workshop_engine_unavailable`).
-+            if let Some((id, text, notice)) = app.workshop_resend.take()
++            // Workshop: the prompt whose OpenCode turn could not start goes out again on the
++            // fallback model that has just been activated — silently; the composer already
++            // names the model that will answer (`dispatch_workshop_engine_unavailable`).
++            if let Some((id, text)) = app.workshop_resend.take()
 +                && let Some(agent) = app.agents.get_mut(&id)
 +            {
 +                agent
 +                    .session
 +                    .enqueue_entry(text, crate::app::agent::QueueEntryKind::Prompt);
 +                let drain = maybe_drain_queue(agent, &mut app.pending_image_notices);
-+                agent.scrollback.push_block(RenderBlock::system(notice));
 +                retry_effects.extend(drain.effects);
 +                page_flips.push((agent.session.id, drain.page_flip_entry));
 +            }
@@ -1579,7 +1783,7 @@ index 769d63a9..9eacb9bf 100644
                  strip_trailing_auth_error_blocks(agent);
                  // Auto-resubmit the prompt that failed on the expired login so the user doesn't have to retype it
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
-index 42279599..dade7ffe 100644
+index 42279599..e023ec86 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
 @@ -24,7 +24,28 @@ fn next_rewrite_nonce() -> u64 {
@@ -1606,7 +1810,7 @@ index 42279599..dade7ffe 100644
 +        });
 +    format!(
 +        "Thanks — saved to {saved} (nothing is sent anywhere). To reach the maintainer, open this prefilled issue: {}",
-+        workshop_brand::feedback_issue_url(text)
++        workshop_brand::feedback_issue_url(text, xai_grok_version::full_version())
 +    )
 +}
  
@@ -1669,7 +1873,7 @@ index 89c36b27..ae9d42f9 100644
          Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
          Action::CopyAuthUrl => {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
-index b00317f2..b3d7b903 100644
+index b00317f2..83c2e937 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 @@ -281,7 +281,7 @@ pub(super) fn maybe_show_x11_primary_paste_hint(
@@ -1681,7 +1885,7 @@ index b00317f2..b3d7b903 100644
  /// Every other failure (`TextRead`, `TargetInsertion`, `AlreadyReported`) is a real dead end and must keep toasting.
  pub(super) fn wrap_host_image_request_eligible(completion: ClipboardPasteCompletion) -> bool {
      matches!(
-@@ -999,6 +999,77 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -999,6 +999,108 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              }
              vec![]
          }
@@ -1729,6 +1933,37 @@ index b00317f2..b3d7b903 100644
 +            }
 +            vec![]
 +        }
++        TaskResult::WorkshopRailInstallDone { rail, result } => {
++            app.workshop_rail_install = None;
++            let name = rail.vendor().display_name();
++            let Some(picker) = app.connection_picker.as_mut() else {
++                // The picker was closed meanwhile: the rails re-probe on the next open.
++                if let Err(e) = result {
++                    tracing::warn!(vendor = rail.vendor().id(), error = %e, "workshop: installer failed");
++                }
++                return vec![];
++            };
++            match result {
++                Ok(()) => {
++                    // Installed: flow straight into the vendor's own sign-in — the Connect
++                    // path, attached to the terminal — with no further keypress.
++                    let argv = crate::app::workshop::rail_login_argv(rail);
++                    picker.set_status(format!("Installed {name} \u{b7} signing you in\u{2026}"));
++                    app.pending_workshop_login = Some((rail, argv));
++                    vec![]
++                }
++                Err(reason) => {
++                    picker.set_status(format!(
++                        "Couldn't install {name} \u{2014} {reason} \u{b7} Enter to retry"
++                    ));
++                    vec![]
++                }
++            }
++        }
++        TaskResult::WorkshopVoicePrefetchDone => {
++            // The outcome lives in the shared status `/voice` reads; nothing to draw here.
++            vec![]
++        }
 +        TaskResult::WorkshopLoginTerminalDone { rail, exit } => {
 +            use workshop_detect::process::InteractiveExit;
 +            if let Some(picker) = app.connection_picker.as_mut() {
@@ -1759,7 +1994,7 @@ index b00317f2..b3d7b903 100644
          TaskResult::ChangelogFetched { markdown, entries } => {
              app.changelog_markdown = markdown;
              app.changelog_bullets =
-@@ -1172,6 +1243,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1172,6 +1274,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              } = &app.auth_state
                  && *current_seq == request_seq
              {
@@ -1771,7 +2006,7 @@ index b00317f2..b3d7b903 100644
                  app.auth_state = AuthState::Pending { error: Some(error) };
                  app.auth_code_input.reset();
              }
-@@ -1185,6 +1261,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1185,6 +1292,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
          } => handle_auth_url_ready(app, request_seq, auth_url, external, mode),
          TaskResult::AuthCodeSubmitted { .. } => vec![],
          TaskResult::AuthCancelComplete => vec![],
@@ -1780,7 +2015,7 @@ index b00317f2..b3d7b903 100644
              use crate::views::extensions_modal::TabDataState;
              if let Some(agent) = app.agents.get_mut(&agent_id)
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
-index 0cbf3632..49e7727c 100644
+index 0cbf3632..94a93b19 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 @@ -394,7 +394,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
@@ -1792,7 +2027,7 @@ index 0cbf3632..49e7727c 100644
      let seq = authenticating_seq(&app);
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -554,34 +554,603 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
+@@ -554,34 +554,625 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
      );
  }
  
@@ -1887,7 +2122,12 @@ index 0cbf3632..49e7727c 100644
 +    assert!(model.is_default, "the engine's own default model is active");
 +    assert_eq!(
 +        app.workshop_connection.composer_label().as_deref(),
-+        Some("OpenCode · Big Pickle")
++        Some("Big Pickle"),
++        "the composer names the model only"
++    );
++    assert!(
++        app.workshop_first_launch,
++        "the first launch carries the doors hint"
 +    );
 +    assert_eq!(effects.len(), 1, "exactly the activation, got {effects:?}");
 +    assert!(
@@ -1949,7 +2189,12 @@ index 0cbf3632..49e7727c 100644
 +        "the active engine model is the highlighted row"
 +    );
 +    let cached = || workshop_auth::PickerSnapshot {
-+        rows: workshop_auth::models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]),
++        rows: workshop_auth::models_rows(
++            &workshop_providers::Catalog::builtin(),
++            |_| false,
++            &[],
++            &[],
++        ),
 +        ..workshop_auth::PickerSnapshot::default()
 +    };
 +    let effects = dispatch(
@@ -1957,10 +2202,13 @@ index 0cbf3632..49e7727c 100644
 +        &mut app,
 +    );
 +    assert!(
-+        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs {
-+            force: false,
-+            engine: None
-+        }]),
++        matches!(
++            effects.as_slice(),
++            [Effect::WorkshopRefreshCatalogs {
++                force: false,
++                engine: None
++            }]
++        ),
 +        "the cached load starts the live refresh, got {effects:?}"
 +    );
 +    let picker = app.connection_picker.as_ref().expect("picker open");
@@ -1987,10 +2235,10 @@ index 0cbf3632..49e7727c 100644
 +        PickerTab::Models
 +    );
 +    assert!(
-+        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs {
-+            force: false,
-+            ..
-+        }]),
++        matches!(
++            effects.as_slice(),
++            [Effect::WorkshopRefreshCatalogs { force: false, .. }]
++        ),
 +        "got {effects:?}"
 +    );
 +}
@@ -2011,14 +2259,20 @@ index 0cbf3632..49e7727c 100644
 +    app.auth_methods.clear();
 +    app.login_method_id = None;
 +    let effects = dispatch(Action::Login, &mut app);
-+    assert!(no_refresh(&effects), "Login fetches nothing, got {effects:?}");
++    assert!(
++        no_refresh(&effects),
++        "Login fetches nothing, got {effects:?}"
++    );
 +    assert!(!app.connection_picker.as_ref().unwrap().refresh_pending);
 +    // `/auth` while the picker is open: still nothing.
 +    let effects = dispatch(
 +        Action::OpenConnectionPicker(PickerTab::Subscriptions),
 +        &mut app,
 +    );
-+    assert!(no_refresh(&effects), "/auth fetches nothing, got {effects:?}");
++    assert!(
++        no_refresh(&effects),
++        "/auth fetches nothing, got {effects:?}"
++    );
 +    app.connection_picker = None;
 +    let effects = dispatch(
 +        Action::OpenConnectionPicker(PickerTab::Subscriptions),
@@ -2031,10 +2285,13 @@ index 0cbf3632..49e7727c 100644
 +    // `r` in the picker: a forced refresh (plus the reload it ends with).
 +    let effects = dispatch(Action::ConnectionPicker(PickerInput::Refresh), &mut app);
 +    assert!(
-+        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs {
-+            force: true,
-+            engine: None
-+        }]),
++        matches!(
++            effects.as_slice(),
++            [Effect::WorkshopRefreshCatalogs {
++                force: true,
++                engine: None
++            }]
++        ),
 +        "got {effects:?}"
 +    );
 +    let picker = app.connection_picker.as_ref().unwrap();
@@ -2133,11 +2390,12 @@ index 0cbf3632..49e7727c 100644
 +    );
 +}
 +
-+/// The OpenCode engine could not start for a turn: one system line, the Kilo keyless pool becomes
-+/// the (shell) connection, the session is switched to it, and the prompt goes out again once the
-+/// activation completes.
++/// The OpenCode model could not start: Workshop falls back *silently*. The keyless pool's model is
++/// activated as the shell's, the connection the user has stays what it is (the next launch tries
++/// it again), the composer names the model that will answer, and the prompt goes out again once
++/// the activation completes — with no notice, no "Kilo", no "fallback".
 +#[test]
-+fn engine_unavailable_falls_back_to_kilo_and_resends_the_prompt() {
++fn engine_unavailable_falls_back_silently_and_resends_the_prompt() {
 +    use crate::scrollback::block::RenderBlock;
 +    let mut app = test_app_with_agent();
 +    let id = AgentId(0);
@@ -2151,6 +2409,16 @@ index 0cbf3632..49e7727c 100644
 +        .push_block(RenderBlock::user_prompt("hello"));
 +    app.workshop_turn_prompt_entry = Some(entry);
 +    app.workshop_turn_agent = Some(id);
++    let system_blocks = |app: &AppView| -> Vec<String> {
++        let agent = test_agent(app, id);
++        (0..agent.scrollback.len())
++            .filter_map(|i| agent.scrollback.entry(i))
++            .filter_map(|e| match &e.block {
++                RenderBlock::System(b) => Some(b.text.clone()),
++                _ => None,
++            })
++            .collect()
++    };
 +
 +    let effects = dispatch(
 +        Action::WorkshopEngineUnavailable {
@@ -2162,13 +2430,18 @@ index 0cbf3632..49e7727c 100644
 +    );
 +
 +    assert!(
-+        app.workshop_connection.is_shell(),
-+        "Kilo is a Direct API (shell) connection"
++        app.workshop_connection.is_engine(),
++        "the user's connection is untouched; only this process routes through the fallback"
 +    );
-+    // The notice is held back until the resend has painted the prompt, so it lands under it.
++    assert_eq!(
++        app.workshop_fallback.as_deref(),
++        Some("Nemotron 3 Super"),
++        "the composer names the answering model, plainly"
++    );
++    assert_eq!(app.workshop_label().as_deref(), Some("Nemotron 3 Super"));
 +    assert!(
 +        test_agent(&app, id).scrollback.index_of_id(entry).is_none(),
-+        "the engine attempt's bubble is dropped; the resend paints it once"
++        "the first attempt's bubble is dropped; the resend paints it once"
 +    );
 +    assert!(
 +        matches!(
@@ -2176,27 +2449,22 @@ index 0cbf3632..49e7727c 100644
 +            [Effect::WorkshopActivateModel { session: Some((sid, _)), model_id, .. }]
 +                if *sid == id && model_id.starts_with("kilo")
 +        ),
-+        "switches the open session to the Kilo model, got {effects:?}"
++        "switches the open session to the fallback model, got {effects:?}"
 +    );
 +    assert_eq!(
-+        app.workshop_resend.as_ref().map(|(_, t, _)| t.as_str()),
++        app.workshop_resend.as_ref().map(|(_, t)| t.as_str()),
 +        Some("hello")
 +    );
-+    let notice = app
-+        .workshop_resend
-+        .as_ref()
-+        .map(|(_, _, n)| n.clone())
-+        .unwrap_or_default();
 +    assert!(
-+        notice.starts_with("OpenCode unavailable (installer failed: offline)")
-+            && notice.contains("Kilo"),
-+        "one-line notice: {notice:?}"
++        system_blocks(&app).is_empty(),
++        "nothing is said about the switch: {:?}",
++        system_blocks(&app)
 +    );
 +    let AuthState::Authenticating { request_seq, .. } = app.auth_state else {
 +        panic!("activation in flight, got {:?}", app.auth_state);
 +    };
 +
-+    let effects = dispatch(
++    dispatch(
 +        Action::TaskComplete(TaskResult::AuthComplete {
 +            request_seq,
 +            meta: None,
@@ -2204,33 +2472,19 @@ index 0cbf3632..49e7727c 100644
 +        &mut app,
 +    );
 +    assert!(app.workshop_resend.is_none(), "the resend was consumed");
-+    assert!(
-+        last_system_text(&app, id).starts_with("OpenCode unavailable"),
-+        "the notice is rendered with the resent prompt: {:?}",
-+        last_system_text(&app, id)
-+    );
++    let said = system_blocks(&app).join("\n").to_ascii_lowercase();
++    for word in ["kilo", "fallback", "engine", "unavailable", "opencode"] {
++        assert!(
++            !said.contains(word),
++            "no plumbing on screen ({word:?}): {said}"
++        );
++    }
 +    assert_eq!(app.active_view, ActiveView::Agent(id));
-+    let agent = test_agent(&app, id);
 +    assert!(
-+        agent.session.pending_prompts.is_empty() && !agent.session.state.is_idle(),
-+        "the prompt was drained into a new turn"
++        test_agent(&app, id).workshop_model_label.as_deref() == Some("Nemotron 3 Super"),
++        "the composer label is the answering model: {:?}",
++        test_agent(&app, id).workshop_model_label
 +    );
-+    assert!(
-+        effects.iter().any(|e| matches!(
-+            e,
-+            Effect::SendPromptBlocks { .. } | Effect::SendPrompt { .. }
-+        )),
-+        "the prompt goes out on the shell path, got {effects:?}"
-+    );
-+    let bubbles = (0..agent.scrollback.len())
-+        .filter(|i| {
-+            matches!(
-+                agent.scrollback.get(*i).map(|e| &e.block),
-+                Some(RenderBlock::UserPrompt(_))
-+            )
-+        })
-+        .count();
-+    assert_eq!(bubbles, 1, "the prompt shows exactly once");
 +}
 +
 +/// Enter on a non-xAI card (Local, OpenAI, …) opens setup details and never emits `Authenticate`.
@@ -2289,7 +2543,10 @@ index 0cbf3632..49e7727c 100644
 +        assert!(*force_interactive);
 +        assert_eq!(method_id.0.as_ref(), "grok.com");
 +    }
-+    assert!(app.connection_picker.is_none(), "picker closes when the flow starts");
++    assert!(
++        app.connection_picker.is_none(),
++        "picker closes when the flow starts"
++    );
 +}
 +
 +/// Picker on the Subscriptions view (`/auth`) with every rail signed out (Connect shown), Claude
@@ -2407,7 +2664,7 @@ index 0cbf3632..49e7727c 100644
  }
  
  /// Puts the app in `Authenticating` with a live task's abort handle installed, as the event loop would.
-@@ -591,7 +1160,7 @@ fn install_live_auth_task(
+@@ -591,7 +1182,7 @@ fn install_live_auth_task(
      app: &mut AppView,
      rt: &tokio::runtime::Runtime,
  ) -> (tokio::task::JoinHandle<()>, u64) {
@@ -2416,7 +2673,7 @@ index 0cbf3632..49e7727c 100644
      let task = rt.spawn(std::future::pending::<()>());
      match &mut app.auth_state {
          AuthState::Authenticating {
-@@ -621,7 +1190,7 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -621,7 +1212,7 @@ fn login_while_authenticating_aborts_prior_task() {
      let mut app = test_app_with_agent();
      let (prior_task, first_seq) = install_live_auth_task(&mut app, &rt);
  
@@ -2425,7 +2682,7 @@ index 0cbf3632..49e7727c 100644
  
      rt.block_on(async {
          assert!(
-@@ -651,12 +1220,12 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -651,12 +1242,12 @@ fn login_while_authenticating_aborts_prior_task() {
  #[test]
  fn stale_auth_complete_after_relogin_is_ignored() {
      let mut app = test_app_with_agent();
@@ -2440,7 +2697,7 @@ index 0cbf3632..49e7727c 100644
  
      dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -722,7 +1291,7 @@ fn cancel_login_aborts_prior_task() {
+@@ -722,7 +1313,7 @@ fn cancel_login_aborts_prior_task() {
  #[test]
  fn cancel_login_restores_view() {
      let mut app = test_app_with_agent();
@@ -2463,14 +2720,15 @@ index 2049a2d9..3ec2aebf 100644
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-index bf64193d..034d83ef 100644
+index bf64193d..bb255135 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-@@ -181,6 +181,33 @@ fn test_app() -> AppView {
+@@ -181,6 +181,34 @@ fn test_app() -> AppView {
          auth_url_poll_handle: None,
          deferred_startup: Default::default(),
          auth_use_oauth: false,
 +        connection_picker: None,
++        workshop_password_ask: None,
 +        workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
 +        workshop_engine: None,
 +        workshop_engine_session: None,
@@ -2490,17 +2748,17 @@ index bf64193d..034d83ef 100644
 +        workshop_turn_record: Vec::new(),
 +        workshop_turn_prompt_text: None,
 +        workshop_resend: None,
++        workshop_fallback: None,
++        workshop_first_launch: false,
 +        workshop_engine_slot: crate::app::workshop::new_engine_slot(),
 +        workshop_engine_warm_started: false,
-+        workshop_turn_progress_entry: None,
-+        workshop_turn_progress: None,
-+        workshop_turn_started: None,
-+        workshop_progress_tick: 0,
++        workshop_turn_running: Vec::new(),
++        workshop_turn_errored: false,
 +        workshop_last_prompt: None,
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -222,6 +249,8 @@ fn test_app() -> AppView {
+@@ -222,6 +250,8 @@ fn test_app() -> AppView {
          welcome_menu_index: None,
          welcome_menu_rects: Vec::new(),
          welcome_show_changelog_action: false,
@@ -2509,15 +2767,25 @@ index bf64193d..034d83ef 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -289,6 +318,7 @@ fn test_app() -> AppView {
+@@ -277,6 +307,7 @@ fn test_app() -> AppView {
+         startup_warnings: Vec::new(),
+         is_api_key_auth: false,
+         pending_update_version: None,
++        workshop_updated_to: None,
+         foreign_resume_launch_generation: 0,
+         foreign_resume_launch: None,
+         quit_for_update: false,
+@@ -289,6 +320,9 @@ fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
 +        pending_workshop_login: None,
++        workshop_rail_install: None,
++        workshop_voice_prefetch: None,
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -585,6 +615,25 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
+@@ -585,6 +619,25 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
      std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
      sess_dir
  }
@@ -2708,7 +2976,7 @@ index ac5de69d..bb7f2994 100644
      match acp_send(req, tx).await {
          Ok(resp) => {
 diff --git a/crates/codegen/xai-grok-pager/src/app/effects/mod.rs b/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
-index 1c507697..5f4a9b72 100644
+index 1c507697..89312ddd 100644
 --- a/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
 @@ -214,7 +214,7 @@ pub(crate) fn execute(
@@ -2728,7 +2996,7 @@ index 1c507697..5f4a9b72 100644
          } => {
              let tx = acp_tx.clone();
              let abort_handle = tasks
-@@ -2327,11 +2328,110 @@ pub(crate) fn execute(
+@@ -2327,11 +2328,133 @@ pub(crate) fn execute(
                              method_id,
                              use_oauth,
                              force_interactive,
@@ -2836,11 +3104,34 @@ index 1c507697..5f4a9b72 100644
 +                    }
 +                });
 +        }
++        Effect::WorkshopInstallRail { rail, progress } => {
++            tasks.spawn(async move {
++                let result = tokio::task::spawn_blocking(move || {
++                    crate::app::workshop::run_rail_installer(rail, progress)
++                })
++                .await
++                .unwrap_or_else(|e| Err(format!("installer task: {e}")));
++                TaskResult::WorkshopRailInstallDone { rail, result }
++            });
++        }
++        Effect::WorkshopVoicePrefetch {
++            shared,
++            delay,
++            home,
++            voice_dir,
++            tier,
++        } => {
++            tasks.spawn(async move {
++                tokio::time::sleep(delay).await;
++                workshop_voice::prefetch::run(home, voice_dir, tier, shared).await;
++                TaskResult::WorkshopVoicePrefetchDone
++            });
++        }
          Effect::PollAuthUrl { request_seq } => {
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..01185f59 100644
+index eda61b3c..53c7d833 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -2991,13 +3282,20 @@ index eda61b3c..01185f59 100644
      app.yolo_policy_block = launch_yolo.policy_block;
      if let Some(warning) = launch_yolo.blocked_warning {
          tracing::warn!("{warning}");
-@@ -1271,19 +1346,35 @@ pub(crate) async fn run(
+@@ -1271,19 +1346,42 @@ pub(crate) async fn run(
              "auto-triggering login at startup"
          );
      }
 +    // Workshop: Engine/Adapter connections are not shell models; restore the one this home last
 +    // activated so a restart lands on the same runtime (`OpenCode · Big Pickle`, `Claude · …`).
 +    app.workshop_connection = crate::app::workshop::load_active_connection();
++    // Workshop: the first launch of a version the silent updater installed says so once.
++    if !xai_grok_version::IS_DEV_BUILD {
++        app.workshop_updated_to = crate::app::workshop_update::note_launch(
++            &xai_dirs::grok_home(),
++            xai_grok_version::VERSION,
++        );
++    }
 +    // Workshop: `--resume ses_…` / `-c` on an engine conversation (resolved by `app::run`, which
 +    // kept the shell on a new session) is replayed into the first agent shown.
 +    app.workshop_engine_resume = workshop_engine_resume;
@@ -3034,7 +3332,22 @@ index eda61b3c..01185f59 100644
      };
      app.has_external_auth_provider =
          crate::slash::commands::usage::detect_external_auth_provider(&app.auth_methods);
-@@ -1632,6 +1723,15 @@ pub(crate) async fn run(
+@@ -1359,6 +1457,14 @@ pub(crate) async fn run(
+     }
+     app.voice_config.client_identifier = crate::client_identity::HEADLESS_CLIENT_TYPE.to_string();
+     app.voice_config.user_agent = crate::client_identity::client_user_agent();
++    // Workshop: on a returning launch voice gets ready in the background half a minute in (a
++    // first run waits for its first reply, see `handle_workshop_turn_msg`).
++    if !needs_interactive_login {
++        post_render_effects.extend(crate::app::workshop::maybe_start_voice_prefetch(
++            &mut app,
++            std::time::Duration::from_secs(30),
++        ));
++    }
+     app.zdr_access_enabled = xai_grok_shell::util::config::resolve_zdr_access_enabled(
+         requirements.as_ref(),
+         user_config.as_ref(),
+@@ -1632,6 +1738,15 @@ pub(crate) async fn run(
      let (progress_tx, mut progress_rx) =
          tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
      let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
@@ -3050,7 +3363,7 @@ index eda61b3c..01185f59 100644
      let voice_auth_factory = connection.auth_manager.clone();
      let mut tick_interval = tick_interval;
      let mut animation_tick_at: Option<Instant> = None;
-@@ -1759,6 +1859,16 @@ pub(crate) async fn run(
+@@ -1759,6 +1874,16 @@ pub(crate) async fn run(
                  git_ref: args.worktree_ref.clone(),
              })
          }
@@ -3067,7 +3380,7 @@ index eda61b3c..01185f59 100644
          MaterializedStartup::NewAuto => None,
      };
      if let Some(action) = startup_action {
-@@ -1892,7 +2002,7 @@ pub(crate) async fn run(
+@@ -1892,7 +2017,7 @@ pub(crate) async fn run(
          if process_effects(workspace_effects, &mut tasks, &mut app, &progress_tx) {
              break;
          }
@@ -3076,7 +3389,7 @@ index eda61b3c..01185f59 100644
              &mut app,
              terminal,
              &input_paused,
-@@ -1902,9 +2012,16 @@ pub(crate) async fn run(
+@@ -1902,9 +2027,16 @@ pub(crate) async fn run(
              &mut suspend_retry_after,
              &mut suspend_wait_reports,
          ) {
@@ -3096,7 +3409,30 @@ index eda61b3c..01185f59 100644
          }
          if run_pending_mode_switch(
              &mut app,
-@@ -2314,6 +2431,7 @@ pub(crate) async fn run(
+@@ -1921,6 +2053,22 @@ pub(crate) async fn run(
+         ) {
+             break;
+         }
++        // Workshop: a default install ships no voice helper or model; they arrive in the
++        // background. A press before both are here says how far along that is (and asks for the
++        // setup if it is not running) instead of starting a pipeline that would fail.
++        if matches!(app.voice_state, VoiceState::ColdStart { .. })
++            && app.voice_cmd_tx.is_none()
++            && app.voice_config.provider == xai_grok_voice::VoiceProvider::Local
++            && let Some((line, setup)) = crate::app::workshop::voice_getting_ready(&mut app)
++        {
++            app.voice_state = VoiceState::Idle;
++            app.voice_ui_active = false;
++            app.show_toast(&line);
++            if process_effects(setup, &mut tasks, &mut app, &progress_tx) {
++                break;
++            }
++            presenter.request_presentation(&mut app, terminal, false);
++        }
+         if let VoiceState::ColdStart { hold, target } = app.voice_state {
+             if app.voice_cmd_tx.is_none() && app.voice_can_start_pipeline() {
+                 let voice_auth = crate::voice::build_voice_auth(voice_auth_factory.clone());
+@@ -2314,6 +2462,7 @@ pub(crate) async fn run(
              maybe_ev = input_rx.recv() => {
                  // `None` means the dedicated terminal reader thread has ended.
                  let Some(ev) = maybe_ev else { break };
@@ -3104,7 +3440,7 @@ index eda61b3c..01185f59 100644
                  let handled_at = std::time::Instant::now();
                  let waited =
                      super::event_loop_stall::input_wait(ev.arrived_at, handled_at, loop_entry);
-@@ -2331,6 +2449,9 @@ pub(crate) async fn run(
+@@ -2331,6 +2480,9 @@ pub(crate) async fn run(
                  if result.should_quit {
                      break;
                  }
@@ -3114,7 +3450,7 @@ index eda61b3c..01185f59 100644
                  if !app.pending_effects.is_empty() {
                      let effs = std::mem::take(&mut app.pending_effects);
                      if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
-@@ -2885,6 +3006,23 @@ pub(crate) async fn run(
+@@ -2885,6 +3037,23 @@ pub(crate) async fn run(
                  presenter.request(false);
              }
  
@@ -3138,7 +3474,7 @@ index eda61b3c..01185f59 100644
              // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
              // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
              // Voice is only serviced when nothing else is pending
-@@ -3096,6 +3234,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3096,6 +3265,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
      app.abandon_startup();
      let exit_info = app.active_agent().and_then(|agent| {
          let sid = agent.session.session_id.as_ref()?;
@@ -3148,7 +3484,7 @@ index eda61b3c..01185f59 100644
          let summary = if app.screen_mode.is_fullscreen() {
              use crate::views::session_title;
              let last_prompt = session_title::last_user_prompt_line(agent);
-@@ -3109,7 +3250,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3109,7 +3281,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
              None
          };
          Some(super::ExitInfo {
@@ -3157,7 +3493,7 @@ index eda61b3c..01185f59 100644
              minimal: app.screen_mode.is_minimal(),
              summary,
          })
-@@ -3143,7 +3284,9 @@ struct RoutedInputEvent {
+@@ -3143,7 +3315,9 @@ struct RoutedInputEvent {
      is_startup_replay: bool,
  }
  fn tty_suspend_armed(app: &AppView) -> bool {
@@ -3168,7 +3504,7 @@ index eda61b3c..01185f59 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4077,470 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4108,559 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -3183,37 +3519,41 @@ index eda61b3c..01185f59 100644
 +) -> (bool, Vec<super::actions::Effect>) {
 +    use crate::app::workshop::WorkshopTurnMsg as M;
 +    use crate::scrollback::block::RenderBlock;
++    use crate::scrollback::blocks::SessionEvent;
 +
 +    // The engine warm-up reports before any turn (and any agent) exists.
 +    if let M::EngineWarm { engine } = msg {
 +        app.workshop_engine = Some(engine);
 +        return (false, vec![]);
 +    }
++    // `sudo` in one of the engine's commands wants the user's password: one masked prompt,
++    // titled with the command that is running (the turn's shell tool) or sudo's own words.
++    if let M::PasswordAsk { prompt, reply } = msg {
++        let command = app
++            .workshop_turn_tool_inputs
++            .values()
++            .filter(|(name, _)| name == "bash")
++            .filter_map(|(_, input)| input.get("command").and_then(|c| c.as_str()))
++            .last()
++            .map(str::to_owned);
++        let title = crate::app::workshop_askpass::title_for(command.as_deref(), &prompt);
++        if let Some(previous) = app.workshop_password_ask.take() {
++            previous.answer(false);
++        }
++        app.workshop_password_ask = Some(crate::app::workshop_askpass::PendingPassword::new(
++            title, reply,
++        ));
++        return (true, vec![]);
++    }
 +    let Some(agent_id) = app.workshop_turn_agent else {
 +        return (false, vec![]);
 +    };
-+    // Bring-up status is transient: the first real output, a fallback, or the end of the turn
-+    // removes it.
-+    let clears_progress = match &msg {
-+        // A whitespace-only part is not output yet (see the `Delta` arm).
-+        M::Delta(text) => !text.trim().is_empty(),
-+        // Hidden thinking (the default) draws nothing, so the waiting line stays up through it.
-+        M::Thinking(_) => crate::appearance::cache::load_show_thinking_blocks(),
-+        M::Tool { .. }
-+        | M::PermissionAsk { .. }
-+        | M::QuestionAsk { .. }
-+        | M::Error(_)
-+        | M::EngineUnavailable { .. }
-+        | M::Done { .. } => true,
-+        _ => false,
-+    };
-+    if clears_progress {
-+        app.workshop_turn_progress = None;
-+        if let Some(id) = app.workshop_turn_progress_entry.take()
-+            && let Some(agent) = app.agents.get_mut(&agent_id)
-+        {
-+            agent.scrollback.remove_entry(id);
-+        }
++    // A stall ends the turn on a failure line or the fallback resend, never on `Worked for …`.
++    if matches!(
++        msg,
++        M::Error(_) | M::EngineUnavailable { .. } | M::Stalled { .. }
++    ) {
++        app.workshop_turn_errored = true;
 +    }
 +    // Reasoning is its own (collapsed) block: the first answer text, tool call, or the end of
 +    // the turn closes it, so thinking is never printed as part of the answer.
@@ -3239,13 +3579,56 @@ index eda61b3c..01185f59 100644
 +        );
 +        return (true, effects);
 +    }
++    if let M::Stalled {
++        model,
++        text,
++        engine,
++    } = msg
++    {
++        // A model that stopped mid-answer: an engine turn is resent through the pool fallback
++        // (the same seam a failed bring-up uses); with no pool to fall back to — or on a CLI
++        // rail — the user gets one plain line and Enter retries.
++        let reason = format!("{model} stopped responding");
++        if engine && crate::app::workshop::kilo_fallback_model().is_some() {
++            let effects = dispatch::dispatch(
++                Action::WorkshopEngineUnavailable {
++                    agent_id,
++                    reason,
++                    text,
++                },
++                app,
++            );
++            return (true, effects);
++        }
++        if let Some(agent) = app.agents.get_mut(&agent_id) {
++            agent
++                .scrollback
++                .push_block(RenderBlock::system_error(crate::app::workshop::stall_line(&model)));
++            agent.workshop_retry_prompt = Some(text);
++        }
++        return (true, vec![]);
++    }
 +    let redraw = match msg {
 +        M::EngineWarm { .. } => false,
 +        M::Progress(text) => {
-+            // One animated line, repainted in place by `AppView::tick` (spinner, elapsed
-+            // seconds, the cancel hint) until the first real output replaces it.
-+            app.workshop_turn_progress = Some(text);
-+            app.repaint_workshop_progress()
++            // The bring-up's phase for the turn-status row: the plain wait for the model, or the
++            // first-time download as a described step (`First-time setup, 12 MB downloaded…`,
++            // one phase whose byte count refines its description). A tool call underway keeps
++            // its own activity.
++            if app.workshop_turn_running.is_empty() {
++                let activity = if text == crate::app::workshop::THINKING {
++                    crate::acp::tracker::TurnActivity::Waiting(
++                        crate::acp::tracker::WaitingReason::Model,
++                    )
++                } else {
++                    crate::acp::tracker::TurnActivity::ToolRunning {
++                        title: crate::app::workshop::FIRST_TIME_SETUP.to_owned(),
++                        description: Some(text),
++                    }
++                };
++                app.set_workshop_turn_activity(activity);
++            }
++            true
 +        }
 +        M::QuestionAsk { request, reply } => {
 +            // OpenCode's `question` tool opens Grok Build's own question view; the answers (or the
@@ -3305,7 +3688,14 @@ index eda61b3c..01185f59 100644
 +            false
 +        }
 +        M::EngineDefaultResolved { model } => {
-+            // OpenCode's live default replaces the pinned seed the first run activated.
++            // OpenCode's live default replaces the pinned seed the first run activated; a picked
++            // effort level stays while the model still offers it.
++            let model = match &app.workshop_connection {
++                crate::app::workshop::WorkshopConnection::Engine { model: current } => {
++                    model.carrying_effort_from(current)
++                }
++                _ => model,
++            };
 +            let conn = crate::app::workshop::WorkshopConnection::Engine { model };
 +            crate::app::workshop::save_active_connection(&conn);
 +            app.workshop_connection = conn;
@@ -3346,6 +3736,7 @@ index eda61b3c..01185f59 100644
 +                    }
 +                }
 +            }
++            app.set_workshop_turn_activity(crate::acp::tracker::TurnActivity::Responding);
 +            true
 +        }
 +        M::Thinking(text) => {
@@ -3370,6 +3761,7 @@ index eda61b3c..01185f59 100644
 +                };
 +                agent.scrollback.push_chunk_to_thinking(id, &text);
 +            }
++            app.set_workshop_turn_activity(crate::acp::tracker::TurnActivity::Thinking);
 +            true
 +        }
 +        M::Tool { id, name, input } => {
@@ -3379,14 +3771,19 @@ index eda61b3c..01185f59 100644
 +            {
 +                agent.scrollback.finish_running(id);
 +            }
++            // The turn-status row reads `Run <command>` with the call's own timer while it runs,
++            // as it does for a shell turn's tool, so a long command never looks frozen.
++            let activity = crate::app::workshop_tools::turn_activity(&name, &input);
 +            if let Some(agent) = app.agents.get_mut(&agent_id) {
 +                let entry = agent
 +                    .scrollback
 +                    .push_block(crate::app::workshop_tools::running_row(&name, &input));
 +                agent.scrollback.set_entry_running(entry, true);
-+                app.workshop_turn_tools.insert(id, entry);
++                app.workshop_turn_tools.insert(id.clone(), entry);
 +                app.workshop_turn_tool_inputs.insert(entry, (name, input));
 +            }
++            app.workshop_turn_running.push((id, activity));
++            app.sync_workshop_tool_activity();
 +            true
 +        }
 +        M::ToolResult {
@@ -3398,6 +3795,9 @@ index eda61b3c..01185f59 100644
 +        } => {
 +            // The result lands on the row that announced the call: the row becomes the pager's
 +            // Edit block with the diff, or Run block with output + exit code, and stops running.
++            // The status row goes back to the wait for the model (or the newest call still running).
++            app.workshop_turn_running.retain(|(call, _)| call != &id);
++            app.sync_workshop_tool_activity();
 +            let Some(entry) = app.workshop_turn_tools.remove(&id) else {
 +                return (false, vec![]);
 +            };
@@ -3489,9 +3889,9 @@ index eda61b3c..01185f59 100644
 +            app.workshop_turn_queue.push_back(text);
 +            false
 +        }
-+        M::Error(message) => {
-+            // Red, and actionable: Enter on the empty composer resends the prompt that failed.
-+            let line = crate::app::workshop::actionable_error_line(&message);
++        M::Error(line) => {
++            // Red, plain, and actionable: Enter on the empty composer resends the prompt that
++            // failed (the technical cause is in the log, never on screen).
 +            if let Some(agent) = app.agents.get_mut(&agent_id) {
 +                agent.scrollback.push_block(RenderBlock::system_error(line));
 +                agent.workshop_retry_prompt = app.workshop_last_prompt.clone();
@@ -3549,31 +3949,56 @@ index eda61b3c..01185f59 100644
 +                app.workshop_turn_tool_inputs.clear();
 +                app.workshop_turn_decided_calls.clear();
 +                dispatch::drain_workshop_permission_queue(agent);
++                // The turn ends the way a shell turn does: the pager's own marker (`Worked for
++                // 2m31s`, `Turn cancelled by user in 10s.`); a failed turn already showed its
++                // red failure line.
++                let elapsed = agent.workshop_turn_started_at.map(|t| t.elapsed());
++                agent.workshop_turn_activity = None;
++                agent.workshop_turn_started_at = None;
++                agent.workshop_turn_cancelling = false;
 +                if cancelled {
-+                    agent
-+                        .scrollback
-+                        .push_block(RenderBlock::system("Turn cancelled."));
++                    agent.scrollback.push_block(RenderBlock::session_event(
++                        SessionEvent::TurnCancelled {
++                            elapsed,
++                            cause: crate::scrollback::blocks::CancelledBy::User,
++                        },
++                    ));
++                } else if !app.workshop_turn_errored {
++                    agent.scrollback.push_block(RenderBlock::session_event(
++                        SessionEvent::TurnCompleted { elapsed },
++                    ));
 +                }
 +            }
 +            app.workshop_turn_active = false;
 +            app.workshop_turn_cancel = None;
 +            app.workshop_turn_agent = None;
 +            app.workshop_turn_prompt_entry = None;
-+            app.workshop_turn_started = None;
++            app.workshop_turn_running.clear();
 +            // A model that answered only this turn (it could see its images) hands the composer
 +            // back to the picked model.
 +            crate::app::workshop::sync_agent_views(app);
++            // The first reply of a first run is when voice starts getting ready in the background
++            // (no-op once started, off, or already in place).
++            let mut effects = crate::app::workshop::maybe_start_voice_prefetch(
++                app,
++                std::time::Duration::ZERO,
++            );
 +            // Prompts typed during the turn go out now, one turn each, oldest first. A cancel
 +            // drops them: the user stopped the conversation, not just this answer.
 +            if cancelled {
 +                app.workshop_turn_queue.clear();
-+                return (true, vec![]);
++                return (true, effects);
 +            }
-+            let effects = dispatch::dispatch(Action::WorkshopNextQueuedPrompt { agent_id }, app);
++            effects.extend(dispatch::dispatch(
++                Action::WorkshopNextQueuedPrompt { agent_id },
++                app,
++            ));
 +            return (true, effects);
 +        }
 +        // Handled above (needs the dispatcher).
-+        M::EngineUnavailable { .. } => false,
++        M::EngineUnavailable { .. } | M::Stalled { .. } => false,
++        // Handled above (before any agent is needed).
++        M::PasswordAsk { .. } => false,
 +    };
 +    (redraw, vec![])
 +}
@@ -3640,23 +4065,25 @@ index eda61b3c..01185f59 100644
      effs: Vec<super::actions::Effect>,
      tasks: &mut JoinSet<TaskResult>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/mod.rs b/crates/codegen/xai-grok-pager/src/app/mod.rs
-index 60fe34f9..d5845f2c 100644
+index 60fe34f9..8b49336e 100644
 --- a/crates/codegen/xai-grok-pager/src/app/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/mod.rs
-@@ -13,6 +13,12 @@ pub mod actions;
+@@ -13,6 +13,14 @@ pub mod actions;
  pub mod agent;
  pub mod agent_view;
  pub mod app_view;
 +/// Workshop overlay: connection picker loading and activation.
 +pub mod workshop;
++pub mod workshop_askpass;
 +pub mod workshop_engine_state;
 +pub mod workshop_permissions;
 +pub mod workshop_sessions;
++pub mod workshop_update;
 +pub mod workshop_tools;
  pub mod bundle;
  pub(crate) mod cancel_latency;
  pub mod cli;
-@@ -815,9 +821,20 @@ pub async fn run(
+@@ -815,9 +823,20 @@ pub async fn run(
          }
          session_startup::set_active_local_workspace(lw)?;
      }
@@ -3678,7 +4105,7 @@ index 60fe34f9..d5845f2c 100644
      let mut materialize_ctx = session_startup::MaterializeCtx::from_pager_args(&args);
      materialize_ctx.restore_progress_on_stdout =
          std::io::IsTerminal::is_terminal(&std::io::stdout());
-@@ -1154,6 +1171,7 @@ pub async fn run(
+@@ -1154,6 +1173,7 @@ pub async fn run(
          bg_update_rx,
          writer_event_rx,
          &mut reader_thread,
@@ -3686,19 +4113,32 @@ index 60fe34f9..d5845f2c 100644
      )
      .await;
      signal_handler::clear_quit_notify();
-@@ -1255,9 +1273,9 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
+@@ -1233,7 +1253,7 @@ pub async fn run(
+         Err(run_error) => Err(run_error),
      }
-     let _ = writeln!(w, "Resume this session with:");
+ }
+-/// Plain-quit "Resume this session with…" lines (after terminal restore).
++/// Plain-quit "Continue later with…" lines (after terminal restore).
+ /// Best-effort: closed-pane EIO/BrokenPipe must not panic (`panic = "abort"`).
+ /// TODO: extend beyond --minimal by rebuilding resume argv from launch flags (see screen_mode_relaunch)
+ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write) {
+@@ -1253,11 +1273,12 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
+         }
+         let _ = writeln!(w);
+     }
+-    let _ = writeln!(w, "Resume this session with:");
++    // Workshop: short and human — `-c` continues this directory's most recent session, so the
++    // user never has to carry a session id around.
      if info.minimal {
 -        let _ = writeln!(w, "  grok --minimal --resume {}", info.session_id);
-+        let _ = writeln!(w, "  workshop --minimal --resume {}", info.session_id);
++        let _ = writeln!(w, "Continue later with: workshop --minimal -c");
      } else {
 -        let _ = writeln!(w, "  grok --resume {}", info.session_id);
-+        let _ = writeln!(w, "  workshop --resume {}", info.session_id);
++        let _ = writeln!(w, "Continue later with: workshop -c");
      }
  }
  /// Screen-mode relaunch failure fallback (same quit tail as plain resume).
-@@ -1474,6 +1492,11 @@ fn init_terminal(
+@@ -1474,6 +1495,11 @@ fn init_terminal(
          startup_typeahead.extend(event_loop::capture_startup_typeahead(
              std::time::Duration::from_millis(0),
          ));
@@ -3710,7 +4150,7 @@ index 60fe34f9..d5845f2c 100644
          set_terminal_title("");
          if want_minimal && clear_main_screen {
              xai_grok_shell::util::with_locked_stderr(|stderr| {
-@@ -1671,10 +1694,10 @@ pub(crate) fn set_terminal_title(title: &str) {
+@@ -1671,10 +1697,10 @@ pub(crate) fn set_terminal_title(title: &str) {
  fn terminal_title_string(title: &str) -> String {
      let sanitized: String = title.chars().filter(|c| !c.is_control()).collect();
      if sanitized.is_empty() {
@@ -3724,7 +4164,7 @@ index 60fe34f9..d5845f2c 100644
      }
  }
  #[cfg(test)]
-@@ -1724,11 +1747,11 @@ mod tests {
+@@ -1724,11 +1750,11 @@ mod tests {
      fn terminal_title_strips_control_characters() {
          assert_eq!(
              terminal_title_string("evil\x07\x1b]52;c;payload\x07title"),
@@ -3740,7 +4180,7 @@ index 60fe34f9..d5845f2c 100644
      }
      #[test]
      fn hunk_tracker_mode_nothing_set_is_none() {
-@@ -2245,9 +2268,9 @@ mod tests {
+@@ -2245,9 +2271,9 @@ mod tests {
          assert!(!args.no_alt_screen);
      }
      #[test]
@@ -3752,7 +4192,7 @@ index 60fe34f9..d5845f2c 100644
      }
      #[test]
      fn cli_help_output_header() {
-@@ -2257,9 +2280,9 @@ mod tests {
+@@ -2257,9 +2283,9 @@ mod tests {
          assert_eq!(
              first_5,
              vec![
@@ -3764,48 +4204,49 @@ index 60fe34f9..d5845f2c 100644
                  "",
                  "Arguments:",
              ]
-@@ -2305,7 +2328,7 @@ mod tests {
+@@ -2305,7 +2331,7 @@ mod tests {
          print_exit_resume_hint(&bare_exit_info("sess-abc", false), 80, &mut buf);
          assert_eq!(
              String::from_utf8(buf).unwrap(),
 -            "\nResume this session with:\n  grok --resume sess-abc\n"
-+            "\nResume this session with:\n  workshop --resume sess-abc\n"
++            "\nContinue later with: workshop -c\n"
          );
      }
      #[test]
-@@ -2314,7 +2337,7 @@ mod tests {
+@@ -2314,7 +2340,7 @@ mod tests {
          print_exit_resume_hint(&bare_exit_info("sess-abc", true), 80, &mut buf);
          assert_eq!(
              String::from_utf8(buf).unwrap(),
 -            "\nResume this session with:\n  grok --minimal --resume sess-abc\n"
-+            "\nResume this session with:\n  workshop --minimal --resume sess-abc\n"
++            "\nContinue later with: workshop --minimal -c\n"
          );
      }
      #[test]
-@@ -2339,7 +2362,7 @@ mod tests {
+@@ -2338,8 +2364,7 @@ mod tests {
+                 "> make the suite deterministic\n",
                  "  Pinned the seed; 200 consecutive green runs.\n",
                  "\n",
-                 "Resume this session with:\n",
+-                "Resume this session with:\n",
 -                "  grok --resume sess-abc\n",
-+                "  workshop --resume sess-abc\n",
++                "Continue later with: workshop -c\n",
              )
          );
      }
-@@ -2360,7 +2383,7 @@ mod tests {
+@@ -2360,7 +2385,7 @@ mod tests {
          assert!(out.contains(&format!("\n{}…\n", "t".repeat(19))));
          assert!(out.contains(&format!("\n> {}…\n", "p".repeat(17))));
          assert!(out.contains(&format!("\n  {}…\n", "r".repeat(17))));
 -        assert!(out.contains("  grok --resume sess-abc\n"));
-+        assert!(out.contains("  workshop --resume sess-abc\n"));
++        assert!(out.contains("Continue later with: workshop -c\n"));
      }
      #[test]
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..6cf260f9
+index 00000000..84b9315b
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,2135 @@
+@@ -0,0 +1,2429 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -3862,16 +4303,23 @@ index 00000000..6cf260f9
 +}
 +
 +impl WorkshopConnection {
-+    /// Composer label: `OpenCode · {model}` for the engine, `Claude · {model}` for rails.
++    /// Composer label in upstream's format, `<model> (<effort>)`: `Big Pickle`,
++    /// `Ling 3.0 Flash Fin Free (high)`, `Claude Sonnet` — the effort only when the model has
++    /// levels and one is picked, never a provider or runtime name. The mode (`· plan`,
++    /// `· always-approve`) is appended by the composer's own mode flags, as upstream does.
 +    pub fn composer_label(&self) -> Option<String> {
 +        match self {
 +            Self::Shell => None,
-+            Self::Engine { model } => Some(format!(
-+                "{} · {}",
-+                workshop_auth::ENGINE_DISPLAY_NAME,
-+                model.name
-+            )),
-+            Self::Adapter { rail, model } => Some(workshop_detect::composer_label(*rail, model)),
++            Self::Engine { model } => Some(model.display()),
++            Self::Adapter { model, .. } => Some(model.display().to_owned()),
++        }
++    }
++    /// The model name for the failure line (`Couldn't reach {model}`); `Shell` has none.
++    pub fn model_name(&self) -> Option<String> {
++        match self {
++            Self::Shell => None,
++            Self::Engine { model } => Some(model.name.clone()),
++            Self::Adapter { model, .. } => Some(model.display().to_owned()),
 +        }
 +    }
 +    pub fn is_shell(&self) -> bool {
@@ -3968,10 +4416,11 @@ index 00000000..6cf260f9
 +    Some(lines)
 +}
 +
-+/// Stamp every agent with the active connection's composer label and context meter numbers
-+/// (after a connection change, a resolved live default, or a new usage report).
++/// Stamp every agent with the active connection's composer label (the answering model's while
++/// the silent fallback carries the session) and context meter numbers (after a connection
++/// change, a resolved live default, or a new usage report).
 +pub fn sync_agent_views(app: &mut crate::app::app_view::AppView) {
-+    let label = app.workshop_connection.composer_label();
++    let label = app.workshop_label();
 +    let context = context_meter(app);
 +    for agent in app.agents.values_mut() {
 +        agent.workshop_model_label = label.clone();
@@ -4031,15 +4480,28 @@ index 00000000..6cf260f9
 +    }
 +}
 +
-+/// The keyless Direct API row Workshop falls back to when the OpenCode engine cannot start
-+/// (offline, installer failed): the Kilo community pool.
++/// Test hook: point the silent fallback at a loopback OpenAI-compatible server instead of the
++/// Kilo Gateway (the PTY gate proves the fallback without network).
++pub const KILO_BASE_URL_ENV: &str = "WORKSHOP_KILO_BASE_URL";
++
++/// The keyless Direct API model Workshop silently falls back to when the OpenCode model cannot
++/// start or answer: the first *concrete* model of the Kilo community pool's default chain (not
++/// the auto-router, so the composer can name the model that actually answered). Never listed on
++/// `/model`; the user only ever sees the model name.
 +pub fn kilo_fallback_model() -> Option<workshop_providers::CatalogModel> {
-+    Catalog::builtin()
-+        .get(&format!(
-+            "kilo:{}",
-+            workshop_providers::KILO_DEFAULT_CHAIN[0]
-+        ))
-+        .cloned()
++    let catalog = Catalog::builtin();
++    let mut model = workshop_providers::KILO_DEFAULT_CHAIN
++        .iter()
++        .filter_map(|id| catalog.get(&format!("kilo:{id}")))
++        .find(|m| workshop_auth::is_chat_model_name(&m.model_id) && !m.model_id.contains("auto"))
++        .cloned()?;
++    if let Some(base) = std::env::var(KILO_BASE_URL_ENV)
++        .ok()
++        .filter(|v| !v.trim().is_empty())
++    {
++        model.base_url = base.trim().trim_end_matches('/').to_owned();
++    }
++    Some(model)
 +}
 +
 +/// The credential broker over the OS keyring with the owner-only file fallback under the home.
@@ -4122,6 +4584,8 @@ index 00000000..6cf260f9
 +            is_default: m.is_default,
 +            tool_call: m.tool_call,
 +            context_limit: m.context_limit,
++            variants: m.variants.clone(),
++            effort: None,
 +            image_input: m.image_input,
 +        })
 +        .collect();
@@ -4171,7 +4635,14 @@ index 00000000..6cf260f9
 +        RefreshOptions::default()
 +    };
 +    let cache_dir = catalog_cache_dir();
-+    let hosted = live_catalogs::refresh(&cache_dir, opts);
++    let manifests = listed_refresh_providers(&default_broker());
++    let hosted = async {
++        if manifests.is_empty() {
++            live_catalogs::load_cached(&cache_dir)
++        } else {
++            live_catalogs::refresh_with(&cache_dir, &manifests, opts).await
++        }
++    };
 +    let engine_result = async {
 +        match engine {
 +            Some(engine) => refresh_engine_catalog(&engine).await.err(),
@@ -4191,13 +4662,29 @@ index 00000000..6cf260f9
 +    snap
 +}
 +
++/// The hosted providers whose model list is worth fetching: never a hidden one, and an API-key
++/// provider only once its key is configured (an unconnected provider has no row to show).
++fn listed_refresh_providers(
++    broker: &CredentialBroker,
++) -> Vec<workshop_providers::ProviderManifest> {
++    live_catalogs::REFRESH_PROVIDERS
++        .iter()
++        .filter(|id| !workshop_auth::is_hidden_provider(id))
++        .filter(|id| {
++            workshop_providers::manifest(id)
++                .is_some_and(|m| !m.requires_credential() || broker.is_connected(id))
++        })
++        .filter_map(|id| workshop_providers::manifest(id))
++        .collect()
++}
++
 +async fn build_picker_snapshot(
 +    hosted: Option<HostedCatalogs>,
 +    engine_error: Option<String>,
 +    rail_models: workshop_detect::Refresh,
 +) -> PickerSnapshot {
 +    let local = workshop_providers::probe_all_local_servers(Duration::from_millis(600)).await;
-+    let rails = tokio::task::spawn_blocking(move || {
++    let rails: Vec<workshop_detect::RailState> = tokio::task::spawn_blocking(move || {
 +        let cache = workshop_detect::ModelsCache::new(catalog_cache_dir());
 +        workshop_detect::picker_rails(
 +            &workshop_detect::DetectConfig::default(),
@@ -4231,7 +4718,7 @@ index 00000000..6cf260f9
 +    let broker = default_broker();
 +    let secret_backend = broker.secret_backend();
 +    let engine = cached_engine_models();
-+    let rows = models_rows(&catalog, |id| broker.is_connected(id), &engine);
++    let rows = models_rows(&catalog, |id| broker.is_connected(id), &engine, &rails);
 +    let default_selection = Some(select_default(&local, true));
 +    let mut catalog_status = vec![engine_catalog_status(&engine, engine_error)];
 +    catalog_status.extend(hosted_status);
@@ -4385,7 +4872,8 @@ index 00000000..6cf260f9
 +    if webbrowser::open(&url).is_err() {
 +        tracing::warn!("could not open a browser for OpenRouter sign-in; url: {url}");
 +    }
-+    let client = workshop_providers::oauth::openrouter::exchange_client().map_err(|e| e.to_string())?;
++    let client =
++        workshop_providers::oauth::openrouter::exchange_client().map_err(|e| e.to_string())?;
 +    let key = signin
 +        .complete_loopback(&client, Duration::from_secs(300))
 +        .await
@@ -4420,14 +4908,22 @@ index 00000000..6cf260f9
 +            Self::Adapter(r) => r.session_id(),
 +        }
 +    }
++    /// The engine ended this turn at its idle ceiling (set before its final `Error` arrives).
++    pub fn stalled(&self) -> bool {
++        match self {
++            Self::Engine(t) => t.stalled(),
++            Self::Adapter(_) => false,
++        }
++    }
 +}
 +
 +/// What the UI thread learns as a turn streams. Mapped to scrollback `RenderBlock`s by the event
 +/// loop's Workshop `select!` arm (kept UI-agnostic so `workshop-adapters` never depends on the pager).
 +#[derive(Debug)]
 +pub enum WorkshopTurnMsg {
-+    /// One line of bring-up status ("Installing the OpenCode engine…"); replaces the previous
-+    /// progress line, and the first real event clears it. Never silent while the user waits.
++    /// The bring-up's phase for the pager's turn-status row: [`THINKING`] for the plain wait for
++    /// the model, or the first-time download progress ([`install_progress_line`]). Never a word
++    /// about what runs underneath.
 +    Progress(String),
 +    /// The OpenCode engine started (lazily, on the first turn); cache it and the session so later
 +    /// turns reuse the same `opencode serve` and conversation. Engine turns only.
@@ -4442,7 +4938,9 @@ index 00000000..6cf260f9
 +    EngineWarm { engine: Arc<OpenCodeEngine> },
 +    /// The engine's live catalog names a different default than the pinned seed the first run
 +    /// activated: the connection follows OpenCode's default (composer label, persisted file).
-+    EngineDefaultResolved { model: EngineModel },
++    EngineDefaultResolved {
++        model: EngineModel,
++    },
 +    Delta(String),
 +    /// A chunk of the model's reasoning: rendered as the pager's collapsed thinking block, never
 +    /// as part of the answer.
@@ -4490,13 +4988,31 @@ index 00000000..6cf260f9
 +    /// A message the user typed while declining a permission ("No, and tell Workshop what to do
 +    /// differently"): sent as the next turn once this one ends.
 +    FollowUp(String),
++    /// The plain failure line (`Couldn't reach <model> — …`); the cause is already in the log.
 +    Error(String),
-+    /// The OpenCode engine could not be started for this turn (offline, installer failed, no
-+    /// verified `opencode`). `text` is the prompt that never ran; the UI falls back to the Kilo
-+    /// keyless pool and resends it. Followed by `Done`.
++    /// OpenCode's model could not start or answer this turn (offline, installer failed, no
++    /// verified `opencode`, the prompt refused, nothing back before the first-event ceiling).
++    /// `text` is the prompt that never ran; the UI silently resends it through the keyless pool.
++    /// Followed by `Done`.
 +    EngineUnavailable {
 +        reason: String,
 +        text: String,
++    },
++    /// `sudo` in one of the engine's commands needs the user's password: the askpass helper is
++    /// waiting on `reply` (`Some(bytes)` = the password, `None` = skipped). The UI shows one
++    /// masked prompt; the bytes go to the helper only. Any turn, any time.
++    PasswordAsk {
++        prompt: String,
++        reply: tokio::sync::oneshot::Sender<Option<Vec<u8>>>,
++    },
++    /// The model started answering and then went silent for [`STALL_TIMEOUT`] (no output, no
++    /// tool running, no prompt waiting on the user); the engine aborted the turn. `text` is the
++    /// prompt to resend: an engine turn goes through the pool fallback, else the user gets
++    /// [`stall_line`] with Enter to retry. Followed by `Done`.
++    Stalled {
++        model: String,
++        text: String,
++        engine: bool,
 +    },
 +    /// The turn ended; `session_id` is persisted per workspace for resume.
 +    Done {
@@ -4507,8 +5023,10 @@ index 00000000..6cf260f9
 +
 +/// Why a turn could not start.
 +enum TurnStartError {
-+    /// `opencode` could not be detected, installed, or started.
++    /// `opencode` could not be detected, installed or started, or would not take the prompt: the
++    /// silent fallback answers instead.
 +    EngineUnavailable(String),
++    /// A vendor CLI turn could not start: the plain failure line.
 +    Other(String),
 +}
 +
@@ -4522,6 +5040,9 @@ index 00000000..6cf260f9
 +    /// The warm-up's failure, so a turn typed right after it reports that cause at once instead
 +    /// of silently repeating a 30 s bring-up that just failed. Cleared by the next attempt.
 +    recent_failure: std::sync::Mutex<Option<(std::time::Instant, String)>>,
++    /// The `sudo` askpass listener (one per process, started with the first engine); `None`
++    /// until then, or when the home could not hold it.
++    askpass: std::sync::Mutex<Option<Arc<crate::app::workshop_askpass::AskpassServer>>>,
 +}
 +
 +pub type EngineSlot = Arc<EngineSlotInner>;
@@ -4531,7 +5052,20 @@ index 00000000..6cf260f9
 +        engine: tokio::sync::Mutex::new(None),
 +        phase: watch::channel(String::new()).0,
 +        recent_failure: std::sync::Mutex::new(None),
++        askpass: std::sync::Mutex::new(None),
 +    })
++}
++
++/// The process's askpass listener, started on first use with the live loop's channel.
++fn askpass_server(
++    slot: &EngineSlot,
++    ui_tx: &mpsc::UnboundedSender<WorkshopTurnMsg>,
++) -> Option<Arc<crate::app::workshop_askpass::AskpassServer>> {
++    let mut guard = slot.askpass.lock().ok()?;
++    if guard.is_none() {
++        *guard = crate::app::workshop_askpass::start(ui_tx.clone()).map(Arc::new);
++    }
++    guard.clone()
 +}
 +
 +/// The pager's permission mode as it applies to one Engine/Adapter turn (Shift+Tab cycle,
@@ -4561,41 +5095,46 @@ index 00000000..6cf260f9
 +/// Hard ceiling on a turn's silence before its first event: past this the engine is up but the
 +/// model never answered, and the user gets the cause plus a way out instead of a spinner.
 +pub const FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
-+/// Hard ceiling on `opencode serve` binding its port and passing its health check.
-+pub const ENGINE_START_TIMEOUT: Duration = Duration::from_secs(30);
-+/// A model that has not sent anything back after this long is said to still be connecting: the
-+/// waiting line changes so the user knows the wait is the network's, not a hang.
-+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-+/// The waiting line shows its elapsed seconds only once the wait is long enough to feel like one.
-+pub const ELAPSED_AFTER: Duration = Duration::from_secs(3);
-+/// Frames of the animated mark in front of the waiting line.
-+pub const WAIT_SPINNER: [char; 10] = [
-+    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
-+    '\u{2807}', '\u{280F}',
-+];
++/// Mid-turn ceiling: once the model has started answering, this long without any output, tool
++/// activity or permission traffic means it stopped (an upstream 504 the engine retries silently,
++/// a dropped stream). The engine aborts the turn and Workshop recovers. `WORKSHOP_STALL_TIMEOUT_SECS`
++/// overrides it (gates run it in seconds).
++pub const STALL_TIMEOUT: Duration = Duration::from_secs(90);
 +
-+/// The one line a user sees while a turn has produced nothing yet: an animated mark, the phase
-+/// ("Installing…", "Waiting for Big Pickle…"), the elapsed seconds after [`ELAPSED_AFTER`], and
-+/// how to stop waiting. Repainted every tick by the UI so the mark moves and the seconds count.
-+pub fn waiting_line(text: &str, elapsed: Duration, frame: usize) -> String {
-+    let mark = WAIT_SPINNER
-+        .get(frame % WAIT_SPINNER.len())
-+        .copied()
-+        .unwrap_or(' ');
-+    let mut line = format!("{mark} {text}");
-+    if elapsed >= ELAPSED_AFTER {
-+        line.push_str(&format!(" \u{b7} {}s", elapsed.as_secs()));
-+    }
-+    line.push_str(" \u{b7} Ctrl+C to cancel");
-+    line
++/// [`STALL_TIMEOUT`], or the `WORKSHOP_STALL_TIMEOUT_SECS` override.
++pub fn stall_timeout() -> Duration {
++    std::env::var("WORKSHOP_STALL_TIMEOUT_SECS")
++        .ok()
++        .and_then(|v| v.trim().parse::<u64>().ok())
++        .filter(|s| *s > 0)
++        .map(Duration::from_secs)
++        .unwrap_or(STALL_TIMEOUT)
 +}
 +
-+/// The install phase with byte progress, once the vendor script has started writing.
++/// The one line shown when a model stopped mid-answer and no fallback could take over.
++pub fn stall_line(model: &str) -> String {
++    format!("{model} stopped responding \u{2014} Enter to retry \u{b7} /model to switch")
++}
++/// Hard ceiling on `opencode serve` binding its port and passing its health check.
++pub const ENGINE_START_TIMEOUT: Duration = Duration::from_secs(30);
++/// The bring-up's "nothing to add" progress: the turn-status row shows the pager's own wait for
++/// the model (`Waiting for response…`) — whatever happens behind it (installing, starting,
++/// connecting). No plumbing words, ever.
++pub const THINKING: &str = "Thinking\u{2026}";
++/// The one described step of a first run, for the turn-status row (`First-time setup, 12 MB
++/// downloaded…` with its own timer): the row's phase identity while the byte count refines it.
++pub const FIRST_TIME_SETUP: &str = "first-time setup";
++
++/// The first-run download, once the vendor script has started writing: the honest byte count so a
++/// minute-long first message never looks hung (the status row adds the spinner and the seconds).
 +pub fn install_progress_line(bytes: u64) -> String {
-+    format!(
-+        "Installing the OpenCode engine (first time only)\u{2026} {} downloaded",
-+        format_bytes(bytes)
-+    )
++    format!("First-time setup, {} downloaded", format_bytes(bytes))
++}
++
++/// The one failure line a user sees when a model could not be reached or did not answer (after
++/// the silent fallback, if any, failed too): plain, no runtime names, and the two ways out.
++pub fn failure_line(model: &str) -> String {
++    format!("Couldn't reach {model} \u{2014} Enter to retry \u{b7} /model to switch")
 +}
 +
 +/// Which backend a submitted prompt should run on.
@@ -4656,20 +5195,102 @@ index 00000000..6cf260f9
 +    use xai_grok_shell::session::persistence::{
 +        RecentSessionSelection, local_summaries_for_cwd_sync,
 +    };
-+    let with_messages = local_summaries_for_cwd_sync(
-+        &cwd.to_string_lossy(),
-+        RecentSessionSelection::Interactive,
-+    )
-+    .map(|list| {
-+        list.iter()
-+            .any(|s| s.num_messages > 0 || s.num_chat_messages > 0)
-+    })
-+    .unwrap_or(false);
++    let with_messages =
++        local_summaries_for_cwd_sync(&cwd.to_string_lossy(), RecentSessionSelection::Interactive)
++            .map(|list| {
++                list.iter()
++                    .any(|s| s.num_messages > 0 || s.num_chat_messages > 0)
++            })
++            .unwrap_or(false);
 +    with_messages
 +        || load_resume_id("opencode", cwd).is_some()
 +        || workshop_detect::Rail::ALL
 +            .iter()
 +            .any(|rail| load_resume_id(rail.vendor().id(), cwd).is_some())
++}
++
++/// Start the background voice setup (the `voice-engine` helper, then this machine's speech model,
++/// from the release mirror only) unless it is off (`voice.auto_download`, `WORKSHOP_VOICE_AUTO=0`),
++/// voice is disabled, already running this process, or already in place. `delay` holds it back
++/// on a returning launch so the first half minute is the user's.
++pub fn maybe_start_voice_prefetch(
++    app: &mut crate::app::app_view::AppView,
++    delay: Duration,
++) -> Vec<crate::app::actions::Effect> {
++    if !workshop_voice::prefetch::auto_enabled(app.voice_config.auto_download) {
++        return vec![];
++    }
++    start_voice_prefetch(app, delay)
++}
++
++/// The setup itself, regardless of the automatic-download flag (a `/voice` press asked for it).
++fn start_voice_prefetch(
++    app: &mut crate::app::app_view::AppView,
++    delay: Duration,
++) -> Vec<crate::app::actions::Effect> {
++    if app.workshop_voice_prefetch.is_some()
++        || !app.voice_mode_enabled
++        || !xai_grok_voice::AUDIO_SUPPORTED
++    {
++        return vec![];
++    }
++    let voice_dir = workshop_voice::store::default_dir();
++    let engine_override = app.voice_config.engine_path.as_deref().map(Path::new);
++    if workshop_voice::prefetch::is_ready(
++        &voice_dir,
++        app.voice_config.model.as_deref(),
++        engine_override,
++    ) {
++        return vec![];
++    }
++    let shared = workshop_voice::prefetch::shared();
++    app.workshop_voice_prefetch = Some(shared.clone());
++    vec![crate::app::actions::Effect::WorkshopVoicePrefetch {
++        shared,
++        delay,
++        home: workshop_home(),
++        voice_dir,
++        tier: app.voice_config.model.clone(),
++    }]
++}
++
++/// `/voice` while voice is not ready: the one line to show instead of starting the microphone
++/// (`Voice is getting ready — 62%`), plus the setup to start if it is not running (a failed
++/// attempt is tried again). `None` when the helper and the model are in place.
++pub fn voice_getting_ready(
++    app: &mut crate::app::app_view::AppView,
++) -> Option<(String, Vec<crate::app::actions::Effect>)> {
++    use workshop_voice::prefetch::Phase;
++    let voice_dir = workshop_voice::store::default_dir();
++    let engine_override = app.voice_config.engine_path.as_deref().map(Path::new);
++    if workshop_voice::prefetch::is_ready(
++        &voice_dir,
++        app.voice_config.model.as_deref(),
++        engine_override,
++    ) {
++        return None;
++    }
++    let status = app
++        .workshop_voice_prefetch
++        .as_ref()
++        .and_then(|s| s.lock().ok().map(|s| s.clone()));
++    match status {
++        Some(status) if !matches!(status.phase, Phase::Failed(_) | Phase::Ready) => {
++            Some((status.line(), vec![]))
++        }
++        _ => {
++            // Not started (or turned off for the background), done but something is missing
++            // again, or failed: the press asked for voice, so one try now.
++            app.workshop_voice_prefetch = None;
++            let effects = start_voice_prefetch(app, Duration::ZERO);
++            let line = if effects.is_empty() {
++                "Voice isn't set up on this machine \u{2014} /doctor shows why".to_owned()
++            } else {
++                workshop_voice::prefetch::Status::default().line()
++            };
++            Some((line, effects))
++        }
++    }
 +}
 +
 +/// Persist the session id for `(backend, workspace)` so the next turn resumes the conversation.
@@ -4823,28 +5444,12 @@ index 00000000..6cf260f9
 +    topic
 +}
 +
-+/// The ways out appended to every failure line: retry the same prompt, switch model, diagnose.
-+pub const ERROR_WAYS_OUT: &str = "Enter retries · /model switches model · /doctor checks the setup";
-+
-+/// The one line a user sees when the engine path fails after the engine is up: the cause, the
-+/// ways out, and where the details went. (A failure *before* the engine is up goes through the
-+/// Kilo fallback instead — see `TurnStartError::EngineUnavailable`.)
-+pub fn engine_failure_line(cause: &str) -> String {
-+    format!(
-+        "OpenCode engine: {cause} — {ERROR_WAYS_OUT}; log: {}",
-+        engine_log_path().display()
-+    )
-+}
-+
-+/// A backend error as the user sees it: the message (one line) with the ways out, unless the
-+/// message already carries them (engine failure lines do).
-+pub fn actionable_error_line(message: &str) -> String {
-+    let message = message.trim();
-+    if message.contains(ERROR_WAYS_OUT) {
-+        message.to_owned()
-+    } else {
-+        format!("{message} — {ERROR_WAYS_OUT}")
-+    }
++/// Record a turn failure's technical cause where `workshop doctor` and the log can show it; the
++/// user sees [`failure_line`] only.
++pub fn log_failure_cause(cause: &str) {
++    let cause = cause.split_whitespace().collect::<Vec<_>>().join(" ");
++    tracing::warn!("workshop turn failed: {cause}");
++    state::append_log(&engine_log_path(), &format!("turn failed: {cause}"));
 +}
 +
 +/// `$WORKSHOP_HOME/logs/opencode-engine.log`, the `opencode serve` stdout/stderr capture.
@@ -4904,11 +5509,6 @@ index 00000000..6cf260f9
 +        return None;
 +    }
 +    Some(path)
-+}
-+
-+/// The waiting line's text while `model` works and nothing new is on screen.
-+fn waiting_for(model: &str) -> String {
-+    format!("Waiting for {model}\u{2026}")
 +}
 +
 +fn engine_progress(tx: &mpsc::UnboundedSender<WorkshopTurnMsg>, text: impl Into<String>) {
@@ -4975,7 +5575,7 @@ index 00000000..6cf260f9
 +        {
 +            // Our own install no longer runs (a quarantine flag from an older Workshop, a
 +            // half-written binary): clear the flag and re-check, else reinstall over it.
-+            engine_phase(slot, &tx, "Repairing the OpenCode engine install…");
++            engine_phase(slot, &tx, THINKING);
 +            state::append_log(
 +                &log,
 +                &format!("repair: `{}` failed verification: {reason}", path.display()),
@@ -5004,15 +5604,14 @@ index 00000000..6cf260f9
 +            return Err(engine_fail(
 +                &mut st,
 +                &home,
-+                format!("`{}` is not a usable OpenCode binary ({reason})", path.display()),
++                format!(
++                    "`{}` is not a usable OpenCode binary ({reason})",
++                    path.display()
++                ),
 +            ));
 +        }
 +        Detection::NotInstalled => {
-+            engine_phase(
-+                slot,
-+                &tx,
-+                "Installing the OpenCode engine (first time only, about a minute)…",
-+            );
++            engine_phase(slot, &tx, THINKING);
 +            run_installer(&mut st, &log);
 +            match install_opencode(&install).await {
 +                Ok(cli) => cli,
@@ -5027,25 +5626,35 @@ index 00000000..6cf260f9
 +    st.version = Some(cli.version.clone());
 +    st.last_phase = Some("start".into());
 +    st.save(&home);
-+    engine_phase(
-+        slot,
-+        &tx,
-+        &format!("Starting the OpenCode engine ({})…", cli.version),
-+    );
++    engine_phase(slot, &tx, THINKING);
 +
 +    let mut opts = EngineOptions::new(workspace);
 +    // The engine asks before edits and commands; what happens next is the agent's permission
 +    // mode (Plan/Normal prompt, Auto/Always-approve allow), decided on the UI thread per ask.
 +    opts.permission = Some(ask_before_edit_and_bash());
++    // `sudo` in the engine's commands has no terminal to ask on. Grok Build's shell tool defers
++    // to the user's own `SUDO_ASKPASS` helper when one is set; so does the engine (the variable
++    // passes through). With none, Workshop is the helper: `SUDO_ASKPASS` → this process's socket
++    // → one masked prompt, never the model.
++    if std::env::var_os(crate::app::workshop_askpass::HELPER_ENV).is_none_or(|v| v.is_empty())
++        && let Some(askpass) = askpass_server(slot, &ui_tx)
++    {
++        opts.extra_env = askpass.env();
++    }
 +    opts.permission_handler = Some(engine_permission_handler(ui_tx.clone()));
 +    opts.question_handler = Some(engine_question_handler(ui_tx));
 +    // The models answer as Workshop's assistant, not as "opencode".
 +    opts.config = Some(engine_config(&log));
 +    let sink_path = log.clone();
-+    opts.log_sink = Some(Arc::new(move |line: &str| state::append_log(&sink_path, line)));
++    opts.log_sink = Some(Arc::new(move |line: &str| {
++        state::append_log(&sink_path, line)
++    }));
 +    // `opencode serve` is up in a couple of seconds on any laptop; a server that has not bound
 +    // its port after this long is broken, and the user should hear so instead of waiting.
 +    opts.startup_timeout = ENGINE_START_TIMEOUT;
++    // A model that stops mid-answer is aborted after this and the turn recovers (see `Stalled`).
++    opts.idle_timeout = Some(stall_timeout());
++
 +    match OpenCodeEngine::start(&cli, opts).await {
 +        Ok(engine) => {
 +            st.last_phase = Some("ready".into());
@@ -5076,7 +5685,7 @@ index 00000000..6cf260f9
 +            engine_progress(
 +                tx,
 +                if current.is_empty() {
-+                    "Starting the OpenCode engine…".to_owned()
++                    THINKING.to_owned()
 +                } else {
 +                    current
 +                },
@@ -5345,7 +5954,9 @@ index 00000000..6cf260f9
 +            if model.is_default
 +                && let Some(live) = live_engine_default(&cached_engine_models())
 +            {
-+                if live.model_ref != model.model_ref {
++                // The user's picked effort level survives the swap while the model offers it.
++                let live = live.carrying_effort_from(&model);
++                if live.model_ref != model.model_ref || live.effort != model.effort {
 +                    let _ = tx.send(WorkshopTurnMsg::EngineDefaultResolved {
 +                        model: live.clone(),
 +                    });
@@ -5377,13 +5988,13 @@ index 00000000..6cf260f9
 +                });
 +                model = vision;
 +            }
-+            engine_progress(tx, waiting_for(&model.name));
++            engine_progress(tx, THINKING);
++            // A model that is up but will not take the prompt cannot answer either: the silent
++            // fallback answers instead (the cause is logged by the fallback dispatch).
 +            let session = match session {
 +                Some(s) if engine.session_exists(s).await.unwrap_or(false) => s.clone(),
 +                _ => engine.create_session(Some("Workshop")).await.map_err(|e| {
-+                    TurnStartError::Other(engine_failure_line(&format!(
-+                        "could not open a session: {e}"
-+                    )))
++                    TurnStartError::EngineUnavailable(format!("could not open a session: {e}"))
 +                })?,
 +            };
 +            let _ = tx.send(WorkshopTurnMsg::EngineReady {
@@ -5392,12 +6003,12 @@ index 00000000..6cf260f9
 +            });
 +            let mut req = TurnRequest::new(spec.text.clone());
 +            req.model = Some(model.model_ref.clone());
++            // The picked effort level reaches OpenCode as the prompt's `variant`.
++            req.variant = model.effort.clone();
 +            req.permission = permission;
 +            req.files = spec.images.clone();
 +            let turn = engine.prompt(&session, req).await.map_err(|e| {
-+                TurnStartError::Other(engine_failure_line(&format!(
-+                    "the prompt was refused: {e}"
-+                )))
++                TurnStartError::EngineUnavailable(format!("the prompt was refused: {e}"))
 +            })?;
 +            // The live catalog knows what the model can see even when the saved pick predates it.
 +            let image_input = sees(&model);
@@ -5418,15 +6029,15 @@ index 00000000..6cf260f9
 +            let cli = match detect(&*adapter, &DetectOptions::default()).await {
 +                Detection::Installed(cli) => cli,
 +                Detection::Unverified { reason, .. } => {
-+                    return Err(TurnStartError::Other(format!(
-+                        "{} could not be verified: {reason}",
-+                        adapter.id()
++                    log_failure_cause(&format!("{} could not be verified: {reason}", adapter.id()));
++                    return Err(TurnStartError::Other(failure_line(
++                        model.as_deref().unwrap_or(&adapter.id().to_string()),
 +                    )));
 +                }
 +                Detection::NotInstalled => {
-+                    return Err(TurnStartError::Other(format!(
-+                        "{} is not installed",
-+                        adapter.id()
++                    log_failure_cause(&format!("{} is not installed", adapter.id()));
++                    return Err(TurnStartError::Other(failure_line(
++                        model.as_deref().unwrap_or(&adapter.id().to_string()),
 +                    )));
 +                }
 +            };
@@ -5436,7 +6047,12 @@ index 00000000..6cf260f9
 +            req.permission = permission;
 +            let handle = spawn(&*adapter, &cli, req, &SupervisorOptions::default())
 +                .await
-+                .map_err(|e| TurnStartError::Other(e.to_string()))?;
++                .map_err(|e| {
++                    log_failure_cause(&e.to_string());
++                    TurnStartError::Other(failure_line(
++                        model.as_deref().unwrap_or(&adapter.id().to_string()),
++                    ))
++                })?;
 +            Ok((TurnStream::Adapter(handle), None))
 +        }
 +    }
@@ -5471,6 +6087,9 @@ index 00000000..6cf260f9
 +            cancelled,
 +        });
 +    };
++    // The waiting line is up from the first moment on every backend (the engine bring-up refines
++    // it with its own phases) and stays under the latest block until the turn ends.
++    engine_progress(&tx, THINKING);
 +    // Ctrl-C must work while the engine is still installing or starting, not only once events
 +    // flow: race the bring-up against the cancel signal.
 +    let built = tokio::select! {
@@ -5499,14 +6118,11 @@ index 00000000..6cf260f9
 +        WorkshopTurnKind::Engine { model, .. } => model.name.clone(),
 +        WorkshopTurnKind::Adapter { adapter_id, .. } => adapter_id.to_string(),
 +    };
++    let is_engine = matches!(spec.kind, WorkshopTurnKind::Engine { .. });
 +    let mut cancelled = false;
 +    let mut aborted_by_us = false;
 +    let mut first_event_at: Option<tokio::time::Instant> =
 +        Some(tokio::time::Instant::now() + FIRST_EVENT_TIMEOUT);
-+    // Ten seconds without a first byte is long enough to tell the user the wait is the
-+    // connection's; the hard ceiling above still ends the turn with the cause.
-+    let mut still_connecting_at: Option<tokio::time::Instant> =
-+        Some(tokio::time::Instant::now() + CONNECT_TIMEOUT);
 +    // The backend's detail for a tool call (title, exit code, diff) arrives right before its
 +    // result; hold it so the UI gets one message per finished call.
 +    let mut tool_details: std::collections::HashMap<String, (Option<String>, serde_json::Value)> =
@@ -5516,6 +6132,7 @@ index 00000000..6cf260f9
 +    // is continued (engine, not Plan), at most MAX_AUTO_CONTINUES times in all.
 +    let mut tail = String::new();
 +    let mut errored = false;
++    let mut stalled = false;
 +    let mut continues = 0;
 +    let asks_for_files = asks_to_write_files(&spec.text);
 +    let mut wrote_a_file = false;
@@ -5536,37 +6153,36 @@ index 00000000..6cf260f9
 +                None => std::future::pending::<()>().await,
 +            }
 +        };
-+        let still_connecting = async {
-+            match still_connecting_at {
-+                Some(at) => tokio::time::sleep_until(at).await,
-+                None => std::future::pending::<()>().await,
-+            }
-+        };
 +        tokio::select! {
-+            _ = still_connecting => {
-+                still_connecting_at = None;
-+                engine_progress(&tx, format!("Still connecting to {model_name}\u{2026} nothing back yet"));
-+            }
 +            _ = silence => {
-+                // The engine accepted the prompt but nothing came back: stop waiting, say why.
++                // The model accepted the prompt but nothing came back: stop waiting. OpenCode's
++                // model cannot answer, so the silent fallback answers instead; a vendor CLI gets
++                // the plain failure line.
 +                stream.cancel();
-+                let _ = tx.send(WorkshopTurnMsg::Error(engine_failure_line(&format!(
-+                    "no answer from {model_name} after {} s",
-+                    FIRST_EVENT_TIMEOUT.as_secs()
-+                ))));
 +                first_event_at = None;
 +                aborted_by_us = true;
++                let cause = format!(
++                    "no answer from {model_name} after {} s",
++                    FIRST_EVENT_TIMEOUT.as_secs()
++                );
++                if is_engine {
++                    let _ = tx.send(WorkshopTurnMsg::EngineUnavailable {
++                        reason: cause,
++                        text: spec.text.clone(),
++                    });
++                    break;
++                }
++                log_failure_cause(&cause);
++                let _ = tx.send(WorkshopTurnMsg::Error(failure_line(&model_name)));
 +            }
 +            ev = stream.next_event() => match ev {
 +                Some(AdapterEvent::TextDelta { text }) => {
 +                    first_event_at = None;
-+                    still_connecting_at = None;
 +                    tail.push_str(&text);
 +                    let _ = tx.send(WorkshopTurnMsg::Delta(text));
 +                }
 +                Some(AdapterEvent::ToolCall { id, name, input }) => {
 +                    first_event_at = None;
-+                    still_connecting_at = None;
 +                    tail.clear();
 +                    wrote_a_file |= FILE_WRITE_TOOLS.contains(&name.as_str());
 +                    if reads_an_image(&name, &input) {
@@ -5592,7 +6208,7 @@ index 00000000..6cf260f9
 +                    });
 +                    // The model is at work again (thinking, hidden by default, or writing): the
 +                    // waiting line says so until its next output.
-+                    engine_progress(&tx, waiting_for(&model_name));
++                    engine_progress(&tx, THINKING);
 +                    if opened_an_image
 +                        && !switched
 +                        && vision_switch.is_none()
@@ -5613,22 +6229,41 @@ index 00000000..6cf260f9
 +                    }
 +                }
 +                Some(AdapterEvent::Error { message }) => {
++                    let nothing_yet = first_event_at.is_some();
 +                    first_event_at = None;
-+                    still_connecting_at = None;
 +                    // The stop that hands the turn to a vision model is not a failure.
 +                    if vision_switch.is_some() {
 +                        continue;
 +                    }
 +                    errored = true;
-+                    // An abort we asked for (Ctrl-C, or the silence timeout above) is already
-+                    // reported; the backend's own "run cancelled" would only repeat it.
-+                    if !(aborted_by_us && message == "run cancelled") {
-+                        let _ = tx.send(WorkshopTurnMsg::Error(message));
++                    if stream.stalled() {
++                        // The engine's idle ceiling ended the turn: reported as `Stalled` below,
++                        // with the recovery, not as a bare error.
++                        stalled = true;
++                        state::append_log(
++                            &engine_log_path(),
++                            &format!("stall: {model_name} stopped responding ({message}); recovering"),
++                        );
++                    } else if !(aborted_by_us && message == "run cancelled") {
++                        // An abort we asked for (Ctrl-C, or the silence timeout above) is already
++                        // reported; the backend's own "run cancelled" would only repeat it.
++                        // OpenCode's model failing before a word came back cannot answer: the
++                        // silent fallback answers instead. After output started, or on a vendor
++                        // CLI, the plain failure line.
++                        if is_engine && nothing_yet {
++                            stream.cancel();
++                            let _ = tx.send(WorkshopTurnMsg::EngineUnavailable {
++                                reason: message,
++                                text: spec.text.clone(),
++                            });
++                            break;
++                        }
++                        log_failure_cause(&message);
++                        let _ = tx.send(WorkshopTurnMsg::Error(failure_line(&model_name)));
 +                    }
 +                }
 +                Some(AdapterEvent::Thinking { text }) => {
 +                    first_event_at = None;
-+                    still_connecting_at = None;
 +                    let _ = tx.send(WorkshopTurnMsg::Thinking(text));
 +                }
 +                Some(AdapterEvent::Usage(usage)) => {
@@ -5679,17 +6314,15 @@ index 00000000..6cf260f9
 +                                tail.clear();
 +                                model_name = vision.name.clone();
 +                                let _ = tx.send(WorkshopTurnMsg::Answering { model: vision });
-+                                engine_progress(&tx, waiting_for(&model_name));
++                                engine_progress(&tx, THINKING);
 +                                continue;
 +                            }
 +                            Err(e) => {
-+                                state::append_log(
-+                                    &engine_log_path(),
-+                                    &format!("vision: the hand-over was refused: {e}"),
-+                                );
-+                                let _ = tx.send(WorkshopTurnMsg::Error(engine_failure_line(
-+                                    &format!("{} could not take over the images: {e}", vision.name),
-+                                )));
++                                log_failure_cause(&format!(
++                                    "vision: {} could not take over the images: {e}",
++                                    vision.model_ref
++                                ));
++                                let _ = tx.send(WorkshopTurnMsg::Error(failure_line(&vision.name)));
 +                            }
 +                        }
 +                    }
@@ -5728,7 +6361,7 @@ index 00000000..6cf260f9
 +                            Ok(turn) => {
 +                                stream = TurnStream::Engine(turn);
 +                                tail.clear();
-+                                engine_progress(&tx, waiting_for(&model_name));
++                                engine_progress(&tx, THINKING);
 +                                continue;
 +                            }
 +                            Err(e) => state::append_log(
@@ -5749,6 +6382,13 @@ index 00000000..6cf260f9
 +    }
 +
 +    let session_id = stream.session_id();
++    if stalled && !cancelled {
++        let _ = tx.send(WorkshopTurnMsg::Stalled {
++            model: model_name.clone(),
++            text: spec.text.clone(),
++            engine: matches!(spec.kind, WorkshopTurnKind::Engine { .. }),
++        });
++    }
 +    let _ = tx.send(WorkshopTurnMsg::Done {
 +        session_id,
 +        cancelled,
@@ -5777,6 +6417,94 @@ index 00000000..6cf260f9
 +    }
 +}
 +
++/// A vendor CLI installer the user started from an `Install` rail, while it runs: one at a time,
++/// its latest output line shared with the runner task for the picker's status line.
++#[derive(Debug, Clone)]
++pub struct RailInstall {
++    pub rail: workshop_detect::Rail,
++    pub started: std::time::Instant,
++    pub progress: Arc<std::sync::Mutex<String>>,
++}
++
++impl RailInstall {
++    pub fn new(rail: workshop_detect::Rail) -> Self {
++        Self {
++            rail,
++            started: std::time::Instant::now(),
++            progress: Arc::new(std::sync::Mutex::new(String::new())),
++        }
++    }
++
++    /// `Installing Claude Code… 12s · <latest installer line>` — one line, no plumbing.
++    pub fn status_line(&self) -> String {
++        let name = self.rail.vendor().display_name();
++        let secs = self.started.elapsed().as_secs();
++        let latest = self
++            .progress
++            .lock()
++            .map(|l| l.clone())
++            .unwrap_or_default();
++        let latest: String = latest.chars().take(60).collect();
++        match (secs >= 3, latest.is_empty()) {
++            (false, true) => format!("Installing {name}\u{2026}"),
++            (true, true) => format!("Installing {name}\u{2026} {secs}s"),
++            (false, false) => format!("Installing {name}\u{2026} \u{b7} {latest}"),
++            (true, false) => format!("Installing {name}\u{2026} {secs}s \u{b7} {latest}"),
++        }
++    }
++}
++
++/// Run `rail`'s official installer to completion (blocking; the effect runs it on the blocking
++/// pool), streaming its lines into `progress` and appending them to
++/// `<workshop home>/logs/install-<vendor>.log`. `Err` is the plain reason for the status line;
++/// it names the log, never the command's internals.
++pub fn run_rail_installer(
++    rail: workshop_detect::Rail,
++    progress: Arc<std::sync::Mutex<String>>,
++) -> Result<(), String> {
++    use std::io::Write as _;
++    use workshop_detect::install::InstallOutcome;
++    let vendor = rail.vendor();
++    let command = workshop_detect::install_command(vendor)
++        .ok_or_else(|| format!("{} has no installer to run", vendor.display_name()))?;
++    let log_path = workshop_detect::install_log_path(&workshop_home(), vendor);
++    if let Some(dir) = log_path.parent() {
++        let _ = std::fs::create_dir_all(dir);
++    }
++    let mut log = std::fs::OpenOptions::new()
++        .create(true)
++        .append(true)
++        .open(&log_path)
++        .map_err(|e| format!("could not open {}: {e}", log_path.display()))?;
++    let _ = writeln!(log, "$ {command}");
++    tracing::info!(vendor = vendor.id(), log = %log_path.display(), "workshop: running the official installer");
++    let outcome = workshop_detect::run_installer(
++        &command,
++        workshop_detect::install::INSTALL_TIMEOUT,
++        |line| {
++            let _ = writeln!(log, "{line}");
++            if let Ok(mut p) = progress.lock() {
++                *p = line.to_owned();
++            }
++        },
++    )?;
++    let _ = writeln!(log, "[workshop] {outcome:?}");
++    match outcome {
++        InstallOutcome::Installed => Ok(()),
++        InstallOutcome::Failed { status } => Err(format!(
++            "the installer exited with {} (details: {})",
++            status
++                .map(|c| format!("status {c}"))
++                .unwrap_or_else(|| "a signal".to_owned()),
++            log_path.display()
++        )),
++        InstallOutcome::Hung => Err(format!(
++            "the installer stopped responding (details: {})",
++            log_path.display()
++        )),
++    }
++}
++
 +/// The official CLI login command for a rail, to run attached to the user's terminal.
 +pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
 +    let vendor = rail.vendor();
@@ -5786,7 +6514,14 @@ index 00000000..6cf260f9
 +        .binary
 +        .as_ref()
 +        .map(|b| b.path.to_string_lossy().to_string())
-+        .unwrap_or_else(|| vendor.binary_names().first().copied().unwrap_or("").to_owned());
++        .unwrap_or_else(|| {
++            vendor
++                .binary_names()
++                .first()
++                .copied()
++                .unwrap_or("")
++                .to_owned()
++        });
 +    let mut argv = vec![bin];
 +    argv.extend(
 +        workshop_detect::login_argv(vendor)
@@ -5939,6 +6674,87 @@ index 00000000..6cf260f9
 +        ] {
 +            assert!(!announces_unfinished_action(tail), "{tail:?}");
 +        }
++    }
++}
+diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_update.rs b/crates/codegen/xai-grok-pager/src/app/workshop_update.rs
+new file mode 100644
+index 00000000..9f016885
+--- /dev/null
++++ b/crates/codegen/xai-grok-pager/src/app/workshop_update.rs
+@@ -0,0 +1,75 @@
++//! Workshop: silent updates. At launch the background updater (`xai_grok_update`) installs a newer
++//! release from Workshop's channel and swaps `~/.workshop/bin/workshop` while this version keeps
++//! running; the welcome screen offers upstream's restart line meanwhile. The first launch of the
++//! new version says so in one line.
++
++use std::path::Path;
++
++/// The version this home last ran, one line in `$WORKSHOP_HOME`.
++const MARKER: &str = "last-run-version";
++
++/// Record `running` as the version this home last ran. Returns `running` when the previous launch
++/// ran an older version (the updater swapped the binary in between); a first install, the same
++/// version, a downgrade, or an unparseable marker say nothing.
++pub fn note_launch(home: &Path, running: &str) -> Option<String> {
++    let path = home.join(MARKER);
++    let previous = std::fs::read_to_string(&path).ok();
++    let previous = previous.as_deref().map(str::trim);
++    if previous != Some(running) {
++        let tmp = home.join(format!(".{MARKER}.tmp.{}", std::process::id()));
++        if std::fs::create_dir_all(home).is_ok()
++            && std::fs::write(&tmp, format!("{running}\n")).is_ok()
++        {
++            let _ = std::fs::rename(&tmp, &path);
++        }
++    }
++    (release_core(running)? > release_core(previous?)?).then(|| running.to_owned())
++}
++
++/// `MAJOR.MINOR.PATCH` of a version string, ignoring any pre-release or build suffix.
++fn release_core(version: &str) -> Option<(u64, u64, u64)> {
++    let core = version.split(['-', '+']).next()?;
++    let mut parts = core.split('.').map(|p| p.parse::<u64>().ok());
++    let triple = (parts.next()??, parts.next()??, parts.next()??);
++    parts.next().is_none().then_some(triple)
++}
++
++/// The one line shown on the first launch after an update.
++pub fn updated_line(version: &str) -> String {
++    format!("Updated to {version}")
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn only_the_first_launch_after_an_upgrade_says_updated() {
++        let home = tempfile::tempdir().unwrap();
++        assert_eq!(note_launch(home.path(), "0.2.1"), None, "first install");
++        assert_eq!(
++            note_launch(home.path(), "0.2.1"),
++            None,
++            "same version again"
++        );
++        assert_eq!(note_launch(home.path(), "0.2.2"), Some("0.2.2".into()));
++        assert_eq!(note_launch(home.path(), "0.2.2"), None, "said once");
++        assert_eq!(
++            note_launch(home.path(), "0.2.1"),
++            None,
++            "a downgrade is not an update"
++        );
++        assert_eq!(
++            std::fs::read_to_string(home.path().join(MARKER)).unwrap(),
++            "0.2.1\n"
++        );
++        assert_eq!(updated_line("0.2.3"), "Updated to 0.2.3");
++        assert_eq!(
++            note_launch(home.path(), "0.10.0"),
++            Some("0.10.0".into()),
++            "numeric, not lexical"
++        );
++        assert_eq!(release_core("0.2.3-alpha.1"), Some((0, 2, 3)));
++        assert_eq!(release_core("garbage"), None);
 +    }
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/headless.rs b/crates/codegen/xai-grok-pager/src/headless.rs
@@ -6136,10 +6952,10 @@ index 51c3c5f1..aa5c8e13 100644
      fn run_set_default_model_resolves_case_insensitively() {
 diff --git a/crates/codegen/xai-grok-pager/src/views/connection_picker.rs b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
 new file mode 100644
-index 00000000..87f62d44
+index 00000000..131b3a92
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
-@@ -0,0 +1,420 @@
+@@ -0,0 +1,426 @@
 +//! Workshop connection picker overlay (ratatui view over `workshop_auth::PickerState`).
 +//!
 +//! `/model` opens the **Models** view: one line per usable model (`name  provider  badge`), the
@@ -6358,9 +7174,11 @@ index 00000000..87f62d44
 +
 +fn badge_style(theme: &Theme, row: &ModelsRow) -> Style {
 +    match &row.kind {
-+        RowKind::XaiOptional => Style::default().fg(theme.warning),
++        RowKind::XaiOptional | RowKind::RailSignIn(_) => Style::default().fg(theme.warning),
++        RowKind::RailNote(..) => Style::default().fg(theme.gray_bright),
 +        RowKind::ConnectProvider { .. } => Style::default().fg(theme.accent_tool),
 +        RowKind::Engine(_) => Style::default().fg(theme.accent_success),
++        RowKind::RailModel { .. } => Style::default().fg(theme.accent_model),
 +        RowKind::Catalog { model, locked } => {
 +            if !*locked && model.is_keyless() {
 +                Style::default().fg(theme.accent_success)
@@ -6376,6 +7194,7 @@ index 00000000..87f62d44
 +        Pill::Detecting => Style::default().fg(theme.gray_bright),
 +        Pill::Ready => Style::default().fg(theme.accent_success),
 +        Pill::SignIn => Style::default().fg(theme.warning),
++        Pill::Install => Style::default().fg(theme.accent_tool),
 +    }
 +}
 +
@@ -6509,7 +7328,10 @@ index 00000000..87f62d44
 +                )));
 +            } else if visible.is_empty() {
 +                lines.push(Line::from(Span::styled(
-+                    format!("  no model matches \u{201c}{}\u{201d}", picker.filter.trim()),
++                    format!(
++                        "  no model matches \u{201c}{}\u{201d}",
++                        picker.filter.trim()
++                    ),
 +                    Style::default().fg(theme.gray_bright),
 +                )));
 +            }
@@ -6561,20 +7383,21 @@ index 00000000..87f62d44
 +    lines
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/views/mod.rs b/crates/codegen/xai-grok-pager/src/views/mod.rs
-index dcbe4033..66b7ae6a 100644
+index dcbe4033..b0a519b1 100644
 --- a/crates/codegen/xai-grok-pager/src/views/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/mod.rs
-@@ -5,6 +5,8 @@ pub mod announcements;
+@@ -5,6 +5,9 @@ pub mod announcements;
  pub mod block_viewer;
  pub mod btw_overlay;
  pub mod completion_dropdown;
 +/// Workshop overlay: connection picker view.
 +pub mod connection_picker;
++pub mod workshop_password;
  pub mod context_bar;
  pub mod credit_bar;
  pub mod dashboard;
 diff --git a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
-index b828a780..d2aecc50 100644
+index b828a780..c6d1cbb7 100644
 --- a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
 @@ -151,9 +151,12 @@ pub struct WelcomeRenderResult {
@@ -6654,7 +7477,16 @@ index b828a780..d2aecc50 100644
      pub mouse_pos: Option<(u16, u16)>,
      pub is_zdr_blocked: bool,
      pub session_picker: Option<&'a [SessionPickerEntry]>,
-@@ -789,10 +794,24 @@ pub fn render_welcome(
+@@ -707,6 +712,8 @@ pub struct WelcomeRenderParams<'a> {
+     pub pending_hint: Option<crate::views::shortcuts_bar::PendingHint>,
+     pub startup_warnings: &'a [StartupWarning],
+     pub pending_update_version: Option<&'a str>,
++    /// Workshop: this launch is the first of a version the silent updater installed.
++    pub workshop_updated_to: Option<&'a str>,
+     /// Recent foreign session offered on ctrl+u, suppressed by a pending update.
+     pub foreign_resume_hint: Option<&'a xai_grok_foreign_sessions::RecentForeignSession>,
+     pub is_api_key_auth: bool,
+@@ -789,10 +796,24 @@ pub fn render_welcome(
      };
      render_top_bar(top_bar_inner, buf, &theme, None);
  
@@ -6681,7 +7513,7 @@ index b828a780..d2aecc50 100644
              let menu = [("l", login_text.as_str()), ("q", "Quit")];
              let msg = error.as_deref().map(|e| (e, theme.accent_error));
              let info = PromptInfo {
-@@ -845,7 +864,7 @@ pub fn render_welcome(
+@@ -845,7 +866,7 @@ pub fn render_welcome(
                  content_area,
                  buf,
                  Some((
@@ -6690,7 +7522,7 @@ index b828a780..d2aecc50 100644
                      theme.gray_bright,
                  )),
                  &menu,
-@@ -1025,7 +1044,7 @@ fn render_welcome_trust(
+@@ -1025,7 +1046,7 @@ fn render_welcome_trust(
          Line::default(),
          // Two lines so the warning never clips at narrow / compact widths (a single ~78-char line would truncate "...posing security risks")
          Line::from(Span::styled(
@@ -6699,7 +7531,7 @@ index b828a780..d2aecc50 100644
              Style::default().fg(theme.gray),
          ))
          .alignment(Alignment::Center),
-@@ -1470,9 +1489,10 @@ fn render_welcome_authenticating(
+@@ -1470,9 +1491,10 @@ fn render_welcome_authenticating(
                  );
                  push_auth_copy_block(&mut lines, theme, clipboard_delivery);
              } else {
@@ -6711,7 +7543,16 @@ index b828a780..d2aecc50 100644
                          Style::default().fg(theme.gray),
                      ))
                      .alignment(Alignment::Center),
-@@ -1788,10 +1808,14 @@ fn render_welcome_done(
+@@ -1736,7 +1758,7 @@ fn render_welcome_done(
+         let action_line = if w.action.is_some() { 1 } else { 0 };
+         msg_lines + action_line + 1 // +1 for buffer spacing
+     });
+-    let has_update_tip = p.pending_update_version.is_some();
++    let has_update_tip = p.pending_update_version.is_some() || p.workshop_updated_to.is_some();
+     let has_resume_tip = !has_update_tip && p.foreign_resume_hint.is_some();
+     // Tip slot precedence: pending update, then privacy banner (wraps, so its height depends on width), then resume hint, then random tip
+     // The update outranks the upsell so a ready update is never invisible; the banner takes the slot back once it's applied
+@@ -1788,10 +1810,14 @@ fn render_welcome_done(
              items.push((key_i_with_x, "Import Claude settings"));
          }
          items.push((key_w, "New worktree"));
@@ -6729,7 +7570,65 @@ index b828a780..d2aecc50 100644
          }
          items.push((key_q, "Quit"));
          owned_menu = items;
-@@ -2283,6 +2307,7 @@ fn render_welcome_done(
+@@ -2128,7 +2154,11 @@ fn render_welcome_done(
+         (None, None)
+     } else {
+         // Privacy banner owns the tip slot when visible (above the prompt), except a pending-update notification, which outranks it
+-        if p.privacy_banner && p.pending_update_version.is_none() && layout.tip.height > 0 {
++        if p.privacy_banner
++            && p.pending_update_version.is_none()
++            && p.workshop_updated_to.is_none()
++            && layout.tip.height > 0
++        {
+             let [_, tip_centered, _] = Layout::horizontal([
+                 Constraint::Min(0),
+                 Constraint::Length(content_area.width),
+@@ -2182,11 +2212,36 @@ fn render_welcome_done(
+             Paragraph::new(line)
+                 .style(Style::default().bg(theme.bg_base))
+                 .render(tip_inset, buf);
++        } else if let Some(ver) = p.workshop_updated_to
++            && layout.tip.height > 0
++        {
++            // Workshop: the first launch after a silent update, in the same slot as upstream's line.
++            let [_, tip_centered, _] = Layout::horizontal([
++                Constraint::Min(0),
++                Constraint::Length(content_area.width),
++                Constraint::Min(0),
++            ])
++            .flex(Flex::Center)
++            .areas(layout.tip);
++            let inset = prompt::prompt_inset(p.compact);
++            let tip_inset = Rect {
++                x: tip_centered.x + inset,
++                y: tip_centered.y,
++                width: tip_centered.width.saturating_sub(inset * 2),
++                height: tip_centered.height,
++            };
++            Paragraph::new(Line::from(Span::styled(
++                crate::app::workshop_update::updated_line(ver),
++                Style::default().fg(theme.accent_user),
++            )))
++            .style(Style::default().bg(theme.bg_base))
++            .render(tip_inset, buf);
+         }
+ 
+         // Recent foreign session: offer a one-click resume in the tip area (only when no update is pending; the update shares ctrl+u and wins)
+         if !p.privacy_banner
+             && p.pending_update_version.is_none()
++            && p.workshop_updated_to.is_none()
+             && let Some(hint) = p.foreign_resume_hint
+             && layout.tip.height > 0
+         {
+@@ -2249,6 +2304,7 @@ fn render_welcome_done(
+             &usage_info,
+             if p.privacy_banner
+                 || p.pending_update_version.is_some()
++                || p.workshop_updated_to.is_some()
+                 || p.foreign_resume_hint.is_some()
+             {
+                 // Banner/update/resume tip already rendered above with custom styling.
+@@ -2283,6 +2339,7 @@ fn render_welcome_done(
          consent_link_rects: Vec::new(),
          consent_legibility: None,
          changelog_action_present: show_changelog_action,
@@ -6737,7 +7636,7 @@ index b828a780..d2aecc50 100644
          changelog_cta_rect,
          announcement_truncated,
          announcement_rect,
-@@ -2718,8 +2743,9 @@ mod tests {
+@@ -2718,8 +2775,9 @@ mod tests {
                  "badge must not label the product: {rendered:?}"
              );
          }
@@ -6749,7 +7648,7 @@ index b828a780..d2aecc50 100644
          assert!(footer.contains("acme"), "footer keeps the team: {footer:?}");
          assert!(
              !footer.ends_with('\u{2502}'),
-@@ -2862,6 +2888,7 @@ mod tests {
+@@ -2862,6 +2920,7 @@ mod tests {
              consent_state: &ConsentState::Done,
              consent_hover_link: None,
              login_label: None,
@@ -6757,7 +7656,7 @@ index b828a780..d2aecc50 100644
              auth_code_input: "",
              auth_code_cursor_byte: 0,
              clipboard_delivery: None,
-@@ -2874,6 +2901,7 @@ mod tests {
+@@ -2874,6 +2933,7 @@ mod tests {
              team_name: None,
              has_access: true,
              has_claude_import: false,
@@ -6765,7 +7664,15 @@ index b828a780..d2aecc50 100644
              mouse_pos: None,
              is_zdr_blocked: false,
              session_picker,
-@@ -3696,7 +3724,7 @@ mod tests {
+@@ -2882,6 +2942,7 @@ mod tests {
+             pending_hint: None,
+             startup_warnings: &[],
+             pending_update_version: None,
++            workshop_updated_to: None,
+             foreign_resume_hint: None,
+             is_api_key_auth: false,
+             session_picker_content_results: None,
+@@ -3696,7 +3757,7 @@ mod tests {
          };
          let one_line = WelcomeLayout::compute(input(None));
          assert_eq!(one_line.logo_tier, LogoTier::Full);
@@ -6774,7 +7681,7 @@ index b828a780..d2aecc50 100644
  
          let tall = WelcomeLayout::compute(input(Some(13)));
          assert_eq!(tall.logo_tier, LogoTier::Compact);
-@@ -3816,7 +3844,7 @@ mod tests {
+@@ -3816,7 +3877,7 @@ mod tests {
  
          let mut buf = Buffer::empty(area);
          let _ = render_welcome(area, &mut buf, &params, &mut prompt, &mut picker);
@@ -6783,7 +7690,7 @@ index b828a780..d2aecc50 100644
  
          prompt.set_text(&["line"; 30].join("\n"));
          let mut buf = Buffer::empty(area);
-@@ -4096,8 +4124,12 @@ mod tests {
+@@ -4096,8 +4157,12 @@ mod tests {
              ..Default::default()
          };
          assert!(
@@ -6798,7 +7705,7 @@ index b828a780..d2aecc50 100644
              "clamped slot must keep the box within the area"
          );
      }
-@@ -4584,7 +4616,8 @@ the usual channels. "
+@@ -4584,7 +4649,8 @@ the usual channels. "
              hero_box::min_content_height(
                  &short_input,
                  short_expanded.hero_info.height,

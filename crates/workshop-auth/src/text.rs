@@ -118,7 +118,7 @@ mod tests {
     #[test]
     fn text_picker_shows_views_rails_pills_and_xai_last() {
         let mut s = PickerState::new();
-        let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]);
+        let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[], &[]);
         let rails = workshop_detect::Rail::ALL
             .iter()
             .map(|r| {
@@ -141,11 +141,10 @@ mod tests {
         assert!(t.contains("[Subscriptions]"));
         assert!(t.contains("Big Pickle · OpenCode · free"));
         assert!(
-            t.contains(
-                "Lists: OpenCode cached list from 2026-09-21 · Kilo Gateway cached list from 2026-09-21"
-            ),
+            t.contains("Lists: OpenCode cached list from 2026-09-21"),
             "{t}"
         );
+        assert!(!t.contains("Kilo"), "Kilo is never named:\n{t}");
         let claude = t.find("Claude ").unwrap();
         let codex = t.find("Codex ").unwrap();
         let cursor = t.find("Cursor ").unwrap();
@@ -159,7 +158,6 @@ mod tests {
         assert!(t.contains("OpenAI \u{2014} API key"), "{t}");
         assert!(openrouter < xai, "xAI card is last");
         assert!(t.contains("Not required."));
-        assert!(t.contains("Kilo"));
         assert!(!t.contains("Login with grok.com"));
     }
 }

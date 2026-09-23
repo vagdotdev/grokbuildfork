@@ -45,6 +45,12 @@
 //! * `new_starts_a_fresh_engine_conversation` — `/new` opens a fresh OpenCode session for the next
 //!   prompt (new id, nothing of the old conversation resent, no meter carried over); `-c` still
 //!   resumes the most recent conversation.
+//! * `mid_turn_stall_is_recovered` / `long_tool_run_is_not_a_stall` — a model that goes silent
+//!   mid-answer is aborted at the stall ceiling and the turn recovers (pool fallback, or one plain
+//!   line with Enter to retry); silence while a tool runs is not a stall.
+//! * `sudo_password_is_asked_in_workshop_never_the_model` — `sudo` in an engine command asks in
+//!   Workshop's own masked prompt (SUDO_ASKPASS helper → this process); the password goes to sudo
+//!   only; Esc skips with "Skipped — needs your password" for the model.
 //!
 //! Evidence (text + HTML screenshots) lands in `WORKSHOP_PTY_EVIDENCE_DIR/engine-trust/*`.
 
@@ -57,7 +63,18 @@ use std::time::Duration;
 
 use pty_common::{Journey, bin_from_env, send_prompt, snapshot, wait_for};
 
-const FIRST_RUN_LABEL: &str = "OpenCode \u{b7} Big Pickle";
+/// The composer names the model only (`Big Pickle`, `Big Pickle · plan`), never the runtime.
+const FIRST_RUN_LABEL: &str = "Big Pickle";
+
+/// The composer's bottom border (`╰──… Big Pickle · plan ─╯`): the last box bottom on screen.
+fn composer_border(screen: &str) -> String {
+    screen
+        .lines()
+        .rev()
+        .find(|l| l.contains('\u{256f}'))
+        .unwrap_or_default()
+        .to_owned()
+}
 
 fn adapter_fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../workshop-adapters/tests/fixtures")
@@ -97,6 +114,11 @@ exit 2
     std::fs::write(&path, script).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The `sudo` the fake engine's commands find: needs a password through SUDO_ASKPASS, like
+    // the real one without a terminal (see `fixtures/fake-sudo.sh`).
+    let sudo = bin.join("sudo");
+    std::fs::copy(fixtures.join("fake-sudo.sh"), &sudo).unwrap();
+    std::fs::set_permissions(&sudo, std::fs::Permissions::from_mode(0o755)).unwrap();
     log
 }
 
@@ -169,11 +191,19 @@ fn select_row(j: &mut Journey, needle: &str) {
     };
     for key in [b"\x1b[A", b"\x1b[B"] {
         for _ in 0..40 {
-            if selected(&j.h.screen_contents()) {
-                return;
+            // A loaded runner paints late: give each step up to half a second to show the frame
+            // before the next key moves the selection past the row.
+            let deadline = std::time::Instant::now() + Duration::from_millis(500);
+            loop {
+                if selected(&j.h.screen_contents()) {
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                j.h.update(Duration::from_millis(50));
             }
             j.h.inject_keys(key).unwrap();
-            j.h.update(Duration::from_millis(120));
         }
     }
     panic!(
@@ -195,12 +225,7 @@ fn wait_gone(j: &mut Journey, text: &str, secs: u64) {
 /// shows no label).
 fn set_mode(j: &mut Journey, mode: &str) {
     for _ in 0..5 {
-        let screen = j.h.screen_contents();
-        let label_line = screen
-            .lines()
-            .find(|l| l.contains(FIRST_RUN_LABEL))
-            .unwrap_or_default()
-            .to_owned();
+        let label_line = composer_border(&j.h.screen_contents());
         let current_is = |m: &str| label_line.contains(&format!("Big Pickle \u{b7} {m}"));
         let at_target = match mode {
             "normal" => !["plan", "auto", "always-approve"]
@@ -588,7 +613,7 @@ fn queued_prompts_are_separate() {
     send_prompt(&mut j, "slow one");
     // The turn is under way (the engine took the prompt) before the next one is typed; a burst
     // of keys with newlines inside would read as a paste, which is not what a user does.
-    wait_for(&mut j.h, "Waiting for Big Pickle", 30);
+    wait_for(&mut j.h, pty_common::WAITING_ROW, 30);
     send_prompt(&mut j, "two");
     wait_for(&mut j.h, "Queued (1)", 10);
     snapshot(&j.h, &j.dir, "01-queued-toast");
@@ -646,9 +671,16 @@ fn queued_prompts_are_separate() {
 const REASONING: [&str; 2] = ["Keep it brief", "Summarize it"];
 
 fn assert_no_thinking(screen: &str) {
+    // The pager's turn-status row (`⠧ Thinking… 2.1s … 5s [stop]`) names the phase, not the
+    // model's reasoning; every transcript row must be free of it.
+    let transcript: Vec<&str> = screen
+        .lines()
+        .filter(|l| !l.trim_end().ends_with("[stop]"))
+        .collect();
+    let transcript = transcript.join("\n");
     for text in REASONING.iter().chain(&["Thought", "Thinking"]) {
         assert!(
-            !screen.contains(text),
+            !transcript.contains(text),
             "no thinking by default ({text:?} on screen):\n{screen}"
         );
     }
@@ -680,14 +712,18 @@ fn reasoning_hidden_by_default() {
         "the whitespace-only text part after the thinking opens no empty reply row:\n{screen}"
     );
 
-    // Hidden thinking after a tool call draws nothing, so the waiting line shows the model is
-    // still at work until its answer lands.
+    // Hidden thinking after a tool call draws nothing in the transcript, so the turn-status row
+    // (`Thinking…` while the reasoning streams, the wait for the model around it) shows the model
+    // is still at work until its answer lands.
     send_prompt(&mut j, "think slowly, then list files");
     let waiting_after_tool = |screen: &str| {
         let mut lines = screen.lines();
         lines.any(|l| l.contains("\u{276f} think slowly, then list files"))
             && lines.any(|l| l.contains("ls -1"))
-            && lines.any(|l| l.contains("Waiting for Big Pickle"))
+            && lines.any(|l| {
+                l.trim_end().ends_with("[stop]")
+                    && (l.contains("Thinking\u{2026}") || l.contains(pty_common::WAITING_ROW))
+            })
     };
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while !waiting_after_tool(&j.h.screen_contents()) {
@@ -698,10 +734,10 @@ fn reasoning_hidden_by_default() {
         );
         j.h.update(Duration::from_millis(150));
     }
-    snapshot(&j.h, &j.dir, "03-waiting-line-during-hidden-thinking");
+    snapshot(&j.h, &j.dir, "03-status-row-during-hidden-thinking");
     assert_no_thinking(&j.h.screen_contents());
     wait_for(&mut j.h, "Here is the listing.", 30);
-    wait_gone(&mut j, "Waiting for Big Pickle", 30);
+    wait_gone(&mut j, "[stop]", 30);
     assert_no_thinking(&j.h.screen_contents());
     quit(&mut j);
 }
@@ -902,7 +938,7 @@ fn saved_model_ref(j: &Journey) -> String {
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
 fn image_turn_is_answered_by_a_model_that_sees() {
-    const MUSE: &str = "OpenCode \u{b7} Muse Spark 1.3 Free";
+    const MUSE: &str = "Muse Spark 1.3 Free";
     let Some(bin) = bin_from_env() else { return };
     let fx = fixture();
     let mut j = launch("engine-trust/image-turn-model-that-sees", &bin, &fx);
@@ -951,15 +987,11 @@ fn image_turn_is_answered_by_a_model_that_sees() {
     assert_eq!(saved_model_ref(&j), "opencode/big-pickle");
 
     // The user's own pick sticks too.
-    pick_model(
-        &mut j,
-        "fin free",
-        "OpenCode \u{b7} Ling 3.0 Flash Fin Free",
-    );
+    pick_model(&mut j, "fin free", "Ling 3.0 Flash Fin Free");
     send_prompt(&mut j, "sort my photos again");
     wait_for(&mut j.h, "Looking at the photos.", 60);
     assert!(j.h.screen_contents().contains(MUSE));
-    wait_for(&mut j.h, "OpenCode \u{b7} Ling 3.0 Flash Fin Free", 30);
+    wait_for(&mut j.h, "Ling 3.0 Flash Fin Free", 30);
     send_prompt(&mut j, "hello again");
     wait_for(&mut j.h, "Echo: hello again", 30);
     snapshot(&j.h, &j.dir, "03-picked-model-sticks");
@@ -1645,8 +1677,15 @@ fn new_starts_a_fresh_engine_conversation() {
     );
     let after = quit(&mut j);
     assert!(
-        after.contains(&format!("workshop --resume {new}")),
-        "the quit hint names the new conversation:\n{after}"
+        after.contains("Continue later with: workshop -c") && !after.contains("ses_"),
+        "the quit hint is `workshop -c`, never a raw session id:\n{after}"
+    );
+    assert!(
+        j.workshop_home()
+            .join("engine/sessions")
+            .join(format!("{new}.json"))
+            .exists(),
+        "the new conversation is recorded under its own id"
     );
 
     // `-c` on the same folder resumes the most recent conversation — the new one.
@@ -1713,6 +1752,197 @@ fn new_starts_a_fresh_engine_conversation() {
     let _ = h.wait_exit_code(Duration::from_secs(10));
 }
 
+/// Unix seconds at which the fake engine was told to abort a turn.
+fn aborts(log: &Path) -> Vec<f64> {
+    engine_log(log)
+        .iter()
+        .filter(|v| v.get("aborted").is_some())
+        .filter_map(|v| v.get("time").and_then(|t| t.as_f64()))
+        .collect()
+}
+
+/// A model that goes silent mid-answer is not left on the waiting line: after the stall ceiling
+/// (`WORKSHOP_STALL_TIMEOUT_SECS`, 5 s here; 90 s shipped) the engine turn is aborted and resent
+/// through the pool fallback — the composer follows the model that answers — or, with nothing to
+/// fall back to, one plain line offers Enter to retry. The ceiling never fires while a tool runs.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn mid_turn_stall_is_recovered() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut env: Vec<(&str, &str)> = OFFLINE.to_vec();
+    env.push(("WORKSHOP_STALL_TIMEOUT_SECS", "5"));
+    let mut j = pty_common::spawn("engine-trust/mid-turn-stall", &bin, &env, Some(&fx.bin));
+    pty_common::connect_big_pickle(&mut j);
+    send_prompt(&mut j, "go silent now");
+    // The answer began, then nothing more comes.
+    wait_for(&mut j.h, "Let me look at that", 60);
+    let began = std::time::Instant::now();
+    snapshot(&j.h, &j.dir, "01-answer-began-then-silence");
+    let deadline = began + Duration::from_secs(30);
+    while aborts(&fx.log).is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the engine turn was never aborted after the stall ceiling:\n{}",
+            j.h.screen_contents()
+        );
+        j.h.update(Duration::from_millis(200));
+    }
+    let aborted_after = began.elapsed();
+    assert!(
+        aborted_after >= Duration::from_secs(4),
+        "the ceiling is not jumped early: aborted after {aborted_after:?}"
+    );
+    // Recovery on screen: the waiting line is gone and either the pool fallback took over (the
+    // composer no longer names Big Pickle) or the plain stall line stands with Enter to retry.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let screen = j.h.screen_contents();
+        let label_switched = screen
+            .lines()
+            .find(|l| l.contains("/model to switch") || l.contains("Shift+Tab"))
+            .is_some_and(|l| !l.contains("Big Pickle"));
+        let plain_line = screen.contains("stopped responding");
+        if (label_switched || plain_line) && !screen.contains("Waiting for Big Pickle") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no recovery after the stall:\n{screen}"
+        );
+        j.h.update(Duration::from_millis(300));
+    }
+    j.h.update(Duration::from_millis(800));
+    snapshot(&j.h, &j.dir, "02-stall-recovered");
+    let engine_log_text =
+        std::fs::read_to_string(j.workshop_home().join("logs").join("opencode-engine.log"))
+            .unwrap_or_default();
+    assert!(
+        engine_log_text.contains("stall: Big Pickle stopped responding"),
+        "the stall is on record for /doctor:\n{engine_log_text}"
+    );
+    eprintln!("stall: engine aborted {aborted_after:.1?} after the answer began (ceiling 5 s)");
+    quit(&mut j);
+}
+
+/// Silence while a tool runs is not a stall: a command longer than the ceiling finishes and the
+/// turn ends normally, with no abort.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn long_tool_run_is_not_a_stall() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut env: Vec<(&str, &str)> = OFFLINE.to_vec();
+    env.push(("WORKSHOP_STALL_TIMEOUT_SECS", "3"));
+    let mut j = pty_common::spawn(
+        "engine-trust/long-tool-not-a-stall",
+        &bin,
+        &env,
+        Some(&fx.bin),
+    );
+    pty_common::connect_big_pickle(&mut j);
+    // Always-approve (the default): the `sleep 8` runs at once and the server is quiet for 8 s.
+    send_prompt(&mut j, "run the long command");
+    wait_for(&mut j.h, "Done waiting.", 60);
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "01-long-command-finished");
+    assert!(
+        aborts(&fx.log).is_empty(),
+        "a running tool is not a stall: nothing was aborted"
+    );
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("stopped responding"),
+        "no stall line for a slow command:\n{screen}"
+    );
+    quit(&mut j);
+}
+
+/// Everything a password could have leaked into: the screen so far, the fake engine's request
+/// log, Workshop's conversation records and the engine log.
+fn password_sinks(j: &Journey, fx: &Fixture, screens: &[String]) -> String {
+    let mut all = screens.join("\n");
+    all.push_str(&std::fs::read_to_string(&fx.log).unwrap_or_default());
+    all.push_str(
+        &std::fs::read_to_string(j.workshop_home().join("logs").join("opencode-engine.log"))
+            .unwrap_or_default(),
+    );
+    if let Ok(entries) = std::fs::read_dir(j.workshop_home().join("engine").join("sessions")) {
+        for entry in entries.flatten() {
+            all.push_str(&std::fs::read_to_string(entry.path()).unwrap_or_default());
+        }
+    }
+    all
+}
+
+/// `sudo` in one of the engine's commands asks Workshop, not a terminal it has not got: one masked
+/// prompt naming the command; the password goes to sudo only (never the screen, the model, the
+/// transcript or the logs); Esc skips and the model reads "Skipped — needs your password".
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve, fake sudo); run with --include-ignored"]
+fn sudo_password_is_asked_in_workshop_never_the_model() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/sudo-askpass", &bin, &fx);
+    let installed = j.cwd.path().join("installed-htop.txt");
+    let mut screens: Vec<String> = Vec::new();
+
+    // 1. The command needs root: the prompt, nothing run yet.
+    send_prompt(&mut j, "install htop");
+    wait_for(
+        &mut j.h,
+        "Needs your password for: sudo touch installed-htop.txt",
+        60,
+    );
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "01-password-prompt");
+    screens.push(j.h.screen_contents());
+    assert!(!installed.exists(), "nothing runs before the password");
+
+    // 2. Typing shows dots, never the characters.
+    j.h.inject_keys(b"hunter2").unwrap();
+    j.h.update(Duration::from_millis(500));
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains("\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"),
+        "seven dots for seven characters:\n{screen}"
+    );
+    snapshot(&j.h, &j.dir, "02-masked-typing");
+    screens.push(screen);
+
+    // 3. Enter: sudo gets it, the command runs, the model hears success.
+    j.h.inject_keys(b"\r").unwrap();
+    wait_for(&mut j.h, "Installed htop.", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "03-command-ran");
+    screens.push(j.h.screen_contents());
+    assert!(installed.exists(), "sudo ran the command with the password");
+    let sinks = password_sinks(&j, &fx, &screens);
+    assert!(
+        !sinks.contains("hunter2"),
+        "the password reached only sudo — not the screen, the engine, the record or the logs"
+    );
+
+    // 4. Esc skips: sudo fails plainly and the model reads why.
+    std::fs::remove_file(&installed).unwrap();
+    send_prompt(&mut j, "install htop again");
+    wait_for(&mut j.h, "Needs your password for:", 60);
+    j.h.inject_keys(b"\x1b").unwrap();
+    wait_for(&mut j.h, "Skipped \u{2014} needs your password", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "04-skipped");
+    let screen = j.h.screen_contents();
+    assert!(
+        !installed.exists() && screen.contains("Could not install htop"),
+        "a skipped password means the command did not run and the model was told:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Needs your password for:"),
+        "the prompt is gone once answered:\n{screen}"
+    );
+    quit(&mut j);
+}
+
 /// The same promises against the real `opencode` (keyless Big Pickle, network): the proof run
 /// behind the v0.2.2 evidence. Needs a genuine `opencode` on `PATH` and `WORKSHOP_LIVE_OPENCODE=1`;
 /// never runs in CI. Screens land in `WORKSHOP_PTY_EVIDENCE_DIR/engine-trust/live-*`.
@@ -1735,8 +1965,8 @@ fn live_engine_trust_journey() {
         &mut j,
         "Create a file named hello.txt containing the word hi.",
     );
-    wait_for(&mut j.h, "Waiting for Big Pickle", 120);
-    wait_gone(&mut j, "Waiting for Big Pickle", 180);
+    wait_for(&mut j.h, pty_common::WAITING_ROW, 120);
+    wait_gone(&mut j, pty_common::WAITING_ROW, 180);
     j.h.update(Duration::from_millis(1500));
     snapshot(&j.h, &j.dir, "01-plan-mode-answer");
     assert!(
@@ -1807,7 +2037,10 @@ fn live_engine_trust_journey() {
     );
     let after = quit(&mut j);
     std::fs::write(j.dir.join("06-quit-hint.txt"), &after).unwrap();
-    assert!(after.contains("workshop --resume ses_"), "{after}");
+    assert!(
+        after.contains("Continue later with: workshop -c"),
+        "{after}"
+    );
     eprintln!("evidence: {}", j.dir.display());
 }
 
@@ -1816,7 +2049,20 @@ fn live_engine_trust_journey() {
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
 fn picked_model_survives_the_next_warm_up() {
-    const LING: &str = "OpenCode \u{b7} Ling 3.0 Flash Fin Free";
+    // The composer names the model only (`Ling 3.0 Flash Fin Free`, never `OpenCode · …`).
+    const LING: &str = "Ling 3.0 Flash Fin Free";
+    /// The composer border names `LING` (the picker's row with the same words does not count).
+    fn border_names_ling(j: &mut Journey, secs: u64) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+        while !composer_border(&j.h.screen_contents()).contains(LING) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the composer border never named {LING:?}:\n{}",
+                j.h.screen_contents()
+            );
+            j.h.update(Duration::from_millis(150));
+        }
+    }
     let Some(bin) = bin_from_env() else { return };
     let fx = fixture();
     let mut j = launch("engine-trust/picked-model-survives-warm-up", &bin, &fx);
@@ -1825,10 +2071,18 @@ fn picked_model_survives_the_next_warm_up() {
     send_prompt(&mut j, "/model");
     wait_for(&mut j.h, "Tab: Subscriptions", 15);
     j.h.inject_keys(b"fin free").unwrap();
-    wait_for(&mut j.h, "Ling 3.0 Flash Fin Free", 15);
+    wait_for(&mut j.h, LING, 15);
     j.h.update(Duration::from_millis(400));
     j.h.inject_keys(b"\r").unwrap();
-    wait_for(&mut j.h, LING, 15);
+    if let Err(e) =
+        j.h.wait_for_text_absent("Tab: Subscriptions", Duration::from_secs(30))
+    {
+        panic!(
+            "picker did not close after the pick: {e}\n{}",
+            j.h.screen_contents()
+        );
+    }
+    border_names_ling(&mut j, 15);
     quit(&mut j);
 
     // A real `opencode serve` takes seconds to come up, so the warm-up the first keystroke starts
@@ -1841,7 +2095,7 @@ fn picked_model_survives_the_next_warm_up() {
         Some(&fx.bin),
         j.home,
     );
-    wait_for(&mut j.h, LING, 45);
+    border_names_ling(&mut j, 45);
     send_prompt(&mut j, "first after relaunch");
     wait_for(&mut j.h, "Echo: first after relaunch", 60);
     send_prompt(&mut j, "second after relaunch");
@@ -1849,7 +2103,10 @@ fn picked_model_survives_the_next_warm_up() {
     j.h.update(Duration::from_millis(500));
     snapshot(&j.h, &j.dir, "01-relaunch-keeps-ling");
     let screen = j.h.screen_contents();
-    assert!(screen.contains(LING), "the label keeps the pick:\n{screen}");
+    assert!(
+        composer_border(&screen).contains(LING),
+        "the label keeps the pick:\n{screen}"
+    );
     let models: Vec<String> = engine_log(&fx.log)
         .iter()
         .filter(|v| {
@@ -1920,7 +2177,7 @@ fn resume_replays_transcript() {
     let after_idle_quit = h.screen_contents();
     std::fs::write(dir.join("01-idle-quit.txt"), &after_idle_quit).unwrap();
     assert!(
-        !after_idle_quit.contains("Resume this session"),
+        !after_idle_quit.contains("Continue later with"),
         "an idle launch leaves nothing to resume:\n{after_idle_quit}"
     );
     assert!(
@@ -1928,7 +2185,7 @@ fn resume_replays_transcript() {
         "no engine session is recorded for an idle launch"
     );
 
-    // 2. A conversation; the quit hint names the engine session.
+    // 2. A conversation; the quit hint is short and human, and the engine session is on disk.
     let mut h = spawn(&[]);
     wait_for(&mut h, FIRST_RUN_LABEL, 45);
     h.update(Duration::from_millis(800));
@@ -1946,17 +2203,29 @@ fn resume_replays_transcript() {
     h.update(Duration::from_millis(300));
     let after_quit = h.screen_contents();
     std::fs::write(dir.join("03-quit-hint.txt"), &after_quit).unwrap();
-    let hint_line = after_quit
-        .lines()
-        .find(|l| l.contains("workshop --resume ses_"))
-        .unwrap_or_else(|| panic!("quit hint names the engine session:\n{after_quit}"))
-        .to_owned();
-    let session_id = hint_line.split_whitespace().last().unwrap().to_owned();
-    let sessions_dir = home.path().join(".workshop/engine/sessions");
     assert!(
-        sessions_dir.join(format!("{session_id}.json")).exists(),
-        "{session_id}"
+        after_quit.contains("Continue later with: workshop -c") && !after_quit.contains("ses_"),
+        "the quit hint is `workshop -c`, never a raw session id:\n{after_quit}"
     );
+    // The engine conversation is recorded under its own id: the one `--resume` takes.
+    let sessions_dir = home.path().join(".workshop/engine/sessions");
+    let mut recorded: Vec<String> = std::fs::read_dir(&sessions_dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", sessions_dir.display()))
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if path.extension()? != "json" {
+                return None;
+            }
+            Some(path.file_stem()?.to_string_lossy().into_owned())
+        })
+        .collect();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "one engine session recorded: {recorded:?}"
+    );
+    let session_id = recorded.remove(0);
+    assert!(session_id.starts_with("ses_"), "{session_id}");
 
     // 3. `--resume <id>`: the transcript is back, the same engine session continues.
     let mut h = spawn(&["--resume", &session_id]);

@@ -42,6 +42,13 @@ from the real server:
     that can (muse-spark-*, mimo-*), or the "Continue my request …" prompt sent to one, answers
     "Looking at the photos." and, 2 s later, "Sorted 1 photo: a lion.".
   * "slow"                            -> waits 3 s before answering (to queue prompts behind it).
+  * "install htop"                    -> permission.asked (bash `sudo touch installed-htop.txt`) and
+    the command really runs (through the `sudo` on PATH, with this server's environment — the
+    askpass gate's stand-in reads SUDO_ASKPASS); the answer reports success or sudo's words.
+  * "long command"                    -> permission.asked (bash `sleep 8`), a `running` tool part,
+    8 s of silence, the completed part, "Done waiting." (silence while a tool runs is not a stall).
+  * "go silent"                       -> starts an answer ("Let me look at that") and then never
+    sends another event; the turn only ends when the host aborts it (logged as `aborted`).
   * agent == plan                     -> never a tool part, never a permission ask: text only.
 
 Every turn ends with a step-finish carrying tokens (total 8627 -> "8.6K") and goes idle. Every
@@ -75,6 +82,7 @@ CWD = os.getcwd()
 subs, lock = [], threading.Lock()
 sessions = {}  # id -> {"messages": [...]}
 permission_replies = {}  # permission id -> reply string
+stalled_sessions = set()  # sessions whose turn went silent on purpose ("stall")
 permission_events = {}  # permission id -> threading.Event
 aborts = {}  # session id -> threading.Event, set by POST /session/{id}/abort
 question_events = {}  # question id -> threading.Event, set by POST /question/{id}/reply|reject
@@ -181,6 +189,8 @@ def tool_part(sid, mid, tool, call_id, inp, output, title, metadata, status="com
     state = {"status": status, "input": inp, "time": {"start": now_ms(), "end": now_ms()}}
     if status == "completed":
         state.update({"output": output, "metadata": metadata, "title": title})
+    elif status == "running":
+        state = {"status": status, "input": inp, "time": {"start": now_ms()}}
     else:
         state.update({"error": output, "metadata": metadata})
     return part(sid, mid, "tool", {"tool": tool, "callID": call_id, "state": state})
@@ -219,6 +229,14 @@ def run_turn(sid, agent, text, model=None):
     items = []
     if "slow" in text_l:
         time.sleep(3)
+    if "go silent" in text_l:
+        # The model starts an answer and then nothing more ever arrives (an upstream 504 the
+        # engine retries silently): the turn never goes idle until the host aborts it.
+        p = part(sid, mid, "text", {"text": "", "time": {"start": now_ms()}})
+        emit_part(p)
+        emit_delta(sid, mid, p["id"], "Let me look at that")
+        stalled_sessions.add(sid)
+        return
     if "think" in text_l:
         thought = "The user wants a short answer. Keep it brief."
         items.append(("reasoning", thought))
@@ -333,6 +351,37 @@ def run_turn(sid, agent, text, model=None):
                             "Edit applied successfully.", "hello.txt",
                             {"diagnostics": {}, "diff": diff, "filediff": {"file": path, "patch": diff, "additions": 1, "deletions": 1}, "truncated": False}))
         answer = "Changed hi to hello in hello.txt."
+    elif "install htop" in text_l:
+        # A command that needs root: really run through whatever `sudo` is on PATH (the gate's
+        # stand-in), with the environment Workshop gave this server, and report what it said.
+        cmd = "sudo touch installed-htop.txt"
+        call_id = next_id("call")
+        reply = ask_permission(sid, mid, call_id, "bash", [cmd], {"command": cmd}, ["sudo *"])
+        if reply in ("once", "always"):
+            emit_part(tool_part(sid, mid, "bash", call_id, {"command": cmd}, "", cmd, {}, status="running"))
+            run = subprocess.run(["sh", "-c", cmd], cwd=CWD, capture_output=True, text=True)
+            out = (run.stdout + run.stderr).strip() or "(no output)"
+            emit_part(tool_part(sid, mid, "bash", call_id, {"command": cmd}, out, cmd,
+                                {"output": out, "exit": run.returncode, "truncated": False}))
+            answer = "Installed htop." if run.returncode == 0 else "Could not install htop: " + out
+        else:
+            emit_part(tool_part(sid, mid, "bash", call_id, {"command": cmd}, "The user rejected permission to use this specific tool call.", cmd, {}, status="error"))
+            answer = "Understood."
+    elif "long command" in text_l:
+        # A command that runs longer than any stall ceiling a gate sets: the server is quiet
+        # while it runs, and that quiet must not count as a stall.
+        call_id = next_id("call")
+        reply = ask_permission(sid, mid, call_id, "bash", ["sleep 8"], {"command": "sleep 8"}, ["sleep *"])
+        if reply in ("once", "always"):
+            running = tool_part(sid, mid, "bash", call_id, {"command": "sleep 8"}, "", "sleep 8", {}, status="running")
+            emit_part(running)
+            time.sleep(8)
+            emit_part(tool_part(sid, mid, "bash", call_id, {"command": "sleep 8"}, "(no output)", "sleep 8",
+                                {"output": "(no output)", "exit": 0, "truncated": False}))
+            answer = "Done waiting."
+        else:
+            emit_part(tool_part(sid, mid, "bash", call_id, {"command": "sleep 8"}, "The user rejected permission to use this specific tool call.", "sleep 8", {}, status="error"))
+            answer = "Understood."
     elif "list files" in text_l or text_l.strip() == "ls":
         if "think" in text_l:
             stream_text(sid, mid, "\n\n")
@@ -485,6 +534,8 @@ class H(BaseHTTPRequestHandler):
             return self._json(200, True)
         if path.startswith("/session/") and path.endswith("/abort"):
             sid = path.split("/")[2]
+            log({"aborted": sid, "time": time.time()})
+            stalled_sessions.discard(sid)
             log({"abort": sid})
             aborts.setdefault(sid, threading.Event()).set()
             broadcast({"type": "session.error", "properties": {"sessionID": sid, "error": {"name": "MessageAbortedError", "data": {"message": "Aborted"}}}})

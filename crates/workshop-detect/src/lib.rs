@@ -27,6 +27,7 @@
 pub mod copy;
 pub mod env;
 pub mod identify;
+pub mod install;
 pub mod locate;
 pub mod model;
 pub mod models;
@@ -35,6 +36,7 @@ pub mod process;
 pub mod status;
 
 pub use identify::{IdentifyError, Identity, identify};
+pub use install::{install_command, install_log_path, official_install_command, run_installer};
 pub use locate::{Candidate, CandidateSource, DetectConfig, known_dirs, locate};
 pub use model::{ModelRef, Pill, Rail, RailState, Vendor, composer_label, rail_state, rails};
 pub use models::{

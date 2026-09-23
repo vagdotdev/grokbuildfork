@@ -2432,6 +2432,29 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::WorkshopInstallRail { rail, progress } => {
+            tasks.spawn(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    crate::app::workshop::run_rail_installer(rail, progress)
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("installer task: {e}")));
+                TaskResult::WorkshopRailInstallDone { rail, result }
+            });
+        }
+        Effect::WorkshopVoicePrefetch {
+            shared,
+            delay,
+            home,
+            voice_dir,
+            tier,
+        } => {
+            tasks.spawn(async move {
+                tokio::time::sleep(delay).await;
+                workshop_voice::prefetch::run(home, voice_dir, tier, shared).await;
+                TaskResult::WorkshopVoicePrefetchDone
+            });
+        }
         Effect::PollAuthUrl { request_seq } => {
             let tx = acp_tx.clone();
             let abort_handle = tasks

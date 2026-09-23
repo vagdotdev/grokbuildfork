@@ -7,9 +7,10 @@
 # HTTP(S)_PROXY pointed at a logging proxy that records every hostname and refuses to forward, under
 # `strace -f -e trace=network` so DNS query payloads and connect() targets are captured too.
 # Scenarios: `--version`, `login` (text picker), headless prompt without a connection (must fail
-# closed), the TUI first run with `/auth` (the engine install starts at launch: `opencode.ai`, the
-# vendor's installer, is the one host asked for — refused, off screen), and `/model` on such a first
-# run (the one user action that fetches: exactly the keyless catalog hosts on top). Fails if any
+# closed), the TUI first run with `/auth` (the opencode install starts at launch: `opencode.ai`,
+# the vendor's installer, is the one host asked for — refused, off screen), and `/model` on a first
+# run that has one API key configured (the one user action that fetches: exactly that provider's
+# host on top — a fresh home with no key lists nothing hosted and fetches nothing). Fails if any
 # recorded hostname matches *.x.ai, *.grok.com, api.mixpanel.com or storage.googleapis.com.
 set -euo pipefail
 BIN="${1:?path to workshop binary}"
@@ -52,12 +53,15 @@ COMMON=(env "HOME=$HOME_DIR" "WORKSHOP_HOME=$HOME_DIR/.workshop" TERM=xterm-256c
 
 # proxy_hosts NAME [EXPECTED_HOSTS...]: the non-loopback hosts scenario NAME asked the proxy for
 # must be exactly EXPECTED_HOSTS (none by default). Loopback is always allowed (the neutral
-# 127.0.0.1:1 sentinel of patch 0003 is the only loopback peer a hermetic run ever names).
+# 127.0.0.1:1 sentinel of patch 0003 is the only loopback peer a hermetic run ever names), and so
+# is Workshop's own update channel: a release build reads stable.json from the release-channel
+# branch at launch (debug builds never check for updates).
 proxy_hosts() {
   local name="$1"; shift
   python3 - "$OUT/$name/proxy.log" "$name" "$@" <<'PY'
 import re,sys
 log,name,expected=sys.argv[1],sys.argv[2],set(sys.argv[3:])
+update_channel={"raw.githubusercontent.com"}
 seen=set(); lines=[]
 for line in open(log):
     parts=line.split()
@@ -65,7 +69,7 @@ for line in open(log):
     host=re.sub(r':\d+$','',parts[2].split(' (')[0]).strip('[]')
     if host in ("127.0.0.1","localhost","::1"): continue
     seen.add(host); lines.append(line.strip())
-if seen!=expected:
+if seen-update_channel!=expected-update_channel:
     print("VIOLATION: %s asked the proxy for %s, expected %s:" % (name, sorted(seen), sorted(expected))); print("\n".join(lines)); sys.exit(1)
 print("%s egress check: ok (%s)" % (name, "loopback only" if not expected else "only " + ", ".join(sorted(expected))))
 PY
@@ -102,14 +106,19 @@ flat=''.join(txt.split())
 ok=True
 # The picker is an overlay; ratatui repaints only changed cells, so a needle must be text a view
 # draws whole ("type to filter" is the Models view's search line, "Tab: Models" the /auth title).
-for needle in ["OpenCode · Big Pickle","/model to switch","/auth to connect subscriptions",
-               "type to filter","Recommended","Kilo","Tab: Models","Claude","Codex","Cursor","[Sign in]","xAI — Sign in","optional",
+# The composer label is the model name only; the Models view groups rows under "OpenCode" and
+# never lists Kilo Gateway; no user-visible text names the engine.
+for needle in ["Big Pickle","/model to switch","/auth to connect subscriptions",
+               "type to filter","OpenCode","Tab: Models","Claude","Codex","Cursor","xAI — Sign in","optional",
                "cached list from 2026-09-21"]:
     if ''.join(needle.split()) not in flat:
         print("VIOLATION: TUI first run did not show %r" % needle); ok=False
+# A rail's pill: [Install] when its CLI is missing (a hosted runner), [Sign in] when it is
+# installed but signed out (a developer machine).
+if not any(''.join(p.split()) in flat for p in ["[Install]","[Sign in]","[Ready]"]):
+    print("VIOLATION: TUI first run showed no rail pill"); ok=False
 for bad in ["Login with grok.com","auth.x.ai/.well-known","Login with Grok","accounts.x.ai",
-            "connect a model","Connection classes","refreshing lists",
-            "Installing the OpenCode engine","Starting the OpenCode engine"]:
+            "connect a model","Connection classes","refreshing lists","OpenCode · Big Pickle","Kilo","engine"]:
     if ''.join(bad.split()) in flat:
         print("VIOLATION: TUI showed %r" % bad); ok=False
 if not any("Workshop" in t for t in titles) or any("grok" in t.lower() for t in titles):
@@ -135,23 +144,24 @@ for line in open(log):
     if at<started-1: at+=86400   # the run crossed midnight
     if at<started+7: at_launch=True
 if not at_launch:
-    print("VIOLATION: the engine install did not start at launch (no opencode.ai request in the first 7 s)"); sys.exit(1)
-print("tui first-run timing check: ok (engine install started at launch)")
+    print("VIOLATION: the opencode install did not start at launch (no opencode.ai request in the first 7 s)"); sys.exit(1)
+print("tui first-run timing check: ok (opencode install started at launch)")
 PY
 if [ -e "$HOME_DIR/.workshop/tools/opencode/.opencode/bin/opencode" ]; then
   echo "VIOLATION: the refused launch install must not leave a binary behind" >&2; fail=1
 fi
 
-# TUI `/model` on a fresh first run: the one user action that fetches. Only the launch's engine
-# install (opencode.ai, refused) is asked for during the first 7 s on the composer; `/model` then
-# asks exactly the keyless catalog hosts (Kilo, OpenRouter, NVIDIA — the proxy refuses, so the
-# overlay keeps the dated seeds and says the refresh failed) and never an xAI host; no opencode
-# binary lands and none is started.
+# TUI `/model` on a fresh first run with one API key configured (NVIDIA's environment variable):
+# the one user action that fetches. Only the launch's opencode install (opencode.ai, refused) is
+# asked for during the first 7 s on the composer; `/model` then lists that provider and asks
+# exactly its host (the proxy refuses, so the overlay keeps the dated seed) — never Kilo,
+# OpenRouter or an xAI host; no opencode binary lands and none is started. Typing `nemotron`
+# filters to that provider's rows so the selected row's detail line shows the list's date.
 MODEL_HOME="$OUT/home-model"; rm -rf "$MODEL_HOME"; mkdir -p "$MODEL_HOME"
-MODEL_ENV=(env "HOME=$MODEL_HOME" "WORKSHOP_HOME=$MODEL_HOME/.workshop" TERM=xterm-256color NO_COLOR=1)
+MODEL_ENV=(env "HOME=$MODEL_HOME" "WORKSHOP_HOME=$MODEL_HOME/.workshop" TERM=xterm-256color NO_COLOR=1 NVIDIA_API_KEY=smoke-test-key-never-sent)
 model_started=$(date +%s)
 observed tui-model -- "${MODEL_ENV[@]}" python3 "$HERE/no-egress/pty_drive.py" --bin "$BIN" --out "$OUT/tui-model/raw.log" --cwd "$CWD_DIR" \
-  --script "wait:7000,text:/model,wait:500,key:Enter,wait:6000,key:Down,wait:1000,key:Esc,wait:800,key:C-c,wait:800,key:C-c,wait:500" || fail=1
+  --script "wait:7000,text:/model,wait:500,key:Enter,wait:6000,text:nemotron,wait:1500,key:Esc,wait:800,key:Esc,wait:800,key:C-c,wait:800,key:C-c,wait:500" || fail=1
 python3 - "$OUT/tui-model/raw.log" <<'PY' || fail=1
 import re,sys
 raw=open(sys.argv[1],'rb').read().decode('utf-8','replace')
@@ -162,18 +172,19 @@ ok=True
 # ` · refresh failed` detail note is repainted cell by cell (ratatui) and row-selection dependent,
 # so the hermetic pty_live_catalogs gate asserts it. Here the point is the seed stands and egress
 # stays put.
-for needle in ["OpenCode · Big Pickle","Tab: Subscriptions","Kilo Gateway","cached list from 2026-09-21"]:
+for needle in ["Big Pickle","Tab: Subscriptions","OpenCode","NVIDIA","cached list from 2026-09-21"]:
     if ''.join(needle.split()) not in flat:
         print("VIOLATION: TUI /model did not show %r" % needle); ok=False
-for bad in ["Login with grok.com","auth.x.ai/.well-known","Login with Grok","accounts.x.ai","connect a model"]:
+for bad in ["Login with grok.com","auth.x.ai/.well-known","Login with Grok","accounts.x.ai","connect a model",
+            "OpenCode · Big Pickle","Kilo","engine"]:
     if ''.join(bad.split()) in flat:
         print("VIOLATION: TUI showed %r" % bad); ok=False
 print("tui /model screen check:", "ok" if ok else "FAILED")
 sys.exit(0 if ok else 1)
 PY
-proxy_hosts tui-model opencode.ai api.kilo.ai openrouter.ai integrate.api.nvidia.com || fail=1
+proxy_hosts tui-model opencode.ai integrate.api.nvidia.com || fail=1
 # Every catalog fetch happened after `/model` was typed (7 s into the run), none on the bare
-# composer; the launch-time engine install (opencode.ai) is the one request allowed before it.
+# composer; the launch-time opencode install (opencode.ai) is the one request allowed before it.
 python3 - "$OUT/tui-model/proxy.log" "$model_started" <<'PY' || fail=1
 import re,sys,time
 log,started=sys.argv[1],int(sys.argv[2])
@@ -183,7 +194,7 @@ for line in open(log):
     parts=line.split()
     if len(parts)<3 or parts[1]=="ERROR": continue
     host=re.sub(r':\d+$','',parts[2].split(' (')[0]).strip('[]')
-    if host in ("127.0.0.1","localhost","::1","opencode.ai"): continue
+    if host in ("127.0.0.1","localhost","::1","opencode.ai","raw.githubusercontent.com"): continue
     h,m,s=(int(x) for x in parts[0].split(':'))
     at=day+h*3600+m*60+s
     if at<started-1: at+=86400   # the run crossed midnight

@@ -7,6 +7,12 @@ use serde::Deserialize;
 
 /// Raw lock file (also read by scripts/install.sh and the release workflow).
 pub const MODEL_LOCK_JSON: &str = include_str!("../../../voice/MODEL.lock.json");
+/// Test hook: a path to a lock file that replaces the compiled-in pins (tiny models against a
+/// loopback mirror). Read once, at the first use of the lock.
+pub const LOCK_ENV: &str = "WORKSHOP_VOICE_LOCK";
+/// Test/mirror hook: a flat base URL that serves the release assets (`SHA256SUMS`, the helper
+/// archive, the model files) in place of the GitHub release of the running version.
+pub const MIRROR_BASE_ENV: &str = "WORKSHOP_VOICE_MIRROR_BASE";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelLockFile {
@@ -62,8 +68,12 @@ pub const RELEASE_VERSION: Option<&str> = match option_env!("WORKSHOP_VERSION") 
 pub fn lock() -> &'static ModelLockFile {
     static LOCK: std::sync::OnceLock<ModelLockFile> = std::sync::OnceLock::new();
     LOCK.get_or_init(|| {
+        let override_json = std::env::var_os(LOCK_ENV)
+            .filter(|v| !v.is_empty())
+            .and_then(|p| std::fs::read_to_string(p).ok());
         let lock: ModelLockFile =
-            serde_json::from_str(MODEL_LOCK_JSON).expect("voice/MODEL.lock.json is valid JSON");
+            serde_json::from_str(override_json.as_deref().unwrap_or(MODEL_LOCK_JSON))
+                .expect("voice/MODEL.lock.json is valid JSON");
         for tier in &lock.tiers {
             assert!(
                 lock.models.contains_key(tier),
@@ -72,6 +82,25 @@ pub fn lock() -> &'static ModelLockFile {
         }
         lock
     })
+}
+
+/// The release mirror every voice asset is fetched from: [`MIRROR_BASE_ENV`] when set, else the
+/// GitHub release of the running version (from the lock's template, minus the file). `None` for a
+/// source build, which has no release to fetch a helper from.
+pub fn release_mirror_base() -> Option<String> {
+    if let Some(base) = std::env::var_os(MIRROR_BASE_ENV).filter(|v| !v.is_empty()) {
+        return Some(base.to_string_lossy().trim_end_matches('/').to_owned());
+    }
+    let version = RELEASE_VERSION?.trim().trim_start_matches('v');
+    if version.is_empty() || RELEASE_REPO.is_empty() {
+        return None;
+    }
+    let template = &lock().mirror_url_template;
+    let base = template.strip_suffix("/{file}")?;
+    Some(
+        base.replace("{release_repo}", RELEASE_REPO)
+            .replace("{version}", version),
+    )
 }
 
 /// Pin for a tier id (`turbo` / `small` / `base`).
@@ -89,6 +118,12 @@ impl ModelPin {
         }
         urls.push(self.upstream_url.clone());
         urls
+    }
+
+    /// The one URL the background prefetch uses: this file on the release mirror, never the
+    /// upstream host (the prefetch's egress is the mirror's host only).
+    pub fn prefetch_url(&self) -> Option<String> {
+        release_mirror_base().map(|base| format!("{base}/{}", self.file))
     }
 
     pub fn mirror_url(&self, release_repo: &str, version: Option<&str>) -> Option<String> {
@@ -175,5 +210,37 @@ mod tests {
         let urls = base.download_urls();
         assert_eq!(urls.last(), Some(&base.upstream_url));
         assert!(urls.iter().all(|u| u.starts_with("https://")));
+    }
+
+    #[test]
+    fn prefetch_uses_the_mirror_base_only() {
+        let _g = crate::test_support::ENV_LOCK.lock().unwrap();
+        let base = pin("base").unwrap();
+        crate::test_support::with_env(
+            &[(MIRROR_BASE_ENV, Some("http://127.0.0.1:9/assets/"))],
+            || {
+                assert_eq!(
+                    release_mirror_base().as_deref(),
+                    Some("http://127.0.0.1:9/assets")
+                );
+                assert_eq!(
+                    base.prefetch_url().as_deref(),
+                    Some("http://127.0.0.1:9/assets/ggml-base.bin")
+                );
+            },
+        );
+        crate::test_support::with_env(&[(MIRROR_BASE_ENV, None)], || {
+            // A release build derives the GitHub release; a source build has no mirror.
+            match RELEASE_VERSION {
+                Some(v) => assert_eq!(
+                    release_mirror_base(),
+                    Some(format!(
+                        "https://github.com/{RELEASE_REPO}/releases/download/v{}",
+                        v.trim_start_matches('v')
+                    ))
+                ),
+                None => assert!(release_mirror_base().is_none()),
+            }
+        });
     }
 }

@@ -9,9 +9,16 @@
 //! The picker never starts an OAuth flow by itself. The optional xAI card is the single entry
 //! point to the inherited xAI OIDC flow, and only after the user selects it twice.
 //!
-//! Data sources: Models rows come from [`workshop_providers`] (local servers, Kilo `:free`,
-//! connected providers) plus the OpenCode engine's free catalog; rail state comes from
-//! [`workshop_detect`] (the single detection source). This crate holds the pure picker policy and
+//! Models view layout (owner decision, v0.2.2): OpenCode's free models first, then every
+//! *installed* subscription CLI as its own group — Claude, Codex, Cursor — listing its models when
+//! it is signed in and one `Sign in` row when it is not (a CLI that is not installed is not on
+//! `/model` at all; it stays on `/auth`), then the API-key providers that have a key configured.
+//! Kilo Gateway is never listed ([`HIDDEN_PROVIDERS`]): it is Workshop's silent fallback when the
+//! OpenCode model cannot answer, and the user only ever sees the answering model's name.
+//!
+//! Data sources: Models rows come from [`workshop_providers`] (local servers, connected
+//! providers) plus the OpenCode free catalog; rail state comes from [`workshop_detect`] (the
+//! single detection source). This crate holds the pure picker policy and
 //! the `[model.<key>]` config writer; the host renders the state, feeds it [`PickerInput`], and
 //! executes [`PickerOutcome`]s.
 //!
@@ -90,6 +97,32 @@ pub const ENGINE_PROVIDER_ID: &str = "opencode-engine";
 pub const ENGINE_DISPLAY_NAME: &str = "OpenCode";
 /// Where the engine rows come from when they are live: the running `opencode serve`.
 pub const ENGINE_CATALOG_SOURCE: &str = "opencode serve /config/providers";
+/// Providers that exist in the catalog code but are never listed on `/model` or `/auth` and never
+/// fetched for the picker (owner decision, v0.2.2): the Kilo Gateway community pool, which only
+/// serves as the silent fallback behind the OpenCode default.
+pub const HIDDEN_PROVIDERS: [&str; 1] = ["kilo"];
+
+/// Whether `provider_id` is hidden from every picker surface.
+pub fn is_hidden_provider(provider_id: &str) -> bool {
+    HIDDEN_PROVIDERS.contains(&provider_id)
+}
+
+/// The model name as the composer shows it: no vendor prefix, no `(free)` suffix —
+/// `NVIDIA: Nemotron 3 Super (free)` reads `Nemotron 3 Super`.
+pub fn plain_model_name(name: &str) -> String {
+    let mut out = name.trim();
+    if let Some((vendor, rest)) = out.split_once(": ")
+        && !vendor.is_empty()
+        && !vendor.contains(' ')
+    {
+        out = rest.trim();
+    }
+    let lower = out.to_ascii_lowercase();
+    if let Some(stripped) = lower.strip_suffix("(free)") {
+        out = out[..stripped.len()].trim_end();
+    }
+    out.to_owned()
+}
 
 /// Name fragments (lowercase) of models that are not chat models: classifiers, guard rails,
 /// routers, rerankers, embeddings. Matched against display names and ids.
@@ -112,9 +145,6 @@ pub fn is_chat_model_name(name: &str) -> bool {
     !NON_CHAT_MARKERS.iter().any(|m| lower.contains(m))
 }
 
-/// How many rows the Recommended group holds at most.
-pub const RECOMMENDED_MAX: usize = 4;
-
 /// A free model served through the OpenCode engine (`opencode serve`), mirrored from its catalog.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EngineModel {
@@ -124,6 +154,14 @@ pub struct EngineModel {
     pub is_default: bool,
     pub tool_call: bool,
     pub context_limit: Option<u64>,
+    /// The effort / reasoning levels OpenCode's catalog offers for this model (`low`, `medium`,
+    /// `high`, …), lowest first; empty for a model without levels.
+    #[serde(default)]
+    pub variants: Vec<String>,
+    /// The level the user picked, one of `variants`; `None` runs the model at its own default.
+    /// Lives on the model so the active connection, the picker row and the prompt agree on it.
+    #[serde(default)]
+    pub effort: Option<String>,
     /// The model can see images (the engine catalog's `capabilities.input.image`).
     #[serde(default)]
     pub image_input: bool,
@@ -139,6 +177,8 @@ impl EngineModel {
             is_default: true,
             tool_call: true,
             context_limit: Some(200_000),
+            variants: Vec::new(),
+            effort: None,
             image_input: false,
         }
     }
@@ -153,9 +193,41 @@ impl EngineModel {
             .unwrap_or_else(Self::big_pickle_seed)
     }
 
-    /// Picker row id of this model (`opencode-engine:opencode/<id>`).
+    /// Picker row id of this model (`opencode-engine:opencode/<id>`, `…/<id>@<effort>` for a
+    /// picked level).
     pub fn row_id(&self) -> String {
-        format!("{ENGINE_PROVIDER_ID}:{}", self.model_ref)
+        match &self.effort {
+            Some(effort) => format!("{ENGINE_PROVIDER_ID}:{}@{effort}", self.model_ref),
+            None => format!("{ENGINE_PROVIDER_ID}:{}", self.model_ref),
+        }
+    }
+
+    /// The composer / row text, upstream's format: `Big Pickle`, `Ling 3.0 Flash Fin Free (high)`.
+    pub fn display(&self) -> String {
+        match &self.effort {
+            Some(effort) => format!("{} ({effort})", self.name),
+            None => self.name.clone(),
+        }
+    }
+
+    /// This model at `effort` (a level of `variants`).
+    pub fn with_effort(&self, effort: &str) -> Self {
+        Self {
+            effort: Some(effort.to_owned()),
+            ..self.clone()
+        }
+    }
+
+    /// A newer catalog entry for the same model keeps the level the user picked, as long as the
+    /// model still offers it; another model, or a dropped level, starts at the default.
+    pub fn carrying_effort_from(mut self, previous: &EngineModel) -> Self {
+        if previous.model_ref == self.model_ref
+            && let Some(effort) = &previous.effort
+            && self.variants.iter().any(|v| v == effort)
+        {
+            self.effort = Some(effort.clone());
+        }
+        self
     }
 }
 
@@ -173,9 +245,23 @@ pub enum RowKind {
     },
     /// A free model behind the OpenCode engine.
     Engine(EngineModel),
+    /// A model of an installed, signed-in subscription CLI (Models view group per rail).
+    RailModel {
+        rail: Rail,
+        model: workshop_detect::ModelRef,
+    },
+    /// The one row of an installed but signed-out subscription CLI: `Sign in`.
+    RailSignIn(Rail),
+    /// The one row of a signed-in subscription CLI whose own model list is not here (yet):
+    /// `Loading models…`, or the rail's failure copy. Not selectable; never a made-up model.
+    RailNote(Rail, String),
     /// The labeled optional xAI card (Subscriptions view, last).
     XaiOptional,
 }
+
+/// What a signed-in rail shows while its CLI's model list has not arrived: the detect layer's
+/// own copy (it sets the rail's `empty_copy` to this, or to its failure copy).
+pub const LOADING_MODELS: &str = workshop_detect::copy::LOADING_MODELS;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelsRow {
@@ -193,6 +279,11 @@ impl ModelsRow {
             RowKind::Catalog { model, .. } => model.key(),
             RowKind::ConnectProvider { provider_id, .. } => format!("connect:{provider_id}"),
             RowKind::Engine(m) => m.row_id(),
+            RowKind::RailModel { rail, model } => {
+                format!("{}:{}", rail.vendor().id(), model.key())
+            }
+            RowKind::RailSignIn(rail) => format!("{}:sign-in", rail.vendor().id()),
+            RowKind::RailNote(rail, _) => format!("{}:note", rail.vendor().id()),
             RowKind::XaiOptional => XAI_ROW_ID.into(),
         }
     }
@@ -204,7 +295,10 @@ impl ModelsRow {
             RowKind::ConnectProvider { .. } | RowKind::XaiOptional => {
                 format!("{} \u{2014} {}", self.group, self.connect_action())
             }
-            RowKind::Engine(m) => m.name.clone(),
+            RowKind::Engine(m) => m.display(),
+            RowKind::RailModel { model, .. } => model.display().to_owned(),
+            RowKind::RailSignIn(_) => "Sign in".into(),
+            RowKind::RailNote(_, copy) => copy.clone(),
         }
     }
     /// How a connect row is acted on: a browser sign-in, or a pasted API key.
@@ -214,8 +308,11 @@ impl ModelsRow {
                 "openrouter" | "opencode" => "Sign in",
                 _ => "API key",
             },
-            RowKind::XaiOptional => "Sign in",
-            RowKind::Catalog { .. } | RowKind::Engine(_) => "",
+            RowKind::XaiOptional | RowKind::RailSignIn(_) => "Sign in",
+            RowKind::Catalog { .. }
+            | RowKind::Engine(_)
+            | RowKind::RailModel { .. }
+            | RowKind::RailNote(..) => "",
         }
     }
     /// Provider column of the row line.
@@ -238,7 +335,9 @@ impl ModelsRow {
                 }
             }
             RowKind::Engine(_) => "free",
-            RowKind::ConnectProvider { .. } => "",
+            RowKind::RailModel { .. } => "subscription",
+            RowKind::RailSignIn(_) => "sign in",
+            RowKind::RailNote(..) | RowKind::ConnectProvider { .. } => "",
             RowKind::XaiOptional => "optional",
         }
     }
@@ -250,12 +349,24 @@ impl ModelsRow {
                 is_chat_model_name(&model.display_name) && is_chat_model_name(&model.model_id)
             }
             RowKind::Engine(m) => is_chat_model_name(&m.name) && is_chat_model_name(&m.model_ref),
-            RowKind::ConnectProvider { .. } | RowKind::XaiOptional => true,
+            RowKind::RailModel { .. }
+            | RowKind::RailSignIn(_)
+            | RowKind::RailNote(..)
+            | RowKind::ConnectProvider { .. }
+            | RowKind::XaiOptional => true,
         }
     }
-    /// Whether the row belongs to the Models view (selectable model) rather than Subscriptions.
+    /// Whether the row belongs to the Models view (a model, or a subscription's `Sign in`) rather
+    /// than Subscriptions.
     pub fn is_model(&self) -> bool {
-        matches!(self.kind, RowKind::Catalog { .. } | RowKind::Engine(_))
+        matches!(
+            self.kind,
+            RowKind::Catalog { .. }
+                | RowKind::Engine(_)
+                | RowKind::RailModel { .. }
+                | RowKind::RailSignIn(_)
+                | RowKind::RailNote(..)
+        )
     }
     pub fn is_xai(&self) -> bool {
         matches!(self.kind, RowKind::XaiOptional)
@@ -267,6 +378,9 @@ impl ModelsRow {
             RowKind::Catalog { model, .. } => Some(model.provider_id.as_str()),
             RowKind::ConnectProvider { provider_id, .. } => Some(provider_id.as_str()),
             RowKind::Engine(_) => Some(ENGINE_PROVIDER_ID),
+            RowKind::RailModel { rail, .. }
+            | RowKind::RailSignIn(rail)
+            | RowKind::RailNote(rail, _) => Some(rail.vendor().id()),
             RowKind::XaiOptional => None,
         }
     }
@@ -291,14 +405,17 @@ pub struct PickerSnapshot {
 }
 
 /// Build every picker row for a snapshot; [`PickerState::apply_snapshot`] splits them into the
-/// Models view (catalog + engine models) and the Subscriptions view (connect rows + xAI card).
+/// Models view (OpenCode models, installed subscriptions, connected API-key providers) and the
+/// Subscriptions view (rails are drawn from `rails` there; connect rows + xAI card here).
 ///
 /// `catalog` already contains detected local rows; `connected(provider_id)` comes from the broker;
-/// `engine_models` is the cached / live engine catalog (empty → the Big Pickle seed row).
+/// `engine_models` is the cached / live engine catalog (empty → the Big Pickle seed row); `rails`
+/// is the probed state of the Claude / Codex / Cursor CLIs.
 pub fn models_rows(
     catalog: &workshop_providers::Catalog,
     connected: impl Fn(&str) -> bool,
     engine_models: &[EngineModel],
+    rails: &[RailState],
 ) -> Vec<ModelsRow> {
     let mut rows = Vec::new();
     // OpenCode free tier first: it is the first-run default. Only through the genuine client, so
@@ -308,17 +425,74 @@ pub fn models_rows(
     } else {
         engine_models.to_vec()
     };
+    // A model with effort levels is one row at its default plus one per level (`Name (high)`),
+    // so the composer can say exactly what was picked; a model without levels is one row.
     for m in engine {
-        rows.push(ModelsRow {
-            kind: RowKind::Engine(m),
-            group: ENGINE_DISPLAY_NAME.into(),
-            badge: "Free · Agent adapter · official opencode CLI · shared pool".into(),
-            class: ConnectionClass::AgentAdapter,
-        });
+        let levels: Vec<EngineModel> = m.variants.iter().map(|v| m.with_effort(v)).collect();
+        for model in std::iter::once(m).chain(levels) {
+            rows.push(ModelsRow {
+                kind: RowKind::Engine(model),
+                group: ENGINE_DISPLAY_NAME.into(),
+                badge: "Free · no sign-in · OpenCode's shared pool".into(),
+                class: ConnectionClass::AgentAdapter,
+            });
+        }
+    }
+    // Then each installed subscription CLI as its own group: its own models when signed in (the
+    // list the CLI reports, in its order), one `Loading models…` / failure row while that list is
+    // not here, one `Sign in` row when signed out. A CLI that is not installed stays on the
+    // Subscriptions view only. Never a made-up model.
+    for rail in rails.iter().filter(|r| r.installed) {
+        let group = rail.rail.display_name().to_owned();
+        if rail.is_ready() && !rail.models.is_empty() {
+            for model in &rail.models {
+                rows.push(ModelsRow {
+                    kind: RowKind::RailModel {
+                        rail: rail.rail,
+                        model: model.clone(),
+                    },
+                    group: group.clone(),
+                    badge: format!(
+                        "Subscription · through the official {} CLI",
+                        rail.rail.vendor().display_name()
+                    ),
+                    class: ConnectionClass::AgentAdapter,
+                });
+            }
+        } else if rail.is_ready() {
+            rows.push(ModelsRow {
+                kind: RowKind::RailNote(
+                    rail.rail,
+                    rail.empty_copy.unwrap_or(LOADING_MODELS).to_owned(),
+                ),
+                group: group.clone(),
+                badge: format!(
+                    "Signed in · the model list comes from the official {} CLI",
+                    rail.rail.vendor().display_name()
+                ),
+                class: ConnectionClass::AgentAdapter,
+            });
+        } else if rail.pill != Pill::Detecting {
+            rows.push(ModelsRow {
+                kind: RowKind::RailSignIn(rail.rail),
+                group: group.clone(),
+                badge: format!(
+                    "Installed, not signed in · Enter runs the official {} login",
+                    rail.rail.vendor().display_name()
+                ),
+                class: ConnectionClass::AgentAdapter,
+            });
+        }
     }
     for group in catalog.picker_groups(&connected) {
+        if is_hidden_provider(&group.provider_id) {
+            continue;
+        }
         let class = ConnectionClass::from_provider(group.class);
-        if group.rows.is_empty() {
+        // Hosted API-key providers are listed on the Models view only once a key is configured;
+        // until then they are a connect row on the Subscriptions view.
+        let listed = class == ConnectionClass::Local || connected(&group.provider_id);
+        if group.rows.is_empty() || !listed {
             if let Some(copy) = group.connect_copy.clone() {
                 let credential_url = workshop_providers::manifest(&group.provider_id)
                     .and_then(|m| m.credential_url.clone());
@@ -396,7 +570,7 @@ pub enum PickerInput {
 /// One line of the Models view as rendered: a group header or a selectable row.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ModelsLine<'a> {
-    Header(&'static str),
+    Header(&'a str),
     Row(&'a ModelsRow),
 }
 
@@ -421,6 +595,9 @@ pub enum PickerOutcome {
     SelectEngine(EngineModel),
     /// A subscription rail's Connect: run the official CLI login in the user's terminal.
     RailConnect(Rail),
+    /// Enter on a rail whose official CLI is not installed: run the vendor's official installer,
+    /// then its sign-in (`RailConnect`). Never started on its own.
+    RailInstall(Rail),
     /// A model on a Ready rail: route turns through that vendor's adapter.
     SelectRailModel(Rail, workshop_detect::ModelRef),
     /// Re-run the loaders.
@@ -516,6 +693,7 @@ impl PickerState {
             &workshop_providers::Catalog::default(),
             |_| false,
             &[],
+            &[],
         ));
         s
     }
@@ -553,93 +731,37 @@ impl PickerState {
         }
     }
 
-    /// The Models view's rows in display order: the Recommended group first, then every other
-    /// visible row in its stable order. Non-chat rows are hidden unless `show_all` (the active
-    /// row is always shown); a non-empty `filter` narrows by name / provider substring.
+    /// The Models view's rows in display order (the stable order of `rows`: OpenCode first, then
+    /// each installed subscription, then connected providers). Non-chat rows are hidden unless
+    /// `show_all` (the active row is always shown); a non-empty `filter` narrows by name /
+    /// provider substring.
     pub fn visible_models(&self) -> Vec<&ModelsRow> {
         let filter = self.filter.trim().to_ascii_lowercase();
-        let passes = |row: &ModelsRow| {
-            (self.show_all || self.is_active(row) || row.is_chat_model())
-                && (filter.is_empty() || {
-                    let hay = format!("{} {}", row.title(), row.provider()).to_ascii_lowercase();
-                    filter.split_whitespace().all(|word| hay.contains(word))
-                })
-        };
-        let recommended = self.recommended_ids();
-        let mut out: Vec<&ModelsRow> = recommended
+        self.rows
             .iter()
-            .filter_map(|id| self.rows.iter().find(|r| r.id() == *id))
-            .filter(|r| passes(r))
-            .collect();
-        out.extend(
-            self.rows
-                .iter()
-                .filter(|r| passes(r) && !recommended.contains(&r.id())),
-        );
-        out
+            .filter(|row| {
+                (self.show_all || self.is_active(row) || row.is_chat_model())
+                    && (filter.is_empty() || {
+                        let hay =
+                            format!("{} {}", row.title(), row.provider()).to_ascii_lowercase();
+                        filter.split_whitespace().all(|word| hay.contains(word))
+                    })
+            })
+            .collect()
     }
 
-    /// Row ids of the Recommended group, in order: the active model, the engine's default, the
-    /// engine's other tool-calling chat models, then the Kilo auto-router — at most
-    /// [`RECOMMENDED_MAX`]. Empty while a filter is typed (a search result needs no groups).
-    pub fn recommended_ids(&self) -> Vec<String> {
-        if !self.filter.trim().is_empty() {
-            return Vec::new();
-        }
-        let mut ids: Vec<String> = Vec::new();
-        let mut push = |row: &ModelsRow| {
-            let id = row.id();
-            if ids.len() < RECOMMENDED_MAX && row.is_chat_model() && !ids.contains(&id) {
-                ids.push(id);
-            }
-        };
-        if let Some(active) = self.active_id.as_deref()
-            && let Some(row) = self.rows.iter().find(|r| r.id() == active)
-        {
-            push(row);
-        }
-        for row in &self.rows {
-            if let RowKind::Engine(m) = &row.kind
-                && m.is_default
-            {
-                push(row);
-            }
-        }
-        for row in &self.rows {
-            if let RowKind::Engine(m) = &row.kind
-                && m.tool_call
-            {
-                push(row);
-            }
-        }
-        for row in &self.rows {
-            if let RowKind::Catalog {
-                model,
-                locked: false,
-            } = &row.kind
-                && model.provider_id == "kilo"
-                && model.model_id.contains("auto")
-            {
-                push(row);
-            }
-        }
-        ids
-    }
-
-    /// The Models view as lines: `Recommended` and `All models` headers around the groups when
-    /// no filter is typed, else the flat filtered list. Rows appear in [`Self::visible_models`]
-    /// order, so `models_selected` indexes the `Row` lines.
+    /// The Models view as lines: one quiet header per group (`OpenCode`, `Claude`, `Codex`,
+    /// `Cursor`, a connected provider) when no filter is typed, else the flat filtered list. Rows
+    /// appear in [`Self::visible_models`] order, so `models_selected` indexes the `Row` lines.
     pub fn models_lines(&self) -> Vec<ModelsLine<'_>> {
         let rows = self.visible_models();
-        let recommended = self.recommended_ids().len();
-        let grouped = self.filter.trim().is_empty() && recommended > 0 && rows.len() > recommended;
-        let mut lines = Vec::with_capacity(rows.len() + 2);
-        for (i, row) in rows.into_iter().enumerate() {
-            if grouped && i == 0 {
-                lines.push(ModelsLine::Header("Recommended"));
-            }
-            if grouped && i == recommended {
-                lines.push(ModelsLine::Header("All models"));
+        let grouped = self.filter.trim().is_empty();
+        let mut lines = Vec::with_capacity(rows.len() + 4);
+        let mut current: Option<&str> = None;
+        for row in rows {
+            if grouped && current != Some(row.provider()) {
+                lines.push(ModelsLine::Header(row.provider()));
+                current = Some(row.provider());
             }
             lines.push(ModelsLine::Row(row));
         }
@@ -746,8 +868,9 @@ impl PickerState {
         self.catalog_status(provider_id).map(CatalogStatus::note)
     }
 
-    /// One line naming every model list and its freshness, engine first, in snapshot order:
-    /// `Lists: OpenCode fetched just now · Kilo Gateway fetched 2 min ago · …`.
+    /// One line naming every *listed* model list and its freshness, engine first, in snapshot
+    /// order: `Lists: OpenCode fetched just now · OpenRouter fetched 2 min ago · …`. Hidden
+    /// providers and providers without a row on the Models view are left out.
     pub fn catalog_summary(&self) -> Option<String> {
         if self.catalog_status.is_empty() {
             return None;
@@ -755,6 +878,14 @@ impl PickerState {
         let parts: Vec<String> = self
             .catalog_status
             .iter()
+            .filter(|s| {
+                s.provider_id == ENGINE_PROVIDER_ID
+                    || (!is_hidden_provider(&s.provider_id)
+                        && self
+                            .rows
+                            .iter()
+                            .any(|r| r.provider_id() == Some(s.provider_id.as_str())))
+            })
             .map(|s| {
                 let name = if s.provider_id == ENGINE_PROVIDER_ID {
                     ENGINE_DISPLAY_NAME.to_owned()
@@ -902,6 +1033,9 @@ impl PickerState {
                 let Some(rail) = self.selected_rail().cloned() else {
                     return PickerOutcome::Changed;
                 };
+                if !rail.installed && rail.pill == Pill::Install {
+                    return PickerOutcome::RailInstall(rail.rail);
+                }
                 if rail.is_ready() && !rail.models.is_empty() {
                     if !self.detail_open {
                         self.detail_open = true;
@@ -948,6 +1082,21 @@ impl PickerState {
                 PickerOutcome::ConnectProvider(provider_id)
             }
             RowKind::Engine(m) => PickerOutcome::SelectEngine(m),
+            RowKind::RailModel { rail, model } => PickerOutcome::SelectRailModel(rail, model),
+            RowKind::RailSignIn(rail) => PickerOutcome::RailConnect(rail),
+            // Signed in, list not here: a failed list is asked for again; a loading one has
+            // nothing to pick yet.
+            RowKind::RailNote(rail, _) => {
+                let failed = self.rails.iter().any(|r| {
+                    r.rail == rail
+                        && matches!(r.subscription, workshop_detect::RailModels::Failed { .. })
+                });
+                if failed {
+                    PickerOutcome::RetryRailModels
+                } else {
+                    PickerOutcome::Changed
+                }
+            }
         }
     }
 
@@ -1059,23 +1208,47 @@ fn row_detail_lines(row: &ModelsRow, xai_armed: bool, list_note: Option<String>)
                 lines.push(format!("Get a key: {url}"));
             }
         }
-        RowKind::Engine(_) => {
+        RowKind::Engine(m) => {
+            lines.push(match &m.effort {
+                Some(effort) => format!(
+                    "Free model from OpenCode's shared pool at effort {effort} (of {}); no sign-in, no key.",
+                    m.variants.join(" / ")
+                ),
+                None => "Free model from OpenCode's shared pool; no sign-in, no key.".into(),
+            });
+            // One line at the overlay's width: the detail area is three rows tall.
             lines.push(
-                "Free shared pool via the official opencode CLI, set up in the background when Workshop opens."
-                    .into(),
-            );
-            lines.push(
-                "Runs on this machine; only opencode itself talks to opencode.ai, where prompts may be logged."
+                "Via the official opencode CLI, started at launch; prompts go to opencode.ai and may be logged."
                     .into(),
             );
             if let Some(note) = &list_note {
                 lines.push(match note.starts_with("fetched") {
                     true => format!("Model list {note} from {ENGINE_CATALOG_SOURCE}."),
                     false => {
-                        format!("Model list: {note}; the live list arrives when the engine starts.")
+                        format!(
+                            "Model list: {note}; the live list arrives once OpenCode has started."
+                        )
                     }
                 });
             }
+        }
+        RowKind::RailModel { rail, .. } => {
+            lines.push(row.badge.clone());
+            lines.push(format!(
+                "Enter picks it; turns run through `{}` on your subscription, in an isolated worktree.",
+                rail.vendor().binary_names().first().copied().unwrap_or("the CLI")
+            ));
+        }
+        RowKind::RailSignIn(rail) => {
+            lines.push(row.badge.clone());
+            lines.push(format!(
+                "Enter runs the official login in your terminal:  {}",
+                workshop_detect::login_argv(rail.vendor()).join(" ")
+            ));
+        }
+        RowKind::RailNote(..) => {
+            lines.push(row.badge.clone());
+            lines.push("Nothing to pick until the list arrives; Ctrl+R asks again.".into());
         }
         RowKind::XaiOptional => {
             lines.push(XAI_CARD_COPY.into());
@@ -1096,10 +1269,23 @@ fn rail_detail_lines(rail: &RailState, selected_model: usize) -> Vec<String> {
     if rail.pill == Pill::Detecting {
         lines.push("Looking for the official CLI on PATH and in the usual install folders…".into());
     } else if !rail.installed {
-        lines.push(format!(
-            "Workshop looks for `{}`; it never reads another app's login files.",
-            rail.rail.vendor().binary_names().join("` or `")
-        ));
+        // Three short lines: the detail area is three rows tall and must not wrap the command.
+        match workshop_detect::official_install_command(rail.rail.vendor()) {
+            Some(cmd) => {
+                lines.push(format!(
+                    "Enter runs {}'s official installer, then its sign-in.",
+                    rail.rail.vendor().display_name()
+                ));
+                lines.push(format!("  {cmd}"));
+            }
+            None => lines.push(format!(
+                "Workshop looks for `{}`.",
+                rail.rail.vendor().binary_names().join("` or `")
+            )),
+        }
+        lines.push(
+            "Nothing installs on its own; Workshop never reads another app's login files.".into(),
+        );
     } else if !rail.is_ready() {
         lines.push(format!(
             "Enter runs the official login in your terminal:  {}",
@@ -1123,6 +1309,10 @@ fn rail_detail_lines(rail: &RailState, selected_model: usize) -> Vec<String> {
             "Enter picks the model; turns run through the official CLI in an isolated worktree."
                 .into(),
         );
+    } else if rail.empty_copy.is_none() {
+        // Signed in, but the CLI's own model list is not here (yet): say that, never a radio
+        // line with nothing in it or a made-up model.
+        lines.push(LOADING_MODELS.to_owned());
     }
     if let Some(copy) = rail.empty_copy {
         lines.push(copy.to_owned());
@@ -1136,7 +1326,7 @@ mod tests {
 
     fn loaded() -> PickerState {
         let mut p = PickerState::new();
-        let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]);
+        let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[], &[]);
         p.apply_snapshot(PickerSnapshot {
             rows,
             rails: Vec::new(),
@@ -1158,7 +1348,13 @@ mod tests {
     #[test]
     fn detail_lines_say_where_and_when_each_list_came_from() {
         let mut p = PickerState::new();
-        let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]);
+        // OpenRouter has a key configured, so its rows are listed; Kilo is hidden whatever it says.
+        let rows = models_rows(
+            &workshop_providers::Catalog::builtin(),
+            |id| id == "openrouter",
+            &[],
+            &[],
+        );
         let now = workshop_providers::catalog::fetch::now_secs();
         p.apply_snapshot(PickerSnapshot {
             rows,
@@ -1173,6 +1369,13 @@ mod tests {
                 },
                 CatalogStatus {
                     provider_id: "openrouter".into(),
+                    freshness: Freshness::Live,
+                    fetched_at_secs: Some(now - 3 * 60),
+                    rows: 5,
+                    error: None,
+                },
+                CatalogStatus {
+                    provider_id: "nvidia".into(),
                     freshness: Freshness::Seed,
                     fetched_at_secs: None,
                     rows: 5,
@@ -1188,26 +1391,38 @@ mod tests {
         assert_eq!(lines.len(), 3, "{lines:?}");
         assert!(
             lines[2].contains("cached list from 2026-09-21")
-                && lines[2].contains("live list arrives when the engine starts"),
+                && lines[2].contains("live list arrives once OpenCode has started"),
             "{lines:?}"
         );
-        // Live Kilo rows: the badge line carries the age.
-        select_row(&mut p, "Auto Free");
-        let lines = p.detail_lines();
         assert!(
-            lines[0].ends_with("· may log/train · fetched 3 min ago"),
-            "{lines:?}"
+            !lines
+                .iter()
+                .any(|l| l.to_ascii_lowercase().contains("engine")),
+            "no plumbing words on the row: {lines:?}"
         );
-        assert_eq!(p.catalog_note("kilo").as_deref(), Some("fetched 3 min ago"));
-        // A failed refresh says so on the seed it fell back to.
+        // Live rows of a connected provider: the badge line carries the age.
+        let openrouter = p
+            .visible_models()
+            .iter()
+            .position(|r| r.provider_id() == Some("openrouter"))
+            .expect("a connected provider's row is listed");
+        p.models_selected = openrouter;
+        let lines = p.detail_lines();
+        assert!(lines[0].ends_with("· fetched 3 min ago"), "{lines:?}");
         assert_eq!(
             p.catalog_note("openrouter").as_deref(),
+            Some("fetched 3 min ago")
+        );
+        // A failed refresh says so on the seed it fell back to.
+        assert_eq!(
+            p.catalog_note("nvidia").as_deref(),
             Some("cached list from 2026-09-21 · refresh failed")
         );
         assert!(p.catalog_note("google").is_none());
+        // The summary names the listed lists only: never Kilo, not an unconnected provider.
         let summary = p.catalog_summary().unwrap();
-        assert!(
-            summary.starts_with("Lists: OpenCode cached list from 2026-09-21 · Kilo Gateway fetched 3 min ago · OpenRouter cached list from 2026-09-21 · refresh failed"),
+        assert_eq!(
+            summary, "Lists: OpenCode cached list from 2026-09-21 · OpenRouter fetched 3 min ago",
             "{summary}"
         );
         // An engine list that was fetched names its source.
@@ -1230,7 +1445,7 @@ mod tests {
     fn a_live_snapshot_clears_refresh_pending_and_a_cached_one_does_not() {
         let mut p = loaded();
         p.refresh_pending = true;
-        let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]);
+        let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[], &[]);
         p.apply_snapshot(PickerSnapshot {
             rows: rows.clone(),
             ..PickerSnapshot::default()
@@ -1321,20 +1536,147 @@ mod tests {
         assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
     }
 
+    /// On the Models view a signed-in rail whose list is still loading or failed to load is its
+    /// own status row (`Loading models…` / `Couldn't load models — press Enter to retry`), never
+    /// a sign-in row; Enter on the failed one asks the CLIs again, on the loading one does nothing.
     #[test]
-    fn kilo_free_is_a_selectable_model_row() {
-        let p = loaded();
-        let kilo = p
-            .rows
+    fn models_view_shows_a_signed_in_rails_status_never_a_sign_in_row() {
+        use workshop_detect::{RailModels, copy};
+        let ready = |rail: Rail, subscription: RailModels, empty_copy| RailState {
+            pill: Pill::Ready,
+            installed: true,
+            empty_copy: Some(empty_copy),
+            subscription,
+            ..RailState::detecting(rail)
+        };
+        let rails = vec![
+            ready(Rail::Claude, RailModels::Loading, copy::LOADING_MODELS),
+            ready(
+                Rail::Codex,
+                RailModels::Failed {
+                    reason: "the CLI did not answer in time".into(),
+                },
+                copy::MODELS_FAILED,
+            ),
+        ];
+        let rows = models_rows(
+            &workshop_providers::Catalog::builtin(),
+            |_| false,
+            &[],
+            &rails,
+        );
+        let claude: Vec<&ModelsRow> = rows
             .iter()
-            .find(|r| matches!(&r.kind, RowKind::Catalog { model, .. } if model.model_id == "kilo-auto/free"))
-            .expect("kilo row");
-        assert!(matches!(kilo.kind, RowKind::Catalog { locked: false, .. }));
-        assert_eq!(kilo.short_badge(), "free");
+            .filter(|r| r.provider_id() == Some(Rail::Claude.vendor().id()))
+            .collect();
+        let codex: Vec<&ModelsRow> = rows
+            .iter()
+            .filter(|r| r.provider_id() == Some(Rail::Codex.vendor().id()))
+            .collect();
+        assert!(
+            matches!(claude.as_slice(), [row] if matches!(&row.kind, RowKind::RailNote(Rail::Claude, c) if c == copy::LOADING_MODELS)),
+            "one Loading status row for Claude: {claude:?}"
+        );
+        assert!(
+            matches!(codex.as_slice(), [row] if matches!(&row.kind, RowKind::RailNote(Rail::Codex, c) if c == copy::MODELS_FAILED)),
+            "one Failed status row for Codex: {codex:?}"
+        );
+        for row in claude.iter().chain(&codex) {
+            assert!(
+                !matches!(row.kind, RowKind::RailSignIn(_)) && !row.badge.contains("not signed in"),
+                "a signed-in rail never reads as signed out: {row:?}"
+            );
+            assert!(row.badge.starts_with("Signed in"), "{row:?}");
+        }
+
+        let mut p = PickerState::new().with_tab(PickerTab::Models);
+        p.apply_snapshot(PickerSnapshot {
+            rows,
+            rails,
+            ..PickerSnapshot::default()
+        });
+        let mut outcomes = std::collections::BTreeMap::new();
+        for _ in 0..p.visible_models().len() {
+            if let Some(row) = p.selected_row()
+                && let RowKind::RailNote(rail, _) = &row.kind
+            {
+                let rail = *rail;
+                outcomes.insert(rail.vendor().id(), p.handle(PickerInput::Enter));
+            }
+            p.handle(PickerInput::Down);
+        }
+        assert_eq!(
+            outcomes.get(Rail::Codex.vendor().id()),
+            Some(&PickerOutcome::RetryRailModels),
+            "Enter on the failed list asks the CLIs again: {outcomes:?}"
+        );
+        assert_eq!(
+            outcomes.get(Rail::Claude.vendor().id()),
+            Some(&PickerOutcome::Changed),
+            "Enter on a loading list has nothing to pick yet: {outcomes:?}"
+        );
+    }
+
+    /// Kilo Gateway is the silent fallback, never a row: not on `/model`, not on `/auth`, and no
+    /// unconnected API-key provider is listed on `/model` either.
+    #[test]
+    fn kilo_is_never_listed_and_key_providers_wait_for_a_key() {
+        let p = loaded();
+        assert!(
+            workshop_providers::Catalog::builtin()
+                .models
+                .iter()
+                .any(|m| m.provider_id == "kilo"),
+            "the catalog code still knows Kilo"
+        );
+        assert!(
+            !p.rows.iter().any(|r| r.provider_id() == Some("kilo")),
+            "Kilo is not on the Models view: {:?}",
+            p.rows.iter().map(ModelsRow::title).collect::<Vec<_>>()
+        );
+        assert!(
+            !p.auth_rows.iter().any(|r| r.provider_id() == Some("kilo")),
+            "Kilo is not on the Subscriptions view"
+        );
+        assert!(
+            p.rows.iter().all(|r| matches!(r.kind, RowKind::Engine(_))),
+            "with nothing connected and no CLI installed, only OpenCode's models are listed: {:?}",
+            p.rows.iter().map(ModelsRow::title).collect::<Vec<_>>()
+        );
+        assert!(is_hidden_provider("kilo") && !is_hidden_provider("openrouter"));
         let engine = p.rows.first().expect("engine seed row");
         assert_eq!(engine.class, ConnectionClass::AgentAdapter);
         assert_eq!(engine.provider(), "OpenCode");
         assert_eq!(engine.title(), "Big Pickle");
+        // Once a key is configured, that provider's rows appear.
+        let connected = models_rows(
+            &workshop_providers::Catalog::builtin(),
+            |id| id == "openrouter",
+            &[],
+            &[],
+        );
+        assert!(
+            connected
+                .iter()
+                .any(|r| r.provider_id() == Some("openrouter") && r.is_model()),
+            "a connected provider's models are listed"
+        );
+        assert!(!connected.iter().any(|r| r.provider_id() == Some("kilo")));
+    }
+
+    #[test]
+    fn plain_model_name_drops_vendor_prefix_and_free_suffix() {
+        assert_eq!(
+            plain_model_name("NVIDIA: Nemotron 3 Super (free)"),
+            "Nemotron 3 Super"
+        );
+        assert_eq!(plain_model_name("Qwen: Qwen3.8 27B (free)"), "Qwen3.8 27B");
+        assert_eq!(plain_model_name("Big Pickle"), "Big Pickle");
+        assert_eq!(
+            plain_model_name("Auto Free (rotates free models)"),
+            "Auto Free (rotates free models)"
+        );
+        assert_eq!(plain_model_name("Claude Sonnet"), "Claude Sonnet");
     }
 
     #[test]
@@ -1343,7 +1685,7 @@ mod tests {
         let mut p = PickerState::new().with_active(Some(active.clone()));
         p.handle(PickerInput::Down);
         p.handle(PickerInput::Down);
-        let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]);
+        let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[], &[]);
         p.apply_snapshot(PickerSnapshot {
             rows,
             ..PickerSnapshot::default()
@@ -1421,22 +1763,8 @@ mod tests {
             EngineModel::big_pickle_seed()
         );
         let live = vec![
-            EngineModel {
-                model_ref: "opencode/other".into(),
-                name: "Other".into(),
-                is_default: false,
-                tool_call: true,
-                context_limit: None,
-                image_input: false,
-            },
-            EngineModel {
-                model_ref: "opencode/new-default".into(),
-                name: "New Default".into(),
-                is_default: true,
-                tool_call: true,
-                context_limit: None,
-                image_input: false,
-            },
+            engine("Other", "opencode/other", false, true),
+            engine("New Default", "opencode/new-default", true, true),
         ];
         assert_eq!(
             EngineModel::first_run_default(&live).model_ref,
@@ -1511,13 +1839,75 @@ mod tests {
             is_default,
             tool_call,
             context_limit: None,
+            variants: Vec::new(),
+            effort: None,
             image_input: false,
         }
     }
 
+    /// A model with effort levels becomes its default row plus one row per level, titled the
+    /// way the composer will read (`Ling Free (high)`); picking a level carries it on the model
+    /// (`effort`), and a newer catalog entry keeps a picked level only while it is still offered.
+    #[test]
+    fn effort_levels_are_rows_and_travel_with_the_picked_model() {
+        let mut ling = engine("Ling Free", "opencode/ling", false, true);
+        ling.variants = vec!["low".into(), "medium".into(), "high".into()];
+        let p = loaded_with_engine(&[
+            engine("Big Pickle", "opencode/big-pickle", true, true),
+            ling.clone(),
+        ]);
+        let titles: Vec<String> = p
+            .rows
+            .iter()
+            .filter(|r| matches!(r.kind, RowKind::Engine(_)))
+            .map(ModelsRow::title)
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "Big Pickle",
+                "Ling Free",
+                "Ling Free (low)",
+                "Ling Free (medium)",
+                "Ling Free (high)"
+            ]
+        );
+        let high = p
+            .rows
+            .iter()
+            .find(|r| r.title() == "Ling Free (high)")
+            .expect("level row");
+        assert_eq!(high.id(), "opencode-engine:opencode/ling@high");
+        let RowKind::Engine(picked) = &high.kind else {
+            panic!("engine row")
+        };
+        assert_eq!(picked.effort.as_deref(), Some("high"));
+        assert_eq!(picked.display(), "Ling Free (high)");
+        assert_eq!(EngineModel::big_pickle_seed().display(), "Big Pickle");
+
+        // The live catalog re-reports the model: the pick survives while the level exists.
+        let fresh = ling.clone().carrying_effort_from(picked);
+        assert_eq!(fresh.effort.as_deref(), Some("high"));
+        let mut without_high = ling.clone();
+        without_high.variants = vec!["low".into()];
+        assert_eq!(without_high.carrying_effort_from(picked).effort, None);
+        assert_eq!(
+            engine("Other", "opencode/other", false, true)
+                .carrying_effort_from(picked)
+                .effort,
+            None,
+            "another model never inherits a level"
+        );
+    }
+
     fn loaded_with_engine(models: &[EngineModel]) -> PickerState {
         let mut p = PickerState::new().with_active(Some(EngineModel::big_pickle_seed().row_id()));
-        let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, models);
+        let rows = models_rows(
+            &workshop_providers::Catalog::builtin(),
+            |_| false,
+            models,
+            &[],
+        );
         p.apply_snapshot(PickerSnapshot {
             rows,
             ..PickerSnapshot::default()
@@ -1527,7 +1917,11 @@ mod tests {
 
     #[test]
     fn typing_filters_the_models_view_and_never_closes_it() {
-        let mut p = loaded();
+        let mut p = loaded_with_engine(&[
+            engine("Big Pickle", "opencode/big-pickle", true, true),
+            engine("Qwen3.8 27B Free", "opencode/qwen", false, true),
+            engine("MiMo Free", "opencode/mimo", false, true),
+        ]);
         let all = p.visible_models().len();
         for c in "qwen".chars() {
             assert_eq!(
@@ -1606,46 +2000,236 @@ mod tests {
         ));
     }
 
+    /// A rail as the detect layer reports it; a Ready rail carries the models its CLI listed
+    /// (here: three Claude aliases, as a CLI would report them).
+    fn rail(rail: Rail, installed: bool, ready: bool) -> RailState {
+        let mut st = RailState::detecting(rail);
+        st.installed = installed;
+        st.pill = if ready {
+            Pill::Ready
+        } else if installed {
+            Pill::SignIn
+        } else {
+            Pill::Install
+        };
+        st.models = if ready {
+            let p = rail.provider_id();
+            ["Claude Opus", "Claude Sonnet", "Claude Haiku"]
+                .iter()
+                .map(|name| {
+                    workshop_detect::ModelRef::new(
+                        p,
+                        name.rsplit(' ').next().unwrap().to_ascii_lowercase(),
+                    )
+                    .with_display_name(*name)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        st.show_connect = !ready;
+        st
+    }
+
+    /// A signed-in CLI whose own model list has not arrived (or failed) is one row carrying the
+    /// rail's copy — `Loading models…` by default — never `Sign in` and never a made-up model;
+    /// Enter does nothing there, and the Subscriptions detail says the same.
     #[test]
-    fn recommended_group_leads_with_the_default_and_tool_callers() {
-        let models = vec![
-            engine("Big Pickle", "opencode/big-pickle", true, true),
-            engine(
-                "Nemotron 3 Ultra Free",
-                "opencode/nemotron-ultra",
-                false,
-                true,
-            ),
-            engine(
-                "Nemotron 3.5 Lightning Free",
-                "opencode/nemotron-lightning",
-                false,
-                true,
-            ),
-            engine("No Tools Free", "opencode/no-tools", false, false),
-            engine("MiMo Free", "opencode/mimo", false, true),
-        ];
-        let p = loaded_with_engine(&models);
-        let ids = p.recommended_ids();
-        assert_eq!(ids.len(), RECOMMENDED_MAX);
+    fn a_signed_in_rail_without_its_list_shows_loading_not_placeholders() {
+        let mut loading = rail(Rail::Claude, true, true);
+        loading.models.clear();
+        let mut failed = rail(Rail::Codex, true, true);
+        failed.models.clear();
+        failed.empty_copy = Some("Couldn't load models — press Ctrl+R to retry");
+        let rails = [loading, failed, rail(Rail::Cursor, false, false)];
+        let mut p = PickerState::new().with_active(Some(EngineModel::big_pickle_seed().row_id()));
+        let rows = models_rows(
+            &workshop_providers::Catalog::builtin(),
+            |_| false,
+            &[],
+            &rails,
+        );
+        p.apply_snapshot(PickerSnapshot {
+            rows,
+            rails: rails.to_vec(),
+            ..PickerSnapshot::default()
+        });
+        let rendered: Vec<String> = p
+            .models_lines()
+            .iter()
+            .map(|l| match l {
+                ModelsLine::Header(h) => format!("# {h}"),
+                ModelsLine::Row(r) => r.title(),
+            })
+            .collect();
         assert_eq!(
-            ids[0],
-            EngineModel::big_pickle_seed().row_id(),
-            "active first"
+            rendered,
+            vec![
+                "# OpenCode",
+                "Big Pickle",
+                "# Claude",
+                "Loading models\u{2026}",
+                "# Codex",
+                "Couldn't load models — press Ctrl+R to retry",
+            ],
+            "{rendered:?}"
         );
-        assert!(ids.iter().all(|id| !id.contains("no-tools")));
-        let lines = p.models_lines();
-        assert_eq!(lines[0], ModelsLine::Header("Recommended"));
-        assert!(matches!(lines[1], ModelsLine::Row(r) if r.title() == "Big Pickle"));
         assert!(
-            lines.contains(&ModelsLine::Header("All models")),
-            "{lines:?}"
+            !rendered
+                .iter()
+                .any(|l| l.contains("Sign in") || l.contains("Opus")),
+            "signed in is never `Sign in`, and no placeholder model: {rendered:?}"
         );
-        // The highlighted row is the active one, at row index 0 under the header.
-        assert_eq!(p.models_selected, 0);
+        p.models_selected = p
+            .visible_models()
+            .iter()
+            .position(|r| r.title().starts_with("Loading"))
+            .unwrap();
+        assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
+        assert!(
+            p.detail_lines()
+                .iter()
+                .any(|l| l.contains("Nothing to pick until the list arrives")),
+            "{:?}",
+            p.detail_lines()
+        );
+        // Subscriptions view: the same copy under the rail, no empty radio line.
+        p.tab = PickerTab::Subscriptions;
+        p.rail_selected = 0;
+        let detail = p.detail_lines();
+        assert_eq!(detail[0], "Loading models\u{2026}");
+        assert!(
+            !detail.iter().any(|l| l.contains("Enter picks the model")),
+            "{detail:?}"
+        );
+    }
+
+    /// The owner's layout: OpenCode's models first, then each *installed* subscription as its own
+    /// group — signed in lists its models, signed out is one `Sign in` row, not installed is absent.
+    #[test]
+    fn models_view_is_opencode_then_each_installed_subscription() {
+        let rails = [
+            rail(Rail::Claude, true, true),
+            rail(Rail::Codex, true, false),
+            rail(Rail::Cursor, false, false),
+        ];
+        let mut p = PickerState::new().with_active(Some(EngineModel::big_pickle_seed().row_id()));
+        let rows = models_rows(
+            &workshop_providers::Catalog::builtin(),
+            |_| false,
+            &[
+                engine("Big Pickle", "opencode/big-pickle", true, true),
+                engine("MiMo Free", "opencode/mimo", false, true),
+            ],
+            &rails,
+        );
+        p.apply_snapshot(PickerSnapshot {
+            rows,
+            rails: rails.to_vec(),
+            ..PickerSnapshot::default()
+        });
+        let lines = p.models_lines();
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|l| match l {
+                ModelsLine::Header(h) => format!("# {h}"),
+                ModelsLine::Row(r) => r.title(),
+            })
+            .collect();
+        assert_eq!(
+            rendered,
+            vec![
+                "# OpenCode",
+                "Big Pickle",
+                "MiMo Free",
+                "# Claude",
+                "Claude Opus",
+                "Claude Sonnet",
+                "Claude Haiku",
+                "# Codex",
+                "Sign in",
+            ],
+            "{rendered:?}"
+        );
+        assert!(
+            !rendered.iter().any(|l| l.contains("Cursor")),
+            "a CLI that is not installed is not on /model"
+        );
+        // Enter on a subscription model routes to that rail; Enter on `Sign in` runs its login.
+        p.models_selected = p
+            .visible_models()
+            .iter()
+            .position(|r| r.title() == "Claude Sonnet")
+            .unwrap();
+        assert!(matches!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::SelectRailModel(Rail::Claude, m) if m.display() == "Claude Sonnet"
+        ));
+        p.models_selected = p
+            .visible_models()
+            .iter()
+            .position(|r| r.title() == "Sign in")
+            .unwrap();
+        assert_eq!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::RailConnect(Rail::Codex)
+        );
+        // The active row is preselected under its header.
+        p.models_selected = 0;
+        p.select_active();
         assert_eq!(
             p.selected_row().map(|r| r.title()),
             Some("Big Pickle".into())
+        );
+        assert_eq!(p.models_selected, 0);
+        // The Subscriptions view still lists every rail, installed or not.
+        assert_eq!(p.rails.len(), 3);
+    }
+
+    /// A rail whose CLI is not installed offers one action: Enter runs the vendor's official
+    /// installer (`RailInstall`), and the detail names that installer and promises nothing runs
+    /// on its own. Signed-out-but-installed still offers `Sign in` (`RailConnect`).
+    #[test]
+    fn a_missing_cli_is_one_install_keypress_never_manual_steps() {
+        let rails = [
+            rail(Rail::Claude, false, false),
+            rail(Rail::Codex, true, false),
+            rail(Rail::Cursor, false, false),
+        ];
+        assert_eq!(rails[0].pill, Pill::Install);
+        assert_eq!(rails[0].pill.label(), "Install");
+        let mut p = PickerState::new();
+        p.apply_snapshot(PickerSnapshot {
+            rows: models_rows(
+                &workshop_providers::Catalog::builtin(),
+                |_| false,
+                &[],
+                &rails,
+            ),
+            rails: rails.to_vec(),
+            ..PickerSnapshot::default()
+        });
+        p.tab = PickerTab::Subscriptions;
+        p.rail_selected = 0;
+        let detail = p.detail_lines().join("\n");
+        assert!(
+            detail.contains("curl -fsSL https://claude.ai/install.sh | bash")
+                && detail.contains("Nothing installs on its own"),
+            "{detail}"
+        );
+        assert_eq!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::RailInstall(Rail::Claude)
+        );
+        p.rail_selected = 2;
+        assert_eq!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::RailInstall(Rail::Cursor)
+        );
+        p.rail_selected = 1;
+        assert_eq!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::RailConnect(Rail::Codex)
         );
     }
 
@@ -1666,6 +2250,7 @@ mod tests {
                 engine("Charlie Free", "opencode/charlie", false, true),
                 engine("Big Pickle", "opencode/big-pickle", true, true),
             ],
+            &[],
         );
         p.apply_snapshot(PickerSnapshot {
             rows,
@@ -1686,11 +2271,7 @@ mod tests {
             "a new engine row joins the engine band: {after:?}"
         );
         assert!(!after.iter().any(|id| id.contains("bravo")));
-        assert_eq!(
-            before.iter().filter(|id| id.contains("kilo")).count(),
-            after.iter().filter(|id| id.contains("kilo")).count(),
-            "untouched provider bands are unchanged"
-        );
+        assert_eq!(before.len(), after.len(), "one row left, one row joined");
     }
 
     #[test]

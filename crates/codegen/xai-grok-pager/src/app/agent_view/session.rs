@@ -138,6 +138,9 @@ impl AgentView {
             workshop_model_label: None,
             workshop_context: None,
             workshop_turn_active: false,
+            workshop_turn_activity: None,
+            workshop_turn_started_at: None,
+            workshop_turn_cancelling: false,
             workshop_retry_prompt: None,
             tip_typing_dismissed: false,
             todo: TodoPane::new(),
@@ -912,6 +915,19 @@ impl AgentView {
             }
         })
     }
+    /// Workshop: an Engine/Adapter turn runs outside the ACP session (its state stays idle), so
+    /// the turn-status row is shown from this state instead — running, or cancelling after
+    /// Ctrl+C — exactly as a shell turn would show it.
+    pub(crate) fn workshop_display_state(&self) -> Option<&'static crate::app::agent::AgentState> {
+        if !self.workshop_turn_active || !self.session.state.is_idle() {
+            return None;
+        }
+        Some(if self.workshop_turn_cancelling {
+            &crate::app::agent::AgentState::TurnCancelling
+        } else {
+            &crate::app::agent::AgentState::TurnRunning
+        })
+    }
     /// Finalize a reconnect-reload window and, iff the running prompt is adoptable, adopt it. Returns whether the window finalized.
     /// Adoption is gated by [`Self::should_adopt_running_prompt`] and ordered AFTER finalize.
     /// The finalize side effects (force-idle and window resolve) then run even when adoption is skipped for a non-adoptable running id.
@@ -1043,6 +1059,10 @@ impl AgentView {
     }
     /// Effective turn elapsed time, excluding time spent in question views (accumulated pauses plus the currently open one, on both clocks).
     pub fn turn_elapsed(&self) -> Option<std::time::Duration> {
+        // Workshop: an Engine/Adapter turn keeps its own clock (no ACP prompt, no pauses).
+        if self.workshop_turn_active {
+            return self.workshop_turn_started_at.map(|t| t.elapsed());
+        }
         let instant_elapsed = self.turn_started_at?.elapsed();
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut instant_paused = self.turn_paused_duration;
@@ -1074,6 +1094,10 @@ impl AgentView {
     ) -> Option<crate::acp::tracker::TurnActivity> {
         use crate::acp::tracker::{TurnActivity, WaitingReason};
         use crate::app::agent::AgentState;
+        // Workshop: an Engine/Adapter turn reports its activity through the event loop.
+        if self.workshop_turn_active {
+            return self.workshop_turn_activity.clone();
+        }
         if let Some(activity) = self.session.turn_activity() {
             return Some(activity);
         }
