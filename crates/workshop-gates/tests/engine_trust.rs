@@ -170,11 +170,19 @@ fn select_row(j: &mut Journey, needle: &str) {
     };
     for key in [b"\x1b[A", b"\x1b[B"] {
         for _ in 0..40 {
-            if selected(&j.h.screen_contents()) {
-                return;
+            // A loaded runner paints late: give each step up to half a second to show the frame
+            // before the next key moves the selection past the row.
+            let deadline = std::time::Instant::now() + Duration::from_millis(500);
+            loop {
+                if selected(&j.h.screen_contents()) {
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                j.h.update(Duration::from_millis(50));
             }
             j.h.inject_keys(key).unwrap();
-            j.h.update(Duration::from_millis(120));
         }
     }
     panic!(
