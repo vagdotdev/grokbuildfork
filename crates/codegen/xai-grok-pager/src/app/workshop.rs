@@ -313,6 +313,7 @@ pub async fn refresh_engine_catalog(engine: &OpenCodeEngine) -> Result<Vec<Engin
             is_default: m.is_default,
             tool_call: m.tool_call,
             context_limit: m.context_limit,
+            image_input: m.image_input,
         })
         .collect();
     if models.is_empty() {
@@ -625,6 +626,9 @@ pub enum WorkshopTurnMsg {
         engine: Arc<OpenCodeEngine>,
         session: String,
     },
+    /// The rest of this turn is answered by `model` (it can see the images the turn opened): the
+    /// composer names it until the turn ends; the next turn goes back to the picked model.
+    Answering { model: EngineModel },
     /// The first-keystroke warm-up finished: the engine is up before the first message.
     EngineWarm { engine: Arc<OpenCodeEngine> },
     /// The engine's live catalog names a different default than the pinned seed the first run
@@ -1247,6 +1251,45 @@ struct EngineFollowUp {
     engine: Arc<OpenCodeEngine>,
     session: String,
     model_ref: String,
+    /// The model answering can see images.
+    image_input: bool,
+}
+
+/// The free models that can see images, in the order a turn that needs to see one is handed to
+/// them: Muse Spark 1.3 sorted the owner's Panthera photos best and fastest, 1.2 is its backup,
+/// MiMo last (a fresh engine often does not list it yet).
+const VISION_MODELS: [&str; 3] = [
+    "opencode/muse-spark-1.3-contributor-free",
+    "opencode/muse-spark-1.2-contributor-free",
+    "opencode/mimo-v2.6-flash-free",
+];
+
+/// The first of [`VISION_MODELS`] the running engine lists with image input.
+fn vision_model(live: &[EngineModel]) -> Option<EngineModel> {
+    VISION_MODELS.iter().find_map(|model_ref| {
+        live.iter()
+            .find(|m| m.model_ref == *model_ref && m.image_input)
+            .cloned()
+    })
+}
+
+/// The follow-up sent (never shown) when a turn moves to a model that can see what it opened.
+const VISION_CONTINUE_PROMPT: &str =
+    "Continue my request. You can now see the image files you opened.";
+
+/// A `read` of an image file: the engine attaches the picture to the tool result.
+fn reads_an_image(tool: &str, input: &serde_json::Value) -> bool {
+    const IMAGE_EXTENSIONS: [&str; 9] = [
+        "jpg", "jpeg", "png", "webp", "gif", "heic", "bmp", "tif", "tiff",
+    ];
+    tool == "read"
+        && input
+            .get("filePath")
+            .or_else(|| input.get("path"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|p| Path::new(p).extension())
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
 /// How many times one turn is continued after it ended on an action it announced but never took.
@@ -1388,10 +1431,16 @@ async fn build_stream(
                     "the prompt was refused: {e}"
                 )))
             })?;
+            // The live catalog knows what the model can see even when the saved pick predates it.
+            let image_input = cached_engine_models()
+                .iter()
+                .find(|m| m.model_ref == model.model_ref)
+                .map_or(model.image_input, |m| m.image_input);
             let follow_up = EngineFollowUp {
                 engine,
                 session,
                 model_ref: model.model_ref,
+                image_input,
             };
             Ok((TurnStream::Engine(turn), Some(follow_up)))
         }
@@ -1466,7 +1515,7 @@ pub async fn run_workshop_turn(
             return;
         }
     };
-    let (mut stream, follow_up) = match built {
+    let (mut stream, mut follow_up) = match built {
         Ok(s) => s,
         Err(error) => {
             let _ = tx.send(match error {
@@ -1481,7 +1530,7 @@ pub async fn run_workshop_turn(
         }
     };
 
-    let model_name = match &spec.kind {
+    let mut model_name = match &spec.kind {
         WorkshopTurnKind::Engine { model, .. } => model.name.clone(),
         WorkshopTurnKind::Adapter { adapter_id, .. } => adapter_id.to_string(),
     };
@@ -1506,6 +1555,12 @@ pub async fn run_workshop_turn(
     let asks_for_files = asks_to_write_files(&spec.text);
     let mut wrote_a_file = false;
     let mut continued_to_write = false;
+    // A model that cannot see images and opens one hands the rest of the turn to one that can
+    // (once a turn): the turn is stopped right after that read and continued on the same engine
+    // conversation, whose history carries the picture.
+    let mut image_reads: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut vision_switch: Option<EngineModel> = None;
+    let mut switched = false;
     loop {
         let silence = async {
             match first_event_at {
@@ -1546,12 +1601,16 @@ pub async fn run_workshop_turn(
                     still_connecting_at = None;
                     tail.clear();
                     wrote_a_file |= FILE_WRITE_TOOLS.contains(&name.as_str());
+                    if reads_an_image(&name, &input) {
+                        image_reads.insert(id.clone());
+                    }
                     let _ = tx.send(WorkshopTurnMsg::Tool { id, name, input });
                 }
                 Some(AdapterEvent::ToolDetail { id, title, metadata }) => {
                     tool_details.insert(id, (title, metadata));
                 }
                 Some(AdapterEvent::ToolResult { id, output, is_error }) => {
+                    let opened_an_image = image_reads.remove(&id) && !is_error;
                     let (title, metadata) = tool_details
                         .remove(&id)
                         .unwrap_or((None, serde_json::Value::Null));
@@ -1565,10 +1624,32 @@ pub async fn run_workshop_turn(
                     // The model is at work again (thinking, hidden by default, or writing): the
                     // waiting line says so until its next output.
                     engine_progress(&tx, waiting_for(&model_name));
+                    if opened_an_image
+                        && !switched
+                        && vision_switch.is_none()
+                        && !aborted_by_us
+                        && let Some(f) = &follow_up
+                        && !f.image_input
+                        && let Some(vision) = vision_model(&cached_engine_models())
+                    {
+                        state::append_log(
+                            &engine_log_path(),
+                            &format!(
+                                "vision: {} cannot see the image it opened on {}; {} answers the rest of the turn",
+                                f.model_ref, f.session, vision.model_ref
+                            ),
+                        );
+                        vision_switch = Some(vision);
+                        stream.cancel();
+                    }
                 }
                 Some(AdapterEvent::Error { message }) => {
                     first_event_at = None;
                     still_connecting_at = None;
+                    // The stop that hands the turn to a vision model is not a failure.
+                    if vision_switch.is_some() {
+                        continue;
+                    }
                     errored = true;
                     // An abort we asked for (Ctrl-C, or the silence timeout above) is already
                     // reported; the backend's own "run cancelled" would only repeat it.
@@ -1586,6 +1667,36 @@ pub async fn run_workshop_turn(
                 }
                 Some(AdapterEvent::Done { .. }) => {}
                 None => {
+                    if let Some(vision) = vision_switch.take()
+                        && !aborted_by_us
+                        && let Some(f) = follow_up.as_mut()
+                    {
+                        let mut req = TurnRequest::new(VISION_CONTINUE_PROMPT);
+                        req.model = Some(vision.model_ref.clone());
+                        req.permission = permission;
+                        match f.engine.prompt(&f.session, req).await {
+                            Ok(turn) => {
+                                stream = TurnStream::Engine(turn);
+                                f.model_ref = vision.model_ref.clone();
+                                f.image_input = true;
+                                switched = true;
+                                tail.clear();
+                                model_name = vision.name.clone();
+                                let _ = tx.send(WorkshopTurnMsg::Answering { model: vision });
+                                engine_progress(&tx, waiting_for(&model_name));
+                                continue;
+                            }
+                            Err(e) => {
+                                state::append_log(
+                                    &engine_log_path(),
+                                    &format!("vision: the hand-over was refused: {e}"),
+                                );
+                                let _ = tx.send(WorkshopTurnMsg::Error(engine_failure_line(
+                                    &format!("{} could not take over the images: {e}", vision.name),
+                                )));
+                            }
+                        }
+                    }
                     let pasted = asks_for_files
                         && !wrote_a_file
                         && !continued_to_write

@@ -846,6 +846,132 @@ fn pasted_file_is_written() {
     quit(&mut j);
 }
 
+/// The prompts the fake engine received, each with the model it was sent to.
+fn prompts_with_models(log: &Path) -> Vec<(String, String)> {
+    engine_log(log)
+        .iter()
+        .filter_map(|v| {
+            Some((
+                v.get("text")?.as_str()?.to_owned(),
+                v.get("model")?.get("modelID")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+/// Pick `row` in `/model` (type to filter, Enter) and wait for the composer to name it.
+fn pick_model(j: &mut Journey, filter: &str, label: &str) {
+    send_prompt(j, "/model");
+    wait_for(&mut j.h, "Tab: Subscriptions", 15);
+    j.h.inject_keys(filter.as_bytes()).unwrap();
+    j.h.update(Duration::from_millis(600));
+    j.h.inject_keys(b"\r").unwrap();
+    wait_for(&mut j.h, label, 15);
+    j.h.update(Duration::from_millis(800));
+    snapshot(
+        &j.h,
+        &j.dir,
+        &format!("picked-{}", filter.replace(' ', "-")),
+    );
+}
+
+fn saved_model_ref(j: &Journey) -> String {
+    let saved = std::fs::read_to_string(j.workshop_home().join("active-connection.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    v["model"]["model_ref"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// A turn whose model cannot see images and opens one is handed, silently, to a free model that
+/// can: the engine conversation continues on Muse Spark 1.3, the composer names Muse while it
+/// answers, and afterwards the picked model — the default or the user's own pick — is back for
+/// the next turn and on disk. A model that sees images keeps its turn.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn image_turn_is_answered_by_a_model_that_sees() {
+    const MUSE: &str = "OpenCode \u{b7} Muse Spark 1.3 Free";
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/image-turn-model-that-sees", &bin, &fx);
+
+    send_prompt(&mut j, "sort my photos");
+    wait_for(&mut j.h, "Looking at the photos.", 60);
+    snapshot(&j.h, &j.dir, "01-muse-answering");
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains(MUSE),
+        "the composer names the model answering:\n{screen}"
+    );
+    wait_for(&mut j.h, "Sorted 1 photo: a lion.", 30);
+    wait_for(&mut j.h, FIRST_RUN_LABEL, 15);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "02-turn-over-default-back");
+    let screen = j.h.screen_contents();
+    for hidden in ["Continue my request", "can't see", "cancelled", "could not"] {
+        assert!(
+            !screen.contains(hidden),
+            "no visible switch ({hidden:?}):\n{screen}"
+        );
+    }
+    let sent = prompts_with_models(&fx.log);
+    assert_eq!(
+        sent,
+        [
+            ("sort my photos".to_owned(), "big-pickle".to_owned()),
+            (
+                "Continue my request. You can now see the image files you opened.".to_owned(),
+                "muse-spark-1.3-contributor-free".to_owned()
+            ),
+        ],
+        "{sent:?}"
+    );
+    let log = std::fs::read_to_string(j.workshop_home().join("logs/opencode-engine.log"))
+        .unwrap_or_default();
+    assert!(
+        log.contains("vision: opencode/big-pickle cannot see"),
+        "{log}"
+    );
+
+    send_prompt(&mut j, "hello");
+    wait_for(&mut j.h, "Echo: hello", 30);
+    assert_eq!(prompts_with_models(&fx.log)[2].1, "big-pickle");
+    assert_eq!(saved_model_ref(&j), "opencode/big-pickle");
+
+    // The user's own pick sticks too.
+    pick_model(
+        &mut j,
+        "fin free",
+        "OpenCode \u{b7} Ling 3.0 Flash Fin Free",
+    );
+    send_prompt(&mut j, "sort my photos again");
+    wait_for(&mut j.h, "Looking at the photos.", 60);
+    assert!(j.h.screen_contents().contains(MUSE));
+    wait_for(&mut j.h, "OpenCode \u{b7} Ling 3.0 Flash Fin Free", 30);
+    send_prompt(&mut j, "hello again");
+    wait_for(&mut j.h, "Echo: hello again", 30);
+    snapshot(&j.h, &j.dir, "03-picked-model-sticks");
+    let sent = prompts_with_models(&fx.log);
+    assert_eq!(sent[3].1, "ling-3.0-flash-fin-free", "{sent:?}");
+    assert_eq!(sent[4].1, "muse-spark-1.3-contributor-free", "{sent:?}");
+    assert_eq!(sent[5].1, "ling-3.0-flash-fin-free", "{sent:?}");
+    assert_eq!(saved_model_ref(&j), "opencode/ling-3.0-flash-fin-free");
+
+    // A model that sees images keeps its turn.
+    pick_model(&mut j, "spark 1.3", MUSE);
+    send_prompt(&mut j, "sort my photos once more");
+    wait_for(&mut j.h, "Sorted 1 photo: a lion.", 30);
+    j.h.update(Duration::from_secs(1));
+    let sent = prompts_with_models(&fx.log);
+    assert_eq!(
+        sent.len(),
+        7,
+        "no hand-over for a model that sees: {sent:?}"
+    );
+    quit(&mut j);
+}
+
 /// `/settings` → "Show thinking blocks" brings the thinking back, as its own block that is never
 /// glued to the answer.
 #[test]

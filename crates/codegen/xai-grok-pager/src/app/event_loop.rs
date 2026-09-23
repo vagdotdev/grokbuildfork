@@ -4135,6 +4135,14 @@ fn handle_workshop_turn_msg(
             app.workshop_turn_progress = Some(text);
             app.repaint_workshop_progress()
         }
+        M::Answering { model } => {
+            // The composer names the model answering; the connection (the user's pick) is unchanged.
+            let label = crate::app::workshop::WorkshopConnection::Engine { model }.composer_label();
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent.workshop_model_label = label;
+            }
+            true
+        }
         // A model the user picked in /model is kept; only a connection still on the default follows it.
         M::EngineDefaultResolved { .. }
             if !matches!(
@@ -4400,6 +4408,9 @@ fn handle_workshop_turn_msg(
             app.workshop_turn_agent = None;
             app.workshop_turn_prompt_entry = None;
             app.workshop_turn_started = None;
+            // A model that answered only this turn (it could see its images) hands the composer
+            // back to the picked model.
+            crate::app::workshop::sync_agent_views(app);
             // Prompts typed during the turn go out now, one turn each, oldest first. A cancel
             // drops them: the user stopped the conversation, not just this answer.
             if cancelled {

@@ -32,6 +32,10 @@ from the real server:
   * "create stubborn.py"              -> pastes the file every time, continued or not.
   * "show me a loop"                  -> answers with a fenced example (no file was asked for).
   * "show the tree"                   -> a finished answer that ends on a colon and a fenced tree.
+  * "sort my photos"                  -> a `read` of img01.jpg ("Image read successfully"). A model
+    that cannot see images then waits for the abort (up to 5 s, else says it can't see them); one
+    that can (muse-spark-*, mimo-*), or the "Continue my request …" prompt sent to one, answers
+    "Looking at the photos." and, 2 s later, "Sorted 1 photo: a lion.".
   * "slow"                            -> waits 3 s before answering (to queue prompts behind it).
   * agent == plan                     -> never a tool part, never a permission ask: text only.
 
@@ -64,6 +68,7 @@ subs, lock = [], threading.Lock()
 sessions = {}  # id -> {"messages": [...]}
 permission_replies = {}  # permission id -> reply string
 permission_events = {}  # permission id -> threading.Event
+aborts = {}  # session id -> threading.Event, set by POST /session/{id}/abort
 counter = [0]
 
 
@@ -183,10 +188,14 @@ def unified_diff(path, old, new):
     return "".join(out)
 
 
-def run_turn(sid, agent, text):
+def run_turn(sid, agent, text, model=None):
     text_l = text.lower()
+    model_id = (model or {}).get("modelID", "big-pickle")
+    sees_images = model_id.startswith(("muse-spark", "mimo"))
+    aborted = aborts.setdefault(sid, threading.Event())
+    aborted.clear()
     # A continuation carries on the request that came before it.
-    continued = text.startswith("Continue:")
+    continued = text.startswith("Continue:") or text.startswith("Continue my request")
     if continued:
         first = next((m["text"] for m in reversed(sessions[sid]["messages"])
                       if m["role"] == "user" and not m["text"].startswith("Continue:")), "")
@@ -209,6 +218,19 @@ def run_turn(sid, agent, text):
         answer = identity_answer(agent, text_l)
     elif agent == "plan":
         answer = "Plan: I would create the file, but plan mode is read-only. Ready when you exit plan mode."
+    elif "sort my photos" in text_l:
+        if not continued:
+            emit_part(tool_part(sid, mid, "read", next_id("call"), {"filePath": os.path.join(CWD, "img01.jpg")},
+                                "Image read successfully", "img01.jpg", {"preview": "", "truncated": False}))
+        if not sees_images:
+            if aborted.wait(5):
+                sessions[sid]["messages"].append({"role": "user", "text": text})
+                return
+            answer = "I can't see images with this model."
+        else:
+            stream_text(sid, mid, "Looking at the photos.\n\n")
+            time.sleep(2)
+            answer = "Sorted 1 photo: a lion."
     elif "keep announcing" in text_l:
         answer = "Let me run it:"
     elif "create todo.py" in text_l and continued:
@@ -400,7 +422,7 @@ class H(BaseHTTPRequestHandler):
             text = "".join(p.get("text", "") for p in body.get("parts", []))
             log({"session": sid, "agent": body.get("agent"), "text": text, "model": body.get("model"),
                  "system_head": system_prompt(body.get("agent")).split("\n", 1)[0]})
-            threading.Thread(target=run_turn, args=(sid, body.get("agent"), text), daemon=True).start()
+            threading.Thread(target=run_turn, args=(sid, body.get("agent"), text, body.get("model")), daemon=True).start()
             self.send_response(204)
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -415,6 +437,8 @@ class H(BaseHTTPRequestHandler):
             return self._json(200, True)
         if path.startswith("/session/") and path.endswith("/abort"):
             sid = path.split("/")[2]
+            log({"abort": sid})
+            aborts.setdefault(sid, threading.Event()).set()
             broadcast({"type": "session.error", "properties": {"sessionID": sid, "error": {"name": "MessageAbortedError", "data": {"message": "Aborted"}}}})
             broadcast({"type": "session.idle", "properties": {"sessionID": sid}})
             return self._json(200, True)

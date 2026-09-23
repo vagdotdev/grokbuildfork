@@ -124,6 +124,9 @@ pub struct EngineModel {
     pub is_default: bool,
     pub tool_call: bool,
     pub context_limit: Option<u64>,
+    /// The model can see images (the engine catalog's `capabilities.input.image`).
+    #[serde(default)]
+    pub image_input: bool,
 }
 
 impl EngineModel {
@@ -136,6 +139,7 @@ impl EngineModel {
             is_default: true,
             tool_call: true,
             context_limit: Some(200_000),
+            image_input: false,
         }
     }
 
@@ -1423,6 +1427,7 @@ mod tests {
                 is_default: false,
                 tool_call: true,
                 context_limit: None,
+                image_input: false,
             },
             EngineModel {
                 model_ref: "opencode/new-default".into(),
@@ -1430,6 +1435,7 @@ mod tests {
                 is_default: true,
                 tool_call: true,
                 context_limit: None,
+                image_input: false,
             },
         ];
         assert_eq!(
@@ -1505,6 +1511,7 @@ mod tests {
             is_default,
             tool_call,
             context_limit: None,
+            image_input: false,
         }
     }
 
