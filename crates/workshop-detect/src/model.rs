@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::copy;
+use crate::models::RailModels;
 use crate::probe::VendorProbe;
 use crate::status::LoginState;
 
@@ -170,13 +171,16 @@ pub struct RailState {
     pub pill: Pill,
     /// A verified vendor binary was found.
     pub installed: bool,
-    /// Models shown as radios on the right, already sorted by display name.
+    /// Models shown as radios on the right: the CLI's own list, in its order, default first.
     pub models: Vec<ModelRef>,
     /// Copy shown when `models` is empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub empty_copy: Option<&'static str>,
     /// Whether the rail shows a Connect button.
     pub show_connect: bool,
+    /// Where `models` came from (loading, live, cached, failed; plan and email), for Ready rails.
+    #[serde(default)]
+    pub subscription: RailModels,
 }
 
 impl RailState {
@@ -189,6 +193,7 @@ impl RailState {
             models: Vec::new(),
             empty_copy: None,
             show_connect: false,
+            subscription: RailModels::NotReady,
         }
     }
 
@@ -202,78 +207,59 @@ pub fn composer_label(rail: Rail, model: &ModelRef) -> String {
     format!("{} · {}", rail.display_name(), model.display())
 }
 
-/// Build one rail's picker state from its probe result and the models known for it.
+/// Build one rail's picker state from its probe result and its model rows
+/// ([`crate::models::rail_models`]).
 ///
 /// Rules, matching the export:
 /// * pill is Ready only when a verified binary is installed **and** the official status command
 ///   reports signed in; anything else (not installed, signed out, unknown) is Sign in;
-/// * models are shown only on a Ready rail;
-/// * Connect shows when the rail is not ready, or when it is ready but empty (except Cursor).
-pub fn rail_state(rail: Rail, probe: &VendorProbe, mut models: Vec<ModelRef>) -> RailState {
+/// * models are shown only on a Ready rail, and only as its CLI listed them: a Ready rail that is
+///   still loading or failed to load shows that copy, never placeholder rows;
+/// * Connect shows when the rail is not ready, or when its CLI listed no models (except Cursor).
+pub fn rail_state(rail: Rail, probe: &VendorProbe, models: RailModels) -> RailState {
     debug_assert_eq!(probe.vendor, rail.vendor());
     let installed = probe.binary.is_some();
     let ready = installed && matches!(probe.login, Some(LoginState::LoggedIn));
-    if !ready {
-        models.clear();
-    }
-    models.sort_by(|a, b| {
-        a.display()
-            .cmp(b.display())
-            .then_with(|| a.key().cmp(&b.key()))
-    });
-
-    let empty_copy = if models.is_empty() {
-        Some(copy::empty_rail_copy(
-            rail,
-            installed,
-            ready,
-            probe.app_present,
-        ))
-    } else {
-        None
+    let subscription = if ready { models } else { RailModels::NotReady };
+    let rows: Vec<ModelRef> = match &subscription {
+        RailModels::Listed { list, .. } => list
+            .models
+            .iter()
+            .map(|m| ModelRef::new(rail.provider_id(), &m.id).with_display_name(&m.label))
+            .collect(),
+        _ => Vec::new(),
     };
-    let show_connect = copy::needs_connect(rail, ready, models.is_empty());
+    let empty_copy = rows.is_empty().then(|| match &subscription {
+        RailModels::Loading => copy::LOADING_MODELS,
+        RailModels::Failed { .. } => copy::MODELS_FAILED,
+        _ => copy::empty_rail_copy(rail, installed, ready, probe.app_present),
+    });
+    let show_connect = !matches!(
+        subscription,
+        RailModels::Loading | RailModels::Failed { .. }
+    ) && copy::needs_connect(rail, ready, rows.is_empty());
 
     RailState {
         rail,
         pill: if ready { Pill::Ready } else { Pill::SignIn },
         installed,
-        models,
+        models: rows,
         empty_copy,
         show_connect,
+        subscription,
     }
 }
 
 /// Build all three rails in picker order.
 pub fn rails(
     probe: &crate::probe::Probe,
-    models_for: impl Fn(Rail) -> Vec<ModelRef>,
+    models_for: impl Fn(Rail) -> RailModels,
 ) -> [RailState; 3] {
     [
         rail_state(Rail::Claude, &probe.claude, models_for(Rail::Claude)),
         rail_state(Rail::Codex, &probe.codex, models_for(Rail::Codex)),
         rail_state(Rail::Cursor, &probe.cursor, models_for(Rail::Cursor)),
     ]
-}
-
-/// Documented default model rows per rail, used until a signed-in CLI supplies a live list.
-///
-/// * Claude: the model aliases the `claude --model` flag documents.
-/// * Codex: the CLI's configured default; `codex exec --model` accepts an override but Workshop
-///   does not invent Codex model ids.
-/// * Cursor: `Auto`, the default the CLI reports in `agent about`; `agent models` supplies the live
-///   list once signed in.
-pub fn default_models(rail: Rail) -> Vec<ModelRef> {
-    let p = rail.provider_id();
-    match rail {
-        Rail::Claude => vec![
-            ModelRef::new(p, "opus").with_display_name("Claude Opus"),
-            ModelRef::new(p, "sonnet").with_display_name("Claude Sonnet"),
-            ModelRef::new(p, "haiku").with_display_name("Claude Haiku"),
-        ],
-        Rail::Codex => vec![ModelRef::new(p, "default").with_display_name("Codex default model")],
-        Rail::Cursor => vec![ModelRef::new(p, "auto").with_display_name("Auto")],
-    }
 }
 
 #[cfg(test)]

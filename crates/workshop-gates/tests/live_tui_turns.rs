@@ -425,6 +425,9 @@ struct FakeVendor {
     status_fd: u8,
     login_args: &'static str,
     fixture: &'static str,
+    /// Shell `case "$*"` arm answering the vendor's model-list probe (workshop-detect `models`),
+    /// in the documented wire shape.
+    models_arm: &'static str,
 }
 
 const FAKE_CLAUDE: FakeVendor = FakeVendor {
@@ -439,6 +442,10 @@ const FAKE_CLAUDE: FakeVendor = FakeVendor {
     status_fd: 1,
     login_args: "auth login",
     fixture: "claude_success.jsonl",
+    models_arm: r#"*--input-format*)
+    IFS= read -r _req
+    printf '%s\n' '{"type":"control_response","response":{"subtype":"success","request_id":"workshop-models","response":{"models":[{"value":"default","displayName":"Default (recommended)"},{"value":"opus[1m]","displayName":"Opus (1M context)"},{"value":"sonnet","displayName":"Sonnet"}],"account":{"email":"user@example.com","subscriptionType":"max"}}}}'
+    while IFS= read -r _; do :; done; exit 0 ;;"#,
 };
 
 const FAKE_CODEX: FakeVendor = FakeVendor {
@@ -453,6 +460,14 @@ const FAKE_CODEX: FakeVendor = FakeVendor {
     status_fd: 2,
     login_args: "login",
     fixture: "codex_success.jsonl",
+    models_arm: r#"app-server)
+    while IFS= read -r req; do
+      case "$req" in
+        *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+        *'"method":"account/read"'*) printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","email":"user@example.com","planType":"pro"},"requiresOpenaiAuth":true}}' ;;
+        *'"method":"model/list"'*) printf '%s\n' '{"id":3,"result":{"data":[{"id":"gpt-6-astra","model":"gpt-6-astra","displayName":"GPT-6-Astra","hidden":false,"isDefault":true},{"id":"gpt-5.5","model":"gpt-5.5","displayName":"GPT-5.5","hidden":false,"isDefault":false}],"nextCursor":null}}' ;;
+      esac
+    done; exit 0 ;;"#,
 };
 
 const FAKE_CURSOR: FakeVendor = FakeVendor {
@@ -467,6 +482,8 @@ const FAKE_CURSOR: FakeVendor = FakeVendor {
     status_fd: 1,
     login_args: "login",
     fixture: "cursor_success.jsonl",
+    models_arm: r#"models)
+    printf 'Available models\n\nauto - Auto (current)\ncomposer-2.5 - Composer 2.5 (default)\n\nTip: use --model <id> to switch.\n'; exit 0 ;;"#,
 };
 
 fn fixtures_dir() -> PathBuf {
@@ -501,6 +518,7 @@ case "$1" in
   --help) printf '%s\n' {help}{help_redirect}; exit 0 ;;
 esac
 case "$*" in
+  {models_arm}
   *status*)
     if [ -f "$state/logged_in" ]; then printf '%s\n' {status_in}{status_redirect}; exit {in_exit}
     else printf '%s\n' {status_out}{status_redirect}; exit {out_exit}; fi ;;
@@ -526,6 +544,7 @@ exit 0
         status_out = sh_quote(v.status_logged_out),
         out_exit = v.status_logged_out_exit,
         login_args = sh_quote(v.login_args),
+        models_arm = v.models_arm,
     );
     let path = bin_dir.join(v.binary);
     std::fs::write(&path, script).expect("write fake");
@@ -576,12 +595,20 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
     let fakes = install_fakes(true);
     let mut j = spawn("rails-ready", &bin, &[], Some(&fakes.bin));
     open_subscriptions(&mut j);
-    // The Claude rail (first) reports logged in → Ready.
+    // The Claude rail (first) reports logged in → Ready, then lists the models its CLI reported
+    // (the fake's `initialize` answer), never a placeholder list.
     wait_for(&mut j.h, "[Ready]", 15);
+    wait_for(&mut j.h, "3 models", 20);
     snapshot(&j.h, &j.dir, "01-rails-ready");
-    // Enter opens the Claude rail detail (its model radios), Enter again selects the first model.
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("Claude Opus") && !screen.contains("Codex default model"),
+        "placeholder model rows are gone:\n{screen}"
+    );
+    // Enter opens the Claude rail detail (its model radios), Enter again selects the first model:
+    // the CLI's default.
     j.h.inject_keys(b"\r").unwrap();
-    j.h.update(Duration::from_millis(400));
+    wait_for(&mut j.h, "Opus (1M context)", 10);
     snapshot(&j.h, &j.dir, "02-claude-rail-detail");
     j.h.inject_keys(b"\r").unwrap();
     // The anonymous session activates (async); the overlay closes and the agent composer is
@@ -594,7 +621,7 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
             j.h.screen_contents()
         );
     }
-    wait_for(&mut j.h, "Claude \u{00b7}", 30);
+    wait_for(&mut j.h, "Claude \u{00b7} Default", 30);
     snapshot(&j.h, &j.dir, "03-connected-claude");
 
     // A turn routes through the adapter (RunHandle spawns the fake `claude`), which replays the

@@ -169,7 +169,11 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq strace iproute2 python3
           scripts/no-egress-smoke.sh target/debug/workshop
       - name: gate:no-theft runtime — decoy foreign credentials are never opened (strace)
-        run: scripts/no-theft-fs-audit.sh target/debug/workshop target/no-egress/no-theft-fs-audit.log
+        # Phase 2 runs the subscription model-list probes (workshop-detect `probe` example) against
+        # signed-in fake CLIs: no decoy open, no keychain tool, every documented probe command ran.
+        run: |
+          cargo build -p workshop-detect --example probe
+          scripts/no-theft-fs-audit.sh target/debug/workshop target/no-egress/no-theft-fs-audit.log
       - name: PTY smoke — Login opens the picker, never grok.com
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop

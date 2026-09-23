@@ -248,7 +248,8 @@ pub fn default_broker() -> CredentialBroker {
 }
 
 /// `$WORKSHOP_HOME/catalog-cache`: the hosted lists (`<provider>.json`, written by
-/// `workshop_providers::catalog::live`) and the engine list (`opencode-engine.json`).
+/// `workshop_providers::catalog::live`), the engine list (`opencode-engine.json`), and each
+/// subscription's last listed models (`<rail>-models.json`, `workshop_detect::ModelsCache`).
 fn catalog_cache_dir() -> PathBuf {
     workshop_providers::catalog::fetch::default_cache_dir(&workshop_home())
 }
@@ -330,14 +331,26 @@ pub async fn refresh_engine_catalog(engine: &OpenCodeEngine) -> Result<Vec<Engin
 /// list comes from the `PickerSnapshot` returned here (`workshop_auth::models_rows` builds the rows
 /// from a `Catalog` plus the engine models; `PickerState::apply_snapshot` takes it). The lists are
 /// read last so a snapshot built while [`refresh_picker_snapshot`] runs still sees what it cached.
+/// A signed-in rail shows its last listed models, or `Loading models…` until
+/// [`refresh_rail_models_snapshot`] (or the `/model` refresh) asks its CLI.
 pub async fn load_picker_snapshot() -> PickerSnapshot {
-    build_picker_snapshot(None, None).await
+    build_picker_snapshot(None, None, workshop_detect::Refresh::CacheOnly).await
+}
+
+/// [`load_picker_snapshot`], but every signed-in rail asks its own CLI for its models (unless it
+/// listed them in the last minute). Child processes only: Workshop itself makes no request.
+pub async fn refresh_rail_models_snapshot() -> PickerSnapshot {
+    let refresh = workshop_detect::Refresh::Live {
+        max_age: workshop_detect::models::FRESH_FOR,
+    };
+    build_picker_snapshot(None, None, refresh).await
 }
 
 /// Refresh the model lists from their live sources, then build the snapshot: the keyless hosted
-/// lists (Kilo, OpenRouter, NVIDIA; concurrently, short deadline, cached on success) and, when an
-/// engine is up, its `/config/providers`. `force` ignores the cache age (the picker's `r`).
-/// Only ever called after the user acted; failures leave the last cached list or the dated seed.
+/// lists (Kilo, OpenRouter, NVIDIA; concurrently, short deadline, cached on success), when an
+/// engine is up its `/config/providers`, and each signed-in rail's CLI. `force` ignores the cache
+/// age (the picker's Ctrl+R). Only ever called after the user acted; failures leave the last
+/// cached list or the dated seed.
 pub async fn refresh_picker_snapshot(
     engine: Option<Arc<OpenCodeEngine>>,
     force: bool,
@@ -356,7 +369,14 @@ pub async fn refresh_picker_snapshot(
         }
     };
     let (hosted, engine_error) = tokio::join!(hosted, engine_result);
-    let mut snap = build_picker_snapshot(Some(hosted), engine_error).await;
+    let rails = workshop_detect::Refresh::Live {
+        max_age: if force {
+            Duration::ZERO
+        } else {
+            workshop_detect::models::FRESH_FOR
+        },
+    };
+    let mut snap = build_picker_snapshot(Some(hosted), engine_error, rails).await;
     snap.live = true;
     snap
 }
@@ -364,11 +384,17 @@ pub async fn refresh_picker_snapshot(
 async fn build_picker_snapshot(
     hosted: Option<HostedCatalogs>,
     engine_error: Option<String>,
+    rail_models: workshop_detect::Refresh,
 ) -> PickerSnapshot {
     let local = workshop_providers::probe_all_local_servers(Duration::from_millis(600)).await;
-    let rails = tokio::task::spawn_blocking(|| {
-        let probe = workshop_detect::probe_all(&workshop_detect::DetectConfig::default());
-        workshop_detect::rails(&probe, workshop_detect::model::default_models).to_vec()
+    let rails = tokio::task::spawn_blocking(move || {
+        let cache = workshop_detect::ModelsCache::new(catalog_cache_dir());
+        workshop_detect::picker_rails(
+            &workshop_detect::DetectConfig::default(),
+            &cache,
+            rail_models,
+        )
+        .to_vec()
     })
     .await
     .unwrap_or_else(|_| {
