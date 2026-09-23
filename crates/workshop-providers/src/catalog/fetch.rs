@@ -38,12 +38,20 @@ struct CacheEntry {
 }
 
 /// Where a returned row set came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Freshness {
     Live,
     Cached,
     StaleCache,
     Seed,
+}
+
+impl Freshness {
+    /// Rows that came from the provider's own list (now or earlier), not from the compiled seeds.
+    pub fn is_fetched(self) -> bool {
+        !matches!(self, Freshness::Seed)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -63,14 +71,20 @@ pub struct CatalogFetcher {
     ttl: Duration,
 }
 
-fn now_secs() -> u64 {
+/// Per-request ceiling of the default fetcher (`CatalogFetcher::new`).
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+/// Connect ceiling of the default fetcher.
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Unix seconds now (the clock every freshness stamp in this module uses).
+pub fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
 
-fn iso_date(secs: u64) -> String {
+pub(crate) fn iso_date(secs: u64) -> String {
     // Days since epoch → civil date (Howard Hinnant's algorithm); enough for an `as_of` stamp.
     let days = (secs / 86_400) as i64;
     let z = days + 719_468;
@@ -119,12 +133,70 @@ pub fn parse_for(
     }
 }
 
+/// `<cache_dir>/<provider_id>.json`.
+pub fn cache_path_in(cache_dir: &Path, provider_id: &str) -> PathBuf {
+    cache_dir.join(format!("{provider_id}.json"))
+}
+
+fn keyless_url(m: &ProviderManifest) -> Option<String> {
+    match &m.model_catalog_source {
+        ModelCatalogSource::ModelsEndpoint { url, keyless: true } => Some(url.clone()),
+        ModelCatalogSource::ModelsDev { url } => Some(url.clone()),
+        _ => None,
+    }
+}
+
+fn read_cache_in(cache_dir: &Path, provider_id: &str) -> Option<CacheEntry> {
+    let text = std::fs::read_to_string(cache_path_in(cache_dir, provider_id)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// The provider's last fetched list from the on-disk cache, without touching the network.
+/// `Cached` when younger than `ttl`, `StaleCache` otherwise; `None` when nothing usable is cached
+/// (no file, a different list URL, or a body that no longer parses).
+pub fn cached(cache_dir: &Path, m: &ProviderManifest, ttl: Duration) -> Option<FetchedCatalog> {
+    let url = keyless_url(m)?;
+    let entry = read_cache_in(cache_dir, &m.id)?;
+    if entry.url != url {
+        return None;
+    }
+    let rows = parse_for(m, &entry.body, &iso_date(entry.fetched_at_secs)).ok()?;
+    let fresh = now_secs().saturating_sub(entry.fetched_at_secs) < ttl.as_secs();
+    Some(FetchedCatalog {
+        provider_id: m.id.clone(),
+        rows,
+        freshness: if fresh {
+            Freshness::Cached
+        } else {
+            Freshness::StaleCache
+        },
+        fetched_at_secs: Some(entry.fetched_at_secs),
+        error: None,
+    })
+}
+
 impl CatalogFetcher {
     /// `cache_dir` is normally `<workshop home>/catalog-cache`. Uses the workspace TLS policy.
     pub fn new(cache_dir: impl Into<PathBuf>, ttl: Duration) -> Result<Self, FetchError> {
+        Self::with_timeouts(
+            cache_dir,
+            ttl,
+            DEFAULT_REQUEST_TIMEOUT,
+            DEFAULT_CONNECT_TIMEOUT,
+        )
+    }
+
+    /// Like [`Self::new`] with explicit request/connect ceilings (the picker keeps them short so
+    /// an offline refresh gives up quickly).
+    pub fn with_timeouts(
+        cache_dir: impl Into<PathBuf>,
+        ttl: Duration,
+        request_timeout: Duration,
+        connect_timeout: Duration,
+    ) -> Result<Self, FetchError> {
         let client = xai_grok_extra_ca::build_reqwest_client(|b| {
-            b.timeout(Duration::from_secs(20))
-                .connect_timeout(Duration::from_secs(8))
+            b.timeout(request_timeout)
+                .connect_timeout(connect_timeout)
                 .user_agent("workshop-providers/0.1")
         })?;
         Ok(Self {
@@ -135,20 +207,15 @@ impl CatalogFetcher {
     }
 
     pub fn cache_path(&self, provider_id: &str) -> PathBuf {
-        self.cache_dir.join(format!("{provider_id}.json"))
+        cache_path_in(&self.cache_dir, provider_id)
     }
 
     fn keyless_url(m: &ProviderManifest) -> Option<String> {
-        match &m.model_catalog_source {
-            ModelCatalogSource::ModelsEndpoint { url, keyless: true } => Some(url.clone()),
-            ModelCatalogSource::ModelsDev { url } => Some(url.clone()),
-            _ => None,
-        }
+        keyless_url(m)
     }
 
     fn read_cache(&self, provider_id: &str) -> Option<CacheEntry> {
-        let text = std::fs::read_to_string(self.cache_path(provider_id)).ok()?;
-        serde_json::from_str(&text).ok()
+        read_cache_in(&self.cache_dir, provider_id)
     }
 
     fn write_cache(&self, provider_id: &str, entry: &CacheEntry) -> Result<(), FetchError> {
@@ -340,6 +407,46 @@ mod tests {
                 & 0o777;
             assert_eq!(mode, 0o700);
         }
+    }
+
+    #[test]
+    fn cached_reads_the_disk_without_a_client_and_honours_ttl_and_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("cache");
+        let mut m = crate::manifest::manifest("kilo").unwrap();
+        m.model_catalog_source = ModelCatalogSource::ModelsEndpoint {
+            url: "http://127.0.0.1:9/models".into(),
+            keyless: true,
+        };
+        assert!(cached(&dir, &m, Duration::from_secs(60)).is_none());
+        let body = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/catalog/kilo-models.json"),
+        )
+        .unwrap();
+        let write = |at: u64, url: &str| {
+            crate::config::atomic_write_private(
+                &cache_path_in(&dir, "kilo"),
+                &serde_json::to_vec(&CacheEntry {
+                    fetched_at_secs: at,
+                    url: url.into(),
+                    body: body.clone(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        write(now_secs(), "http://127.0.0.1:9/models");
+        let fresh = cached(&dir, &m, Duration::from_secs(60)).unwrap();
+        assert_eq!(fresh.freshness, Freshness::Cached);
+        assert!(fresh.rows.iter().any(|r| r.model_id == "kilo-auto/free"));
+        let stale = cached(&dir, &m, Duration::ZERO).unwrap();
+        assert_eq!(stale.freshness, Freshness::StaleCache);
+        // A list URL that changed since the cache was written is not trusted.
+        write(now_secs(), "http://127.0.0.1:9/other");
+        assert!(cached(&dir, &m, Duration::from_secs(60)).is_none());
+        // Keyed endpoints have no keyless URL, so nothing is ever read for them.
+        let google = crate::manifest::manifest("google").unwrap();
+        assert!(cached(&dir, &google, Duration::from_secs(60)).is_none());
     }
 
     #[tokio::test]

@@ -26,7 +26,9 @@ pub mod text;
 use std::path::PathBuf;
 
 pub use workshop_detect::{Pill, Rail, RailState};
-pub use workshop_providers::{CatalogModel, ConnectOption, DefaultSelection};
+pub use workshop_providers::{
+    CatalogModel, CatalogStatus, ConnectOption, DefaultSelection, Freshness,
+};
 
 /// Connection class, always shown to the user (never present a subscription as an API base URL).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +88,8 @@ pub const XAI_CARD_COPY: &str = "Uses xAI accounts and auth.x.ai. Not required."
 pub const ENGINE_PROVIDER_ID: &str = "opencode-engine";
 /// Provider display name of the OpenCode engine rows and the composer label prefix.
 pub const ENGINE_DISPLAY_NAME: &str = "OpenCode";
+/// Where the engine rows come from when they are live: the running `opencode serve`.
+pub const ENGINE_CATALOG_SOURCE: &str = "opencode serve /config/providers";
 
 /// A free model served through the OpenCode engine (`opencode serve`), mirrored from its catalog.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -207,6 +211,16 @@ impl ModelsRow {
     pub fn is_xai(&self) -> bool {
         matches!(self.kind, RowKind::XaiOptional)
     }
+    /// The provider whose model list this row belongs to (`opencode-engine` for engine rows);
+    /// `None` for the xAI card.
+    pub fn provider_id(&self) -> Option<&str> {
+        match &self.kind {
+            RowKind::Catalog { model, .. } => Some(model.provider_id.as_str()),
+            RowKind::ConnectProvider { provider_id, .. } => Some(provider_id.as_str()),
+            RowKind::Engine(_) => Some(ENGINE_PROVIDER_ID),
+            RowKind::XaiOptional => None,
+        }
+    }
 }
 
 /// Everything the host feeds into the picker once its async loaders finish.
@@ -220,6 +234,11 @@ pub struct PickerSnapshot {
     pub default_selection: Option<DefaultSelection>,
     /// Secret backend name for the review line (`keyring`, `file`, …).
     pub secret_backend: Option<&'static str>,
+    /// Where each model list came from and when (hosted providers and the engine, keyed by
+    /// provider id); rendered as `fetched 3 min ago` / `cached list from <date>` with the rows.
+    pub catalog_status: Vec<CatalogStatus>,
+    /// This snapshot is the result of a live refresh (clears the picker's `refresh_pending`).
+    pub live: bool,
 }
 
 /// Build every picker row for a snapshot; [`PickerState::apply_snapshot`] splits them into the
@@ -379,6 +398,8 @@ pub struct PickerState {
     pub xai_armed: bool,
     /// Loaders still running (rows may be partial).
     pub loading: bool,
+    /// A live refresh of the model lists is in flight; the rows shown are the cached ones.
+    pub refresh_pending: bool,
     /// Transient status line (errors, progress).
     pub status: Option<String>,
     pub key_entry: Option<KeyEntry>,
@@ -386,6 +407,8 @@ pub struct PickerState {
     pub active_id: Option<String>,
     pub default_selection: Option<DefaultSelection>,
     pub secret_backend: Option<&'static str>,
+    /// Freshness of every model list on the Models view (see [`Self::catalog_note`]).
+    pub catalog_status: Vec<CatalogStatus>,
 }
 
 impl Default for PickerState {
@@ -408,11 +431,13 @@ impl PickerState {
             detail_open: false,
             xai_armed: false,
             loading: true,
+            refresh_pending: false,
             status: None,
             key_entry: None,
             active_id: None,
             default_selection: None,
             secret_backend: None,
+            catalog_status: Vec::new(),
         };
         s.set_rows(models_rows(
             &workshop_providers::Catalog::default(),
@@ -461,6 +486,10 @@ impl PickerState {
         }
         self.default_selection = snap.default_selection;
         self.secret_backend = snap.secret_backend;
+        self.catalog_status = snap.catalog_status;
+        if snap.live {
+            self.refresh_pending = false;
+        }
         self.loading = false;
         self.models_selected = prev_model
             .filter(|_| !first_load)
@@ -517,6 +546,43 @@ impl PickerState {
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status = Some(msg.into());
+    }
+
+    /// Freshness of `provider_id`'s model list (`opencode-engine` for the engine rows); `None`
+    /// for providers without a list.
+    pub fn catalog_status(&self, provider_id: &str) -> Option<&CatalogStatus> {
+        self.catalog_status
+            .iter()
+            .find(|s| s.provider_id == provider_id)
+    }
+
+    /// The freshness note for `provider_id`'s list: `fetched 3 min ago`, or `cached list from
+    /// <date>` while the compiled seed stands in (` · refresh failed` when a fetch was tried).
+    pub fn catalog_note(&self, provider_id: &str) -> Option<String> {
+        self.catalog_status(provider_id).map(CatalogStatus::note)
+    }
+
+    /// One line naming every model list and its freshness, engine first, in snapshot order:
+    /// `Lists: OpenCode fetched just now · Kilo Gateway fetched 2 min ago · …`.
+    pub fn catalog_summary(&self) -> Option<String> {
+        if self.catalog_status.is_empty() {
+            return None;
+        }
+        let parts: Vec<String> = self
+            .catalog_status
+            .iter()
+            .map(|s| {
+                let name = if s.provider_id == ENGINE_PROVIDER_ID {
+                    ENGINE_DISPLAY_NAME.to_owned()
+                } else {
+                    workshop_providers::manifest(&s.provider_id)
+                        .map(|m| m.display_name)
+                        .unwrap_or_else(|| s.provider_id.clone())
+                };
+                format!("{name} {}", s.note())
+            })
+            .collect();
+        Some(format!("Lists: {}", parts.join(" · ")))
     }
 
     /// Open the key-entry prompt for a provider (host calls this for paste-key connect flows).
@@ -681,13 +747,14 @@ impl PickerState {
             };
             return vec![entry.label.clone(), masked];
         }
+        let note = |row: &ModelsRow| row.provider_id().and_then(|id| self.catalog_note(id));
         let lines = match self.tab {
             PickerTab::Models => self
                 .selected_row()
-                .map(|row| row_detail_lines(row, self.xai_armed))
+                .map(|row| row_detail_lines(row, self.xai_armed, note(row)))
                 .unwrap_or_default(),
             PickerTab::Subscriptions => match self.selected_auth_row() {
-                Some(row) => row_detail_lines(row, self.xai_armed),
+                Some(row) => row_detail_lines(row, self.xai_armed, note(row)),
                 None => self
                     .selected_rail()
                     .map(|r| rail_detail_lines(r, self.rail_model_selected))
@@ -705,11 +772,16 @@ pub fn config_path() -> PathBuf {
         .join("config.toml")
 }
 
-fn row_detail_lines(row: &ModelsRow, xai_armed: bool) -> Vec<String> {
+/// `list_note` is the freshness of the row's model list (`fetched 3 min ago` / `cached list from
+/// <date>`), shown with the badge so every row says where and when its list came from.
+fn row_detail_lines(row: &ModelsRow, xai_armed: bool, list_note: Option<String>) -> Vec<String> {
     let mut lines = Vec::new();
     match &row.kind {
         RowKind::Catalog { model, locked } => {
-            lines.push(row.badge.clone());
+            lines.push(match &list_note {
+                Some(note) => format!("{} · list {note}", row.badge),
+                None => row.badge.clone(),
+            });
             let mut facts = vec![format!("Endpoint: {}", model.endpoint())];
             if let Some(tools) = model.tools {
                 facts.push(format!(
@@ -756,6 +828,14 @@ fn row_detail_lines(row: &ModelsRow, xai_armed: bool) -> Vec<String> {
                 "Loopback only; opencode.ai is contacted by opencode itself. Prompts may be logged upstream."
                     .into(),
             );
+            if let Some(note) = &list_note {
+                lines.push(match note.starts_with("fetched") {
+                    true => format!("Model list {note} from {ENGINE_CATALOG_SOURCE}."),
+                    false => {
+                        format!("Model list: {note}; the live list arrives when the engine starts.")
+                    }
+                });
+            }
         }
         RowKind::XaiOptional => {
             lines.push(XAI_CARD_COPY.into());
@@ -822,8 +902,104 @@ mod tests {
             rails: Vec::new(),
             default_selection: Some(workshop_providers::select_default(&[], true)),
             secret_backend: Some("memory"),
+            ..PickerSnapshot::default()
         });
         p
+    }
+
+    fn select_row(p: &mut PickerState, needle: &str) {
+        p.models_selected = p
+            .rows
+            .iter()
+            .position(|r| r.title().contains(needle))
+            .unwrap_or_else(|| panic!("row {needle:?}"));
+    }
+
+    #[test]
+    fn detail_lines_say_where_and_when_each_list_came_from() {
+        let mut p = PickerState::new();
+        let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]);
+        let now = workshop_providers::catalog::fetch::now_secs();
+        p.apply_snapshot(PickerSnapshot {
+            rows,
+            catalog_status: vec![
+                CatalogStatus::seed(ENGINE_PROVIDER_ID, 1),
+                CatalogStatus {
+                    provider_id: "kilo".into(),
+                    freshness: Freshness::Live,
+                    fetched_at_secs: Some(now - 3 * 60),
+                    rows: 21,
+                    error: None,
+                },
+                CatalogStatus {
+                    provider_id: "openrouter".into(),
+                    freshness: Freshness::Seed,
+                    fetched_at_secs: None,
+                    rows: 5,
+                    error: Some("HTTP 502".into()),
+                },
+            ],
+            live: true,
+            ..PickerSnapshot::default()
+        });
+        // Engine seed: dated, and honest about when the live list comes.
+        select_row(&mut p, "Big Pickle");
+        let lines = p.detail_lines();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(
+            lines[2].contains("cached list from 2026-09-21")
+                && lines[2].contains("live list arrives when the engine starts"),
+            "{lines:?}"
+        );
+        // Live Kilo rows: the badge line carries the age.
+        select_row(&mut p, "Auto Free");
+        let lines = p.detail_lines();
+        assert!(lines[0].ends_with("· list fetched 3 min ago"), "{lines:?}");
+        assert_eq!(p.catalog_note("kilo").as_deref(), Some("fetched 3 min ago"));
+        // A failed refresh says so on the seed it fell back to.
+        assert_eq!(
+            p.catalog_note("openrouter").as_deref(),
+            Some("cached list from 2026-09-21 · refresh failed")
+        );
+        assert!(p.catalog_note("google").is_none());
+        let summary = p.catalog_summary().unwrap();
+        assert!(
+            summary.starts_with("Lists: OpenCode cached list from 2026-09-21 · Kilo Gateway fetched 3 min ago · OpenRouter cached list from 2026-09-21 · refresh failed"),
+            "{summary}"
+        );
+        // An engine list that was fetched names its source.
+        p.catalog_status = vec![CatalogStatus {
+            provider_id: ENGINE_PROVIDER_ID.into(),
+            freshness: Freshness::Cached,
+            fetched_at_secs: Some(now),
+            rows: 7,
+            error: None,
+        }];
+        select_row(&mut p, "Big Pickle");
+        let lines = p.detail_lines();
+        assert_eq!(
+            lines[2],
+            format!("Model list fetched just now from {ENGINE_CATALOG_SOURCE}.")
+        );
+    }
+
+    #[test]
+    fn a_live_snapshot_clears_refresh_pending_and_a_cached_one_does_not() {
+        let mut p = loaded();
+        p.refresh_pending = true;
+        let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]);
+        p.apply_snapshot(PickerSnapshot {
+            rows: rows.clone(),
+            ..PickerSnapshot::default()
+        });
+        assert!(p.refresh_pending, "the cached snapshot lands first");
+        p.apply_snapshot(PickerSnapshot {
+            rows,
+            live: true,
+            ..PickerSnapshot::default()
+        });
+        assert!(!p.refresh_pending);
+        assert!(p.catalog_summary().is_none(), "no status, no summary line");
     }
 
     fn goto_xai(p: &mut PickerState) {

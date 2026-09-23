@@ -13,6 +13,7 @@ xai-grok-sampling-types = { path = "../codegen/xai-grok-sampling-types" }
 
 base64 = { workspace = true }
 fs2 = { workspace = true }
+futures-util = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 keyring = "4"
 rand = { workspace = true }
@@ -26,7 +27,6 @@ url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-futures-util = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 wiremock = { workspace = true }

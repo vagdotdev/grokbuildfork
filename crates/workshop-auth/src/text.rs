@@ -28,6 +28,12 @@ pub fn render(state: &PickerState) -> String {
             row.short_badge(),
         ));
     }
+    if let Some(summary) = state.catalog_summary() {
+        out.push_str(&format!("  {summary}\n"));
+    }
+    if state.refresh_pending {
+        out.push_str("  (refreshing the lists…)\n");
+    }
 
     out.push_str(&format!("\n[{}]\n", PickerTab::Subscriptions.title()));
     for (i, rail) in state.rails.iter().enumerate() {
@@ -111,13 +117,22 @@ mod tests {
         s.apply_snapshot(PickerSnapshot {
             rows,
             rails,
-            default_selection: None,
-            secret_backend: None,
+            catalog_status: vec![
+                workshop_providers::CatalogStatus::seed(crate::ENGINE_PROVIDER_ID, 1),
+                workshop_providers::CatalogStatus::seed("kilo", 6),
+            ],
+            ..PickerSnapshot::default()
         });
         let t = render(&s);
         assert!(t.contains("[Models]"));
         assert!(t.contains("[Subscriptions]"));
         assert!(t.contains("Big Pickle · OpenCode · free"));
+        assert!(
+            t.contains(
+                "Lists: OpenCode cached list from 2026-09-21 · Kilo Gateway cached list from 2026-09-21"
+            ),
+            "{t}"
+        );
         let claude = t.find("Claude ").unwrap();
         let codex = t.find("Codex ").unwrap();
         let cursor = t.find("Cursor ").unwrap();

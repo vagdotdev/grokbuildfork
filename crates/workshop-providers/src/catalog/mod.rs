@@ -11,6 +11,7 @@
 //! access is unconfirmed, so they are reachable only through the OpenCode CLI adapter.
 
 pub mod fetch;
+pub mod live;
 pub mod sources;
 
 use serde::{Deserialize, Serialize};
@@ -159,7 +160,9 @@ pub fn row_for(
     }
 }
 
-const SEED_REVIEWED: &str = "2026-09-21";
+/// The day the compiled seed lists were last reviewed against the live sources. Shown as
+/// `cached list from <date>` whenever a seed stands in for a list that could not be fetched.
+pub const SEED_REVIEWED: &str = "2026-09-21";
 
 fn seed_source(name: &str) -> CatalogSource {
     CatalogSource {
