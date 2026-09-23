@@ -1,0 +1,13 @@
+# T2 — the owner's test: download Panthera photos, then sort them by species (docs: acceptance-tasks.md)
+@timeout 900
+launch workshop
+type download photos of the Panthera genus to my Desktop, 3 of each species (lion, tiger, leopard, jaguar, snow leopard)
+waitturn
+snap turn1
+type On the desktop there are a bunch of photos of the Panthera genus. Look at all of them and then organise them into each species and put all of them in a very organised way under the genus folder
+waitturn
+snap turn2
+line /exit
+waitshell 30
+line find ~/Desktop -type f | sort
+sleep 4

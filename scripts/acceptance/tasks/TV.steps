@@ -1,0 +1,7 @@
+# TV — can the active model see images through Workshop? Pick it with ACC_MODEL_REF / ACC_MODEL_NAME.
+@timeout 300
+launch workshop
+type What animal is in each of the photos img01.jpg, img02.jpg and img03.jpg on my Desktop? Answer with one word per photo.
+waitturn
+line /exit
+waitshell 30

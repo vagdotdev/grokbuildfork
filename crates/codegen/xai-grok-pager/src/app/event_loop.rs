@@ -4093,8 +4093,9 @@ fn handle_workshop_turn_msg(
     let clears_progress = match &msg {
         // A whitespace-only part is not output yet (see the `Delta` arm).
         M::Delta(text) => !text.trim().is_empty(),
-        M::Thinking(_)
-        | M::Tool { .. }
+        // Hidden thinking (the default) draws nothing, so the waiting line stays up through it.
+        M::Thinking(_) => crate::appearance::cache::load_show_thinking_blocks(),
+        M::Tool { .. }
         | M::PermissionAsk { .. }
         | M::Error(_)
         | M::EngineUnavailable { .. }
@@ -4140,6 +4141,15 @@ fn handle_workshop_turn_msg(
             // seconds, the cancel hint) until the first real output replaces it.
             app.workshop_turn_progress = Some(text);
             app.repaint_workshop_progress()
+        }
+        // A model the user picked in /model is kept; only a connection still on the default follows it.
+        M::EngineDefaultResolved { .. }
+            if !matches!(
+                &app.workshop_connection,
+                crate::app::workshop::WorkshopConnection::Engine { model } if model.is_default
+            ) =>
+        {
+            false
         }
         M::EngineDefaultResolved { model } => {
             // OpenCode's live default replaces the pinned seed the first run activated.
