@@ -9,8 +9,9 @@
 # pane is also shown in an xfce4-terminal on $DISPLAY and the whole desktop is recorded to
 # OUTDIR/raw-screen.mp4 (render.py cuts the waits afterwards).
 #
-# The task runs as its own account (default `sam`, with NOPASSWD sudo like a Mac admin using Homebrew;
-# T11's `mac` needs its password), with HOME under the root-owned, unlistable /home/acc/. That account
+# The task runs as its own account (default `sam`; T11 uses `mac`), set up like a normal desktop user:
+# sudo asks for its password, which the monitor types when a password prompt shows, as the user would.
+# HOME is under the root-owned, unlistable /home/acc/. That account
 # cannot read the invoking user's home, where the evidence and the fixtures' answer keys live; after the
 # checks the HOME is moved into OUTDIR/home.
 #
@@ -53,7 +54,7 @@ XAUTH="${XAUTHORITY:-$HOME/.Xauthority}"
 
 directive() { sed -n "s/^@$1[[:space:]]\+//p" "$STEPS" | head -1; }
 RUN_USER="$(directive user)"; RUN_USER="${RUN_USER:-${ACC_USER:-sam}}"
-PASSWORD="$(directive password)"
+PASSWORD="$(directive password)"; PASSWORD="${PASSWORD:-workshop}"  # the run user's sudo password (setup.py sets it)
 TURN_TIMEOUT="$(directive timeout)"; TURN_TIMEOUT="${TURN_TIMEOUT:-900}"
 STALL="$(directive stall)"; STALL="${STALL:-120}"
 if [ "$RUN_USER" = "$(id -un)" ]; then UHOME="$OUT/home"; AS=(); else UHOME="/home/acc/$RUN_KEY"; AS=(sudo -n -u "$RUN_USER"); fi
@@ -83,7 +84,8 @@ tool_running() {
 }
 # The waiting line (`⠏ Thinking… · 4s · Ctrl+C to cancel`, or v0.2.2's `⠼ Run … 13s ⇣1.6k [stop]`); braille
 # alone is not busy (the hero logo uses it).
-busy() { screen | grep -qE 'Thinking…|Ctrl\+C to cancel|Esc to interrupt|\[stop\]'; }
+# The status line can be cut at the screen edge (`… 12s ⇣12.5k [sto`): its token counter counts too.
+busy() { screen | grep -qE 'Thinking…|Ctrl\+C to cancel|Esc to interrupt|\[stop\]|⇣[0-9.]+k'; }
 uread() { "${AS[@]}" cat "$@" 2>/dev/null; }
 turns_total() {
   local f n=0 k
@@ -116,7 +118,17 @@ waitshell() { # the shell prompt is back as the last non-empty line
   done
   ev shell_timeout; return 1
 }
-TURN_BASE=0; WF_BASE=0
+TURN_BASE=0; TURN_PROMPT=""
+# v0.2.2's done line (`Worked for 22s`): below this turn's own prompt, or the last line above the
+# composer box when the prompt has scrolled away.
+done_line() {
+  screen | awk -v p="$TURN_PROMPT" '
+    p != "" && index($0, p) {f = 1}
+    f && /Worked for/ {d = 1}
+    /╭─/ {exit}
+    {g = $0; gsub(/[[:space:]█]/, "", g); if (g != "") last = $0}
+    END {exit !(d || last ~ /Worked for/)}'
+}
 waitturn() {
   local limit="${1:-$TURN_TIMEOUT}" start=$SECONDS prev="" cur still=0 stalled=0 n active=$SECONDS
   while [ $((SECONDS - start)) -lt "$limit" ]; do
@@ -129,7 +141,7 @@ waitturn() {
     fi
     # No engine record (the silent fallback answered on the shell path): v0.2.2's done line
     # (`Worked for 22s`) that appeared after the prompt ends the turn.
-    if [ "$n" -le "$TURN_BASE" ] && [ $still -ge 6 ] && ! busy && [ "$(screen | grep -c 'Worked for')" -gt "$WF_BASE" ]; then
+    if [ "$n" -le "$TURN_BASE" ] && [ $still -ge 6 ] && ! busy && done_line; then
       ev turn_end "done line without a record after $((SECONDS - start))s"; return 0
     fi
     # No engine record and no done line: 120 s still, and for the last 30 s nothing
@@ -231,7 +243,7 @@ while IFS= read -r raw || [ -n "$raw" ]; do
       if screen_has 'always-approve'; then ev mode_on_screen always-approve; else ev mode_on_screen "not shown"; fi
       screen > "$OUT/probes/composer.txt"
       TURN_BASE="$(turns_total)" ;;
-    type) TURN_BASE="$(turns_total)"; WF_BASE="$(screen | grep -c 'Worked for')"; type_text "$arg"; "${T[@]}" send-keys -t "$SESSION" Enter; ev prompt_sent "$arg" ;;
+    type) TURN_BASE="$(turns_total)"; TURN_PROMPT="${arg:0:40}"; type_text "$arg"; "${T[@]}" send-keys -t "$SESSION" Enter; ev prompt_sent "$arg" ;;
     waitturn) waitturn ${arg:+"$arg"}; screen > "$OUT/probes/turn-end-$(grep -c '"turn_end"\|"turn_timeout"' "$EVENTS").txt" ;;
     line) type_line "$arg"; ev line "$arg" ;;
     key) # shellcheck disable=SC2086
