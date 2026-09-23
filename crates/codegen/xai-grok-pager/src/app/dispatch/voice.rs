@@ -89,15 +89,8 @@ pub(super) fn dispatch_enable_voice_mode(app: &mut AppView, from_hold: bool) -> 
     // Leave home after the flag / tier gates so a disabled or restricted press stays a no-op.
     // Deliberately before the audio gate: the audio-less Bazel build is the only CI that runs
     // these dispatch tests, and it must still cover leave-home (Always isolation) from voice.
-    let mut effects = super::session::lifecycle::leave_welcome_for_session(app);
+    let effects = super::session::lifecycle::leave_welcome_for_session(app);
     if !xai_grok_voice::AUDIO_SUPPORTED {
-        return effects;
-    }
-    // Workshop: a default install ships no voice helper or model; they arrive in the background.
-    // Until both are here, the press says how far along that is instead of failing.
-    if let Some((line, setup)) = crate::app::workshop::voice_getting_ready(app) {
-        app.show_toast(&line);
-        effects.extend(setup);
         return effects;
     }
 

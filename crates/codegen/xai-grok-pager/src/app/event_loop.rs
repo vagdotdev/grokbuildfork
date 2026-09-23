@@ -2030,6 +2030,22 @@ pub(crate) async fn run(
         ) {
             break;
         }
+        // Workshop: a default install ships no voice helper or model; they arrive in the
+        // background. A press before both are here says how far along that is (and asks for the
+        // setup if it is not running) instead of starting a pipeline that would fail.
+        if matches!(app.voice_state, VoiceState::ColdStart { .. })
+            && app.voice_cmd_tx.is_none()
+            && app.voice_config.provider == xai_grok_voice::VoiceProvider::Local
+            && let Some((line, setup)) = crate::app::workshop::voice_getting_ready(&mut app)
+        {
+            app.voice_state = VoiceState::Idle;
+            app.voice_ui_active = false;
+            app.show_toast(&line);
+            if process_effects(setup, &mut tasks, &mut app, &progress_tx) {
+                break;
+            }
+            presenter.request_presentation(&mut app, terminal, false);
+        }
         if let VoiceState::ColdStart { hold, target } = app.voice_state {
             if app.voice_cmd_tx.is_none() && app.voice_can_start_pipeline() {
                 let voice_auth = crate::voice::build_voice_auth(voice_auth_factory.clone());
