@@ -1811,6 +1811,10 @@ pub enum Effect {
     /// default model resolved); ask the shell to re-read its model list so the dashboard and
     /// session surfaces show the real model name. No auth, no session switch.
     WorkshopReloadModels,
+    /// Workshop: a signed-in rail is still `Loading models…` after a picker load with no live
+    /// refresh queued (`/auth`, after a sign-in): ask those CLIs for their models, then reload the
+    /// picker. Child processes only; Workshop itself makes no request.
+    WorkshopRefreshRailModels,
     /// Workshop: a `[model.<key>]` was written; ask the shell to reload its model list, authenticate
     /// with the non-interactive method, and switch the active session (if any) to `model_id`.
     WorkshopActivateModel {

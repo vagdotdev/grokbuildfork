@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use workshop_detect::copy;
 use workshop_detect::{
-    DetectConfig, IdentifyError, LoginState, Pill, Rail, Vendor, composer_label,
-    model::default_models, probe_all, probe_vendor, rails,
+    DetectConfig, IdentifyError, LoginState, ModelsCache, Pill, Rail, RailModels, Refresh,
+    SubscriptionModels, Vendor, composer_label, probe_all, probe_vendor, rails, rails_models,
 };
 
 fn fixtures() -> PathBuf {
@@ -69,7 +69,7 @@ fn all_four_vendors_detected_and_signed_out() {
             .ends_with("cursor-agent")
     );
 
-    let rails = rails(&probe, default_models);
+    let rails = rails(&probe, |_| RailModels::Loading);
     assert_eq!(rails.each_ref().map(|r| r.rail), Rail::ALL);
     for r in &rails {
         assert_eq!(r.pill, Pill::SignIn, "{:?}", r.rail);
@@ -122,26 +122,46 @@ fn signed_in_rails_are_ready_with_models() {
         );
         assert!(probe.get(vendor).ready());
     }
-    let rails = rails(&probe, default_models);
+    let cache = ModelsCache::new(state.path().join("catalog-cache"));
+    let [claude, codex, cursor] = rails_models(
+        &probe,
+        &cfg,
+        &cache,
+        Refresh::Live {
+            max_age: Duration::ZERO,
+        },
+    );
+    let rails = rails(&probe, |rail| match rail {
+        Rail::Claude => claude.clone(),
+        Rail::Codex => codex.clone(),
+        Rail::Cursor => cursor.clone(),
+    });
     for r in &rails {
         assert_eq!(r.pill, Pill::Ready, "{:?}", r.rail);
         assert!(!r.models.is_empty());
         assert!(r.empty_copy.is_none());
         assert!(!r.show_connect, "rail with models never shows Connect");
     }
-    // Models are sorted by display name and keyed provider:model.
+    // The CLIs' own lists, in their order with the default first, keyed provider:model.
     let claude_keys: Vec<String> = rails[0].models.iter().map(|m| m.key()).collect();
     assert_eq!(
         claude_keys,
-        ["anthropic:haiku", "anthropic:opus", "anthropic:sonnet"]
+        [
+            "anthropic:default",
+            "anthropic:opus[1m]",
+            "anthropic:claude-fable-5-1",
+            "anthropic:sonnet",
+            "anthropic:haiku"
+        ]
     );
     assert_eq!(
         composer_label(Rail::Claude, &rails[0].models[1]),
-        "Claude · Claude Opus"
+        "Claude · Opus (1M context)"
     );
+    assert_eq!(rails[1].models[0].key(), "openai:gpt-6-astra");
     assert_eq!(
         composer_label(Rail::Cursor, &rails[2].models[0]),
-        "Cursor · Auto"
+        "Cursor · Composer 2.5"
     );
 }
 
@@ -154,7 +174,18 @@ fn ready_rail_with_no_models_shows_no_models_copy() {
         &[("FAKE_LOGIN_CLAUDE", "in"), ("FAKE_LOGIN_CURSOR", "in")],
     );
     let probe = probe_all(&cfg);
-    let rails = rails(&probe, |_| Vec::new());
+    let empty = |rail| RailModels::Listed {
+        list: SubscriptionModels {
+            rail,
+            models: Vec::new(),
+            account: None,
+            documented_aliases: false,
+            fetched_at_secs: 0,
+        },
+        cached: false,
+        error: None,
+    };
+    let rails = rails(&probe, empty);
     assert_eq!(rails[0].pill, Pill::Ready);
     assert_eq!(rails[0].empty_copy, Some(copy::NO_MODELS));
     assert!(
@@ -193,7 +224,7 @@ fn impostor_agent_is_not_cursor() {
     let probe = probe_all(&cfg);
     assert!(probe.cursor.binary.is_none());
     assert_eq!(probe.cursor.login, None);
-    let rails = rails(&probe, default_models);
+    let rails = rails(&probe, |_| RailModels::Loading);
     assert_eq!(rails[2].pill, Pill::SignIn);
     assert!(!rails[2].installed);
     assert_eq!(rails[2].empty_copy, Some(copy::CURSOR_DESKTOP_ONLY));
@@ -209,7 +240,7 @@ fn cursor_app_without_cli_gets_install_agent_copy() {
     let probe = probe_all(&cfg);
     assert!(probe.cursor.app_present);
     assert!(probe.cursor.binary.is_none());
-    let rails = rails(&probe, default_models);
+    let rails = rails(&probe, |_| RailModels::Loading);
     assert_eq!(rails[2].empty_copy, Some(copy::CURSOR_APP_WITHOUT_CLI));
     assert!(rails[2].show_connect);
 }
@@ -221,7 +252,7 @@ fn wrong_claude_binary_means_not_installed() {
     let probe = probe_all(&cfg);
     assert!(probe.claude.binary.is_none());
     assert_eq!(probe.claude.rejected.len(), 1);
-    let rails = rails(&probe, default_models);
+    let rails = rails(&probe, |_| RailModels::Loading);
     assert_eq!(rails[0].empty_copy, Some(copy::INSTALL_CLAUDE));
     assert_eq!(rails[1].empty_copy, Some(copy::INSTALL_CODEX));
     assert!(rails[0].show_connect && rails[1].show_connect);
@@ -282,7 +313,7 @@ fn garbage_status_output_is_unknown_and_shows_sign_in() {
         );
         assert!(!probe.get(vendor).ready());
     }
-    for r in rails(&probe, default_models) {
+    for r in rails(&probe, |_| RailModels::Loading) {
         assert_eq!(
             r.pill,
             Pill::SignIn,
@@ -308,7 +339,7 @@ fn presence_only_scan_never_runs_status_commands() {
             "{vendor}: {c}"
         );
     }
-    for r in rails(&probe, default_models) {
+    for r in rails(&probe, |_| RailModels::Loading) {
         assert_eq!(r.pill, Pill::SignIn);
     }
 }

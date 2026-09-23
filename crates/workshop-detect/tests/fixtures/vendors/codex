@@ -1,7 +1,18 @@
 #!/bin/sh
 # Fake Codex CLI for Workshop detection tests.
-# Output shapes copied from Codex CLI 0.155.1 (`codex --version`, `codex login status`).
-[ -n "$FAKE_CLI_STATE_DIR" ] && { echo "codex $*" >> "$FAKE_CLI_STATE_DIR/calls.codex"; env > "$FAKE_CLI_STATE_DIR/env.codex"; }
+# Output shapes copied from Codex CLI 0.155.1 (`codex --version`, `codex login status`) and 0.156.1
+# (`codex app-server` JSON-RPC: initialize, account/read, model/list).
+if [ -n "$FAKE_CLI_STATE_DIR" ]; then
+  echo "codex $*" >> "$FAKE_CLI_STATE_DIR/calls.codex"; env > "$FAKE_CLI_STATE_DIR/env.codex"
+  # One codex child at a time: another one still alive when this starts is an overlap. The pid
+  # check tells a live holder from one that was SIGKILLed before its trap could run.
+  lock="$FAKE_CLI_STATE_DIR/codex.running"
+  if ! mkdir "$lock" 2>/dev/null && kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then
+    echo "codex $*" >> "$FAKE_CLI_STATE_DIR/overlap.codex"
+  fi
+  mkdir -p "$lock"; echo $$ > "$lock/pid"
+  trap 'rm -rf "$lock"' EXIT
+fi
 case "$1" in
   --version|-V) echo "codex-cli 0.155.1"; exit 0 ;;
   --help|-h)
@@ -19,6 +30,36 @@ case "$1" in
         esac ;;
       "") echo "fake codex login"; exit 0 ;;
     esac ;;
+  app-server)
+    mode="${FAKE_MODELS_CODEX:-ok}"
+    account_pending=""
+    while IFS= read -r req; do
+      case "$req" in
+        *'"method":"initialize"'*)
+          printf '%s\n' '{"id":1,"result":{"userAgent":"workshop/0.156.1","codexHome":"/tmp/codex","platformFamily":"unix","platformOs":"linux"}}'
+          printf '%s\n' '{"method":"configWarning","params":{"summary":"Codex could not find bubblewrap on PATH."}}'
+          [ "$mode" = hang ] && { sleep 30; exit 0; } ;;
+        *'"method":"initialized"'*) ;;
+        *'"method":"account/read"'*)
+          case "$req" in *refreshToken*) echo "refreshToken requested" >> "$FAKE_CLI_STATE_DIR/refresh.codex" ;; esac
+          if [ "${FAKE_ACCOUNT_CODEX:-}" = none ] || [ "${FAKE_LOGIN_CODEX:-out}" != in ]; then
+            account_pending='{"id":2,"result":{"account":null,"requiresOpenaiAuth":true,"workspaceRouting":null}}'
+          else
+            account_pending='{"id":2,"result":{"account":{"type":"chatgpt","email":"user@example.com","planType":"pro"},"requiresOpenaiAuth":true,"workspaceRouting":null}}'
+          fi ;;
+        *'"method":"model/list"'*)
+          id=$(printf '%s' "$req" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+          if [ "$mode" = error ]; then
+            printf '{"id":%s,"error":{"code":-32600,"message":"model catalog unavailable"}}\n' "$id"
+          else
+            # The real server's default page (per-model effort/tier fields trimmed). Answered
+            # before the account read on purpose: responses are matched by id, not order.
+            printf '{"id":%s,"result":{"data":[{"id":"gpt-5.5","model":"gpt-5.5","displayName":"GPT-5.5","hidden":false,"isDefault":false},{"id":"gpt-6-astra","model":"gpt-6-astra","displayName":"GPT-6-Astra","hidden":false,"isDefault":true},{"id":"gpt-6-sol","model":"gpt-6-sol","displayName":"GPT-6-Sol","hidden":false,"isDefault":false},{"id":"gpt-internal","model":"gpt-internal","displayName":"Internal","hidden":true,"isDefault":false}],"nextCursor":null}}\n' "$id"
+          fi
+          [ -n "$account_pending" ] && { printf '%s\n' "$account_pending"; account_pending=""; } ;;
+      esac
+    done
+    exit 0 ;;
 esac
 echo "fake codex: unsupported args: $*" >&2
 exit 64

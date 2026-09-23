@@ -160,7 +160,15 @@ pub fn login_state(vendor: Vendor, bin: &Path, cfg: &DetectConfig) -> LoginState
         Ok(env) => env,
         Err(e) => return LoginState::unknown(e.to_string()),
     };
-    match process::run(bin, status_argv(vendor), None, &env, cfg.timeout) {
+    match process::run_vendor(
+        vendor,
+        bin,
+        status_argv(vendor),
+        None,
+        &env,
+        cfg.timeout,
+        cfg.kill_grace(vendor),
+    ) {
         Ok(out) => interpret_status(vendor, &out),
         Err(e) => LoginState::unknown(e.to_string()),
     }
