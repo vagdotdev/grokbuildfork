@@ -663,9 +663,9 @@ impl TurnStream {
 /// loop's Workshop `select!` arm (kept UI-agnostic so `workshop-adapters` never depends on the pager).
 #[derive(Debug)]
 pub enum WorkshopTurnMsg {
-    /// One line of waiting status (`Thinking…`, or the first-time download progress); replaces the
-    /// previous progress line, and the first real event clears it. Never silent while the user
-    /// waits, and never a word about what runs underneath.
+    /// The bring-up's phase for the pager's turn-status row: [`THINKING`] for the plain wait for
+    /// the model, or the first-time download progress ([`install_progress_line`]). Never a word
+    /// about what runs underneath.
     Progress(String),
     /// The OpenCode engine started (lazily, on the first turn); cache it and the session so later
     /// turns reuse the same `opencode serve` and conversation. Engine turns only.
@@ -800,53 +800,18 @@ const RECENT_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 pub const FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 /// Hard ceiling on `opencode serve` binding its port and passing its health check.
 pub const ENGINE_START_TIMEOUT: Duration = Duration::from_secs(30);
-/// The one thing the user sees while nothing has come back yet — whatever is happening behind it
-/// (installing, starting, connecting, waiting for the model). No plumbing words, ever.
+/// The bring-up's "nothing to add" progress: the turn-status row shows the pager's own wait for
+/// the model (`Waiting for response…`) — whatever happens behind it (installing, starting,
+/// connecting). No plumbing words, ever.
 pub const THINKING: &str = "Thinking\u{2026}";
-/// The waiting line shows its elapsed seconds only once the wait is long enough to feel like one.
-pub const ELAPSED_AFTER: Duration = Duration::from_secs(3);
-/// Frames of the animated mark in front of the waiting line.
-pub const WAIT_SPINNER: [char; 10] = [
-    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
-    '\u{2807}', '\u{280F}',
-];
+/// The one described step of a first run, for the turn-status row (`First-time setup, 12 MB
+/// downloaded…` with its own timer): the row's phase identity while the byte count refines it.
+pub const FIRST_TIME_SETUP: &str = "first-time setup";
 
-/// The one line a user sees while a turn has produced nothing yet: an animated mark, the phase
-/// ("Installing…", "Waiting for Big Pickle…"), the elapsed seconds after [`ELAPSED_AFTER`], and
-/// how to stop waiting. Repainted every tick by the UI so the mark moves and the seconds count.
-pub fn waiting_line(text: &str, elapsed: Duration, frame: usize) -> String {
-    let mark = WAIT_SPINNER
-        .get(frame % WAIT_SPINNER.len())
-        .copied()
-        .unwrap_or(' ');
-    let mut line = format!("{mark} {text}");
-    if elapsed >= ELAPSED_AFTER {
-        line.push_str(&format!(" \u{b7} {}s", elapsed.as_secs()));
-    }
-    line.push_str(" \u{b7} Ctrl+C to cancel");
-    line
-}
-
-/// The quiet end of a turn, under the last thing the model did: how long the whole turn took.
-pub fn done_line(elapsed: Duration) -> String {
-    let secs = elapsed.as_secs();
-    let took = if secs == 0 {
-        "<1s".to_owned()
-    } else if secs < 60 {
-        format!("{secs}s")
-    } else {
-        format!("{}m {:02}s", secs / 60, secs % 60)
-    };
-    format!("Done \u{b7} {took}")
-}
-
-/// The first-run download, once the vendor script has started writing: still `Thinking…`, with
-/// the honest byte count so a minute-long first message never looks hung.
+/// The first-run download, once the vendor script has started writing: the honest byte count so a
+/// minute-long first message never looks hung (the status row adds the spinner and the seconds).
 pub fn install_progress_line(bytes: u64) -> String {
-    format!(
-        "{THINKING} \u{b7} first-time setup, {} downloaded",
-        format_bytes(bytes)
-    )
+    format!("First-time setup, {} downloaded", format_bytes(bytes))
 }
 
 /// The one failure line a user sees when a model could not be reached or did not answer (after

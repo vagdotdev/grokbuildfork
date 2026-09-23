@@ -8,8 +8,11 @@ Install or update: `curl -fsSL https://raw.githubusercontent.com/vagdotdev/grokb
 - One product name, everywhere: **Vagdev's Workshop**. The welcome card is an invitation to type
   (`Ask anything…` placeholder), shows *Resume session* only when there is something to resume, and
   its *Release notes* row opens these notes.
-- Waiting is one calm line, `Thinking…`, whatever happens behind it: an animated mark, elapsed
-  seconds after 3 s, `Ctrl+C to cancel`, and the download progress on a first run.
+- A turn on the free models runs behind the same status row as any other turn: `Waiting for
+  response…`, `Thinking…`, `Run sudo apt install ghostty` with the command's own seconds, the turn
+  timer and `[stop]`; a running command's row pulses; the turn closes with `Worked for 2m31s`. A
+  first run shows `First-time setup, 12 MB downloaded…` on that row while OpenCode is set up. Never a
+  frozen screen, never a word about what runs underneath.
 - `/model` and `/auth` are overlays over the transcript. `/model` lists OpenCode's free models,
   then each installed coding subscription (Claude, Codex, Cursor) with its models or a `Sign in`
   row, then the API-key providers you connected; type to filter, stable order while open,

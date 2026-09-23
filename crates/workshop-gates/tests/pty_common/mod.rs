@@ -260,15 +260,19 @@ pub const PLUMBING_WORDS: [&str; 6] = [
     "Installing the",
 ];
 
-/// While the turn waits, the one line is `Thinking…` with no plumbing beside it. Polls until that
-/// line shows or `outcome` (the answer, the failure line) has already landed — a failure faster
-/// than a frame may skip the waiting line altogether.
+/// The pager's own turn-status row while nothing has come back yet: `⠧ Waiting for response… 3s …
+/// 5s [stop]` — the same row a shell turn shows, with no plumbing beside it.
+pub const WAITING_ROW: &str = "Waiting for response";
+
+/// While the turn waits, the turn-status row reads [`WAITING_ROW`] with no plumbing beside it.
+/// Polls until that row shows or `outcome` (the answer, the failure line) has already landed — a
+/// failure faster than a frame may skip the waiting row altogether.
 pub fn expect_thinking_line(j: &mut Journey, outcome: &str, secs: u64) {
     let deadline = std::time::Instant::now() + Duration::from_secs(secs);
     loop {
         let screen = j.h.screen_contents();
-        if screen.contains("Thinking") {
-            assert_no_plumbing(&j.h, "while thinking");
+        if screen.contains(WAITING_ROW) {
+            assert_no_plumbing(&j.h, "while waiting for the model");
             return;
         }
         if screen.contains(outcome) {

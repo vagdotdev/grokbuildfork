@@ -344,10 +344,10 @@ fn welcome_copy_is_one_name_and_an_invitation_to_type() {
 /// binary's own file name is the one allowed spelling.
 #[test]
 fn user_visible_text_never_names_the_engine_or_the_fallback() {
-    use std::time::Duration;
     use workshop_auth::{EngineModel, models_rows, plain_model_name};
+    use xai_grok_pager::acp::tracker::WaitingReason;
     use xai_grok_pager::app::workshop::{
-        THINKING, WorkshopConnection, done_line, failure_line, install_progress_line,
+        THINKING, WorkshopConnection, failure_line, install_progress_line,
     };
 
     fn plumbing(line: &str) -> Option<&'static str> {
@@ -394,24 +394,25 @@ fn user_visible_text_never_names_the_engine_or_the_fallback() {
     assert_clean("welcome subtitle", &workshop_brand::hero_subtitle());
     assert_clean("prompt placeholder", workshop_brand::PROMPT_PLACEHOLDER);
 
-    // The waiting line is one neutral word whatever happens behind it; the failure line names the
-    // model and the two ways out, nothing else.
+    // While a turn runs the pager's own turn-status row shows (`Waiting for response…`,
+    // `Thinking…`, `Run <command>`); the bring-up's own words are the neutral marker and the
+    // first-run download's byte count; the failure line names the model and the two ways out,
+    // nothing else.
     assert_eq!(THINKING, "Thinking\u{2026}");
-    assert!(install_progress_line(2_500_000).starts_with(THINKING));
-    assert_clean("download progress line", &install_progress_line(2_500_000));
+    assert_eq!(
+        install_progress_line(2_500_000),
+        "First-time setup, 2.5 MB downloaded"
+    );
     assert_eq!(
         failure_line("Big Pickle"),
         "Couldn't reach Big Pickle \u{2014} Enter to retry \u{b7} /model to switch"
     );
-    // The end of a turn is one dim line with how long it took.
-    assert_eq!(done_line(Duration::from_millis(400)), "Done \u{b7} <1s");
-    assert_eq!(done_line(Duration::from_secs(47)), "Done \u{b7} 47s");
-    assert_eq!(done_line(Duration::from_secs(125)), "Done \u{b7} 2m 05s");
+    assert_eq!(WaitingReason::Model.label(), "Waiting for response\u{2026}");
     for text in [
         THINKING.to_owned(),
+        WaitingReason::Model.label(),
         install_progress_line(0),
         failure_line("Big Pickle"),
-        done_line(Duration::from_secs(47)),
     ] {
         assert_clean("turn status line", &text);
         assert!(

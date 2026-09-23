@@ -573,7 +573,7 @@ fn queued_prompts_are_separate() {
     send_prompt(&mut j, "slow one");
     // The turn is under way (the engine took the prompt) before the next one is typed; a burst
     // of keys with newlines inside would read as a paste, which is not what a user does.
-    wait_for(&mut j.h, "Thinking", 30);
+    wait_for(&mut j.h, pty_common::WAITING_ROW, 30);
     send_prompt(&mut j, "two");
     wait_for(&mut j.h, "Queued (1)", 10);
     snapshot(&j.h, &j.dir, "01-queued-toast");
@@ -702,8 +702,8 @@ fn live_engine_trust_journey() {
         &mut j,
         "Create a file named hello.txt containing the word hi.",
     );
-    wait_for(&mut j.h, "Thinking", 120);
-    wait_gone(&mut j, "Thinking", 180);
+    wait_for(&mut j.h, pty_common::WAITING_ROW, 120);
+    wait_gone(&mut j, pty_common::WAITING_ROW, 180);
     j.h.update(Duration::from_millis(1500));
     snapshot(&j.h, &j.dir, "01-plan-mode-answer");
     assert!(

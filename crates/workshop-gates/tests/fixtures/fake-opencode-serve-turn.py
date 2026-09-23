@@ -3,7 +3,8 @@
 
 Serves health, a captured `/config/providers` (--providers), session create, the `/event`
 stream, and a prompt that replays a captured turn (--turn, JSON lines of events, --pace seconds
-between them so a gate can watch the turn mid-way). With --record every `prompt_async` body is
+between them so a gate can watch the turn mid-way; a line `{"sleep": N}` is not an event but a
+pause of N seconds, to hold a tool call "running"). With --record every `prompt_async` body is
 appended to that file as one JSON line, so a gate can check what reached the engine boundary
 (model, variant, agent). Started by a fake `opencode` binary's `serve` subcommand:
 `serve --hostname 127.0.0.1 --port N`.
@@ -38,6 +39,9 @@ def broadcast(ev):
 def replay():
     time.sleep(0.05)
     for ev in TURN:
+        if "sleep" in ev and "type" not in ev:
+            time.sleep(float(ev["sleep"]))
+            continue
         broadcast(ev)
         time.sleep(a.pace)
 

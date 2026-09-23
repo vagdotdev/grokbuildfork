@@ -49,9 +49,11 @@ workshop
 You land in the composer. The footer names the active model, **Big Pickle**: OpenCode's free
 default, no sign-in, no key. Type a sentence and press `Enter`.
 
-While the first answer is on its way you see one line, `Thinking…`, with the elapsed seconds and
-`Ctrl+C to cancel`. The first message also sets up OpenCode's `opencode` CLI on your machine (about
-a minute, the download progress is shown on that same line); every later message answers within
+While a message is being worked on, the status row above the composer shows what is happening —
+`Waiting for response…`, `Thinking…`, `Run sudo apt install ghostty` with that command's own seconds
+— plus the turn's total time and `[stop]` (or `Ctrl+C`) to cancel; the turn closes with `Worked for
+2m31s`. The first message also sets up OpenCode's `opencode` CLI on your machine (about a minute;
+the row shows `First-time setup, 12 MB downloaded…` as it goes); every later message answers within
 seconds. Nothing is downloaded until you send that first message. If the free model cannot be
 reached, Workshop quietly answers through another free model and the footer names the model that
 answered; only if that fails too do you see `Couldn't reach Big Pickle — Enter to retry · /model to
