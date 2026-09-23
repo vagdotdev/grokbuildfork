@@ -5,8 +5,9 @@
 //!   message is answered silently through the live keyless pool (the fallback the user never sees
 //!   named) → a file-write tool call → the file exists on disk; the composer names the answering
 //!   model only.
-//! * `WORKSHOP_LIVE_OPENCODE=1` — P2b: cold start lands on "Big Pickle" (type-and-go, no picker)
-//!   → the first message installs/starts `opencode serve` → a tool call → the file exists on disk.
+//! * `WORKSHOP_LIVE_OPENCODE=1` — P2b: cold start lands on "Big Pickle" (type-and-go, no picker;
+//!   the launch installs/starts `opencode serve` in the background) → the first message → a tool
+//!   call → the file exists on disk.
 //!
 //! Both need `WORKSHOP_BIN` (the built `workshop` binary) and `--include-ignored`. When `strace` is
 //! on `PATH` the TUI runs under `strace -f -e trace=network`, so the evidence directory also holds
@@ -17,9 +18,12 @@
 //! Evidence (text + HTML screenshots, strace) lands in `WORKSHOP_PTY_EVIDENCE_DIR`
 //! (default `target/pty-evidence/live-<journey>`).
 
+mod pty_common;
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use pty_common::install_fake_opencode_into;
 use xai_grok_pager_pty_harness::PtyHarness;
 
 const FILE_CONTENT: &str = "hello from workshop";
@@ -366,7 +370,8 @@ fn opencode_big_pickle_turn_with_tool_call() {
     let Some(bin) = bin_from_env() else { return };
     let mut j = spawn("opencode", &bin, &[], None);
     // Type-and-go: the first run lands in the composer with the engine default already active;
-    // nothing is picked and `opencode` is installed by the first message below.
+    // nothing is picked, and `opencode` is being installed in the background while the first
+    // message below is typed (the message waits for it if it is not up yet).
     wait_for(&mut j.h, FIRST_RUN_LABEL, 45);
     j.h.update(Duration::from_millis(1000));
     snapshot(&j.h, &j.dir, "02-home-connected");
@@ -559,6 +564,9 @@ fn install_fakes(logged_in: bool) -> Fakes {
     for v in [&FAKE_CLAUDE, &FAKE_CODEX, &FAKE_CURSOR] {
         install_fake(&bin, &state, v, logged_in);
     }
+    // The engine is brought up at launch; without a fake `opencode` on PATH these hermetic rails
+    // gates would run the real vendor installer in the background.
+    install_fake_opencode_into(&bin, "crash");
     Fakes {
         _dir: dir,
         bin,

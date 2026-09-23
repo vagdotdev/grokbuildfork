@@ -49,13 +49,14 @@ workshop
 You land in the composer. The footer names the active model, **Big Pickle**: OpenCode's free
 default, no sign-in, no key. Type a sentence and press `Enter`.
 
-While the first answer is on its way you see one line, `Thinking…`, with the elapsed seconds and
-`Ctrl+C to cancel`. The first message also sets up OpenCode's `opencode` CLI on your machine (about
-a minute, the download progress is shown on that same line); every later message answers within
-seconds. Nothing is downloaded until you send that first message. If the free model cannot be
-reached, Workshop quietly answers through another free model and the footer names the model that
-answered; only if that fails too do you see `Couldn't reach Big Pickle — Enter to retry · /model to
-switch`.
+OpenCode's official `opencode` CLI is installed on your first launch and started in the background
+every time Workshop opens, so it is usually ready by the time you press `Enter`; a message sent
+before it is ready simply waits for it. The install (about a minute on a slow connection) reaches
+only opencode.ai, the vendor's installer; every later message answers within seconds. While an
+answer is on its way you see one line, `Thinking…`, with the elapsed seconds and `Ctrl+C to cancel`.
+If the free model cannot be reached, Workshop quietly answers through another free model and the
+footer names the model that answered; only if that fails too do you see `Couldn't reach Big Pickle
+— Enter to retry · /model to switch`.
 
 Two commands are all you need to know on day one:
 
@@ -112,8 +113,11 @@ Prefix with `!` to search hidden files:
 
 ### Permissions
 
-`Shift+Tab` cycles the session mode: **Normal** asks before risky commands and edits, **Plan**
-explores read-only and presents a plan first, **Always-approve** skips the prompts. You can also:
+Workshop starts in **Always-approve**: commands and edits run without prompts, and the composer
+border says so (`Big Pickle · always-approve`). `Shift+Tab` cycles the session mode: **Normal**
+asks before risky commands and edits, **Plan** explores read-only and presents a plan first,
+**Always-approve** skips the prompts. The mode you pick is remembered for later launches. You can
+also:
 
 - Press `Ctrl+O` to toggle always-approve mode
 - Use the `--always-approve` flag at launch: `workshop --always-approve`

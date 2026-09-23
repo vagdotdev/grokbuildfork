@@ -7,9 +7,10 @@
 # HTTP(S)_PROXY pointed at a logging proxy that records every hostname and refuses to forward, under
 # `strace -f -e trace=network` so DNS query payloads and connect() targets are captured too.
 # Scenarios: `--version`, `login` (text picker), headless prompt without a connection (must fail
-# closed), the TUI first run with `/auth` (hermetic: loopback only), and `/model` on a first run
-# that has one API key configured (the one user action that fetches: exactly that provider's host,
-# nothing else — a fresh home with no key lists nothing hosted and fetches nothing). Fails if any
+# closed), the TUI first run with `/auth` (the opencode install starts at launch: `opencode.ai`,
+# the vendor's installer, is the one host asked for — refused, off screen), and `/model` on a first
+# run that has one API key configured (the one user action that fetches: exactly that provider's
+# host on top — a fresh home with no key lists nothing hosted and fetches nothing). Fails if any
 # recorded hostname matches *.x.ai, *.grok.com, api.mixpanel.com or storage.googleapis.com.
 set -euo pipefail
 BIN="${1:?path to workshop binary}"
@@ -85,8 +86,11 @@ proxy_hosts headless || fail=1
 
 # TUI first run: the composer comes up with the OpenCode default active (no picker); `/auth` opens
 # the Subscriptions overlay (rails + API-key providers + optional xAI card), Tab switches to the
-# Models view and back, Esc closes, quit. The whole run makes no network request: the model lists
-# are the cached/seed ones (a live refresh is only ever asked for by `/model`, below).
+# Models view and back, Esc closes, quit. The one network request of the whole run is the engine
+# install the launch starts in the background (the vendor's installer at opencode.ai, refused by
+# the proxy, nothing drawn): the model lists are the cached/seed ones (a live refresh is only ever
+# asked for by `/model`, below).
+first_run_started=$(date +%s)
 observed tui-first-run -- "${COMMON[@]}" python3 "$HERE/no-egress/pty_drive.py" --bin "$BIN" --out "$OUT/tui-first-run/raw.log" --cwd "$CWD_DIR" \
   --script "wait:7000,text:/auth,wait:500,key:Enter,wait:2500,key:Tab,wait:1500,key:Tab,wait:800,key:Esc,wait:800,key:C-c,wait:800,key:C-c,wait:500" || fail=1
 python3 - "$OUT/tui-first-run/raw.log" <<'PY' || fail=1
@@ -119,18 +123,37 @@ if not any("Workshop" in t for t in titles) or any("grok" in t.lower() for t in 
 print("tui screen check:", "ok" if ok else "FAILED")
 sys.exit(0 if ok else 1)
 PY
-# Type-and-go must not reach the network before the first message.
-proxy_hosts tui-first-run || fail=1
-if [ -d "$HOME_DIR/.workshop/tools" ]; then
-  echo "VIOLATION: TUI first run installed opencode before the first message" >&2; fail=1
+# Type-and-go: the launch brings the engine up in the background, so the vendor's installer is the
+# one host asked for — at once (inside the 7 s before `/auth` was typed), never a catalog or xAI host.
+proxy_hosts tui-first-run opencode.ai || fail=1
+python3 - "$OUT/tui-first-run/proxy.log" "$first_run_started" <<'PY' || fail=1
+import re,sys
+log,started=sys.argv[1],int(sys.argv[2])
+day=started-(started%86400)
+at_launch=False
+for line in open(log):
+    parts=line.split()
+    if len(parts)<3 or parts[1]=="ERROR": continue
+    host=re.sub(r':\d+$','',parts[2].split(' (')[0]).strip('[]')
+    if host!="opencode.ai": continue
+    h,m,s=(int(x) for x in parts[0].split(':'))
+    at=day+h*3600+m*60+s
+    if at<started-1: at+=86400   # the run crossed midnight
+    if at<started+7: at_launch=True
+if not at_launch:
+    print("VIOLATION: the opencode install did not start at launch (no opencode.ai request in the first 7 s)"); sys.exit(1)
+print("tui first-run timing check: ok (opencode install started at launch)")
+PY
+if [ -e "$HOME_DIR/.workshop/tools/opencode/.opencode/bin/opencode" ]; then
+  echo "VIOLATION: the refused launch install must not leave a binary behind" >&2; fail=1
 fi
 
 # TUI `/model` on a fresh first run with one API key configured (NVIDIA's environment variable):
-# the one action that fetches. Nothing is asked for during the first 7 s on the composer; `/model`
-# then lists that provider and asks exactly its host (the proxy refuses, so the overlay keeps the
-# dated seed) — never Kilo, OpenRouter or an xAI host; opencode is neither installed nor started.
-# Typing `nemotron` filters to that provider's rows so the selected row's detail line shows the
-# list's date.
+# the one user action that fetches. Only the launch's opencode install (opencode.ai, refused) is
+# asked for during the first 7 s on the composer; `/model` then lists that provider and asks
+# exactly its host (the proxy refuses, so the overlay keeps the dated seed) — never Kilo,
+# OpenRouter or an xAI host; no opencode binary lands and none is started. Typing `nemotron`
+# filters to that provider's rows so the selected row's detail line shows the list's date.
 MODEL_HOME="$OUT/home-model"; rm -rf "$MODEL_HOME"; mkdir -p "$MODEL_HOME"
 MODEL_ENV=(env "HOME=$MODEL_HOME" "WORKSHOP_HOME=$MODEL_HOME/.workshop" TERM=xterm-256color NO_COLOR=1 NVIDIA_API_KEY=smoke-test-key-never-sent)
 model_started=$(date +%s)
@@ -143,8 +166,9 @@ txt=re.sub(r'\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b[=>]
 flat=''.join(txt.split())
 ok=True
 # The proxy refuses, so the live list never replaces the dated seed (`cached list from …`); the
-# exact ` · refresh failed` detail note is async and row-selection dependent — the hermetic
-# pty_live_catalogs gate asserts it. Here the point is the seed stands and egress stays put.
+# ` · refresh failed` detail note is repainted cell by cell (ratatui) and row-selection dependent,
+# so the hermetic pty_live_catalogs gate asserts it. Here the point is the seed stands and egress
+# stays put.
 for needle in ["Big Pickle","Tab: Subscriptions","OpenCode","NVIDIA","cached list from 2026-09-21"]:
     if ''.join(needle.split()) not in flat:
         print("VIOLATION: TUI /model did not show %r" % needle); ok=False
@@ -155,8 +179,9 @@ for bad in ["Login with grok.com","auth.x.ai/.well-known","Login with Grok","acc
 print("tui /model screen check:", "ok" if ok else "FAILED")
 sys.exit(0 if ok else 1)
 PY
-proxy_hosts tui-model integrate.api.nvidia.com || fail=1
-# Every fetch happened after `/model` was typed (7 s into the run), none on the bare composer.
+proxy_hosts tui-model opencode.ai integrate.api.nvidia.com || fail=1
+# Every catalog fetch happened after `/model` was typed (7 s into the run), none on the bare
+# composer; the launch-time opencode install (opencode.ai) is the one request allowed before it.
 python3 - "$OUT/tui-model/proxy.log" "$model_started" <<'PY' || fail=1
 import re,sys,time
 log,started=sys.argv[1],int(sys.argv[2])
@@ -166,7 +191,7 @@ for line in open(log):
     parts=line.split()
     if len(parts)<3 or parts[1]=="ERROR": continue
     host=re.sub(r':\d+$','',parts[2].split(' (')[0]).strip('[]')
-    if host in ("127.0.0.1","localhost","::1"): continue
+    if host in ("127.0.0.1","localhost","::1","opencode.ai"): continue
     h,m,s=(int(x) for x in parts[0].split(':'))
     at=day+h*3600+m*60+s
     if at<started-1: at+=86400   # the run crossed midnight
@@ -175,8 +200,8 @@ if early:
     print("VIOLATION: a catalog fetch happened before the user typed /model:"); print("\n".join(early)); sys.exit(1)
 print("tui /model timing check: ok (fetches only after /model)")
 PY
-if [ -d "$MODEL_HOME/.workshop/tools" ]; then
-  echo "VIOLATION: /model installed opencode" >&2; fail=1
+if [ -e "$MODEL_HOME/.workshop/tools/opencode/.opencode/bin/opencode" ]; then
+  echo "VIOLATION: an opencode binary landed although the installer was refused" >&2; fail=1
 fi
 
 if [ "$fail" = 0 ]; then echo "no-egress-smoke: PASS (evidence in $OUT)"; else echo "no-egress-smoke: FAIL (evidence in $OUT)" >&2; exit 1; fi

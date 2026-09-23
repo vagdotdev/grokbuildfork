@@ -80,8 +80,10 @@ workshop doctor           # terminal, clipboard, voice and free-model checks wit
 
 ## Privacy
 
-- Nothing is fetched on launch. The first message sets up and starts OpenCode's `opencode` CLI;
-  `/model` refreshes the model lists of the providers you connected when you open it.
+- On launch, only OpenCode's `opencode` CLI is brought up: a first run fetches the vendor's
+  installer from opencode.ai and starts it on this machine; later launches just start it. Nothing
+  is sent to a model before your first message; `/model` refreshes the model lists of the providers
+  you connected when you open it.
 - Free pools are shared services: prompts sent through them may be logged by the operator. The
   row's detail line says so.
 - Telemetry is off and no analytics token is baked in. Auto-update is off unless you opt in with

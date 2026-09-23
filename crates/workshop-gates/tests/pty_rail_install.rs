@@ -86,7 +86,9 @@ fn a_missing_cli_installs_and_signs_in_on_one_keypress() {
     std::fs::create_dir_all(&state).unwrap();
     let installer = fake_installer(fakes.path(), &bin_dir, &state);
     let installer_s = installer.to_string_lossy().to_string();
-    // `bin_dir` is on PATH from the start but empty: Claude Code is "not installed".
+    // `bin_dir` is on PATH from the start without a `claude`: Claude Code is "not installed". It
+    // does hold the fake `opencode`, so the launch-time engine warm-up stays hermetic.
+    install_fake_opencode_into(&bin_dir, "silent");
     let mut j = spawn(
         "rail-install",
         &bin,

@@ -1,8 +1,9 @@
 //! PTY smoke of the built `workshop` binary: a first run lands in the composer with the OpenCode
-//! default model active (no picker, no `opencode` install until the first message), `/model` opens
-//! the compact Models overlay, `/auth` the Subscriptions overlay with the Claude / Codex / Cursor
-//! rails — and nothing ever shows a `grok.com` login or an `auth.x.ai` URL. The terminal title is
-//! `Workshop`, never `grok`. Also captures evidence (asciinema cast, text and HTML screenshots) into
+//! default model active (no picker; the engine install starts in the background, off screen —
+//! here against a closed proxy, so it fails at once and hermetically), `/model` opens the compact
+//! Models overlay, `/auth` the Subscriptions overlay with the Claude / Codex / Cursor rails — and
+//! nothing ever shows a `grok.com` login or an `auth.x.ai` URL. The terminal title is `Workshop`,
+//! never `grok`. Also captures evidence (asciinema cast, text and HTML screenshots) into
 //! `WORKSHOP_PTY_EVIDENCE_DIR` (default `target/pty-evidence`).
 //!
 //! Opt-in: set `WORKSHOP_BIN` to the built binary and run with `--include-ignored`.
@@ -127,6 +128,13 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
         ("TERM", "xterm-256color"),
         ("NO_COLOR", "1"),
         ("GROK_DISABLE_AUTOUPDATER", "1"),
+        // The launch-time engine install (`curl https://opencode.ai/install`) must fail fast and
+        // offline here: a closed proxy port.
+        ("HTTP_PROXY", "http://127.0.0.1:9"),
+        ("HTTPS_PROXY", "http://127.0.0.1:9"),
+        ("ALL_PROXY", "http://127.0.0.1:9"),
+        ("http_proxy", "http://127.0.0.1:9"),
+        ("https_proxy", "http://127.0.0.1:9"),
     ];
     let mut h = PtyHarness::new_inherited_env(&bin, 40, 120, &[], &env, Some(cwd.path()))
         .expect("spawn workshop in pty");
@@ -155,9 +163,22 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
         conn.contains("\"engine\"") && conn.contains("opencode/big-pickle"),
         "engine default is the active connection: {conn}"
     );
+    // The engine is brought up in the background from launch (a first run installs it first);
+    // the attempt is on record, and nothing about it is on screen.
+    let engine_log = workshop_home.join("logs").join("opencode-engine.log");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !engine_log.is_file() && std::time::Instant::now() < deadline {
+        h.update(Duration::from_millis(200));
+    }
+    let log = std::fs::read_to_string(&engine_log).expect("the engine bring-up starts at launch");
     assert!(
-        !workshop_home.join("tools").exists(),
-        "opencode must not be installed before the first message"
+        log.contains("install: running the official OpenCode installer"),
+        "a first run installs the engine at launch:\n{log}"
+    );
+    let screen = h.screen_contents();
+    assert!(
+        !screen.contains("Installing") && !screen.contains("Starting the OpenCode engine"),
+        "the launch bring-up never shows on the composer:\n{screen}"
     );
 
     // 2. `/model`: the compact Models overlay, active row highlighted, Esc closes.
@@ -270,8 +291,10 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
         "terminal title must never say grok, got {titles:?}"
     );
     assert!(
-        !workshop_home.join("tools").exists(),
-        "opencode is still not installed: nothing contacted the network"
+        !workshop_home
+            .join("tools/opencode/.opencode/bin/opencode")
+            .exists(),
+        "offline, the launch install could not complete: no binary landed"
     );
 
     h.write_cast(&dir.join("workshop-first-run.cast"))

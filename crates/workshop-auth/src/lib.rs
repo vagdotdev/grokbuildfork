@@ -1214,7 +1214,7 @@ fn row_detail_lines(row: &ModelsRow, xai_armed: bool, list_note: Option<String>)
             });
             // One line at the overlay's width: the detail area is three rows tall.
             lines.push(
-                "Runs here through the official opencode CLI; prompts go to opencode.ai and may be logged."
+                "Via the official opencode CLI, started at launch; prompts go to opencode.ai and may be logged."
                     .into(),
             );
             if let Some(note) = &list_note {
@@ -1222,7 +1222,7 @@ fn row_detail_lines(row: &ModelsRow, xai_armed: bool, list_note: Option<String>)
                     true => format!("Model list {note} from {ENGINE_CATALOG_SOURCE}."),
                     false => {
                         format!(
-                            "Model list: {note}; the live list arrives after your first message."
+                            "Model list: {note}; the live list arrives once OpenCode has started."
                         )
                     }
                 });
@@ -1387,7 +1387,7 @@ mod tests {
         assert_eq!(lines.len(), 3, "{lines:?}");
         assert!(
             lines[2].contains("cached list from 2026-09-21")
-                && lines[2].contains("live list arrives after your first message"),
+                && lines[2].contains("live list arrives once OpenCode has started"),
             "{lines:?}"
         );
         assert!(

@@ -1,17 +1,20 @@
 //! Live model lists through the real TUI (hermetic, PTY-driven; opt-in via `WORKSHOP_BIN`):
 //!
-//! * `catalogs_are_fetched_only_after_the_user_acts` — the zero-egress gate. Every request that
+//! * `catalogs_are_fetched_only_after_the_user_acts` — the egress gate. Every request that
 //!   honours `HTTP(S)_PROXY` lands on a logging proxy inside the test that refuses to forward.
-//!   A first run, `/auth` (and its Models view via Tab), `workshop login` and — on a fresh home,
-//!   where no API-key provider is configured and so none is listed — `/model` ask the proxy for
-//!   nothing. Once a key is configured (`NVIDIA_API_KEY`), that provider is listed and `/model`
-//!   (and a returning launch, in the background) asks for exactly its host, never an xAI host;
-//!   with the proxy refusing, its list is the dated seed with `refresh failed`. Kilo Gateway is
-//!   never listed and never fetched.
+//!   `workshop login` asks the proxy for nothing. A first run asks for exactly one host at launch
+//!   — `opencode.ai`, the vendor's installer for the `opencode` CLI that is brought up in the
+//!   background — and `/auth` (and its Models view via Tab) add nothing; on a fresh home, where
+//!   no API-key provider is configured and so none is listed, `/model` adds nothing either. Once
+//!   a key is configured (`NVIDIA_API_KEY`), that provider is listed and `/model` (and a
+//!   returning launch, in the background) asks for exactly its host, never an xAI host; with the
+//!   proxy refusing, its list is the dated seed with `refresh failed`. Kilo Gateway is never
+//!   listed and never fetched.
 //! * `model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up` — a fake `opencode`
-//!   whose `serve` is a loopback HTTP/SSE stand-in (the adapter crate's captured fixtures). The
-//!   first message starts it; `/model` then lists every free model the engine reports (8 in the
-//!   fixture, not the one pinned seed), dated `fetched just now`, and the cache under
+//!   whose `serve` is a loopback HTTP/SSE stand-in (the adapter crate's captured fixtures). With
+//!   no engine to start, `/model` shows the one pinned seed row, dated; with the fake on `PATH`
+//!   the engine starts at launch and `/model` lists every free model it reports (8 in the
+//!   fixture), dated `fetched just now`, before and after the first turn; the cache under
 //!   `$WORKSHOP_HOME/catalog-cache/` holds the same list for the next launch.
 //!
 //! Evidence (text + HTML screenshots) lands in `WORKSHOP_PTY_EVIDENCE_DIR`
@@ -284,7 +287,8 @@ fn spawn(bin: &Path, home: &Path, extra_env: &[(&str, String)], extra_path: Opti
     Run { h, _cwd: cwd }
 }
 
-/// Zero egress before the user acts; `/model` reaches only the hosts of the lists it shows.
+/// The launch-time `opencode` install is the one request before the user acts; `/model` reaches
+/// only the hosts of the lists it shows (none on a fresh home).
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (logging proxy, no network); run with --include-ignored"]
 fn catalogs_are_fetched_only_after_the_user_acts() {
@@ -316,18 +320,31 @@ fn catalogs_are_fetched_only_after_the_user_acts() {
         proxy.remote_hosts()
     );
 
-    // 1. First run: the composer, no fetch — not after 3 s either.
+    // 1. First run: the composer, and — with nothing typed — the engine bring-up: the vendor's
+    //    installer (`opencode.ai`, refused here) is the one host asked for; no catalog, no xAI
+    //    host, not after 3 s either, and nothing about it on screen.
+    let installer_only = BTreeSet::from(["opencode.ai".to_owned()]);
     let mut run = spawn(&bin, home.path(), &proxy.env(), None);
     wait_for(&mut run.h, FIRST_RUN_LABEL, 30);
+    let hosts = proxy.wait_for_hosts(1, 60);
+    assert_eq!(
+        hosts, installer_only,
+        "a first run asks for the engine installer at launch and nothing else"
+    );
     run.h.update(Duration::from_millis(3000));
     snapshot(&run.h, &dir, "01-first-run-composer");
+    assert_eq!(
+        proxy.remote_hosts(),
+        installer_only,
+        "first run must not fetch catalogs"
+    );
+    let screen = run.h.screen_contents();
     assert!(
-        proxy.remote_hosts().is_empty(),
-        "first run must not fetch catalogs, asked for {:?}",
-        proxy.remote_hosts()
+        !screen.contains("Installing") && !screen.contains("Starting the OpenCode engine"),
+        "the launch bring-up never shows on the composer:\n{screen}"
     );
 
-    // 2. `/auth`, and its Models view via Tab: still nothing.
+    // 2. `/auth`, and its Models view via Tab: still nothing more.
     slash(&mut run.h, "/auth");
     wait_for(&mut run.h, "Tab: Models", 10);
     run.h.inject_keys(b"\t").unwrap();
@@ -335,10 +352,10 @@ fn catalogs_are_fetched_only_after_the_user_acts() {
     wait_for(&mut run.h, "OpenCode", 10);
     run.h.update(Duration::from_millis(2000));
     snapshot(&run.h, &dir, "02-auth-then-tab-models-no-fetch");
-    assert!(
-        proxy.remote_hosts().is_empty(),
-        "/auth (even on its Models view) must not fetch, asked for {:?}",
-        proxy.remote_hosts()
+    assert_eq!(
+        proxy.remote_hosts(),
+        installer_only,
+        "/auth (even on its Models view) must not fetch"
     );
     run.h.inject_keys(b"\x1b").unwrap();
     wait_gone(&mut run.h, "Tab: Subscriptions", 5);
@@ -352,15 +369,15 @@ fn catalogs_are_fetched_only_after_the_user_acts() {
     wait_gone(&mut run.h, "refreshing lists", 15);
     run.h.update(Duration::from_millis(2000));
     let screen = run.h.screen_contents();
-    assert!(
-        proxy.remote_hosts().is_empty(),
-        "/model on a fresh home has no hosted list to fetch, asked for {:?}",
-        proxy.remote_hosts()
+    assert_eq!(
+        proxy.remote_hosts(),
+        installer_only,
+        "/model on a fresh home has no hosted list to fetch (the launch's installer request is the only one)"
     );
     assert!(
         selected_line(&run.h).is_some_and(|l| l.contains("Big Pickle"))
             && screen.contains(SEED_NOTE)
-            && screen.contains("live list arrives after your first message"),
+            && screen.contains("live list arrives once OpenCode has started"),
         "the OpenCode seed row is highlighted and dated:\n{screen}"
     );
     assert!(
@@ -371,38 +388,56 @@ fn catalogs_are_fetched_only_after_the_user_acts() {
     );
     snapshot(&run.h, &dir, "03-model-fresh-home-no-fetch");
     assert!(
-        !workshop_home.join("tools").exists(),
-        "/model never installs or starts opencode"
+        !workshop_home
+            .join("tools/opencode/.opencode/bin/opencode")
+            .exists(),
+        "the refused launch install left no binary behind, and /model never installs one"
     );
     quit(run.h);
 
-    // 4. A returning launch (a connection is active) refreshes the lists it shows in the
-    //    background — on this home no API key is configured, so still nothing.
+    // 4. A returning launch (a connection is active) starts `opencode` again and refreshes the
+    //    lists it shows in the background — on this home no API key is configured, so the
+    //    installer host is still the only one.
     proxy.targets.lock().unwrap().clear();
     let mut run = spawn(&bin, home.path(), &proxy.env(), None);
     wait_for(&mut run.h, FIRST_RUN_LABEL, 30);
     run.h.update(Duration::from_millis(3000));
     assert!(
-        proxy.remote_hosts().is_empty(),
-        "a returning launch with no configured API key has nothing to fetch, asked for {:?}",
+        proxy.remote_hosts().is_subset(&installer_only),
+        "a returning launch with no configured API key has no list to fetch, asked for {:?}",
         proxy.remote_hosts()
     );
     quit(run.h);
 
     // 5. With an API key configured (NVIDIA's environment variable here), that provider is listed
-    //    on the Models view and its list is refreshed — exactly its host, nothing else, never an
-    //    xAI host: in the background on this returning launch and again by `/model`. The proxy
-    //    refuses, so its rows stay the dated seed and say the refresh failed.
+    //    on the Models view and its list is refreshed — its host (plus the launch's installer
+    //    request), nothing else, never an xAI host: in the background on this returning launch
+    //    and again by `/model`. The proxy refuses, so its rows stay the dated seed and say the
+    //    refresh failed.
     proxy.targets.lock().unwrap().clear();
     let mut env = proxy.env();
     env.push(("NVIDIA_API_KEY", "test-key-never-sent".to_owned()));
     let mut run = spawn(&bin, home.path(), &env, None);
     wait_for(&mut run.h, FIRST_RUN_LABEL, 30);
-    let hosts = proxy.wait_for_hosts(1, 20);
-    assert_eq!(
-        hosts,
-        BTreeSet::from(["integrate.api.nvidia.com".to_owned()]),
-        "a returning launch refreshes the configured provider's list, and only that"
+    let nvidia = "integrate.api.nvidia.com".to_owned();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !proxy.remote_hosts().contains(&nvidia) {
+        assert!(
+            Instant::now() < deadline,
+            "a returning launch refreshes the configured provider's list, asked for {:?}",
+            proxy.remote_hosts()
+        );
+        run.h.update(Duration::from_millis(200));
+    }
+    let allowed: BTreeSet<String> = installer_only
+        .iter()
+        .cloned()
+        .chain([nvidia.clone()])
+        .collect();
+    assert!(
+        proxy.remote_hosts().is_subset(&allowed),
+        "a returning launch refreshes the configured provider's list, and only that: {:?}",
+        proxy.remote_hosts()
     );
     slash(&mut run.h, "/model");
     wait_for(&mut run.h, "Tab: Subscriptions", 10);
@@ -420,10 +455,10 @@ fn catalogs_are_fetched_only_after_the_user_acts() {
         !screen.contains("Kilo") && !screen.contains("OpenRouter"),
         "only the configured provider joins the Models view:\n{screen}"
     );
-    assert_eq!(
-        proxy.remote_hosts(),
-        BTreeSet::from(["integrate.api.nvidia.com".to_owned()]),
-        "/model fetches the listed provider's host and nothing else"
+    assert!(
+        proxy.remote_hosts().is_subset(&allowed) && proxy.remote_hosts().contains(&nvidia),
+        "/model fetches the listed provider's host and nothing else: {:?}",
+        proxy.remote_hosts()
     );
     let all = proxy.targets.lock().unwrap().clone();
     assert!(
@@ -433,8 +468,10 @@ fn catalogs_are_fetched_only_after_the_user_acts() {
     );
     snapshot(&run.h, &dir, "04-model-with-key-after-refused-refresh");
     assert!(
-        !workshop_home.join("tools").exists(),
-        "/model never installs or starts opencode"
+        !workshop_home
+            .join("tools/opencode/.opencode/bin/opencode")
+            .exists(),
+        "the refused launch install left no binary behind, and /model never installs one"
     );
     quit(run.h);
     eprintln!("evidence: {}", dir.display());
@@ -499,10 +536,10 @@ fn model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up() {
         .into_iter()
         .map(|k| (k, "http://127.0.0.1:9".to_owned()))
         .collect();
-    let mut run = spawn(&bin, home.path(), &offline, Some(&fake_bin));
+    // Before: no engine to start (none on PATH; the launch install is refused by the closed
+    // proxy), so `/model` shows the one pinned engine row, dated.
+    let mut run = spawn(&bin, home.path(), &offline, None);
     wait_for(&mut run.h, FIRST_RUN_LABEL, 30);
-
-    // Before: the engine has never run, so `/model` shows the one pinned engine row, dated.
     slash(&mut run.h, "/model");
     wait_for(&mut run.h, "Tab: Subscriptions", 10);
     wait_for(&mut run.h, "OpenCode", 15);
@@ -515,18 +552,21 @@ fn model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up() {
     snapshot(&run.h, &dir, "10-model-before-engine-seed-only");
     run.h.inject_keys(b"\x1b").unwrap();
     wait_gone(&mut run.h, "Tab: Subscriptions", 5);
+    quit(run.h);
 
-    // The first message starts the (fake) engine; its turn replays the captured fixture.
-    run.h.inject_keys(b"hello").unwrap();
-    run.h.update(Duration::from_millis(300));
-    run.h.inject_keys(b"\r").unwrap();
-    wait_for(&mut run.h, "Created hello.txt with the exact line.", 90);
-    snapshot(&run.h, &dir, "11-first-turn-through-fake-engine");
+    // With the fake on PATH the engine starts at launch — nothing typed — and its free list is
+    // cached at once, so `/model` lists it before the first message.
+    let mut run = spawn(&bin, home.path(), &offline, Some(&fake_bin));
+    wait_for(&mut run.h, FIRST_RUN_LABEL, 30);
     let cache = workshop_home
         .join("catalog-cache")
         .join("opencode-engine.json");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !cache.is_file() && Instant::now() < deadline {
+        run.h.update(Duration::from_millis(200));
+    }
     let cached: Vec<serde_json::Value> = serde_json::from_str(
-        &std::fs::read_to_string(&cache).expect("engine start caches the live list"),
+        &std::fs::read_to_string(&cache).expect("the launch start caches the live list"),
     )
     .unwrap();
     assert_eq!(
@@ -536,8 +576,33 @@ fn model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up() {
     );
     assert_eq!(cached[0]["model_ref"], "opencode/big-pickle");
     assert_eq!(cached[0]["is_default"], true);
+    slash(&mut run.h, "/model");
+    wait_for(&mut run.h, "Tab: Subscriptions", 10);
+    wait_for(&mut run.h, "Nemotron 3 Ultra Free", 10);
+    wait_gone(&mut run.h, "loading\u{2026}", 20);
+    wait_gone(&mut run.h, "refreshing lists", 15);
+    // Models only (a model with effort levels adds one `Name (level)` row per level).
+    let at_launch = overlay_rows_for(&run.h, "OpenCode");
+    let at_launch_models = at_launch.iter().filter(|r| !r.contains(" (")).count();
+    assert_eq!(
+        at_launch_models, 8,
+        "the engine started at launch: its live list is there before the first message:\n{at_launch:#?}"
+    );
+    move_selection_to(&mut run.h, "Big Pickle");
+    wait_for(&mut run.h, "Model list fetched", 5);
+    snapshot(&run.h, &dir, "11-model-at-launch-live-list");
+    run.h.inject_keys(b"\x1b").unwrap();
+    wait_gone(&mut run.h, "Tab: Subscriptions", 5);
 
-    // After: `/model` lists every free model the engine reports, dated from the fetch.
+    // The first message goes through the engine that started at launch; its turn replays the
+    // captured fixture.
+    run.h.inject_keys(b"hello").unwrap();
+    run.h.update(Duration::from_millis(300));
+    run.h.inject_keys(b"\r").unwrap();
+    wait_for(&mut run.h, "Created hello.txt with the exact line.", 90);
+    snapshot(&run.h, &dir, "12-first-turn-through-fake-engine");
+
+    // After: `/model` still lists every free model the engine reports, dated from the fetch.
     slash(&mut run.h, "/model");
     wait_for(&mut run.h, "Tab: Subscriptions", 10);
     wait_for(&mut run.h, "Nemotron 3 Ultra Free", 10);
@@ -592,7 +657,7 @@ fn model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up() {
         selected_line(&run.h).is_some_and(|l| l.contains("active")),
         "the active default is still highlighted:\n{screen}"
     );
-    snapshot(&run.h, &dir, "12-model-after-engine-live-list");
+    snapshot(&run.h, &dir, "13-model-after-engine-live-list");
     quit(run.h);
 
     // The next launch shows the cached live list at once (`fetched <age>`), before any turn.
@@ -608,7 +673,7 @@ fn model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up() {
     );
     move_selection_to(&mut run.h, "Big Pickle");
     wait_for(&mut run.h, "Model list fetched", 5);
-    snapshot(&run.h, &dir, "13-model-next-launch-cached-live-list");
+    snapshot(&run.h, &dir, "14-model-next-launch-cached-live-list");
     quit(run.h);
     eprintln!("evidence: {}", dir.display());
 }

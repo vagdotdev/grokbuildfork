@@ -122,10 +122,11 @@ fn model_picker_filters_as_you_type_and_swallows_stray_keys() {
         screen.contains("pickle"),
         "the filter text is shown:\n{screen}"
     );
-    // Model rows sit inside the box (they end with its border); the composer footer does not.
+    // Model rows sit inside the box (they end with its border) and carry the group's badge; the
+    // detail lines and the composer footer do not.
     let rows: Vec<&str> = screen
         .lines()
-        .filter(|l| l.trim_end().ends_with('\u{2502}') && l.contains("OpenCode "))
+        .filter(|l| l.trim_end().ends_with('\u{2502}') && l.contains("OpenCode free"))
         .collect();
     assert!(
         !rows.is_empty()
