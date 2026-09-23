@@ -19,7 +19,7 @@ pub use config::{
     NotificationCondition, NotificationConfig, NotificationEventKind, NotificationHook,
     NotificationMethod, TitleConfig, TitleItem,
 };
-pub use title::TitleState;
+pub use title::{TITLE_RESTORE, TITLE_SAVE, TitleState};
 
 pub struct NotificationEvent {
     pub kind: NotificationEventKind,
@@ -630,9 +630,10 @@ mod tests {
         let payload = rx
             .try_recv()
             .expect("shutdown escapes must ride the writer queue");
+        let escapes = String::from_utf8_lossy(payload.data()).to_string();
         assert!(
-            String::from_utf8_lossy(payload.data()).contains("Workshop"),
-            "expected the title reset in the queued escape"
+            escapes.contains(title::TITLE_RESTORE),
+            "expected the title restore in the queued escape: {escapes:?}"
         );
         assert!(rx.try_recv().is_err(), "one combined payload expected");
     }

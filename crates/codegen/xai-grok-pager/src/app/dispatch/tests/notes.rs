@@ -774,7 +774,7 @@ fn inline_feedback_sends_immediately_while_a_turn_runs() {
     );
     assert_eq!("", agent.prompt.text());
     assert!(agent.prompt.images.is_empty());
-    assert!(last_system_text(&app, id).contains("Thanks for the feedback"));
+    assert!(last_system_text(&app, id).contains("Thanks \u{2014} saved to"));
 }
 
 /// Typed bare `/feedback` must not drain composer images until the modal opens: every refusal
@@ -1391,7 +1391,7 @@ fn feedback_modal_submit_closes_immediately_and_failure_keeps_a_draft() {
         "a committed submit closes the modal without waiting on the POST"
     );
     assert!(
-        last_system_text(&app, AgentId(0)).contains("Thanks for the feedback"),
+        last_system_text(&app, AgentId(0)).contains("Thanks \u{2014} saved to"),
         "the thank-you lands at send time"
     );
     assert!(
@@ -1709,7 +1709,7 @@ fn feedback_modal_success_completion_is_quiet_without_consent() {
         agent_ref(&app, AgentId(0)).feedback_modal.is_none(),
         "submit closes the modal"
     );
-    assert!(last_system_text(&app, AgentId(0)).contains("Thanks for the feedback"));
+    assert!(last_system_text(&app, AgentId(0)).contains("Thanks \u{2014} saved to"));
     let scrollback_len = agent_ref(&app, AgentId(0)).scrollback.len();
 
     let effects = dispatch(
@@ -2197,7 +2197,7 @@ fn trace_offer_sequences_post_then_exactly_one_upload() {
         agent_ref(&app, AgentId(0)).feedback_modal.is_none(),
         "the committed trace choice closes the modal at send time"
     );
-    assert!(last_system_text(&app, AgentId(0)).contains("Thanks for the feedback"));
+    assert!(last_system_text(&app, AgentId(0)).contains("Thanks \u{2014} saved to"));
     let parked_session = agent_ref(&app, AgentId(0))
         .session
         .session_id

@@ -30,6 +30,27 @@ pub enum InstallTarget {
     Home(PathBuf),
 }
 
+/// Byte-progress callback for the installer: called with the number of bytes the installer has
+/// written under its `HOME` so far (the vendor script downloads the archive there before it
+/// unpacks it), every [`PROGRESS_POLL`] while the download grows.
+#[derive(Clone)]
+pub struct InstallProgress(std::sync::Arc<dyn Fn(u64) + Send + Sync>);
+
+impl InstallProgress {
+    pub fn new(f: impl Fn(u64) + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(f))
+    }
+}
+
+impl std::fmt::Debug for InstallProgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("InstallProgress(..)")
+    }
+}
+
+/// How often the installer's download directory is measured for [`InstallProgress`].
+pub const PROGRESS_POLL: Duration = Duration::from_millis(500);
+
 #[derive(Clone, Debug)]
 pub struct InstallOptions {
     /// Exact version to install; defaults to the adapter's tested pin.
@@ -39,6 +60,8 @@ pub struct InstallOptions {
     /// Environment for the installer (`PATH`, proxies); `None` = minimal env
     /// from this process.
     pub env: Option<BTreeMap<OsString, OsString>>,
+    /// Download progress in bytes, reported while the vendor script runs; `None` = silent.
+    pub progress: Option<InstallProgress>,
 }
 
 impl Default for InstallOptions {
@@ -48,7 +71,39 @@ impl Default for InstallOptions {
             target: InstallTarget::Home(workshop_tools_dir().join("opencode")),
             timeout: Duration::from_secs(300),
             env: None,
+            progress: None,
         }
+    }
+}
+
+/// Total size of the regular files under `root` (the installer's `HOME`), 0 when unreadable.
+pub fn tree_bytes(root: &Path) -> u64 {
+    let mut total = 0;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else if meta.is_file() {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
+/// Human-readable byte count for a progress line: `12.3 MB`, `840 KB`.
+pub fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1_000_000 {
+        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+    } else if bytes >= 1_000 {
+        format!("{} KB", bytes / 1_000)
+    } else {
+        format!("{bytes} B")
     }
 }
 
@@ -159,15 +214,34 @@ pub async fn install_opencode(opts: &InstallOptions) -> Result<InstalledCli, Ins
         "set -o pipefail; curl -fsSL {OFFICIAL_INSTALLER_URL} | bash -s -- --version {version} --no-modify-path"
     );
     tracing::info!(%version, home = %home.display(), "running official opencode installer");
-    let output = run_probe(&bash, &["-c", &script], &env, Some(&home), opts.timeout)
-        .await
-        .map_err(|e| match e {
-            crate::probe::ProbeError::Timeout { timeout, .. } => InstallError::Timeout(timeout),
-            other => InstallError::InstallerFailed {
-                exit_code: None,
-                stderr: other.to_string(),
-            },
-        })?;
+    // Byte progress: the script writes the archive under its HOME as it downloads, so the size
+    // of that tree is the honest number to show while the user waits.
+    let progress_poll = opts.progress.clone().map(|progress| {
+        let root = home.clone();
+        tokio::spawn(async move {
+            let mut last = 0u64;
+            let mut ticks = tokio::time::interval(PROGRESS_POLL);
+            loop {
+                ticks.tick().await;
+                let bytes = tree_bytes(&root);
+                if bytes != last {
+                    last = bytes;
+                    (progress.0)(bytes);
+                }
+            }
+        })
+    });
+    let output = run_probe(&bash, &["-c", &script], &env, Some(&home), opts.timeout).await;
+    if let Some(poll) = progress_poll {
+        poll.abort();
+    }
+    let output = output.map_err(|e| match e {
+        crate::probe::ProbeError::Timeout { timeout, .. } => InstallError::Timeout(timeout),
+        other => InstallError::InstallerFailed {
+            exit_code: None,
+            stderr: other.to_string(),
+        },
+    })?;
     if !output.success() {
         return Err(InstallError::InstallerFailed {
             exit_code: output.exit_code,

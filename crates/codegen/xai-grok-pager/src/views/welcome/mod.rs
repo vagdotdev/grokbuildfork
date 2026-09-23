@@ -151,9 +151,12 @@ pub struct WelcomeRenderResult {
     pub consent_link_rects: Vec<(usize, Rect)>,
     /// `None` when this frame did not paint the notice.
     pub consent_legibility: Option<crate::app::consent::ConsentLegibility>,
-    /// Whether a "Changelog" menu action was rendered (above Quit).
-    /// The input handler uses it to map the extra menu row to the release-notes action once markdown is available.
+    /// Whether a "Release notes" menu action was rendered (above Quit).
+    /// The input handler uses it to map the extra menu row to the release-notes action.
     pub changelog_action_present: bool,
+    /// Whether the "Resume session" menu row was rendered (Workshop hides it when nothing can be
+    /// resumed), so the input handler's index-to-action mapping matches the rows on screen.
+    pub resume_action_present: bool,
     /// Hit-test rect for the clickable changelog info block (opens release notes).
     pub changelog_cta_rect: Option<Rect>,
     /// Whether the announcement overflowed (the "expandable" signal).
@@ -698,6 +701,9 @@ pub struct WelcomeRenderParams<'a> {
     pub team_name: Option<&'a str>,
     pub has_access: bool,
     pub has_claude_import: bool,
+    /// Workshop: this directory has a session with messages (or an engine conversation) to come
+    /// back to; the "Resume session" row is hidden otherwise.
+    pub has_resumable_sessions: bool,
     pub mouse_pos: Option<(u16, u16)>,
     pub is_zdr_blocked: bool,
     pub session_picker: Option<&'a [SessionPickerEntry]>,
@@ -1802,10 +1808,14 @@ fn render_welcome_done(
             items.push((key_i_with_x, "Import Claude settings"));
         }
         items.push((key_w, "New worktree"));
-        items.push((key_resume, "Resume session"));
-        // "Changelog" above Quit; no shortcut, opened by click (row or block)
+        // Workshop: nothing to resume on a fresh directory, so the row does not offer it.
+        if p.has_resumable_sessions {
+            items.push((key_resume, "Resume session"));
+        }
+        // Workshop: "Release notes" above Quit opens the bundled notes (the same as
+        // `/release-notes`), by click or by menu navigation; nothing depends on a CDN fetch.
         if show_changelog_action {
-            items.push(("", "Changelog"));
+            items.push(("/release-notes", "Release notes"));
         }
         items.push((key_q, "Quit"));
         owned_menu = items;
@@ -2297,6 +2307,7 @@ fn render_welcome_done(
         consent_link_rects: Vec::new(),
         consent_legibility: None,
         changelog_action_present: show_changelog_action,
+        resume_action_present: p.has_access && !show_picker && p.has_resumable_sessions,
         changelog_cta_rect,
         announcement_truncated,
         announcement_rect,
@@ -2890,6 +2901,7 @@ mod tests {
             team_name: None,
             has_access: true,
             has_claude_import: false,
+            has_resumable_sessions: true,
             mouse_pos: None,
             is_zdr_blocked: false,
             session_picker,

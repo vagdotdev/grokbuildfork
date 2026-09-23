@@ -37,6 +37,9 @@ xai-grok-pager-render = { path = "../codegen/xai-grok-pager-render" }
 xai-grok-tools = { workspace = true }
 # Branding gate: the assembled system prompt.
 xai-grok-agent = { workspace = true }
+# Branding gate: `workshop --help` rendered from the clap definition; the welcome copy.
+clap = { workspace = true }
+workshop-brand = { path = "../workshop-brand" }
 
 [lints]
 workspace = true

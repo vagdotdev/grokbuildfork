@@ -183,6 +183,10 @@ pub(crate) fn test_app() -> AppView {
         workshop_engine_slot: crate::app::workshop::new_engine_slot(),
         workshop_engine_warm_started: false,
         workshop_turn_progress_entry: None,
+        workshop_turn_progress: None,
+        workshop_turn_started: None,
+        workshop_progress_tick: 0,
+        workshop_last_prompt: None,
         auth_clipboard_delivery: None,
         auth_clipboard_feedback_generation: 0,
         team_id: None,
@@ -224,6 +228,8 @@ pub(crate) fn test_app() -> AppView {
         welcome_menu_index: None,
         welcome_menu_rects: Vec::new(),
         welcome_show_changelog_action: false,
+        welcome_show_resume_action: true,
+        welcome_has_resumable_sessions: std::cell::OnceCell::new(),
         welcome_import_banner_rect: None,
         last_mouse_pos: None,
         last_scroll_pos: None,
@@ -3218,15 +3224,15 @@ fn welcome_ctrl_d_requires_confirmation() {
 #[test]
 fn menu_action_indices_without_changelog() {
     assert!(matches!(
-        dispatch_menu_action(0, false, false, None),
+        dispatch_menu_action(0, false, true, false, None),
         InputOutcome::Action(Action::OpenNewWorktreeDialog)
     ));
     assert!(matches!(
-        dispatch_menu_action(1, false, false, None),
+        dispatch_menu_action(1, false, true, false, None),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, false, false, None),
+        dispatch_menu_action(2, false, true, false, None),
         InputOutcome::Action(Action::Quit)
     ));
 }
@@ -3234,46 +3240,69 @@ fn menu_action_indices_without_changelog() {
 fn menu_action_changelog_sits_above_quit() {
     let md = Some("# notes");
     assert!(matches!(
-        dispatch_menu_action(1, false, true, md),
+        dispatch_menu_action(1, false, true, true, md),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, false, true, md),
+        dispatch_menu_action(2, false, true, true, md),
         InputOutcome::Action(Action::ShowReleaseNotes { .. })
     ));
     assert!(matches!(
-        dispatch_menu_action(3, false, true, md),
+        dispatch_menu_action(3, false, true, true, md),
         InputOutcome::Action(Action::Quit)
     ));
 }
+/// Workshop: the release-notes row never dead-ends; without fetched markdown it opens the bundled notes.
 #[test]
-fn menu_action_changelog_before_fetch_is_noop() {
+fn menu_action_release_notes_before_fetch_opens_bundled_notes() {
+    match dispatch_menu_action(2, false, true, true, None) {
+        InputOutcome::Action(Action::ShowReleaseNotes { content, .. }) => {
+            assert!(content.contains("# Workshop release notes"), "{content}");
+        }
+        other => panic!("expected the bundled release notes, got {other:?}"),
+    }
+}
+/// Workshop: with nothing to resume the Resume row is absent and the indices close up.
+#[test]
+fn menu_action_indices_without_resume() {
     assert!(matches!(
-        dispatch_menu_action(2, false, true, None),
-        InputOutcome::Unchanged
+        dispatch_menu_action(0, false, false, true, None),
+        InputOutcome::Action(Action::OpenNewWorktreeDialog)
+    ));
+    assert!(matches!(
+        dispatch_menu_action(1, false, false, true, None),
+        InputOutcome::Action(Action::ShowReleaseNotes { .. })
+    ));
+    assert!(matches!(
+        dispatch_menu_action(2, false, false, true, None),
+        InputOutcome::Action(Action::Quit)
+    ));
+    assert!(matches!(
+        dispatch_menu_action(1, false, false, false, None),
+        InputOutcome::Action(Action::Quit)
     ));
 }
 #[test]
 fn menu_action_indices_with_import_and_changelog() {
     let md = Some("# notes");
     assert!(matches!(
-        dispatch_menu_action(0, true, true, md),
+        dispatch_menu_action(0, true, true, true, md),
         InputOutcome::Action(Action::ImportClaudeSettings)
     ));
     assert!(matches!(
-        dispatch_menu_action(1, true, true, md),
+        dispatch_menu_action(1, true, true, true, md),
         InputOutcome::Action(Action::OpenNewWorktreeDialog)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, true, true, md),
+        dispatch_menu_action(2, true, true, true, md),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(3, true, true, md),
+        dispatch_menu_action(3, true, true, true, md),
         InputOutcome::Action(Action::ShowReleaseNotes { .. })
     ));
     assert!(matches!(
-        dispatch_menu_action(4, true, true, md),
+        dispatch_menu_action(4, true, true, true, md),
         InputOutcome::Action(Action::Quit)
     ));
 }

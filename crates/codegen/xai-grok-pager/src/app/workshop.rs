@@ -18,8 +18,9 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use tokio::sync::{mpsc, watch};
 use workshop_adapters::opencode_engine::{
-    EngineOptions, InstallOptions, OpenCodeEngine, PermissionHandler, PermissionReply,
-    TurnHandle, TurnRequest, clear_quarantine, detect_opencode, install_opencode,
+    EngineOptions, InstallOptions, InstallProgress, OpenCodeEngine, PermissionHandler,
+    PermissionReply, TurnHandle, TurnRequest, clear_quarantine, detect_opencode, format_bytes,
+    install_opencode,
 };
 
 use crate::app::workshop_engine_state::{self as state, EngineState};
@@ -521,6 +522,40 @@ const RECENT_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 pub const FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 /// Hard ceiling on `opencode serve` binding its port and passing its health check.
 pub const ENGINE_START_TIMEOUT: Duration = Duration::from_secs(30);
+/// A model that has not sent anything back after this long is said to still be connecting: the
+/// waiting line changes so the user knows the wait is the network's, not a hang.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// The waiting line shows its elapsed seconds only once the wait is long enough to feel like one.
+pub const ELAPSED_AFTER: Duration = Duration::from_secs(3);
+/// Frames of the animated mark in front of the waiting line.
+pub const WAIT_SPINNER: [char; 10] = [
+    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
+    '\u{2807}', '\u{280F}',
+];
+
+/// The one line a user sees while a turn has produced nothing yet: an animated mark, the phase
+/// ("Installing…", "Waiting for Big Pickle…"), the elapsed seconds after [`ELAPSED_AFTER`], and
+/// how to stop waiting. Repainted every tick by the UI so the mark moves and the seconds count.
+pub fn waiting_line(text: &str, elapsed: Duration, frame: usize) -> String {
+    let mark = WAIT_SPINNER
+        .get(frame % WAIT_SPINNER.len())
+        .copied()
+        .unwrap_or(' ');
+    let mut line = format!("{mark} {text}");
+    if elapsed >= ELAPSED_AFTER {
+        line.push_str(&format!(" \u{b7} {}s", elapsed.as_secs()));
+    }
+    line.push_str(" \u{b7} Ctrl+C to cancel");
+    line
+}
+
+/// The install phase with byte progress, once the vendor script has started writing.
+pub fn install_progress_line(bytes: u64) -> String {
+    format!(
+        "Installing the OpenCode engine (first time only)\u{2026} {} downloaded",
+        format_bytes(bytes)
+    )
+}
 
 /// Which backend a submitted prompt should run on.
 pub enum WorkshopTurnKind {
@@ -568,6 +603,29 @@ pub fn load_resume_id(backend: &str, cwd: &Path) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Whether `cwd` has anything to come back to: a saved session with messages, or an engine /
+/// adapter conversation id recorded for this workspace. The welcome menu reads it once per launch
+/// to decide whether to offer "Resume session" at all.
+pub fn has_resumable_sessions(cwd: &Path) -> bool {
+    use xai_grok_shell::session::persistence::{
+        RecentSessionSelection, local_summaries_for_cwd_sync,
+    };
+    let with_messages = local_summaries_for_cwd_sync(
+        &cwd.to_string_lossy(),
+        RecentSessionSelection::Interactive,
+    )
+    .map(|list| {
+        list.iter()
+            .any(|s| s.num_messages > 0 || s.num_chat_messages > 0)
+    })
+    .unwrap_or(false);
+    with_messages
+        || load_resume_id("opencode", cwd).is_some()
+        || workshop_detect::Rail::ALL
+            .iter()
+            .any(|rail| load_resume_id(rail.vendor().id(), cwd).is_some())
+}
+
 /// Persist the session id for `(backend, workspace)` so the next turn resumes the conversation.
 pub fn save_resume_id(backend: &str, cwd: &Path, session_id: &str) {
     let path = resume_store_path();
@@ -607,14 +665,45 @@ fn engine_permission_handler(
     })
 }
 
+/// The session topic shown in the terminal title: the first line of the first prompt, trimmed to
+/// a tab-width string.
+pub fn session_topic(prompt: &str) -> String {
+    const MAX: usize = 40;
+    let line = prompt
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default();
+    let mut topic: String = line.chars().take(MAX).collect();
+    if line.chars().count() > MAX {
+        topic = topic.trim_end().to_owned();
+        topic.push('\u{2026}');
+    }
+    topic
+}
+
+/// The ways out appended to every failure line: retry the same prompt, switch model, diagnose.
+pub const ERROR_WAYS_OUT: &str = "Enter retries · /model switches model · /doctor checks the setup";
+
 /// The one line a user sees when the engine path fails after the engine is up: the cause, the
-/// way out, and where the details went. (A failure *before* the engine is up goes through the
+/// ways out, and where the details went. (A failure *before* the engine is up goes through the
 /// Kilo fallback instead — see `TurnStartError::EngineUnavailable`.)
 pub fn engine_failure_line(cause: &str) -> String {
     format!(
-        "OpenCode engine: {cause} — /model switches to another model; log: {}",
+        "OpenCode engine: {cause} — {ERROR_WAYS_OUT}; log: {}",
         engine_log_path().display()
     )
+}
+
+/// A backend error as the user sees it: the message (one line) with the ways out, unless the
+/// message already carries them (engine failure lines do).
+pub fn actionable_error_line(message: &str) -> String {
+    let message = message.trim();
+    if message.contains(ERROR_WAYS_OUT) {
+        message.to_owned()
+    } else {
+        format!("{message} — {ERROR_WAYS_OUT}")
+    }
 }
 
 /// `$WORKSHOP_HOME/logs/opencode-engine.log`, the `opencode serve` stdout/stderr capture.
@@ -660,8 +749,16 @@ async fn start_engine(
     st.save(&home);
 
     // Detect an `opencode` on PATH / known dirs / the Workshop tools tree; install the pinned
-    // version via the vendor's own script only if absent (never a bundled binary).
-    let install = InstallOptions::default();
+    // version via the vendor's own script only if absent (never a bundled binary). The download
+    // reports its bytes so the first minute is never a static line.
+    let install = InstallOptions {
+        progress: Some(InstallProgress::new({
+            let slot = slot.clone();
+            let tx = tx.clone();
+            move |bytes| engine_phase(&slot, &tx, &install_progress_line(bytes))
+        })),
+        ..InstallOptions::default()
+    };
     let detect_opts = DetectOptions::default();
     let run_installer = |st: &mut EngineState, log: &Path| {
         st.last_phase = Some("install".into());
@@ -998,6 +1095,10 @@ pub async fn run_workshop_turn(
     let mut aborted_by_us = false;
     let mut first_event_at: Option<tokio::time::Instant> =
         Some(tokio::time::Instant::now() + FIRST_EVENT_TIMEOUT);
+    // Ten seconds without a first byte is long enough to tell the user the wait is the
+    // connection's; the hard ceiling above still ends the turn with the cause.
+    let mut still_connecting_at: Option<tokio::time::Instant> =
+        Some(tokio::time::Instant::now() + CONNECT_TIMEOUT);
     loop {
         let silence = async {
             match first_event_at {
@@ -1005,7 +1106,17 @@ pub async fn run_workshop_turn(
                 None => std::future::pending::<()>().await,
             }
         };
+        let still_connecting = async {
+            match still_connecting_at {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::select! {
+            _ = still_connecting => {
+                still_connecting_at = None;
+                engine_progress(&tx, format!("Still connecting to {model_name}\u{2026} nothing back yet"));
+            }
             _ = silence => {
                 // The engine accepted the prompt but nothing came back: stop waiting, say why.
                 stream.cancel();
@@ -1019,10 +1130,12 @@ pub async fn run_workshop_turn(
             ev = stream.next_event() => match ev {
                 Some(AdapterEvent::TextDelta { text }) => {
                     first_event_at = None;
+                    still_connecting_at = None;
                     let _ = tx.send(WorkshopTurnMsg::Delta(text));
                 }
                 Some(AdapterEvent::ToolCall { name, input, .. }) => {
                     first_event_at = None;
+                    still_connecting_at = None;
                     let _ = tx.send(WorkshopTurnMsg::Tool {
                         name,
                         summary: summarize_tool_input(&input),
@@ -1033,6 +1146,7 @@ pub async fn run_workshop_turn(
                 }
                 Some(AdapterEvent::Error { message }) => {
                     first_event_at = None;
+                    still_connecting_at = None;
                     // An abort we asked for (Ctrl-C, or the silence timeout above) is already
                     // reported; the backend's own "run cancelled" would only repeat it.
                     if !(aborted_by_us && message == "run cancelled") {
@@ -1041,6 +1155,7 @@ pub async fn run_workshop_turn(
                 }
                 Some(AdapterEvent::Thinking { .. }) => {
                     first_event_at = None;
+                    still_connecting_at = None;
                 }
                 Some(AdapterEvent::Usage(_)) | Some(AdapterEvent::Done { .. }) => {}
                 None => break,

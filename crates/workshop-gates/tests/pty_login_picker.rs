@@ -170,7 +170,7 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
         "no explanatory paragraph or footer sentence:\n{screen}"
     );
     assert!(
-        !screen.contains("xAI (optional)"),
+        !screen.contains("xAI \u{2014} Sign in"),
         "the Models view lists models only:\n{screen}"
     );
     assert_no_xai(&h, "/model overlay");
@@ -202,14 +202,19 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
         "a pill is shown:\n{screen}"
     );
     assert!(
-        screen.contains("xAI (optional)"),
-        "the optional xAI card is on the Subscriptions view:\n{screen}"
+        screen.contains("xAI \u{2014} Sign in") && screen.contains("optional"),
+        "the optional xAI card is last on the Subscriptions view, worded like the other rows:\n{screen}"
+    );
+    assert!(
+        screen.contains("OpenAI \u{2014} API key")
+            && screen.contains("OpenRouter \u{2014} Sign in"),
+        "connect rows share one vocabulary (Provider — API key | Sign in):\n{screen}"
     );
     assert_no_xai(&h, "/auth overlay");
     snapshot(&h, &dir, "03-auth-overlay");
 
     // 4. Enter on the OpenAI row opens a key-entry prompt (never a login, never an echo of the key).
-    move_selection_to(&mut h, "OpenAI API key");
+    move_selection_to(&mut h, "OpenAI \u{2014} API key");
     h.inject_keys(b"\r").unwrap();
     wait_for(&mut h, "paste or type your key", 5);
     assert_no_xai(&h, "openai key entry");
@@ -218,7 +223,7 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
     h.update(Duration::from_millis(300));
 
     // 5. The last row (xAI optional): first Enter only shows the labeled copy; Esc disarms.
-    move_selection_to(&mut h, "xAI (optional)");
+    move_selection_to(&mut h, "xAI \u{2014} Sign in");
     h.inject_keys(b"\r").unwrap();
     wait_for(&mut h, "Not required.", 5);
     wait_for(&mut h, "Press Enter again", 5);

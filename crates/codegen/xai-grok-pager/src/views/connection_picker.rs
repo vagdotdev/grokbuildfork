@@ -16,7 +16,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 use unicode_width::UnicodeWidthStr;
-use workshop_auth::{ModelsRow, PickerState, PickerTab, Pill, RowKind};
+use workshop_auth::{ModelsLine, ModelsRow, PickerState, PickerTab, Pill, RowKind};
 
 use crate::theme::Theme;
 
@@ -46,9 +46,11 @@ pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState,
         2 + entries.len() as u16 + 1 + DETAIL_ROWS + 1 + u16::from(picker.status.is_some());
     let height = wanted.min(avail.height);
     let width = avail.width.min(MAX_WIDTH);
+    // Anchored at the top of its area: a list that shrinks while the user types must not jump
+    // around the screen the way a centered box would.
     let overlay = Rect {
         x: avail.x + (avail.width - width) / 2,
-        y: avail.y + (avail.height - height) / 2,
+        y: avail.y,
         width,
         height,
     };
@@ -146,9 +148,21 @@ pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState,
         } else if picker.refresh_pending {
             " · refreshing lists…"
         } else {
-            " · r refresh"
+            " · Ctrl+R refresh"
         };
-        format!("↑↓ move · {enter} · Tab {other} · Esc close{refresh}")
+        let esc = if picker.tab == PickerTab::Models && !picker.filter.is_empty() {
+            "Esc clear"
+        } else {
+            "Esc close"
+        };
+        let show_all = match (picker.tab, picker.hidden_models(), picker.show_all) {
+            (PickerTab::Models, hidden, false) if hidden > 0 => {
+                format!(" · Ctrl+A show {hidden} hidden")
+            }
+            (PickerTab::Models, _, true) => " · Ctrl+A hide non-chat".to_owned(),
+            _ => String::new(),
+        };
+        format!("↑↓ · {enter} · Tab {other} · {esc}{refresh}{show_all}")
     };
     Paragraph::new(Line::from(Span::styled(
         keys,
@@ -160,7 +174,24 @@ pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState,
 /// Index of the highlighted line within [`list_lines`].
 fn selected_line_index(picker: &PickerState) -> usize {
     match picker.tab {
-        PickerTab::Models => picker.models_selected,
+        // The search line, then group headers ahead of the selected row.
+        PickerTab::Models => {
+            let mut rows = 0;
+            let mut line = 1;
+            for entry in picker.models_lines() {
+                match entry {
+                    ModelsLine::Header(_) => line += 1,
+                    ModelsLine::Row(_) => {
+                        if rows == picker.models_selected {
+                            return line;
+                        }
+                        rows += 1;
+                        line += 1;
+                    }
+                }
+            }
+            line
+        }
         // Rails, then a blank spacer line, then the connect rows / xAI card.
         PickerTab::Subscriptions => {
             if picker.rail_selected < picker.rails.len() || picker.auth_rows.is_empty() {
@@ -270,24 +301,73 @@ fn columns(rows: &[ModelsRow]) -> (usize, usize) {
     (name_w, prov_w)
 }
 
+/// The type-to-filter line at the top of the Models view.
+fn search_line<'a>(theme: &Theme, picker: &PickerState) -> Line<'a> {
+    let mut spans = vec![Span::styled(
+        "  \u{2315} ".to_owned(),
+        Style::default().fg(theme.gray_bright),
+    )];
+    if picker.filter.is_empty() {
+        spans.push(Span::styled(
+            "type to filter".to_owned(),
+            Style::default().fg(theme.gray_dim),
+        ));
+    } else {
+        spans.push(Span::styled(
+            picker.filter.clone(),
+            Style::default()
+                .fg(theme.text_primary)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            "\u{258f}".to_owned(),
+            Style::default().fg(theme.gray_bright),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn header_line<'a>(theme: &Theme, title: &str) -> Line<'a> {
+    Line::from(Span::styled(
+        format!("  {title}"),
+        Style::default()
+            .fg(theme.text_secondary)
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
 fn list_lines<'a>(theme: &Theme, picker: &PickerState) -> Vec<Line<'a>> {
     let mut lines = Vec::new();
     match picker.tab {
         PickerTab::Models => {
+            lines.push(search_line(theme, picker));
+            let visible = picker.visible_models();
             let (name_w, prov_w) = columns(&picker.rows);
-            for (i, row) in picker.rows.iter().enumerate() {
-                lines.push(row_line(
-                    theme,
-                    row,
-                    i == picker.models_selected,
-                    picker.is_active(row),
-                    name_w,
-                    prov_w,
-                ));
+            let mut i = 0;
+            for entry in picker.models_lines() {
+                match entry {
+                    ModelsLine::Header(title) => lines.push(header_line(theme, title)),
+                    ModelsLine::Row(row) => {
+                        lines.push(row_line(
+                            theme,
+                            row,
+                            i == picker.models_selected,
+                            picker.is_active(row),
+                            name_w,
+                            prov_w,
+                        ));
+                        i += 1;
+                    }
+                }
             }
             if picker.rows.is_empty() {
                 lines.push(Line::from(Span::styled(
                     "  loading…",
+                    Style::default().fg(theme.gray_bright),
+                )));
+            } else if visible.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("  no model matches \u{201c}{}\u{201d}", picker.filter.trim()),
                     Style::default().fg(theme.gray_bright),
                 )));
             }
@@ -314,16 +394,24 @@ fn list_lines<'a>(theme: &Theme, picker: &PickerState) -> Vec<Line<'a>> {
             }
             if !picker.auth_rows.is_empty() {
                 lines.push(Line::from(""));
-                let (name_w, prov_w) = columns(&picker.auth_rows);
+                // One vocabulary for every connect row: `Provider — Sign in` / `Provider — API key`.
+                let name_w = picker
+                    .auth_rows
+                    .iter()
+                    .map(|r| UnicodeWidthStr::width(r.title().as_str()))
+                    .max()
+                    .unwrap_or(10)
+                    .clamp(10, 48);
                 for (i, row) in picker.auth_rows.iter().enumerate() {
-                    lines.push(row_line(
-                        theme,
-                        row,
-                        picker.rails.len() + i == picker.rail_selected,
-                        false,
-                        name_w,
-                        prov_w,
-                    ));
+                    let selected = picker.rails.len() + i == picker.rail_selected;
+                    let base = row_style(theme, selected);
+                    let marker = if selected { "› " } else { "  " };
+                    lines.push(Line::from(vec![
+                        Span::styled(marker.to_owned(), base),
+                        Span::styled(pad(&row.title(), name_w), base),
+                        Span::styled(" ".to_owned(), base),
+                        Span::styled(row.short_badge().to_owned(), badge_style(theme, row)),
+                    ]));
                 }
             }
         }

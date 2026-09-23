@@ -94,33 +94,64 @@ pub fn shade_level(shade: &str, row: usize, col: usize) -> u8 {
         .map_or(1, |b| b - b'0')
 }
 
-/// The hero titles; one is picked per launch.
-pub const TITLES: [&str; 2] = ["Vagdev's Workshop", "Workshop by Vagdev"];
+/// The one product name, everywhere a user reads it (hero, version line, exit card).
+pub const TITLE: &str = "Vagdev's Workshop";
 
-/// Hero title for this launch (random pick from [`TITLES`]), stable across frames.
+/// Hero title: always [`TITLE`]. One name per product, the same on every launch.
 pub fn title() -> &'static str {
-    static TITLE: OnceLock<&'static str> = OnceLock::new();
-    TITLE.get_or_init(|| title_for(launch_seed()))
+    TITLE
 }
 
-fn title_for(seed: u64) -> &'static str {
-    TITLES[(seed & 1) as usize]
-}
-
-/// Random per process without an extra dependency: `RandomState` is seeded from the OS.
-fn launch_seed() -> u64 {
-    use std::hash::{BuildHasher, Hasher};
-    std::collections::hash_map::RandomState::new()
-        .build_hasher()
-        .finish()
-}
+/// Composer placeholder: an invitation to type, with one concrete example.
+pub const PROMPT_PLACEHOLDER: &str = "Ask anything\u{2026} \"add a test for multiply\"";
 
 /// Subtitle under the hero title.
 pub fn hero_subtitle() -> String {
     format!(
-        "Thanks for trying {}, give feedback with /feedback!",
+        "Thanks for trying {} \u{2014} /feedback saves a note and drafts a GitHub issue.",
         title()
     )
+}
+
+/// Workshop's own release notes, bundled so `/release-notes` works offline and without a CDN.
+pub const RELEASE_NOTES: &str = include_str!("../assets/release-notes.md");
+
+/// Public repository: issues and releases.
+pub const REPO_URL: &str = "https://github.com/vagdotdev/grokbuildfork";
+
+/// A prefilled "new issue" link for a feedback note (title and body URL-encoded, capped so the
+/// URL stays within what browsers accept).
+pub fn feedback_issue_url(text: &str) -> String {
+    let text = text.trim();
+    let title: String = text
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(80)
+        .collect();
+    // Short enough to stay one readable line in a transcript; the full note is on disk.
+    let body: String = text.chars().take(600).collect();
+    format!(
+        "{REPO_URL}/issues/new?title={}&body={}",
+        url_encode(&format!("Feedback: {title}")),
+        url_encode(&body)
+    )
+}
+
+/// Percent-encode every byte outside the unreserved set (RFC 3986), so the text survives inside a
+/// query string in any browser.
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// Whether a remote announcement may take the welcome hero's info slot.
@@ -285,16 +316,45 @@ mod tests {
     }
 
     #[test]
-    fn title_alternates_by_seed_and_is_stable_per_launch() {
-        assert_eq!(title_for(0), "Vagdev's Workshop");
-        assert_eq!(title_for(1), "Workshop by Vagdev");
-        assert!(TITLES.contains(&title()));
-        assert_eq!(title(), title());
+    fn one_product_name_on_every_launch() {
+        assert_eq!(title(), "Vagdev's Workshop");
+        assert_eq!(title(), TITLE);
+        assert!(!TITLE.contains("by Vagdev"), "the alternate name is gone");
     }
 
     #[test]
-    fn subtitle_carries_the_launch_title() {
-        assert!(hero_subtitle().starts_with(&format!("Thanks for trying {}", title())));
+    fn subtitle_carries_the_title_and_is_honest_about_feedback() {
+        let subtitle = hero_subtitle();
+        assert!(subtitle.starts_with(&format!("Thanks for trying {TITLE}")));
+        assert!(subtitle.contains("GitHub issue"), "{subtitle}");
+    }
+
+    #[test]
+    fn placeholder_invites_typing_with_an_example() {
+        assert!(PROMPT_PLACEHOLDER.starts_with("Ask anything"));
+        assert!(PROMPT_PLACEHOLDER.contains("add a test for multiply"));
+    }
+
+    #[test]
+    fn release_notes_are_bundled_and_de_branded() {
+        assert!(RELEASE_NOTES.contains("# Workshop release notes"));
+        assert!(RELEASE_NOTES.contains("0.2.2"));
+        let lower = RELEASE_NOTES.to_ascii_lowercase();
+        assert!(
+            !lower.contains("grok build"),
+            "release notes name the product"
+        );
+    }
+
+    #[test]
+    fn feedback_issue_url_is_prefilled_and_encoded() {
+        let url = feedback_issue_url("Picker closes on q\n\nTyping qwen leaves wen in the prompt.");
+        assert!(url.starts_with("https://github.com/vagdotdev/grokbuildfork/issues/new?title="));
+        assert!(url.contains("title=Feedback%3A%20Picker%20closes%20on%20q"));
+        assert!(url.contains("&body=Picker%20closes%20on%20q%0A%0ATyping"));
+        assert!(!url.contains(' ') && !url.contains('\n'));
+        let long = "x".repeat(10_000);
+        assert!(feedback_issue_url(&long).len() < 1_000);
     }
 
     #[test]

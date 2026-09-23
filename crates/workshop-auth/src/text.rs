@@ -9,23 +9,36 @@ pub fn render(state: &PickerState) -> String {
     out.push_str("Workshop starts on the OpenCode free model and never signs you in anywhere by default.\n\n");
 
     out.push_str(&format!("[{}]\n", PickerTab::Models.title()));
-    for (i, row) in state.rows.iter().enumerate() {
-        let marker = if state.tab == PickerTab::Models && i == state.models_selected {
-            "›"
-        } else {
-            " "
-        };
-        let active = if state.is_active(row) {
-            " · active"
-        } else {
-            ""
-        };
+    let mut i = 0;
+    for line in state.models_lines() {
+        match line {
+            crate::ModelsLine::Header(title) => out.push_str(&format!("  {title}\n")),
+            crate::ModelsLine::Row(row) => {
+                let marker = if state.tab == PickerTab::Models && i == state.models_selected {
+                    "›"
+                } else {
+                    " "
+                };
+                let active = if state.is_active(row) {
+                    " · active"
+                } else {
+                    ""
+                };
+                out.push_str(&format!(
+                    "{marker} {:<2} {} · {} · {}{active}\n",
+                    i + 1,
+                    row.title(),
+                    row.provider(),
+                    row.short_badge(),
+                ));
+                i += 1;
+            }
+        }
+    }
+    let hidden = state.hidden_models();
+    if hidden > 0 {
         out.push_str(&format!(
-            "{marker} {:<2} {} · {} · {}{active}\n",
-            i + 1,
-            row.title(),
-            row.provider(),
-            row.short_badge(),
+            "  ({hidden} non-chat models hidden: classifiers, routers; Ctrl+A in the app shows them)\n"
         ));
     }
     if let Some(summary) = state.catalog_summary() {
@@ -61,12 +74,7 @@ pub fn render(state: &PickerState) -> String {
         } else {
             " "
         };
-        out.push_str(&format!(
-            "{marker} {} · {} · {}\n",
-            row_title(row),
-            row.provider(),
-            row.short_badge()
-        ));
+        out.push_str(&format!("{marker} {}\n", row_title(row)));
     }
 
     out.push('\n');
@@ -82,7 +90,12 @@ pub fn render(state: &PickerState) -> String {
 
 fn row_title(row: &ModelsRow) -> String {
     match &row.kind {
-        RowKind::XaiOptional => format!("xAI (optional) — {}", crate::XAI_CARD_COPY),
+        RowKind::XaiOptional => format!(
+            "{} · {} · {}",
+            row.title(),
+            row.short_badge(),
+            crate::XAI_CARD_COPY
+        ),
         _ => row.title(),
     }
 }
@@ -141,8 +154,9 @@ mod tests {
             "rail order Claude, Codex, Cursor"
         );
         assert!(t.contains("[Sign in]"));
-        let xai = t.find("xAI (optional)").unwrap();
-        let openrouter = t.find("OpenRouter").unwrap();
+        let xai = t.find("xAI \u{2014} Sign in · optional").unwrap();
+        let openrouter = t.find("OpenRouter \u{2014} Sign in").unwrap();
+        assert!(t.contains("OpenAI \u{2014} API key"), "{t}");
         assert!(openrouter < xai, "xAI card is last");
         assert!(t.contains("Not required."));
         assert!(t.contains("Kilo"));

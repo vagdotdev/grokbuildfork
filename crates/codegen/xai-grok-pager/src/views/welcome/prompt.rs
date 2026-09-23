@@ -28,7 +28,10 @@ fn prompt_style(focus: WelcomePromptFocus, compact: bool) -> PromptStyle {
         chrome: true,
         chrome_pad_left: CHROME_PAD,
         chrome_pad_right: CHROME_PAD,
-        placeholder_override: Some("Type a message..."),
+        // Workshop: the home composer is an invitation to type, so the placeholder stays visible
+        // while the (already focused) box is empty.
+        placeholder_override: Some(workshop_brand::PROMPT_PLACEHOLDER),
+        placeholder_when_focused: true,
         ..PromptStyle::default()
     }
 }

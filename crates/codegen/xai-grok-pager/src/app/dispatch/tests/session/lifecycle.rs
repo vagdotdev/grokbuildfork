@@ -2031,16 +2031,20 @@ fn gated_worktree_with_none_companions_preserves_stashed_label_and_ref() {
     assert!(app.deferred_startup.session.is_none());
     assert!(!app.deferred_startup.worktree);
 }
-/// `/login` from inside a session must move to the welcome screen and stash the agent view for restoration.
-/// The welcome screen is the only view that renders the connection picker and the auth flow.
-/// Workshop: Login alone opens the picker (no Authenticate); the inherited flow starts only from
-/// the optional xAI card, which still needs the stashed view and the welcome screen.
+/// `/login` from inside a session opens the connection picker as an overlay over the session and
+/// stashes the agent view for restoration. Workshop: Login alone opens the picker (no
+/// Authenticate); the inherited flow starts only from the optional xAI card, which moves to the
+/// welcome screen (the only view that draws the browser / device-code flow) with the view stashed.
 #[test]
 fn login_mid_session_switches_to_welcome_and_stashes_view() {
     let mut app = test_app_with_agent();
     assert_eq!(app.active_view, ActiveView::Agent(AgentId(0)));
     let effects = dispatch(Action::Login, &mut app);
-    assert_eq!(app.active_view, ActiveView::Welcome);
+    assert_eq!(
+        app.active_view,
+        ActiveView::Agent(AgentId(0)),
+        "the picker is an overlay; the session stays up behind it"
+    );
     assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
     assert!(app.connection_picker.is_some(), "Login opens the picker");
     // Opening the picker loads its rows/rails (`WorkshopLoadPicker`) — a data probe, not auth.
@@ -2052,6 +2056,7 @@ fn login_mid_session_switches_to_welcome_and_stashes_view() {
         "Login alone must not kick off an auth flow, got {effects:?}",
     );
     let effects = start_login_flow(&mut app);
+    assert_eq!(app.active_view, ActiveView::Welcome, "the xAI flow is drawn by the welcome view");
     assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
     assert!(matches!(app.auth_state, AuthState::Authenticating { .. }));
     assert!(
@@ -2061,13 +2066,13 @@ fn login_mid_session_switches_to_welcome_and_stashes_view() {
         "the optional xAI card still kicks off the inherited auth flow",
     );
 }
-/// A mid-session `/login` switches to the welcome view to host the auth flow.
+/// A mid-session xAI sign-in switches to the welcome view to host the auth flow.
 /// That transition must collapse any expanded announcement so it can't reappear stale if auth completion lands back on a welcome screen.
 #[test]
 fn login_mid_session_resets_welcome_announcement_expanded() {
     let mut app = test_app_with_agent();
     app.welcome_announcement.expanded = true;
-    dispatch(Action::Login, &mut app);
+    start_login_flow(&mut app);
     assert_eq!(app.active_view, ActiveView::Welcome);
     assert!(
         !app.welcome_announcement.expanded,

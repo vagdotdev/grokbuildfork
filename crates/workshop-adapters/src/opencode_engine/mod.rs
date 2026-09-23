@@ -43,8 +43,9 @@ pub use catalog::{FreeCatalog, FreeModel, parse_free_catalog};
 pub use events::{PermissionRequest, ServeTurn};
 pub use http::{HttpError, ServerClient};
 pub use install::{
-    InstallError, InstallOptions, InstallTarget, OFFICIAL_INSTALLER_URL, detect_opencode,
-    ensure_opencode, install_opencode, is_workshop_managed, workshop_tools_dir,
+    InstallError, InstallOptions, InstallProgress, InstallTarget, OFFICIAL_INSTALLER_URL,
+    detect_opencode, ensure_opencode, format_bytes, install_opencode, is_workshop_managed,
+    workshop_tools_dir,
 };
 pub use state::{clear_quarantine, quarantine_flag};
 

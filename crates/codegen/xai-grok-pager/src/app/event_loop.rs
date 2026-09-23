@@ -4075,11 +4075,13 @@ fn handle_workshop_turn_msg(
             | M::EngineUnavailable { .. }
             | M::Done { .. }
     );
-    if clears_progress
-        && let Some(id) = app.workshop_turn_progress_entry.take()
-        && let Some(agent) = app.agents.get_mut(&agent_id)
-    {
-        agent.scrollback.remove_entry(id);
+    if clears_progress {
+        app.workshop_turn_progress = None;
+        if let Some(id) = app.workshop_turn_progress_entry.take()
+            && let Some(agent) = app.agents.get_mut(&agent_id)
+        {
+            agent.scrollback.remove_entry(id);
+        }
     }
     if let M::EngineUnavailable { reason, text } = msg {
         let effects = dispatch::dispatch(
@@ -4095,14 +4097,10 @@ fn handle_workshop_turn_msg(
     let redraw = match msg {
         M::EngineWarm { .. } => false,
         M::Progress(text) => {
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                if let Some(id) = app.workshop_turn_progress_entry.take() {
-                    agent.scrollback.remove_entry(id);
-                }
-                let id = agent.scrollback.push_block(RenderBlock::system(text));
-                app.workshop_turn_progress_entry = Some(id);
-            }
-            true
+            // One animated line, repainted in place by `AppView::tick` (spinner, elapsed
+            // seconds, the cancel hint) until the first real output replaces it.
+            app.workshop_turn_progress = Some(text);
+            app.repaint_workshop_progress()
         }
         M::EngineDefaultResolved { model } => {
             // OpenCode's live default replaces the pinned seed the first run activated.
@@ -4168,8 +4166,11 @@ fn handle_workshop_turn_msg(
             true
         }
         M::Error(message) => {
+            // Red, and actionable: Enter on the empty composer resends the prompt that failed.
+            let line = crate::app::workshop::actionable_error_line(&message);
             if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent.scrollback.push_block(RenderBlock::system(message));
+                agent.scrollback.push_block(RenderBlock::system_error(line));
+                agent.workshop_retry_prompt = app.workshop_last_prompt.clone();
             }
             true
         }
@@ -4206,6 +4207,7 @@ fn handle_workshop_turn_msg(
             app.workshop_turn_cancel = None;
             app.workshop_turn_agent = None;
             app.workshop_turn_prompt_entry = None;
+            app.workshop_turn_started = None;
             true
         }
         // Handled above (needs the dispatcher).

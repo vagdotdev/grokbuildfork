@@ -33,8 +33,10 @@ auth.x.ai	sign in with an xAI account (opens auth.x.ai). Never the default
 #   ^ `workshop --xai` flag help (crates/codegen/xai-grok-pager/src/app/cli.rs)
 auth.x.ai	https://auth.x.ai
 #   ^ xai-grok-login OIDC issuer constant + its 'open this URL' message; reached only through the optional row (gate1: not in GrokComConfig::default())
-auth.x.ai	SpaceXAI OAuth at `auth.x.ai`
-#   ^ upstream user guide docs/user-guide/02-authentication.md (`grok login --oauth` reference), embedded as text; not a code path
+auth.x.ai	the browser opens `auth.x.ai`
+#   ^ Workshop user guide docs/user-guide/02-authentication.md (the optional xAI account row of the connection table), embedded as text; not a code path
+auth.x.ai	optional xAI account sign-in only (opens auth.x.ai); never the default
+#   ^ Workshop user guide docs/user-guide/02-authentication.md (`workshop login --xai` in the command-line section), embedded as text; not a code path
 accounts.x.ai	https://accounts.x.ai/sign-in
 #   ^ xai-grok-login sign-in URL constant + the auth-flow log line + the upstream docs' jq example; same optional row
 accounts.x.ai	instead of `accounts.x.ai`

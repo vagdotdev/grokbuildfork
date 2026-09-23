@@ -195,9 +195,14 @@ fn healthy_serve_with_a_silent_model_hits_the_90s_first_event_ceiling() {
         line.contains("no answer from Big Pickle after 90 s"),
         "the first-event ceiling is the reported cause: {line}"
     );
-    // The engine is up, so there is nothing to fall back from: `/model` is the way out.
+    // The engine is up, so there is nothing to fall back from: `/model` is the way out, and the
+    // failed prompt can be retried with Enter.
     assert!(
         line.contains("/model") && line.contains("opencode-engine.log"),
         "{line}"
+    );
+    assert!(
+        line.contains("Enter retries") && line.contains("/doctor"),
+        "the failure line names the ways out: {line}"
     );
 }

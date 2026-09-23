@@ -378,16 +378,58 @@ pub(crate) fn default_palette_entries(
     slash: &crate::slash::SlashController,
 ) -> Vec<PaletteEntry> {
     let screen_mode = slash.screen_mode();
+    // Workshop: the eight commands a first-time user needs come first; the power tools sit in an
+    // "Advanced" section at the end (see `crate::slash::ADVANCED_COMMANDS`).
     let mut entries = vec![
         PaletteEntry {
-            label: "Session".into(),
+            label: "Common".into(),
             shortcut: String::new(),
-            command: PaletteCommand::SectionHeader("Session".into()),
+            command: PaletteCommand::SectionHeader("Common".into()),
+        },
+        PaletteEntry {
+            label: "Switch Model".into(),
+            shortcut: "/model".into(),
+            command: PaletteCommand::SlashCommand("/model".into()),
+        },
+        PaletteEntry {
+            label: "Connect a Subscription or API Key".into(),
+            shortcut: "/auth".into(),
+            command: PaletteCommand::SlashCommand("/auth".into()),
         },
         PaletteEntry {
             label: "New Session".into(),
             shortcut: "Ctrl+N".into(),
             command: PaletteCommand::NewSession,
+        },
+        PaletteEntry {
+            label: "Resume Session".into(),
+            shortcut: "/resume".into(),
+            command: PaletteCommand::SlashCommand("/resume".into()),
+        },
+        PaletteEntry {
+            label: "Compact History".into(),
+            shortcut: "/compact".into(),
+            command: PaletteCommand::SlashCommand("/compact".into()),
+        },
+        PaletteEntry {
+            label: "Switch Theme".into(),
+            shortcut: "/theme".into(),
+            command: PaletteCommand::SlashCommand("/theme ".into()),
+        },
+        PaletteEntry {
+            label: "How-to Guides".into(),
+            shortcut: "/docs".into(),
+            command: PaletteCommand::HowTo,
+        },
+        PaletteEntry {
+            label: "Quit".into(),
+            shortcut: "Ctrl+Q".into(),
+            command: PaletteCommand::Quit,
+        },
+        PaletteEntry {
+            label: "Session".into(),
+            shortcut: String::new(),
+            command: PaletteCommand::SectionHeader("Session".into()),
         },
         PaletteEntry {
             label: "New Session in Worktree".into(),
@@ -410,11 +452,6 @@ pub(crate) fn default_palette_entries(
             command: PaletteCommand::SlashCommand("/delete".into()),
         },
         PaletteEntry {
-            label: "Resume Session".into(),
-            shortcut: "/resume".into(),
-            command: PaletteCommand::SlashCommand("/resume".into()),
-        },
-        PaletteEntry {
             label: "Share Session".into(),
             shortcut: "/share".into(),
             command: PaletteCommand::SlashCommand("/share".into()),
@@ -430,7 +467,7 @@ pub(crate) fn default_palette_entries(
             command: PaletteCommand::SlashCommand("/session-info".into()),
         },
         PaletteEntry {
-            label: "Send Feedback".into(),
+            label: "Feedback (saved locally, drafts a GitHub issue)".into(),
             shortcut: "/feedback".into(),
             command: PaletteCommand::OpenFeedbackModal,
         },
@@ -438,11 +475,6 @@ pub(crate) fn default_palette_entries(
             label: "Context".into(),
             shortcut: String::new(),
             command: PaletteCommand::SectionHeader("Context".into()),
-        },
-        PaletteEntry {
-            label: "Compact History".into(),
-            shortcut: "/compact".into(),
-            command: PaletteCommand::SlashCommand("/compact".into()),
         },
         PaletteEntry {
             label: "Context Usage".into(),
@@ -465,11 +497,6 @@ pub(crate) fn default_palette_entries(
             command: PaletteCommand::SectionHeader("Model & Input".into()),
         },
         PaletteEntry {
-            label: "Switch Model".into(),
-            shortcut: "/model".into(),
-            command: PaletteCommand::SlashCommand("/model ".into()),
-        },
-        PaletteEntry {
             label: "Always Approve Mode".into(),
             shortcut: "/always-approve".into(),
             command: PaletteCommand::SlashCommand("/always-approve".into()),
@@ -485,9 +512,63 @@ pub(crate) fn default_palette_entries(
             command: PaletteCommand::EditPromptExternal,
         },
         PaletteEntry {
-            label: "Tools".into(),
+            label: "Other".into(),
             shortcut: String::new(),
-            command: PaletteCommand::SectionHeader("Tools".into()),
+            command: PaletteCommand::SectionHeader("Other".into()),
+        },
+        PaletteEntry {
+            label: "Settings".into(),
+            shortcut: "F2".into(),
+            command: PaletteCommand::OpenSettings,
+        },
+        PaletteEntry {
+            label: "Keyboard Shortcuts".into(),
+            shortcut: if crate::actions::ctrl_dot_unreliable() {
+                "Ctrl+X".into()
+            } else {
+                "Ctrl+.".into()
+            },
+            command: PaletteCommand::KeyboardShortcuts,
+        },
+        PaletteEntry {
+            label: "Tutorial".into(),
+            shortcut: "/tutorial".into(),
+            command: PaletteCommand::SlashCommand("/tutorial".into()),
+        },
+        PaletteEntry {
+            label: "Advanced".into(),
+            shortcut: String::new(),
+            command: PaletteCommand::SectionHeader("Advanced".into()),
+        },
+        PaletteEntry {
+            label: "Loop".into(),
+            shortcut: "/loop".into(),
+            command: PaletteCommand::SlashCommand("/loop ".into()),
+        },
+        PaletteEntry {
+            label: "Personas".into(),
+            shortcut: "/personas".into(),
+            command: PaletteCommand::SlashCommand("/personas".into()),
+        },
+        PaletteEntry {
+            label: "Import Claude Settings".into(),
+            shortcut: "/import-claude".into(),
+            command: PaletteCommand::SlashCommand("/import-claude".into()),
+        },
+        PaletteEntry {
+            label: "Fork Session".into(),
+            shortcut: "/fork".into(),
+            command: PaletteCommand::SlashCommand("/fork".into()),
+        },
+        PaletteEntry {
+            label: "Timeline".into(),
+            shortcut: "/timeline".into(),
+            command: PaletteCommand::SlashCommand("/timeline".into()),
+        },
+        PaletteEntry {
+            label: "Vim Mode".into(),
+            shortcut: "/vim-mode".into(),
+            command: PaletteCommand::SlashCommand("/vim-mode".into()),
         },
         PaletteEntry {
             label: "Hooks".into(),
@@ -535,45 +616,6 @@ pub(crate) fn default_palette_entries(
             label: "Manage Agents".into(),
             shortcut: "/config-agents".into(),
             command: PaletteCommand::OpenAgentsModal,
-        },
-        PaletteEntry {
-            label: "Other".into(),
-            shortcut: String::new(),
-            command: PaletteCommand::SectionHeader("Other".into()),
-        },
-        PaletteEntry {
-            label: "Switch Theme".into(),
-            shortcut: "/theme".into(),
-            command: PaletteCommand::SlashCommand("/theme ".into()),
-        },
-        PaletteEntry {
-            label: "Settings".into(),
-            shortcut: "F2".into(),
-            command: PaletteCommand::OpenSettings,
-        },
-        PaletteEntry {
-            label: "Keyboard Shortcuts".into(),
-            shortcut: if crate::actions::ctrl_dot_unreliable() {
-                "Ctrl+X".into()
-            } else {
-                "Ctrl+.".into()
-            },
-            command: PaletteCommand::KeyboardShortcuts,
-        },
-        PaletteEntry {
-            label: "How-to Guides".into(),
-            shortcut: "/docs".into(),
-            command: PaletteCommand::HowTo,
-        },
-        PaletteEntry {
-            label: "Tutorial".into(),
-            shortcut: "/tutorial".into(),
-            command: PaletteCommand::SlashCommand("/tutorial".into()),
-        },
-        PaletteEntry {
-            label: "Quit".into(),
-            shortcut: "Ctrl+Q".into(),
-            command: PaletteCommand::Quit,
         },
     ];
     entries.retain(|entry| {
