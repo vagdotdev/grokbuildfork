@@ -220,7 +220,7 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
         return Ok(());
     }
 
-    println!("Grok Build - v{}{}", status.current_version, channel_label);
+    println!("Workshop - v{}{}", status.current_version, channel_label);
     Ok(())
 }
 
@@ -583,7 +583,16 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
     let policy = config::VersionPolicy::resolve();
     let target_version = match fetch_update_plan(installer, update_config, &policy).await {
         Ok(UpdatePlan::Install { target, .. }) => target,
-        Ok(UpdatePlan::Skip { .. } | UpdatePlan::Unavailable { .. }) | Err(_) => {
+        Ok(UpdatePlan::Skip { .. } | UpdatePlan::Unavailable { .. }) => {
+            return BackgroundUpdateCheck::none();
+        }
+        Err(e) => {
+            // Workshop: offline or a broken channel is never shown, only logged.
+            xai_grok_telemetry::unified_log::info(
+                "update.check_failed",
+                None,
+                Some(serde_json::json!({ "error": format!("{e:#}") })),
+            );
             return BackgroundUpdateCheck::none();
         }
     };
@@ -618,6 +627,11 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
 
     // Kick off a non-blocking download so the binary is ready when the user restarts (or accepts the in-TUI restart prompt)
     let download = if disk_needs_download {
+        xai_grok_telemetry::unified_log::info(
+            "update.download_started",
+            None,
+            Some(serde_json::json!({ "from": current_version, "to": target_version })),
+        );
         match run_update_subcommand(UpdateRunMode::NonBlocking, CliUpdateTrigger::AutoBackground)
             .await
         {
@@ -841,7 +855,7 @@ pub fn restart_grok() -> Result<()> {
     }
     cmd.env_clear();
     cmd.envs(std::env::vars_os().filter(|(k, _)| k != "GROK_AUTO_UPDATE"));
-    eprintln!("Restarting Grok...");
+    eprintln!("Restarting Workshop...");
 
     // Use exec on Unix to replace the current process, avoiding stdio issues when the parent exits
     // On Windows, fall back to spawn and exit
@@ -2482,7 +2496,7 @@ fn warn_if_other_grok_processes_running() {
             );
             eprintln!("    Processes running from the npm vendored binary path may be");
             eprintln!("    killed by macOS when npm replaces the package files.");
-            eprintln!("    Consider closing other grok sessions before updating.");
+            eprintln!("    Consider closing other Workshop sessions before updating.");
             eprintln!();
         }
     }
@@ -2567,8 +2581,8 @@ pub async fn run_update(
         {
             tracing::warn!("Failed to persist auto_update=false for pinned install: {e}");
         }
-        eprintln!("  ✓ grok v{} installed successfully!", version);
-        eprintln!("  Please restart Grok.");
+        eprintln!("  ✓ Workshop v{} installed successfully!", version);
+        eprintln!("  Please restart Workshop.");
         return Ok(Some(version.to_string()));
     }
 
@@ -2675,26 +2689,39 @@ pub async fn run_update(
         .unwrap_or(true)
     {
         eprintln!(
-            "Forcing reinstall of Grok {} (already up to date)",
+            "Forcing reinstall of Workshop {} (already up to date)",
             effective_current
         );
         &effective_current
     } else {
-        eprintln!("Updating Grok {} → {}", effective_current, install_target);
+        eprintln!("Updating Workshop {} → {}", effective_current, install_target);
         &install_target
     };
 
     eprintln!();
-    run_install_script(installer, Some(target_version), update_config, trigger).await?;
+    if let Err(e) = run_install_script(installer, Some(target_version), update_config, trigger).await
+    {
+        xai_grok_telemetry::unified_log::warn(
+            "update.install_failed",
+            None,
+            Some(serde_json::json!({ "to": target_version, "error": format!("{e:#}") })),
+        );
+        return Err(e);
+    }
+    xai_grok_telemetry::unified_log::info(
+        "update.installed",
+        None,
+        Some(serde_json::json!({ "from": effective_current, "to": target_version })),
+    );
     // Fetch the stable pointer now so the new binary has it immediately for channel_label() display
     // Otherwise it would wait for the next TTL-gated update check (~30 min)
     let stable_ptr = try_fetch_stable_pointer().await;
     write_version_cache(target_version, stable_ptr.as_deref()).await;
     refresh_deployment_config().await;
-    eprintln!("  ✓ grok v{} installed successfully!", target_version);
+    eprintln!("  ✓ Workshop v{} installed successfully!", target_version);
 
     if !force && std::env::var_os("GROK_AUTO_UPDATE").is_none() {
-        eprintln!("  Please restart Grok.");
+        eprintln!("  Please restart Workshop.");
     }
     Ok(Some(target_version.to_string()))
 }
@@ -2721,7 +2748,7 @@ async fn refresh_deployment_config() {
         Err(e) if e.is_auth_rejection() => tracing::debug!("managed config not applied: {e}"),
         Err(e) if e.is_retryable() => {
             tracing::debug!("managed config refresh failed: {e}");
-            eprintln!("  Couldn't apply managed configuration. Run `grok setup` to retry.");
+            eprintln!("  Couldn't apply managed configuration. Run `workshop setup` to retry.");
         }
         Err(e) => eprintln!("  Couldn't apply managed configuration. {e}"),
     }

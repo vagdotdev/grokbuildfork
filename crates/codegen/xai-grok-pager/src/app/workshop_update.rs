@@ -17,7 +17,9 @@ pub fn note_launch(home: &Path, running: &str) -> Option<String> {
     let previous = previous.as_deref().map(str::trim);
     if previous != Some(running) {
         let tmp = home.join(format!(".{MARKER}.tmp.{}", std::process::id()));
-        if std::fs::create_dir_all(home).is_ok() && std::fs::write(&tmp, format!("{running}\n")).is_ok() {
+        if std::fs::create_dir_all(home).is_ok()
+            && std::fs::write(&tmp, format!("{running}\n")).is_ok()
+        {
             let _ = std::fs::rename(&tmp, &path);
         }
     }
@@ -45,16 +47,28 @@ mod tests {
     fn only_the_first_launch_after_an_upgrade_says_updated() {
         let home = tempfile::tempdir().unwrap();
         assert_eq!(note_launch(home.path(), "0.2.1"), None, "first install");
-        assert_eq!(note_launch(home.path(), "0.2.1"), None, "same version again");
+        assert_eq!(
+            note_launch(home.path(), "0.2.1"),
+            None,
+            "same version again"
+        );
         assert_eq!(note_launch(home.path(), "0.2.2"), Some("0.2.2".into()));
         assert_eq!(note_launch(home.path(), "0.2.2"), None, "said once");
-        assert_eq!(note_launch(home.path(), "0.2.1"), None, "a downgrade is not an update");
+        assert_eq!(
+            note_launch(home.path(), "0.2.1"),
+            None,
+            "a downgrade is not an update"
+        );
         assert_eq!(
             std::fs::read_to_string(home.path().join(MARKER)).unwrap(),
             "0.2.1\n"
         );
         assert_eq!(updated_line("0.2.3"), "Updated to 0.2.3");
-        assert_eq!(note_launch(home.path(), "0.10.0"), Some("0.10.0".into()), "numeric, not lexical");
+        assert_eq!(
+            note_launch(home.path(), "0.10.0"),
+            Some("0.10.0".into()),
+            "numeric, not lexical"
+        );
         assert_eq!(release_core("0.2.3-alpha.1"), Some((0, 2, 3)));
         assert_eq!(release_core("garbage"), None);
     }
