@@ -498,6 +498,8 @@ def sorted_panthera(c, expected_shas):
     outside = [i for i in (image_info(p) for p in image_candidates(desk)) if not root or not i["path"].startswith(str(root) + "/")]
     stray = [str(Path(i["path"]).relative_to(desk)) for i in outside]
     dups = near_duplicates(sorted_imgs)
+    rev = OUT / "species-review.json"
+    dups += json.loads(rev.read_text()).get("duplicates", []) if rev.exists() else []
     replaced = len(set(expected_shas) - set(sorted_shas)) if expected_shas else None
     c.add("T2.3", bool(sorted_shas) and not stray and len(sorted_shas) == len(sorted_imgs) and not dups,
           "nothing left loose, no photo twice (same file or near-duplicate)",
@@ -730,6 +732,11 @@ def verify():
 
     elif TASK == "T9":
         p1 = next((e["text"] for e in ev if e["ev"] == "prompt_sent"), "")
+        working = next((e for e in ev if e["ev"] in ("waitre_ok", "waitre_timeout") and e["text"].startswith("◆")), None)
+        first = ts[0] if ts else {}
+        c.add("T9.0", bool(working) and working["ev"] == "waitre_ok", "the model was at work (a tool row on screen) when the user quit",
+              json.dumps({"tool_row": working["ev"] if working else None, "turn1_tools": sum(1 for i in first.get("items", []) if i.get("kind") == "tool"),
+                          "turn1_text_end": turn_text(first)[-160:] if first else ""}))
         resumed_at = next((i for i, e in enumerate(ev) if e["ev"] == "line" and e["text"].startswith("workshop -c")), None)
         replay = [e for e in ev[resumed_at or 0:] if e["ev"] in ("waitre_ok", "waitre_timeout")] if resumed_at is not None else []
         c.add("T9.1", bool(replay) and replay[0]["ev"] == "waitre_ok", "workshop -c shows the earlier conversation within 10 s",
@@ -741,6 +748,7 @@ def verify():
         res = {}
         if (proj / "todo.py").exists():
             scratch = Path(tempfile.mkdtemp(prefix="acc-t9-"))
+            scratch.chmod(0o755)
             shutil.copytree(proj, scratch / "p", ignore=shutil.ignore_patterns("todos.json", ".git"))
             if OTHER:
                 subprocess.run(["sudo", "chown", "-R", RUN["user"], str(scratch)])
@@ -758,7 +766,7 @@ def verify():
                 res["json_ok"] = ("buy milk" not in flat) or bool(re.search(r'"(done|completed|complete|status)":\s*(true|"done"|"completed")', flat))
             except (ValueError, FileNotFoundError) as e:
                 res["json"], res["json_ok"] = str(e), False
-            shutil.rmtree(scratch, ignore_errors=True)
+            subprocess.run(["sudo", "-n", "rm", "-rf", str(scratch)] if OTHER else ["rm", "-rf", str(scratch)])
         ok = bool(res) and all(res[k][0] == 0 for k in ("add", "list", "done")) and "buy milk" in res["list"][1].lower() and res.get("json_ok")
         c.add("T9.3", bool(ok), "the todo app works: add, list, done, valid todos.json", json.dumps(res))
 
