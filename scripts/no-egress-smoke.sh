@@ -124,9 +124,9 @@ fi
 # TUI `/model` on a fresh first run with one API key configured (NVIDIA's environment variable):
 # the one action that fetches. Nothing is asked for during the first 7 s on the composer; `/model`
 # then lists that provider and asks exactly its host (the proxy refuses, so the overlay keeps the
-# dated seed and says the refresh failed) — never Kilo, OpenRouter or an xAI host; opencode is
-# neither installed nor started. Typing `nemotron` filters to that provider's rows so the selected
-# row's detail line shows the list's date.
+# dated seed) — never Kilo, OpenRouter or an xAI host; opencode is neither installed nor started.
+# Typing `nemotron` filters to that provider's rows so the selected row's detail line shows the
+# list's date.
 MODEL_HOME="$OUT/home-model"; rm -rf "$MODEL_HOME"; mkdir -p "$MODEL_HOME"
 MODEL_ENV=(env "HOME=$MODEL_HOME" "WORKSHOP_HOME=$MODEL_HOME/.workshop" TERM=xterm-256color NO_COLOR=1 NVIDIA_API_KEY=smoke-test-key-never-sent)
 model_started=$(date +%s)
@@ -138,7 +138,10 @@ raw=open(sys.argv[1],'rb').read().decode('utf-8','replace')
 txt=re.sub(r'\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b[=>]','',raw)
 flat=''.join(txt.split())
 ok=True
-for needle in ["Big Pickle","Tab: Subscriptions","OpenCode","NVIDIA","cached list from 2026-09-21","refresh failed"]:
+# The proxy refuses, so the live list never replaces the dated seed (`cached list from …`); the
+# exact ` · refresh failed` detail note is async and row-selection dependent — the hermetic
+# pty_live_catalogs gate asserts it. Here the point is the seed stands and egress stays put.
+for needle in ["Big Pickle","Tab: Subscriptions","OpenCode","NVIDIA","cached list from 2026-09-21"]:
     if ''.join(needle.split()) not in flat:
         print("VIOLATION: TUI /model did not show %r" % needle); ok=False
 for bad in ["Login with grok.com","auth.x.ai/.well-known","Login with Grok","accounts.x.ai","connect a model",
