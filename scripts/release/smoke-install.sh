@@ -50,6 +50,9 @@ asset=$(asset_name "$version" "$platform")
 [[ -f "$dist/$asset" ]] || die "$dist has no $asset for this host; nothing to smoke-test"
 
 tmp=$(mktemp -d)
+# The cases install under throwaway WORKSHOP_HOMEs but run with the real HOME: keep the
+# maintainer's (or runner's) shell startup files untouched.
+export WORKSHOP_NO_MODIFY_PATH=1
 server_pid=''
 cleanup() {
   [[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null

@@ -824,10 +824,10 @@ index 8ffcc224..613c4739 100644
  ## Reopen this tutorial
  
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
-index ab27a76d..cadfba82 100644
+index ab27a76d..15f3379c 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
-@@ -1,99 +1,90 @@
+@@ -1,99 +1,91 @@
  # Getting Started
  
 -Grok Build is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
@@ -854,8 +854,9 @@ index ab27a76d..cadfba82 100644
  
 -Install a specific version:
 +The installer downloads the release for your platform, verifies its SHA-256 against the channel
-+manifest, installs `~/.workshop/bin/workshop` and prints the one line to add to your `PATH` if it
-+is not there yet. It makes no other network requests and sends no telemetry. Later:
++manifest, installs `~/.workshop/bin/workshop` and puts it on your `PATH` (one line in your shell's
++startup file, skipped with `WORKSHOP_NO_MODIFY_PATH=1`). It makes no other network requests and
++sends no telemetry. Later:
  
  ```bash
 -curl -fsSL https://x.ai/cli/install.sh | bash -s 0.1.42
@@ -976,7 +977,7 @@ index ab27a76d..cadfba82 100644
  
  ### File References
  
-@@ -105,7 +96,8 @@ Use `@` in your prompt to attach files:
+@@ -105,7 +97,8 @@ Use `@` in your prompt to attach files:
  @src/                     # Browse a directory
  ```
  
@@ -986,7 +987,7 @@ index ab27a76d..cadfba82 100644
  
  ```
  @!.github                 # Search hidden files
-@@ -114,10 +106,11 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore`
+@@ -114,10 +107,11 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore`
  
  ### Permissions
  
@@ -1000,7 +1001,7 @@ index ab27a76d..cadfba82 100644
  - Type `/always-approve` in the prompt to toggle the mode
  
  ---
-@@ -126,27 +119,31 @@ By default, Grok asks for permission before executing shell commands or editing
+@@ -126,27 +120,31 @@ By default, Grok asks for permission before executing shell commands or editing
  
  ### Sessions
  
@@ -1038,7 +1039,7 @@ index ab27a76d..cadfba82 100644
  
  | Tool | Description |
  |------|-------------|
-@@ -159,14 +156,17 @@ Grok has built-in tools for:
+@@ -159,14 +157,17 @@ Grok has built-in tools for:
  | `spawn_subagent` | Spawn parallel subagent sessions |
  | `memory_search` | Search cross-session memory |
  
@@ -1059,7 +1060,7 @@ index ab27a76d..cadfba82 100644
  /compact                          # Compress conversation history
  /always-approve                   # Toggle always-approve mode
  /new                              # Start a new session
-@@ -180,54 +180,50 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
+@@ -180,54 +181,50 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
  
  ```bash
  # Launch the interactive TUI and submit an initial prompt as the first turn
@@ -1129,7 +1130,7 @@ index ab27a76d..cadfba82 100644
  ```
  
  Output formats:
-@@ -241,22 +237,24 @@ Output formats:
+@@ -241,22 +238,24 @@ Output formats:
  Example CI/CD usage:
  
  ```bash
@@ -1158,7 +1159,7 @@ index ab27a76d..cadfba82 100644
  
  ---
  
-@@ -264,7 +262,7 @@ Deeper files take precedence. Grok also reads `CLAUDE.md` files for compatibilit
+@@ -264,7 +263,7 @@ Deeper files take precedence. Grok also reads `CLAUDE.md` files for compatibilit
  
  | Document | What You Will Learn |
  |----------|-------------------|

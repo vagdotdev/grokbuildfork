@@ -18,7 +18,10 @@
 #      model into $WORKSHOP_HOME/voice with resume + SHA-256 verification (three attempts,
 #      project mirror first, then Hugging Face), and records the choice. A matching file is never
 #      downloaded again.
-#   7. print what to do next: `cd <project> && workshop`
+#   7. make `workshop` a command: a link in ~/.local/bin or ~/bin when one is already on PATH,
+#      else one PATH line in the shell's startup file (~/.zshrc; ~/.bash_profile on macOS,
+#      ~/.bashrc on Linux; fish config.fish; ~/.profile), then print what to do next:
+#      `cd <project> && workshop`
 #
 # Every step is labeled `[n/6]` so a user can tell a download from a checksum from an install.
 #
@@ -35,6 +38,7 @@
 #   WORKSHOP_DOWNLOAD_BASE  asset base containing v<version>/ directories, for pinned
 #                           installs (mirrors, tests; default: the GitHub release assets)
 #   WORKSHOP_VOICE=1        also download the speech model now (default: on the first /voice)
+#   WORKSHOP_NO_MODIFY_PATH=1  leave shell startup files alone (print the PATH line instead)
 #
 # This file is POSIX sh on purpose: it runs under whatever `sh` the user has.
 set -eu
@@ -491,18 +495,57 @@ $reported"
   fi
 
   step 6 "Done. Workshop starts on a free model; nothing to sign in to."
+  start_now=''
   case ":$PATH:" in
     *":$bindir:"*) ;;
-    *)
-      say "first add Workshop to your PATH (append to ~/.zshrc, ~/.bashrc or ~/.config/fish/config.fish):"
-      case "$(basename "${SHELL:-sh}")" in
-        fish) printf '  fish_add_path %s\n' "$bindir" >&2 ;;
-        *) printf '  export PATH="%s:%s"\n' "$bindir" "\$PATH" >&2 ;;
-      esac
-      ;;
+    *) put_on_path ;;
   esac
-  printf '\n  cd <your-project> && %s\n\n' "$BIN" >&2
+  if [ -n "$start_now" ]; then
+    printf '\n  %s\n  cd <your-project> && %s\n\n' "$start_now" "$BIN" >&2
+  else
+    printf '\n  cd <your-project> && %s\n\n' "$BIN" >&2
+  fi
   say "then type what you want. /model switches models, /auth connects a subscription or an API key."
+}
+
+# Make `workshop` a command. A personal bin dir already on PATH gets a link, so it works in this
+# very shell; otherwise the shell's startup file gets one PATH line (once), and `start_now` is
+# the single command that makes it work before a new terminal is opened.
+put_on_path() {
+  for d in "$HOME/.local/bin" "$HOME/bin"; do
+    case ":$PATH:" in
+      *":$d:"*)
+        if [ -d "$d" ] && [ -w "$d" ]; then
+          ln -sf "$bindir/$BIN" "$d/$BIN"
+          say "linked $d/$BIN, so \`$BIN\` works right away"
+          return 0
+        fi
+        ;;
+    esac
+  done
+  shell_name=$(basename "${SHELL:-sh}")
+  case "$shell_name" in
+    zsh) rc="${ZDOTDIR:-$HOME}/.zshrc" line="export PATH=\"$bindir:\$PATH\"" ;;
+    bash)
+      # Terminal.app starts login shells, which read ~/.bash_profile, not ~/.bashrc.
+      if [ "$OS" = macos ]; then rc="$HOME/.bash_profile"; else rc="$HOME/.bashrc"; fi
+      line="export PATH=\"$bindir:\$PATH\""
+      ;;
+    fish) rc="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" line="fish_add_path $bindir" ;;
+    *) rc="$HOME/.profile" line="export PATH=\"$bindir:\$PATH\"" ;;
+  esac
+  if [ "$shell_name" = fish ]; then start_now="fish_add_path $bindir"; else start_now="export PATH=\"$bindir:\$PATH\""; fi
+  if [ "${WORKSHOP_NO_MODIFY_PATH:-0}" = 1 ]; then
+    say "add Workshop to your PATH (WORKSHOP_NO_MODIFY_PATH=1, so $rc was left alone):"
+    return 0
+  fi
+  if [ -f "$rc" ] && grep -F "$bindir" "$rc" >/dev/null 2>&1; then
+    say "$rc already puts Workshop on your PATH; new terminals have it. To use it in this one:"
+    return 0
+  fi
+  mkdir -p "$(dirname "$rc")"
+  printf '\n# Workshop\n%s\n' "$line" >>"$rc"
+  say "added Workshop to your PATH in $rc; new terminals have it. To use it in this one:"
 }
 
 main "$@"

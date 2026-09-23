@@ -19,8 +19,9 @@ curl -fsSL https://raw.githubusercontent.com/vagdotdev/grokbuildfork/release-cha
 ```
 
 The installer downloads the release for your platform, verifies its SHA-256 against the channel
-manifest, installs `~/.workshop/bin/workshop` and prints the one line to add to your `PATH` if it
-is not there yet. It makes no other network requests and sends no telemetry. Later:
+manifest, installs `~/.workshop/bin/workshop` and puts it on your `PATH` (one line in your shell's
+startup file, skipped with `WORKSHOP_NO_MODIFY_PATH=1`). It makes no other network requests and
+sends no telemetry. Later:
 
 ```bash
 workshop update            # move to the newest release
