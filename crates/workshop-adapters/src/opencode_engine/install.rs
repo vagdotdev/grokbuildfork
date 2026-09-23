@@ -194,15 +194,14 @@ pub async fn install_opencode(opts: &InstallOptions) -> Result<InstalledCli, Ins
         })?;
     }
     if !path.is_file() {
-        let tail: String =
-            crate::probe::strip_ansi(&format!("{}\n{}", output.stdout, output.stderr))
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .last()
-                .unwrap_or("no output")
-                .chars()
-                .take(400)
-                .collect();
+        let combined = crate::probe::strip_ansi(&format!("{}\n{}", output.stdout, output.stderr));
+        let tail: String = combined
+            .lines()
+            .rfind(|l| !l.trim().is_empty())
+            .unwrap_or("no output")
+            .chars()
+            .take(400)
+            .collect();
         return Err(InstallError::InstallerFailed {
             exit_code: output.exit_code,
             stderr: format!("finished without writing `{}`: {tail}", path.display()),

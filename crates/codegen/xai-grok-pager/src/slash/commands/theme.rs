@@ -333,7 +333,7 @@ mod tests {
             let mut matcher = crate::slash::matcher::FuzzyMatcher::new();
             for (alias, canonical) in [
                 ("transparent", "terminal"),
-                ("dark", "groknight"),
+                ("dark", "night"),
                 ("system", "auto"),
             ] {
                 let hits = matcher.rank(&items, alias, items.len(), |item| &item.match_text);
@@ -370,10 +370,10 @@ mod tests {
                     ..crate::settings::PagerLocalSnapshot::default()
                 },
             };
-            let result = cmd.run(&mut ctx, "groknight");
+            let result = cmd.run(&mut ctx, "night");
             match result {
                 CommandResult::Action(Action::SetTheme(name)) => {
-                    assert_eq!(name, "groknight");
+                    assert_eq!(name, "night");
                 }
                 other => panic!("expected Action::SetTheme(\"groknight\"), got {other:?}"),
             }
@@ -534,7 +534,7 @@ mod tests {
             let result = cmd.run(&mut ctx, "dark");
             match result {
                 CommandResult::Action(Action::SetTheme(name)) => {
-                    assert_eq!(name, "groknight", "alias must normalise to canonical");
+                    assert_eq!(name, "night", "alias must normalise to canonical");
                 }
                 other => panic!("expected Action::SetTheme(\"groknight\"), got {other:?}"),
             }
@@ -559,7 +559,7 @@ mod tests {
         with_test_env(|| {
             theme_cache::set(ThemeKind::GrokNight);
             let cmd = ThemeCommand;
-            cmd.preview_arg("grokday");
+            cmd.preview_arg("day");
             assert_eq!(Theme::current_kind(), ThemeKind::GrokDay);
         });
     }
@@ -586,11 +586,11 @@ mod tests {
             theme_cache::set(ThemeKind::GrokNight);
             let cmd = ThemeCommand;
             // Simulate user navigating into a different theme during preview.
-            cmd.preview_arg("grokday");
+            cmd.preview_arg("day");
             assert_eq!(Theme::current_kind(), ThemeKind::GrokDay);
 
             // Then Escape (or arg picker dismissal): restore.
-            cmd.cancel_preview("groknight");
+            cmd.cancel_preview("night");
             assert_eq!(
                 Theme::current_kind(),
                 ThemeKind::GrokNight,

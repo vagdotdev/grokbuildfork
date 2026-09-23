@@ -2395,7 +2395,7 @@ pub(crate) async fn run(
             maybe_ev = input_rx.recv() => {
                 // `None` means the dedicated terminal reader thread has ended.
                 let Some(ev) = maybe_ev else { break };
-                maybe_warm_engine_on_first_keystroke(&mut app, &ev.event);
+                let typed_char = typed_character(&ev.event);
                 let handled_at = std::time::Instant::now();
                 let waited =
                     super::event_loop_stall::input_wait(ev.arrived_at, handled_at, loop_entry);
@@ -2412,6 +2412,9 @@ pub(crate) async fn run(
                 }
                 if result.should_quit {
                     break;
+                }
+                if typed_char {
+                    maybe_warm_engine_on_first_message_keystroke(&mut app);
                 }
                 if !app.pending_effects.is_empty() {
                     let effs = std::mem::take(&mut app.pending_effects);
@@ -4205,20 +4208,34 @@ fn handle_workshop_turn_msg(
     (redraw, vec![])
 }
 
+/// A plain character key press (not a Ctrl/Alt chord, not a release).
+fn typed_character(event: &Event) -> bool {
+    let Event::Key(key) = event else { return false };
+    matches!(key.code, KeyCode::Char(_))
+        && key.kind != KeyEventKind::Release
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+}
+
 /// Workshop: the OpenCode engine is brought up (installed on first run, `opencode serve`) the
-/// moment the user starts typing, never on launch — a fresh home that is opened and quit makes no
-/// network call and gains no `tools/` directory, while a typed first message only waits for the
-/// model. Only a plain character key counts: navigation, Ctrl chords and quitting start nothing.
-fn maybe_warm_engine_on_first_keystroke(app: &mut AppView, event: &Event) {
+/// moment the user starts typing a *message*, never on launch and never for a slash command —
+/// a fresh home that is opened, browsed with `/model` and `/auth`, and quit makes no network call
+/// and gains no `tools/` directory, while a typed first message only waits for the model.
+fn maybe_warm_engine_on_first_message_keystroke(app: &mut AppView) {
     if app.workshop_engine_warm_started || !app.workshop_connection.is_engine() {
         return;
     }
-    let Event::Key(key) = event else { return };
-    let typed = matches!(key.code, KeyCode::Char(_))
-        && !key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
-    if !typed || key.kind == KeyEventKind::Release {
+    let composer = match app.active_view {
+        ActiveView::Welcome => app.welcome_prompt.text(),
+        ActiveView::Agent(id) => match app.agents.get(&id) {
+            Some(agent) => agent.prompt.text(),
+            None => return,
+        },
+        _ => return,
+    };
+    let text = composer.trim_start();
+    if text.is_empty() || text.starts_with('/') {
         return;
     }
     let Some(tx) = app.workshop_turn_tx.clone() else { return };

@@ -302,14 +302,16 @@ pub(super) fn dispatch_workshop_engine_unavailable(
         if let Some(entry) = app.workshop_turn_prompt_entry.take() {
             agent.scrollback.remove_entry(entry);
         }
-        agent.scrollback.push_block(RenderBlock::system(format!(
-            "OpenCode unavailable ({reason}) — using {} (Kilo · free shared pool) instead.",
-            plan.display_name
-        )));
     }
     crate::app::workshop::export_env(&plan.env);
     set_workshop_connection(app, crate::app::workshop::WorkshopConnection::Shell);
-    app.workshop_resend = Some((agent_id, text));
+    // The notice is rendered right under the resent prompt (after the page flip the resend
+    // causes), so the cause is on screen with the message it applies to.
+    let notice = format!(
+        "OpenCode unavailable ({reason}) — using {} (Kilo · free shared pool) instead.",
+        plan.display_name
+    );
+    app.workshop_resend = Some((agent_id, text, notice));
     app.auth_return_view = Some(ActiveView::Agent(agent_id));
     start_workshop_activation(app, plan.key)
 }
@@ -603,13 +605,14 @@ pub(super) fn handle_auth_complete(
             let mut page_flips = Vec::new();
             // Workshop: the prompt whose OpenCode turn could not start goes out again on the Kilo
             // fallback that has just been activated (`dispatch_workshop_engine_unavailable`).
-            if let Some((id, text)) = app.workshop_resend.take()
+            if let Some((id, text, notice)) = app.workshop_resend.take()
                 && let Some(agent) = app.agents.get_mut(&id)
             {
                 agent
                     .session
                     .enqueue_entry(text, crate::app::agent::QueueEntryKind::Prompt);
                 let drain = maybe_drain_queue(agent, &mut app.pending_image_notices);
+                agent.scrollback.push_block(RenderBlock::system(notice));
                 retry_effects.extend(drain.effects);
                 page_flips.push((agent.session.id, drain.page_flip_entry));
             }

@@ -80,7 +80,23 @@ pub fn spawn(
     extra_env: &[(&str, &str)],
     extra_path: Option<&Path>,
 ) -> Journey {
-    let home = tempfile::tempdir().expect("tempdir");
+    spawn_in(
+        journey,
+        bin,
+        extra_env,
+        extra_path,
+        tempfile::tempdir().expect("tempdir"),
+    )
+}
+
+/// [`spawn`] on a HOME the test has prepared (foreign config to be ignored, hooks to run, …).
+pub fn spawn_in(
+    journey: &str,
+    bin: &Path,
+    extra_env: &[(&str, &str)],
+    extra_path: Option<&Path>,
+    home: tempfile::TempDir,
+) -> Journey {
     let cwd = tempfile::tempdir().expect("tempdir");
     std::process::Command::new("git")
         .args(["init", "-q", "."])
@@ -135,21 +151,16 @@ pub fn fake_opencode(mode: &str) -> tempfile::TempDir {
     dir
 }
 
-/// First run: pick the OpenCode engine row in the picker and wait for the composer.
+/// First run (type and go): the composer is up with the OpenCode engine active; no picker.
 pub fn connect_big_pickle(j: &mut Journey) {
-    wait_for(&mut j.h, "connect a model", 45);
-    move_selection_to(&mut j.h, "Big Pickle");
-    j.h.inject_keys(b"\r").unwrap();
-    if let Err(e) =
-        j.h.wait_for_text_absent("connect a model", Duration::from_secs(60))
-    {
-        panic!(
-            "picker never closed after selecting Big Pickle: {e}\nscreen:\n{}",
-            j.h.screen_contents()
-        );
-    }
-    wait_for(&mut j.h, "\u{276f}", 30);
+    wait_for(&mut j.h, "\u{276f}", 45);
+    wait_for(&mut j.h, "OpenCode", 30);
     j.h.update(Duration::from_millis(1200));
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("connect a model"),
+        "a fresh HOME lands in the composer, not a picker:\n{screen}"
+    );
 }
 
 /// Type `text` into the composer and press Enter.

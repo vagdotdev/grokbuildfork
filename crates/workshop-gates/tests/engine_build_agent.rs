@@ -34,7 +34,11 @@ fn big_pickle_creates_and_runs_a_file_without_always_approve() {
             "engine failed instead of editing:\n{screen}"
         );
     }
-    assert!(hello.is_file(), "hello.py was never created:\n{}", j.h.screen_contents());
+    assert!(
+        hello.is_file(),
+        "hello.py was never created:\n{}",
+        j.h.screen_contents()
+    );
     // The run step shows up as a tool call in the scrollback.
     wait_for(&mut j.h, "python", 60);
     j.h.update(Duration::from_secs(4));

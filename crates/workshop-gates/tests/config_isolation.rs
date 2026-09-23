@@ -65,10 +65,12 @@ fn populated_grok_home_and_claude_settings_are_ignored_but_workshop_hooks_run() 
     let claude_marker = markers.path().join("claude-hook-ran");
     let workshop_marker = markers.path().join("workshop-hook-ran");
 
-    // Spawn first to get the fresh HOME, then populate the foreign homes inside it before the
-    // session starts (the picker is up for a while; hooks fire at session creation).
-    let home_holder = tempfile::tempdir().unwrap();
-    let grok_home = home_holder.path().join("dot-grok");
+    // Prepare the HOME before Workshop starts: a Grok Build home (also pointed to by
+    // `GROK_HOME`), Claude Code settings with a hook, and the positive control under
+    // `$WORKSHOP_HOME/hooks`. Hooks fire at session creation, which type-and-go does at once.
+    let home_dir = tempfile::tempdir().unwrap();
+    let home = home_dir.path().to_path_buf();
+    let grok_home = home.join(".grok");
     std::fs::create_dir_all(grok_home.join("hooks")).unwrap();
     std::fs::write(
         grok_home.join("hooks").join("startup.json"),
@@ -80,8 +82,20 @@ fn populated_grok_home_and_claude_settings_are_ignored_but_workshop_hooks_run() 
         "[models]\ndefault = \"grok-4.6\"\n",
     )
     .unwrap();
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::fs::write(
+        home.join(".claude").join("settings.json"),
+        session_start_hook(&claude_marker),
+    )
+    .unwrap();
+    std::fs::create_dir_all(home.join(".workshop").join("hooks")).unwrap();
+    std::fs::write(
+        home.join(".workshop").join("hooks").join("startup.json"),
+        session_start_hook(&workshop_marker),
+    )
+    .unwrap();
     let grok_home_s = grok_home.to_string_lossy().to_string();
-    let mut j = spawn(
+    let mut j = spawn_in(
         "config-isolation",
         &bin,
         &[
@@ -90,28 +104,8 @@ fn populated_grok_home_and_claude_settings_are_ignored_but_workshop_hooks_run() 
             ("GROK_CLAUDE_HOOKS_ENABLED", "1"),
         ],
         Some(fake.path()),
+        home_dir,
     );
-    // `~/.grok` and `~/.claude/settings.json` under the fresh HOME, plus the positive control
-    // under `$WORKSHOP_HOME/hooks`.
-    let home = j.home.path().to_path_buf();
-    std::fs::create_dir_all(home.join(".grok").join("hooks")).unwrap();
-    std::fs::write(
-        home.join(".grok").join("hooks").join("startup.json"),
-        session_start_hook(&grok_marker),
-    )
-    .unwrap();
-    std::fs::create_dir_all(home.join(".claude")).unwrap();
-    std::fs::write(
-        home.join(".claude").join("settings.json"),
-        session_start_hook(&claude_marker),
-    )
-    .unwrap();
-    std::fs::create_dir_all(j.workshop_home().join("hooks")).unwrap();
-    std::fs::write(
-        j.workshop_home().join("hooks").join("startup.json"),
-        session_start_hook(&workshop_marker),
-    )
-    .unwrap();
 
     connect_big_pickle(&mut j);
     // Session created; hooks have fired by the time the composer is up. Give the positive

@@ -1069,7 +1069,7 @@ fn configured_report_reaches_pass_state_only_for_exact_managed_alias() {
 fn shell_aliases_expand_to_exact_argv_and_bypass_is_explicit() {
     let temp = tempfile::tempdir().unwrap();
     let capture = temp.path().join("capture");
-    let grok = temp.path().join("grok");
+    let grok = temp.path().join("workshop");
     std::fs::write(
         &grok,
         format!(

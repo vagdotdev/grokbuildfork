@@ -106,9 +106,9 @@ pub fn is_first_run() -> bool {
     let Ok(doc) = text.parse::<toml::Table>() else {
         return true;
     };
-    !doc.get("model")
+    doc.get("model")
         .and_then(toml::Value::as_table)
-        .is_some_and(|models| !models.is_empty())
+        .is_none_or(|models| models.is_empty())
 }
 
 /// The first-run connection: the OpenCode engine's own default free model. Before the engine has
@@ -533,6 +533,9 @@ fn engine_phase(slot: &EngineSlot, tx: &mpsc::UnboundedSender<WorkshopTurnMsg>, 
 
 /// Record a failed bring-up for `workshop doctor` and return the cause with the log pointer.
 fn engine_fail(st: &mut EngineState, home: &Path, cause: String) -> String {
+    // One line: installer/serve stderr can carry newlines, and the fallback notice keeps the
+    // first line only.
+    let cause = cause.split_whitespace().collect::<Vec<_>>().join(" ");
     st.last_error = Some(cause.clone());
     st.save(home);
     format!("{cause}; log: {}", state::log_path(home).display())

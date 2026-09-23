@@ -10,15 +10,28 @@ use std::time::{Duration, Instant};
 
 use pty_common::*;
 
-/// Wait until the scrollback carries an `OpenCode engine:` line; return it and how long it took.
+/// Wait until the scrollback carries the failure line (`OpenCode unavailable (…)` when the
+/// engine never came up — followed by the Kilo fallback — or `OpenCode engine: …` when it was up
+/// but the turn failed); return it and how long it took.
 fn wait_for_failure_line(j: &mut Journey, secs: u64) -> (String, Duration) {
     let start = Instant::now();
-    wait_for(&mut j.h, "OpenCode engine:", secs);
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let screen = j.h.screen_contents();
+        if screen.contains("OpenCode unavailable") || screen.contains("OpenCode engine:") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no failure line after {secs}s:\n{screen}"
+        );
+        j.h.update(Duration::from_millis(200));
+    }
     j.h.update(Duration::from_millis(600));
     let screen = j.h.screen_contents();
     let line = screen
         .lines()
-        .skip_while(|l| !l.contains("OpenCode engine:"))
+        .skip_while(|l| !(l.contains("OpenCode unavailable") || l.contains("OpenCode engine:")))
         .take_while(|l| !l.trim().is_empty())
         .map(str::trim)
         .collect::<Vec<_>>()
@@ -26,14 +39,19 @@ fn wait_for_failure_line(j: &mut Journey, secs: u64) -> (String, Duration) {
     (line, start.elapsed())
 }
 
-fn assert_way_out(line: &str) {
+/// A bring-up failure: the cause, the engine log pointer, and the Kilo fallback as the way out.
+fn assert_fallback_way_out(line: &str) {
     assert!(
-        line.contains("/model"),
-        "failure line names /model as the way out: {line}"
+        line.contains("OpenCode unavailable"),
+        "a bring-up failure falls back: {line}"
     );
     assert!(
         line.contains("opencode-engine.log"),
         "failure line names the engine log: {line}"
+    );
+    assert!(
+        line.contains("instead"),
+        "the Kilo fallback is announced on the same line: {line}"
     );
     assert!(
         !line.contains("already running"),
@@ -55,7 +73,7 @@ fn serve_that_exits_at_once_is_reported_with_its_stderr_in_seconds() {
         line.contains("exited during startup") && line.contains("libfake.dylib"),
         "the process exit and its stderr are the reported cause: {line}"
     );
-    assert_way_out(&line);
+    assert_fallback_way_out(&line);
     assert!(took < Duration::from_secs(10), "reported in {took:?}");
     let state = j.workshop_home().join("engine").join("state.json");
     let state = std::fs::read_to_string(&state).expect("engine state written for doctor");
@@ -86,7 +104,7 @@ fn serve_that_never_binds_hits_the_30s_ceiling_with_a_visible_status_line() {
         line.contains("did not become ready within 30s"),
         "the hard startup ceiling is the reported cause: {line}"
     );
-    assert_way_out(&line);
+    assert_fallback_way_out(&line);
     assert!(
         !j.h.screen_contents()
             .contains("Starting the OpenCode engine"),
@@ -149,7 +167,7 @@ fn offline_installer_failure_names_the_curl_error() {
         line.contains("install failed") && line.contains("Could not resolve host"),
         "the installer's own error is the reported cause: {line}"
     );
-    assert_way_out(&line);
+    assert_fallback_way_out(&line);
     assert!(took < Duration::from_secs(15), "reported in {took:?}");
 }
 
@@ -177,5 +195,9 @@ fn healthy_serve_with_a_silent_model_hits_the_90s_first_event_ceiling() {
         line.contains("no answer from Big Pickle after 90 s"),
         "the first-event ceiling is the reported cause: {line}"
     );
-    assert_way_out(&line);
+    // The engine is up, so there is nothing to fall back from: `/model` is the way out.
+    assert!(
+        line.contains("/model") && line.contains("opencode-engine.log"),
+        "{line}"
+    );
 }

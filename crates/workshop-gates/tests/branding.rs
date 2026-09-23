@@ -106,7 +106,10 @@ fn system_prompt_carries_no_grok_or_xai_identity() {
         (ToolKind::List, "list_dir"),
         (ToolKind::Plan, "todo_write"),
         (ToolKind::Skill, "skill"),
-        (ToolKind::BackgroundTaskAction, "get_command_or_subagent_output"),
+        (
+            ToolKind::BackgroundTaskAction,
+            "get_command_or_subagent_output",
+        ),
         (ToolKind::KillTaskAction, "kill_command_or_subagent"),
         (ToolKind::WebSearch, "web_search"),
     ]
@@ -116,11 +119,19 @@ fn system_prompt_carries_no_grok_or_xai_identity() {
     let renderer = TemplateRenderer::new(tools, HashMap::new());
 
     let primary = PromptContext::default();
-    let mut subagent = PromptContext::default();
-    subagent.audience = PromptAudience::Subagent;
-    let mut codex = PromptContext::default();
-    codex.system_prompt = TemplateOverride::Codex;
-    for (name, ctx) in [("primary", primary), ("subagent", subagent), ("apply-patch", codex)] {
+    let subagent = PromptContext {
+        audience: PromptAudience::Subagent,
+        ..Default::default()
+    };
+    let codex = PromptContext {
+        system_prompt: TemplateOverride::Codex,
+        ..Default::default()
+    };
+    for (name, ctx) in [
+        ("primary", primary),
+        ("subagent", subagent),
+        ("apply-patch", codex),
+    ] {
         let prompt = ctx
             .render_with_renderer(&renderer)
             .unwrap_or_else(|| panic!("{name} prompt renders"));

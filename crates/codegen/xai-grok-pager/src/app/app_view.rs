@@ -1049,7 +1049,7 @@ pub struct AppView {
     /// Kilo fallback).
     pub workshop_turn_prompt_entry: Option<crate::scrollback::EntryId>,
     /// A prompt to resend on the shell path once the Kilo fallback activation completes.
-    pub workshop_resend: Option<(crate::app::agent::AgentId, String)>,
+    pub workshop_resend: Option<(crate::app::agent::AgentId, String, String)>,
     /// Delivery state from the last clipboard copy during auth.
     pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     /// Generation of the current auth copy feedback and its clear timer.

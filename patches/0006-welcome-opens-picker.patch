@@ -115,7 +115,7 @@ index f1602289..cbd8421e 100644
      ChangelogFetched {
          markdown: Option<String>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..a1ccba80 100644
+index fc9a4553..f76e8b93 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -189,7 +189,7 @@ index fc9a4553..a1ccba80 100644
 +    /// Kilo fallback).
 +    pub workshop_turn_prompt_entry: Option<crate::scrollback::EntryId>,
 +    /// A prompt to resend on the shell path once the Kilo fallback activation completes.
-+    pub workshop_resend: Option<(crate::app::agent::AgentId, String)>,
++    pub workshop_resend: Option<(crate::app::agent::AgentId, String, String)>,
      /// Delivery state from the last clipboard copy during auth.
      pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
      /// Generation of the current auth copy feedback and its clear timer.
@@ -395,10 +395,10 @@ index fc9a4553..a1ccba80 100644
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-index 483296d4..22b6b73d 100644
+index 483296d4..c74aec13 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-@@ -169,6 +169,17 @@ pub(crate) fn test_app() -> AppView {
+@@ -169,6 +169,20 @@ pub(crate) fn test_app() -> AppView {
          auth_url_poll_handle: None,
          deferred_startup: Default::default(),
          auth_use_oauth: false,
@@ -413,10 +413,13 @@ index 483296d4..22b6b73d 100644
 +        workshop_turn_agent: None,
 +        workshop_turn_prompt_entry: None,
 +        workshop_resend: None,
++        workshop_engine_slot: crate::app::workshop::new_engine_slot(),
++        workshop_engine_warm_started: false,
++        workshop_turn_progress_entry: None,
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -278,6 +289,7 @@ pub(crate) fn test_app() -> AppView {
+@@ -278,6 +292,7 @@ pub(crate) fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -424,7 +427,7 @@ index 483296d4..22b6b73d 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -616,6 +628,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
+@@ -616,6 +631,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
      );
  }
  #[test]
@@ -432,7 +435,7 @@ index 483296d4..22b6b73d 100644
  fn needs_animation_gates_prompt_history_tick_delivery() {
      let mut app = test_app_with_agent();
      let id = super::super::agent::AgentId(0);
-@@ -2268,16 +2281,20 @@ fn is_restricted_tier_classification() {
+@@ -2268,16 +2284,20 @@ fn is_restricted_tier_classification() {
      assert!(!is_restricted_tier(Some("X Premium+")));
      assert!(!is_restricted_tier(Some("SomeFutureTier")));
  }
@@ -514,7 +517,7 @@ index 87f63aef..3ea3c577 100644
          Self::parse_from(std::iter::once(bin_name).chain(std::env::args().skip(1)))
      }
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
-index 769d63a9..f46a0e22 100644
+index 769d63a9..923a84fc 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 @@ -10,6 +10,7 @@ use crate::app::agent_view::AgentView;
@@ -525,7 +528,7 @@ index 769d63a9..f46a0e22 100644
  
  /// `/logout`: ask the shell to clear auth, then return to the login screen.
  pub(super) fn dispatch_logout(_app: &mut AppView) -> Vec<Effect> {
-@@ -203,24 +204,282 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
+@@ -203,24 +204,284 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
      }
  }
  
@@ -639,14 +642,16 @@ index 769d63a9..f46a0e22 100644
 +        if let Some(entry) = app.workshop_turn_prompt_entry.take() {
 +            agent.scrollback.remove_entry(entry);
 +        }
-+        agent.scrollback.push_block(RenderBlock::system(format!(
-+            "OpenCode unavailable ({reason}) — using {} (Kilo · free shared pool) instead.",
-+            plan.display_name
-+        )));
 +    }
 +    crate::app::workshop::export_env(&plan.env);
 +    set_workshop_connection(app, crate::app::workshop::WorkshopConnection::Shell);
-+    app.workshop_resend = Some((agent_id, text));
++    // The notice is rendered right under the resent prompt (after the page flip the resend
++    // causes), so the cause is on screen with the message it applies to.
++    let notice = format!(
++        "OpenCode unavailable ({reason}) — using {} (Kilo · free shared pool) instead.",
++        plan.display_name
++    );
++    app.workshop_resend = Some((agent_id, text, notice));
 +    app.auth_return_view = Some(ActiveView::Agent(agent_id));
 +    start_workshop_activation(app, plan.key)
 +}
@@ -820,7 +825,7 @@ index 769d63a9..f46a0e22 100644
  
      abort_prior_auth(app);
  
-@@ -240,6 +499,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
+@@ -240,6 +501,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
              method_id,
              use_oauth: app.auth_use_oauth,
              force_interactive: true,
@@ -828,7 +833,7 @@ index 769d63a9..f46a0e22 100644
          },
          Effect::PollAuthUrl { request_seq },
      ]
-@@ -263,6 +523,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
+@@ -263,6 +525,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
      app.auth_state = AuthState::Done;
      app.auth_show_raw_url = false;
      app.auth_code_input.reset();
@@ -837,7 +842,7 @@ index 769d63a9..f46a0e22 100644
      restore_auth_return_view(app, return_view);
      // This runs on all agents because the login may have been started from the dashboard
      // Clearing the stash alone is not enough
-@@ -314,6 +576,18 @@ pub(super) fn handle_auth_complete(
+@@ -314,6 +578,18 @@ pub(super) fn handle_auth_complete(
          app.welcome_prompt_focused = !app.is_access_blocked();
          app.auth_code_input.reset();
  
@@ -856,19 +861,20 @@ index 769d63a9..f46a0e22 100644
          // Mid-session re-auth (`/login` or a 401 prompt): restore the view the user was on instead of running the startup load-session flow
          // The session state lives in `app.agents`, independent of `active_view`, so it is preserved across the auth detour
          if let Some(return_view) = app.auth_return_view.take() {
-@@ -327,6 +601,18 @@ pub(super) fn handle_auth_complete(
+@@ -327,6 +603,19 @@ pub(super) fn handle_auth_complete(
              // Auth is global, so handle every agent (the login may have been started from the dashboard, not the agent that 401'd)
              let mut retry_effects = Vec::new();
              let mut page_flips = Vec::new();
 +            // Workshop: the prompt whose OpenCode turn could not start goes out again on the Kilo
 +            // fallback that has just been activated (`dispatch_workshop_engine_unavailable`).
-+            if let Some((id, text)) = app.workshop_resend.take()
++            if let Some((id, text, notice)) = app.workshop_resend.take()
 +                && let Some(agent) = app.agents.get_mut(&id)
 +            {
 +                agent
 +                    .session
 +                    .enqueue_entry(text, crate::app::agent::QueueEntryKind::Prompt);
 +                let drain = maybe_drain_queue(agent, &mut app.pending_image_notices);
++                agent.scrollback.push_block(RenderBlock::system(notice));
 +                retry_effects.extend(drain.effects);
 +                page_flips.push((agent.session.id, drain.page_flip_entry));
 +            }
@@ -991,7 +997,7 @@ index b00317f2..9611b9b4 100644
                  app.auth_code_input.reset();
              }
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
-index 0cbf3632..1dc3c5f9 100644
+index 0cbf3632..375f58f7 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 @@ -394,7 +394,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
@@ -1003,7 +1009,7 @@ index 0cbf3632..1dc3c5f9 100644
      let seq = authenticating_seq(&app);
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -554,34 +554,417 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
+@@ -554,34 +554,427 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
      );
  }
  
@@ -1200,12 +1206,7 @@ index 0cbf3632..1dc3c5f9 100644
 +        app.workshop_connection.is_shell(),
 +        "Kilo is a Direct API (shell) connection"
 +    );
-+    let notice = last_system_text(&app, id);
-+    assert!(
-+        notice.starts_with("OpenCode unavailable (installer failed: offline)")
-+            && notice.contains("Kilo"),
-+        "one-line notice: {notice:?}"
-+    );
++    // The notice is held back until the resend has painted the prompt, so it lands under it.
 +    assert!(
 +        test_agent(&app, id).scrollback.index_of_id(entry).is_none(),
 +        "the engine attempt's bubble is dropped; the resend paints it once"
@@ -1219,8 +1220,18 @@ index 0cbf3632..1dc3c5f9 100644
 +        "switches the open session to the Kilo model, got {effects:?}"
 +    );
 +    assert_eq!(
-+        app.workshop_resend.as_ref().map(|(_, t)| t.as_str()),
++        app.workshop_resend.as_ref().map(|(_, t, _)| t.as_str()),
 +        Some("hello")
++    );
++    let notice = app
++        .workshop_resend
++        .as_ref()
++        .map(|(_, _, n)| n.clone())
++        .unwrap_or_default();
++    assert!(
++        notice.starts_with("OpenCode unavailable (installer failed: offline)")
++            && notice.contains("Kilo"),
++        "one-line notice: {notice:?}"
 +    );
 +    let AuthState::Authenticating { request_seq, .. } = app.auth_state else {
 +        panic!("activation in flight, got {:?}", app.auth_state);
@@ -1234,6 +1245,11 @@ index 0cbf3632..1dc3c5f9 100644
 +        &mut app,
 +    );
 +    assert!(app.workshop_resend.is_none(), "the resend was consumed");
++    assert!(
++        last_system_text(&app, id).starts_with("OpenCode unavailable"),
++        "the notice is rendered with the resent prompt: {:?}",
++        last_system_text(&app, id)
++    );
 +    assert_eq!(app.active_view, ActiveView::Agent(id));
 +    let agent = test_agent(&app, id);
 +    assert!(
@@ -1433,7 +1449,7 @@ index 0cbf3632..1dc3c5f9 100644
  }
  
  /// Puts the app in `Authenticating` with a live task's abort handle installed, as the event loop would.
-@@ -591,7 +974,7 @@ fn install_live_auth_task(
+@@ -591,7 +984,7 @@ fn install_live_auth_task(
      app: &mut AppView,
      rt: &tokio::runtime::Runtime,
  ) -> (tokio::task::JoinHandle<()>, u64) {
@@ -1442,7 +1458,7 @@ index 0cbf3632..1dc3c5f9 100644
      let task = rt.spawn(std::future::pending::<()>());
      match &mut app.auth_state {
          AuthState::Authenticating {
-@@ -621,7 +1004,7 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -621,7 +1014,7 @@ fn login_while_authenticating_aborts_prior_task() {
      let mut app = test_app_with_agent();
      let (prior_task, first_seq) = install_live_auth_task(&mut app, &rt);
  
@@ -1451,7 +1467,7 @@ index 0cbf3632..1dc3c5f9 100644
  
      rt.block_on(async {
          assert!(
-@@ -651,12 +1034,12 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -651,12 +1044,12 @@ fn login_while_authenticating_aborts_prior_task() {
  #[test]
  fn stale_auth_complete_after_relogin_is_ignored() {
      let mut app = test_app_with_agent();
@@ -1466,7 +1482,7 @@ index 0cbf3632..1dc3c5f9 100644
  
      dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -722,7 +1105,7 @@ fn cancel_login_aborts_prior_task() {
+@@ -722,7 +1115,7 @@ fn cancel_login_aborts_prior_task() {
  #[test]
  fn cancel_login_restores_view() {
      let mut app = test_app_with_agent();
@@ -1489,10 +1505,10 @@ index 2049a2d9..3ec2aebf 100644
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-index bf64193d..95bfbe8c 100644
+index bf64193d..40ca0147 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-@@ -181,6 +181,17 @@ fn test_app() -> AppView {
+@@ -181,6 +181,20 @@ fn test_app() -> AppView {
          auth_url_poll_handle: None,
          deferred_startup: Default::default(),
          auth_use_oauth: false,
@@ -1507,10 +1523,13 @@ index bf64193d..95bfbe8c 100644
 +        workshop_turn_agent: None,
 +        workshop_turn_prompt_entry: None,
 +        workshop_resend: None,
++        workshop_engine_slot: crate::app::workshop::new_engine_slot(),
++        workshop_engine_warm_started: false,
++        workshop_turn_progress_entry: None,
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -289,6 +300,7 @@ fn test_app() -> AppView {
+@@ -289,6 +303,7 @@ fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -1518,7 +1537,7 @@ index bf64193d..95bfbe8c 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -585,6 +597,25 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
+@@ -585,6 +600,25 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
      std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
      sess_dir
  }
@@ -1545,9 +1564,18 @@ index bf64193d..95bfbe8c 100644
  fn authenticating_seq(app: &AppView) -> u64 {
      match app.auth_state {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
-index 347259b3..bdf454ac 100644
+index 347259b3..d1b4f1b3 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
+@@ -1622,7 +1622,7 @@ fn trust_folder_continues_session_only_when_embedded_and_persist_denied() {
+         .map(|(m, _)| m.as_str())
+         .unwrap_or_default();
+     assert!(
+-        toast.contains("grok --trust"),
++        toast.contains("workshop --trust"),
+         "a session-only grant must show how to persist: {toast}"
+     );
+ }
 @@ -2032,8 +2032,9 @@ fn gated_worktree_with_none_companions_preserves_stashed_label_and_ref() {
      assert!(!app.deferred_startup.worktree);
  }
@@ -1744,7 +1772,7 @@ index 1c507697..233aca18 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..2232560f 100644
+index eda61b3c..a5e26479 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -1932,11 +1960,21 @@ index eda61b3c..2232560f 100644
              maybe_ev = input_rx.recv() => {
                  // `None` means the dedicated terminal reader thread has ended.
                  let Some(ev) = maybe_ev else { break };
-+                maybe_warm_engine_on_first_keystroke(&mut app, &ev.event);
++                let typed_char = typed_character(&ev.event);
                  let handled_at = std::time::Instant::now();
                  let waited =
                      super::event_loop_stall::input_wait(ev.arrived_at, handled_at, loop_entry);
-@@ -2885,6 +2967,23 @@ pub(crate) async fn run(
+@@ -2331,6 +2413,9 @@ pub(crate) async fn run(
+                 if result.should_quit {
+                     break;
+                 }
++                if typed_char {
++                    maybe_warm_engine_on_first_message_keystroke(&mut app);
++                }
+                 if !app.pending_effects.is_empty() {
+                     let effs = std::mem::take(&mut app.pending_effects);
+                     if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
+@@ -2885,6 +2970,23 @@ pub(crate) async fn run(
                  presenter.request(false);
              }
  
@@ -1960,7 +1998,7 @@ index eda61b3c..2232560f 100644
              // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
              // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
              // Voice is only serviced when nothing else is pending
-@@ -3143,7 +3242,9 @@ struct RoutedInputEvent {
+@@ -3143,7 +3245,9 @@ struct RoutedInputEvent {
      is_startup_replay: bool,
  }
  fn tty_suspend_armed(app: &AppView) -> bool {
@@ -1971,7 +2009,7 @@ index eda61b3c..2232560f 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4035,202 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4038,216 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -2145,20 +2183,34 @@ index eda61b3c..2232560f 100644
 +    (redraw, vec![])
 +}
 +
++/// A plain character key press (not a Ctrl/Alt chord, not a release).
++fn typed_character(event: &Event) -> bool {
++    let Event::Key(key) = event else { return false };
++    matches!(key.code, KeyCode::Char(_))
++        && key.kind != KeyEventKind::Release
++        && !key
++            .modifiers
++            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
++}
++
 +/// Workshop: the OpenCode engine is brought up (installed on first run, `opencode serve`) the
-+/// moment the user starts typing, never on launch — a fresh home that is opened and quit makes no
-+/// network call and gains no `tools/` directory, while a typed first message only waits for the
-+/// model. Only a plain character key counts: navigation, Ctrl chords and quitting start nothing.
-+fn maybe_warm_engine_on_first_keystroke(app: &mut AppView, event: &Event) {
++/// moment the user starts typing a *message*, never on launch and never for a slash command —
++/// a fresh home that is opened, browsed with `/model` and `/auth`, and quit makes no network call
++/// and gains no `tools/` directory, while a typed first message only waits for the model.
++fn maybe_warm_engine_on_first_message_keystroke(app: &mut AppView) {
 +    if app.workshop_engine_warm_started || !app.workshop_connection.is_engine() {
 +        return;
 +    }
-+    let Event::Key(key) = event else { return };
-+    let typed = matches!(key.code, KeyCode::Char(_))
-+        && !key
-+            .modifiers
-+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
-+    if !typed || key.kind == KeyEventKind::Release {
++    let composer = match app.active_view {
++        ActiveView::Welcome => app.welcome_prompt.text(),
++        ActiveView::Agent(id) => match app.agents.get(&id) {
++            Some(agent) => agent.prompt.text(),
++            None => return,
++        },
++        _ => return,
++    };
++    let text = composer.trim_start();
++    if text.is_empty() || text.starts_with('/') {
 +        return;
 +    }
 +    let Some(tx) = app.workshop_turn_tx.clone() else { return };
@@ -2291,10 +2343,10 @@ index 60fe34f9..e1784570 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..03cc0540
+index 00000000..306a657e
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1007 @@
+@@ -0,0 +1,1010 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -2403,9 +2455,9 @@ index 00000000..03cc0540
 +    let Ok(doc) = text.parse::<toml::Table>() else {
 +        return true;
 +    };
-+    !doc.get("model")
++    doc.get("model")
 +        .and_then(toml::Value::as_table)
-+        .is_some_and(|models| !models.is_empty())
++        .is_none_or(|models| models.is_empty())
 +}
 +
 +/// The first-run connection: the OpenCode engine's own default free model. Before the engine has
@@ -2830,6 +2882,9 @@ index 00000000..03cc0540
 +
 +/// Record a failed bring-up for `workshop doctor` and return the cause with the log pointer.
 +fn engine_fail(st: &mut EngineState, home: &Path, cause: String) -> String {
++    // One line: installer/serve stderr can carry newlines, and the fallback notice keeps the
++    // first line only.
++    let cause = cause.split_whitespace().collect::<Vec<_>>().join(" ");
 +    st.last_error = Some(cause.clone());
 +    st.save(home);
 +    format!("{cause}; log: {}", state::log_path(home).display())
