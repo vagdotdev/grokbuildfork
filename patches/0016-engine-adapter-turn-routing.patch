@@ -61,7 +61,7 @@ index ae3b381c..68aa7a2f 100644
      /// Whether a local or wake cancel is still in flight.
      pub(crate) fn any_cancel_pending(&self) -> bool {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-index a4d77733..7d70f71b 100644
+index a4d77733..463a3d8e 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 @@ -82,6 +82,7 @@ pub(super) fn collect_live_doctor_report_for_terminal(
@@ -72,7 +72,7 @@ index a4d77733..7d70f71b 100644
      Some(report)
  }
  
-@@ -614,6 +615,91 @@ pub(super) fn dispatch_send_prompt_inner(
+@@ -614,6 +615,92 @@ pub(super) fn dispatch_send_prompt_inner(
      dispatch_send_prompt_submission(app, text, None, consume_input, literal, is_follow_up)
  }
  
@@ -139,6 +139,7 @@ index a4d77733..7d70f71b 100644
 +    app.workshop_turn_stream_entry = None;
 +    app.workshop_turn_progress = None;
 +    app.workshop_turn_started = Some(std::time::Instant::now());
++    app.workshop_turn_errored = false;
 +    app.workshop_last_prompt = Some(text.clone());
 +
 +    if let Some(agent) = app.agents.get_mut(&id) {
@@ -164,7 +165,7 @@ index a4d77733..7d70f71b 100644
  pub(super) fn dispatch_send_prompt_submission(
      app: &mut AppView,
      text: String,
-@@ -689,6 +775,20 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -689,6 +776,20 @@ pub(super) fn dispatch_send_prompt_submission(
          text
      };
  
@@ -185,7 +186,7 @@ index a4d77733..7d70f71b 100644
      // Capture app-level fields before the mut-borrow on `agent`.
      let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
      let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
-@@ -701,6 +801,7 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -701,6 +802,7 @@ pub(super) fn dispatch_send_prompt_submission(
      let login_method_id_from_app = app.login_method_id.as_ref().map(|id| id.0.to_string());
      let leader_mode = app.leader_mode;
      let screen_mode_is_minimal = app.screen_mode.is_minimal();
@@ -193,7 +194,7 @@ index a4d77733..7d70f71b 100644
      let Some(agent) = app.agents.get_mut(&id) else {
          return prelude;
      };
-@@ -1029,6 +1130,23 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -1029,6 +1131,23 @@ pub(super) fn dispatch_send_prompt_submission(
                  return effects;
              }
              CommandResult::QueueCommand(cmd_text) => {
@@ -217,7 +218,7 @@ index a4d77733..7d70f71b 100644
                  agent.session.enqueue_command(cmd_text);
              }
              CommandResult::InjectSkill {
-@@ -1413,7 +1531,23 @@ pub(super) fn handle_prompt_response(
+@@ -1413,7 +1532,23 @@ pub(super) fn handle_prompt_response(
      // The leader's `running_prompt_id` broadcast can arrive before this `PromptResponse`
      // Take any stashed adoption now; it is applied after `finish_turn` clears `current_prompt_id` below
      let pending_adoption = app.pending_running_adoptions.remove(&agent_id);
@@ -241,7 +242,7 @@ index a4d77733..7d70f71b 100644
          // Discard PromptResponses that don't belong to the currently active prompt
          // They belong to a turn the user rewound, or to a queued prompt that never became the running turn
          // Without the `Err` fallback, a queued prompt's RPC error has no id to gate on and is misattributed to the running turn
-@@ -1642,6 +1776,17 @@ pub(super) fn handle_prompt_response(
+@@ -1642,6 +1777,17 @@ pub(super) fn handle_prompt_response(
          // Insert the session event message (skip TurnCompleted for bash-mode, which has no agent turn)
          let event = match (&result, was_cancelling) {
              (Ok(_), false) if agent.bash_turn => None,
@@ -259,7 +260,7 @@ index a4d77733..7d70f71b 100644
              (Err(_), _) if dedicated_ux_shown => None,
              // `err` is already banner-formatted by `format_acp_error` at the producer, the single formatting owner
              // Don't re-format here
-@@ -1682,9 +1827,13 @@ pub(super) fn handle_prompt_response(
+@@ -1682,9 +1828,13 @@ pub(super) fn handle_prompt_response(
                  };
                  Some((NotificationEventKind::TurnComplete, body))
              }

@@ -1,8 +1,19 @@
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
-index d9583697..f42ee669 100644
+index d9583697..4b35cf24 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
-@@ -2252,18 +2252,26 @@ impl AgentView {
+@@ -741,7 +741,9 @@ impl AgentView {
+             } else {
+                 None
+             },
+-            placeholder_when_focused: false,
++            // Workshop: the empty composer reads its invitation whenever nothing is running; a
++            // turn in flight leaves it blank until the turn ends.
++            placeholder_when_focused: !self.stoppable_activity_running(),
+             placeholder_override: if let Some(ph) = self
+                 .prompt_input_mode
+                 .placeholder_override(self.multiline_mode)
+@@ -2252,18 +2254,26 @@ impl AgentView {
                  dot,
                  Style::default().fg(dot_color).bg(bg),
              );
@@ -35,7 +46,7 @@ index d9583697..f42ee669 100644
              let stop_fg = if self.hit_voice_stop_button.hovered {
                  theme.accent_error
              } else {
-@@ -2338,9 +2346,13 @@ impl AgentView {
+@@ -2338,9 +2348,13 @@ impl AgentView {
          let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
          let usage_warning = usage_warning_text.as_deref();
          let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
