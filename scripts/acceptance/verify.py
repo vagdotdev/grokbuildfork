@@ -389,9 +389,17 @@ def probe(name):
                                "input": "<input" in body.lower(), "button": bool(re.search(r"<button|<form|type=.submit", body, re.I)),
                                "script": "<script" in body.lower(), "todo": bool(re.search(r"to-?do", body, re.I))})
         if name == "t3-server" and targets:
+            (OUT / "probes" / f"{name}.json").write_text(json.dumps(p, indent=1))
             shot = OUT / "probes" / "t3-page.png"
-            subprocess.run(["google-chrome", "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
-                            f"--screenshot={shot}", "--window-size=1200,900", targets[0]], capture_output=True, timeout=60)
+            # headless Chrome writes the shot and then may not exit: give it 30 s, then kill it
+            chrome = subprocess.Popen(["google-chrome", "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
+                                       f"--user-data-dir={tempfile.mkdtemp(prefix='acc-chrome-')}", f"--screenshot={shot}",
+                                       "--window-size=1200,900", targets[0]], stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL, start_new_session=True)
+            try:
+                chrome.wait(30)
+            except subprocess.TimeoutExpired:
+                os.killpg(chrome.pid, signal.SIGKILL)
             p["screenshot"] = str(shot) if shot.exists() else None
     elif TASK == "T1" and name == "ghostty-launch":
         rc, where = as_user("command -v ghostty")
