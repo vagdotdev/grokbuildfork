@@ -25,7 +25,9 @@ from the real server:
 Every turn ends with a step-finish carrying tokens (total 8627 -> "8.6K") and goes idle. Every
 prompt_async body and permission reply is appended to the `--log` file (JSON lines) so a gate can
 pin the agent that was sent and the answer Workshop posted; the server's own start is the first
-line (`{"started": true, "time": <unix seconds>}`) so a gate can pin *when* Workshop brought it up.
+line (`{"started": true, "time": <unix seconds>}`) so a gate can pin *when* Workshop brought it up,
+and every session Workshop opens is a `{"created": "<id>"}` line so a gate can pin *which*
+conversation each prompt went to.
 """
 import json
 import os
@@ -328,6 +330,7 @@ class H(BaseHTTPRequestHandler):
         if path == "/session":
             sid = next_id("ses_fake")
             sessions[sid] = {"messages": []}
+            log({"created": sid})
             return self._json(200, {"id": sid, "title": body.get("title", ""), "directory": CWD})
         if path.startswith("/session/") and path.endswith("/prompt_async"):
             sid = path.split("/")[2]

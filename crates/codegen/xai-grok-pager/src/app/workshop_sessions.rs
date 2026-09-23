@@ -396,6 +396,17 @@ pub fn replay(agent: &mut AgentView, session: &EngineSession) {
     agent.scrollback.enable_follow_mode();
 }
 
+/// A new session (`/new`, a new worktree session, the agent behind a loaded conversation) is a new
+/// conversation on the engine too: the next turn opens a fresh OpenCode session instead of
+/// continuing the last one, the context meter starts over, and nothing queued for the old
+/// conversation carries across. The old conversation stays in the record store, so `workshop -c`
+/// and the resume picker still find it. A pending resume is applied after this, on top.
+pub fn begin_fresh_conversation(app: &mut AppView) {
+    app.workshop_engine_session = None;
+    app.workshop_context_used = None;
+    app.workshop_turn_queue.clear();
+}
+
 /// Bind a just-created agent to the engine conversation a launch or the picker asked to resume:
 /// replay the transcript, continue the same OpenCode session, restore the context meter.
 pub fn apply_pending_resume(app: &mut AppView, agent_id: crate::app::agent::AgentId) {

@@ -34,6 +34,9 @@
 //!   composer opens in always-approve (`Big Pickle · always-approve`, a command runs unprompted);
 //!   Shift+Tab reaches the asking mode, the pick is written to the config and the next launch
 //!   opens in it.
+//! * `new_starts_a_fresh_engine_conversation` — `/new` opens a fresh OpenCode session for the next
+//!   prompt (new id, nothing of the old conversation resent, no meter carried over); `-c` still
+//!   resumes the most recent conversation.
 //!
 //! Evidence (text + HTML screenshots) lands in `WORKSHOP_PTY_EVIDENCE_DIR/engine-trust/*`.
 
@@ -1000,6 +1003,153 @@ fn first_run_starts_in_always_approve_and_a_pick_persists() {
     assert!(j.cwd.path().join("tmp").exists());
     assert_eq!(permission_replies(&fx.log), vec!["once", "reject"]);
     quit(&mut j);
+}
+
+/// Sessions the fake engine was asked to open (`POST /session`), in order.
+fn sessions_created(log: &Path) -> Vec<String> {
+    engine_log(log)
+        .iter()
+        .filter_map(|v| v.get("created").and_then(|s| s.as_str()).map(str::to_owned))
+        .collect()
+}
+
+/// `(session, prompt text)` for every prompt the fake engine received, in order.
+fn prompts_by_session(log: &Path) -> Vec<(String, String)> {
+    engine_log(log)
+        .iter()
+        .filter_map(|v| {
+            Some((
+                v.get("session")?.as_str()?.to_owned(),
+                v.get("text")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+/// `/new` is a new conversation on the engine: the next prompt opens a fresh OpenCode session
+/// (a new id; the old session is never written to again, and nothing of it is sent along), while
+/// `workshop -c` still resumes the most recent conversation.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn new_starts_a_fresh_engine_conversation() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/new-starts-fresh-conversation", &bin, &fx);
+    send_prompt(&mut j, "remember the word pelican");
+    wait_for(&mut j.h, "Echo: remember the word pelican", 60);
+    j.h.update(Duration::from_millis(400));
+    let first = prompts_by_session(&fx.log);
+    assert_eq!(first.len(), 1, "{first:?}");
+    let old = first.first().map(|(s, _)| s.clone()).unwrap_or_default();
+    assert_eq!(sessions_created(&fx.log), vec![old.clone()]);
+    // The record store keys conversations by second; keep the two turns apart.
+    j.h.update(Duration::from_millis(1200));
+
+    // `/new`: an empty conversation — the transcript is gone, the meter is gone.
+    send_prompt(&mut j, "/new");
+    wait_gone(&mut j, "Echo: remember the word pelican", 15);
+    j.h.update(Duration::from_millis(600));
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("8.6K / 200K"),
+        "the context meter starts over with the new conversation:\n{screen}"
+    );
+    snapshot(&j.h, &j.dir, "01-after-new");
+
+    // The next prompt goes to a fresh session: a new id, and the old one receives nothing more.
+    send_prompt(&mut j, "and now?");
+    wait_for(&mut j.h, "Echo: and now?", 60);
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "02-first-turn-of-new-conversation");
+    let created = sessions_created(&fx.log);
+    assert_eq!(
+        created.len(),
+        2,
+        "a second OpenCode session was opened: {created:?}"
+    );
+    let new = created.get(1).cloned().unwrap_or_default();
+    assert_ne!(new, old, "the new conversation has its own session id");
+    assert_eq!(
+        prompts_by_session(&fx.log),
+        vec![
+            (old.clone(), "remember the word pelican".to_owned()),
+            (new.clone(), "and now?".to_owned()),
+        ],
+        "each prompt went to its own session; nothing of the old conversation was resent"
+    );
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("pelican"),
+        "the old conversation is not shown in the new one:\n{screen}"
+    );
+    let after = quit(&mut j);
+    assert!(
+        after.contains(&format!("workshop --resume {new}")),
+        "the quit hint names the new conversation:\n{after}"
+    );
+
+    // `-c` on the same folder resumes the most recent conversation — the new one.
+    let mut h = {
+        let inherited = std::env::var("PATH").unwrap_or_default();
+        let path_s = format!("{}:{inherited}", fx.bin.display());
+        let home_s = j.home.path().to_string_lossy().to_string();
+        let wh_s = j.workshop_home().to_string_lossy().to_string();
+        let mut env: Vec<(&str, &str)> = vec![
+            ("HOME", home_s.as_str()),
+            ("WORKSHOP_HOME", wh_s.as_str()),
+            ("PATH", path_s.as_str()),
+            ("TERM", "xterm-256color"),
+            ("NO_COLOR", "1"),
+            ("GROK_DISABLE_AUTOUPDATER", "1"),
+        ];
+        env.extend_from_slice(OFFLINE);
+        let mut h = xai_grok_pager_pty_harness::PtyHarness::new_inherited_env(
+            &bin,
+            45,
+            140,
+            &["-c"],
+            &env,
+            Some(j.cwd.path()),
+        )
+        .expect("spawn workshop -c in pty");
+        h.set_respond_to_queries(true);
+        h
+    };
+    wait_for(&mut h, "Echo: and now?", 45);
+    wait_for(&mut h, "Resumed", 10);
+    h.update(Duration::from_millis(400));
+    let screen = h.screen_contents();
+    std::fs::write(
+        j.dir.join("03-continue-resumes-new-conversation.txt"),
+        &screen,
+    )
+    .unwrap();
+    std::fs::write(
+        j.dir.join("03-continue-resumes-new-conversation.html"),
+        h.screen_html(),
+    )
+    .unwrap();
+    assert!(
+        !screen.contains("pelican"),
+        "-c resumes the newest conversation, not the one before /new:\n{screen}"
+    );
+    // A turn on the resumed conversation never touches the session from before `/new`. (This
+    // launch's fake server has no memory of the earlier process's sessions, so Workshop opens a
+    // replacement session for it — with the real engine, which persists sessions, it is `new`.)
+    h.inject_keys(b"still here?").unwrap();
+    h.update(Duration::from_millis(300));
+    h.inject_keys(b"\r").unwrap();
+    wait_for(&mut h, "Echo: still here?", 60);
+    let last = prompts_by_session(&fx.log).pop().unwrap_or_default();
+    assert_eq!(last.1, "still here?");
+    assert_ne!(
+        last.0, old,
+        "the resumed turn must not continue the conversation from before /new"
+    );
+    h.inject_keys(b"\x03").unwrap();
+    h.update(Duration::from_millis(400));
+    h.inject_keys(b"\x03").unwrap();
+    let _ = h.wait_exit_code(Duration::from_secs(10));
 }
 
 /// The same promises against the real `opencode` (keyless Big Pickle, network): the proof run
