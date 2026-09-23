@@ -426,14 +426,15 @@ pub fn apply_pending_resume(app: &mut AppView, agent_id: crate::app::agent::Agen
     }
 }
 
-/// The id the quit hint should name, or `None` when nothing was said this session (no hint):
-/// the engine conversation for an Engine connection, the shell session otherwise.
-pub fn exit_resume_id(app: &AppView, agent: &AgentView, shell_session_id: &str) -> Option<String> {
+/// The id the quit hint should name: for an Engine connection the engine conversation, or `None`
+/// (no hint) when nothing was said — the shell session behind an engine agent is always an empty
+/// husk, never worth resuming. Other connections keep the shell's own session id.
+pub fn exit_resume_id(app: &AppView, shell_session_id: &str) -> Option<String> {
     if app.workshop_connection.is_engine() {
         let id = app.workshop_engine_session.as_deref()?;
         return load(id).filter(|s| !s.turns.is_empty()).map(|s| s.id);
     }
-    crate::views::session_title::last_user_prompt_line(agent).map(|_| shell_session_id.to_owned())
+    Some(shell_session_id.to_owned())
 }
 
 #[cfg(test)]

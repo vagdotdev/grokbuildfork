@@ -541,6 +541,104 @@ fn engine_answers_as_workshop() {
     quit(&mut j);
 }
 
+/// The same promises against the real `opencode` (keyless Big Pickle, network): the proof run
+/// behind the v0.2.2 evidence. Needs a genuine `opencode` on `PATH` and `WORKSHOP_LIVE_OPENCODE=1`;
+/// never runs in CI. Screens land in `WORKSHOP_PTY_EVIDENCE_DIR/engine-trust/live-*`.
+#[test]
+#[ignore = "needs WORKSHOP_BIN, a real opencode on PATH and network; run with WORKSHOP_LIVE_OPENCODE=1 --include-ignored"]
+fn live_engine_trust_journey() {
+    let Some(bin) = bin_from_env() else { return };
+    if std::env::var_os("WORKSHOP_LIVE_OPENCODE").is_none() {
+        eprintln!("WORKSHOP_LIVE_OPENCODE not set; skipping");
+        return;
+    }
+    let mut j = pty_common::spawn("engine-trust/live-safety-modes", &bin, &[], None);
+    pty_common::connect_big_pickle(&mut j);
+    std::fs::create_dir_all(j.cwd.path().join("tmp")).unwrap();
+    std::fs::write(j.cwd.path().join("tmp/junk"), "x").unwrap();
+
+    // Plan: a file request is planned, not done.
+    set_mode(&mut j, "plan");
+    send_prompt(
+        &mut j,
+        "Create a file named hello.txt containing the word hi.",
+    );
+    wait_for(&mut j.h, "Waiting for Big Pickle", 120);
+    wait_gone(&mut j, "Waiting for Big Pickle", 180);
+    j.h.update(Duration::from_millis(1500));
+    snapshot(&j.h, &j.dir, "01-plan-mode-answer");
+    assert!(
+        !j.cwd.path().join("hello.txt").exists(),
+        "plan mode must not create files"
+    );
+
+    // Normal: the engine asks before `rm -rf tmp`; approve; it runs.
+    set_mode(&mut j, "normal");
+    send_prompt(
+        &mut j,
+        "Run exactly this shell command and nothing else: rm -rf tmp",
+    );
+    wait_for(&mut j.h, "Allow Execute?", 180);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "02-normal-mode-prompt");
+    assert!(
+        j.cwd.path().join("tmp").exists(),
+        "nothing runs before the answer"
+    );
+    let screen = j.h.screen_contents();
+    assert!(screen.contains("rm -rf tmp"), "{screen}");
+    j.h.inject_keys(b"1").unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    while j.cwd.path().join("tmp").exists() && std::time::Instant::now() < deadline {
+        j.h.update(Duration::from_millis(500));
+    }
+    assert!(
+        !j.cwd.path().join("tmp").exists(),
+        "the approved command ran"
+    );
+    wait_gone(&mut j, "Allow Execute?", 60);
+    j.h.update(Duration::from_millis(3000));
+    snapshot(&j.h, &j.dir, "03-normal-mode-approved");
+
+    // Always-approve: the same kind of command runs with no prompt.
+    std::fs::create_dir_all(j.cwd.path().join("tmp2")).unwrap();
+    set_mode(&mut j, "always-approve");
+    send_prompt(
+        &mut j,
+        "Run exactly this shell command and nothing else: rm -rf tmp2",
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    while j.cwd.path().join("tmp2").exists() && std::time::Instant::now() < deadline {
+        j.h.update(Duration::from_millis(500));
+        assert!(
+            !j.h.screen_contents().contains("Allow Execute?"),
+            "always-approve draws no prompt"
+        );
+    }
+    assert!(
+        !j.cwd.path().join("tmp2").exists(),
+        "always-approve ran the command"
+    );
+    j.h.update(Duration::from_millis(3000));
+    snapshot(&j.h, &j.dir, "04-always-approve-ran");
+
+    // Identity and reasoning on the live model.
+    send_prompt(&mut j, "What are you? Answer in one sentence.");
+    wait_for(&mut j.h, "Workshop", 180);
+    j.h.update(Duration::from_millis(4000));
+    snapshot(&j.h, &j.dir, "05-identity-and-context-meter");
+    let screen = j.h.screen_contents();
+    assert!(!screen.contains("I'm opencode"), "{screen}");
+    assert!(
+        screen.contains("/ 200K"),
+        "live meter against the model's window:\n{screen}"
+    );
+    let after = quit(&mut j);
+    std::fs::write(j.dir.join("06-quit-hint.txt"), &after).unwrap();
+    assert!(after.contains("workshop --resume ses_"), "{after}");
+    eprintln!("evidence: {}", j.dir.display());
+}
+
 /// The engine conversation is what resume finds, replays and continues.
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]

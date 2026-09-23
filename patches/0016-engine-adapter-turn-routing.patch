@@ -917,10 +917,10 @@ index 00000000..c3d86a17
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs b/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs
 new file mode 100644
-index 00000000..81275072
+index 00000000..b953733b
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs
-@@ -0,0 +1,527 @@
+@@ -0,0 +1,528 @@
 +//! Workshop overlay: engine conversations on disk, so they can be resumed.
 +//!
 +//! An Engine (OpenCode) turn never enters the shell's session store — the shell session behind
@@ -1349,14 +1349,15 @@ index 00000000..81275072
 +    }
 +}
 +
-+/// The id the quit hint should name, or `None` when nothing was said this session (no hint):
-+/// the engine conversation for an Engine connection, the shell session otherwise.
-+pub fn exit_resume_id(app: &AppView, agent: &AgentView, shell_session_id: &str) -> Option<String> {
++/// The id the quit hint should name: for an Engine connection the engine conversation, or `None`
++/// (no hint) when nothing was said — the shell session behind an engine agent is always an empty
++/// husk, never worth resuming. Other connections keep the shell's own session id.
++pub fn exit_resume_id(app: &AppView, shell_session_id: &str) -> Option<String> {
 +    if app.workshop_connection.is_engine() {
 +        let id = app.workshop_engine_session.as_deref()?;
 +        return load(id).filter(|s| !s.turns.is_empty()).map(|s| s.id);
 +    }
-+    crate::views::session_title::last_user_prompt_line(agent).map(|_| shell_session_id.to_owned())
++    Some(shell_session_id.to_owned())
 +}
 +
 +#[cfg(test)]

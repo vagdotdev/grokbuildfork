@@ -2019,7 +2019,7 @@ index 1c507697..6b5e925c 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..f0147667 100644
+index eda61b3c..442b245d 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -2291,7 +2291,7 @@ index eda61b3c..f0147667 100644
          let sid = agent.session.session_id.as_ref()?;
 +        // Workshop: name the id that resumes what was actually said — the engine conversation
 +        // for an Engine connection — and print no hint for a session nothing was said in.
-+        let sid = crate::app::workshop_sessions::exit_resume_id(app, agent, sid.0.as_ref())?;
++        let sid = crate::app::workshop_sessions::exit_resume_id(app, sid.0.as_ref())?;
          let summary = if app.screen_mode.is_fullscreen() {
              use crate::views::session_title;
              let last_prompt = session_title::last_user_prompt_line(agent);

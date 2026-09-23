@@ -3220,7 +3220,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
         let sid = agent.session.session_id.as_ref()?;
         // Workshop: name the id that resumes what was actually said — the engine conversation
         // for an Engine connection — and print no hint for a session nothing was said in.
-        let sid = crate::app::workshop_sessions::exit_resume_id(app, agent, sid.0.as_ref())?;
+        let sid = crate::app::workshop_sessions::exit_resume_id(app, sid.0.as_ref())?;
         let summary = if app.screen_mode.is_fullscreen() {
             use crate::views::session_title;
             let last_prompt = session_title::last_user_prompt_line(agent);
