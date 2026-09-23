@@ -762,8 +762,8 @@ fn announced_action_is_carried_out() {
     quit(&mut j);
 }
 
-/// A finished answer is never continued, and a model that keeps announcing is continued at most
-/// twice before the turn ends.
+/// A finished answer is never continued (nor one that ends on a colon and a fenced result), and a
+/// model that keeps announcing is continued at most twice before the turn ends.
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
 fn auto_continue_is_bounded() {
@@ -772,9 +772,19 @@ fn auto_continue_is_bounded() {
     let mut j = launch("engine-trust/auto-continue-is-bounded", &bin, &fx);
     send_prompt(&mut j, "hello");
     wait_for(&mut j.h, "Echo: hello", 60);
+    // A finished answer that ends on a colon and a fenced result is not an announcement.
+    send_prompt(&mut j, "show the tree");
+    wait_for(&mut j.h, "tiger/", 60);
+    j.h.update(Duration::from_secs(2));
+    assert_eq!(
+        prompts_sent(&fx.log).len(),
+        2,
+        "{:?}",
+        prompts_sent(&fx.log)
+    );
     send_prompt(&mut j, "keep announcing");
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    while prompts_sent(&fx.log).len() < 4 && std::time::Instant::now() < deadline {
+    while prompts_sent(&fx.log).len() < 5 && std::time::Instant::now() < deadline {
         j.h.update(Duration::from_millis(300));
     }
     j.h.update(Duration::from_secs(3));
@@ -782,11 +792,11 @@ fn auto_continue_is_bounded() {
     let prompts = prompts_sent(&fx.log);
     assert_eq!(
         prompts.len(),
-        4,
-        "hello once, keep announcing once plus two continuations: {prompts:?}"
+        5,
+        "hello, show the tree, keep announcing once plus two continuations: {prompts:?}"
     );
     assert_eq!(prompts[0], "hello");
-    assert!(prompts[2].starts_with("Continue:") && prompts[3].starts_with("Continue:"));
+    assert!(prompts[3].starts_with("Continue:") && prompts[4].starts_with("Continue:"));
     quit(&mut j);
 }
 
@@ -843,6 +853,254 @@ fn pasted_file_is_written() {
         prompts.len(),
         5,
         "pasting again is continued once: {prompts:?}"
+    );
+    quit(&mut j);
+}
+
+/// The prompts the fake engine received, each with the model it was sent to.
+fn prompts_with_models(log: &Path) -> Vec<(String, String)> {
+    engine_log(log)
+        .iter()
+        .filter_map(|v| {
+            Some((
+                v.get("text")?.as_str()?.to_owned(),
+                v.get("model")?.get("modelID")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+/// Pick `row` in `/model` (type to filter, Enter) and wait for the composer to name it.
+fn pick_model(j: &mut Journey, filter: &str, label: &str) {
+    send_prompt(j, "/model");
+    wait_for(&mut j.h, "Tab: Subscriptions", 15);
+    j.h.inject_keys(filter.as_bytes()).unwrap();
+    j.h.update(Duration::from_millis(600));
+    j.h.inject_keys(b"\r").unwrap();
+    wait_for(&mut j.h, label, 15);
+    j.h.update(Duration::from_millis(800));
+    snapshot(
+        &j.h,
+        &j.dir,
+        &format!("picked-{}", filter.replace(' ', "-")),
+    );
+}
+
+fn saved_model_ref(j: &Journey) -> String {
+    let saved = std::fs::read_to_string(j.workshop_home().join("active-connection.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    v["model"]["model_ref"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// A turn whose model cannot see images and opens one is handed, silently, to a free model that
+/// can: the engine conversation continues on Muse Spark 1.3, the composer names Muse while it
+/// answers, and afterwards the picked model — the default or the user's own pick — is back for
+/// the next turn and on disk. A model that sees images keeps its turn.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn image_turn_is_answered_by_a_model_that_sees() {
+    const MUSE: &str = "OpenCode \u{b7} Muse Spark 1.3 Free";
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/image-turn-model-that-sees", &bin, &fx);
+
+    send_prompt(&mut j, "sort my photos");
+    wait_for(&mut j.h, "Looking at the photos.", 60);
+    snapshot(&j.h, &j.dir, "01-muse-answering");
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains(MUSE),
+        "the composer names the model answering:\n{screen}"
+    );
+    wait_for(&mut j.h, "Sorted 1 photo: a lion.", 30);
+    wait_for(&mut j.h, FIRST_RUN_LABEL, 15);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "02-turn-over-default-back");
+    let screen = j.h.screen_contents();
+    for hidden in ["Continue my request", "can't see", "cancelled", "could not"] {
+        assert!(
+            !screen.contains(hidden),
+            "no visible switch ({hidden:?}):\n{screen}"
+        );
+    }
+    let sent = prompts_with_models(&fx.log);
+    assert_eq!(
+        sent,
+        [
+            ("sort my photos".to_owned(), "big-pickle".to_owned()),
+            (
+                "Continue my request. You can now see the image files you opened.".to_owned(),
+                "muse-spark-1.3-contributor-free".to_owned()
+            ),
+        ],
+        "{sent:?}"
+    );
+    let log = std::fs::read_to_string(j.workshop_home().join("logs/opencode-engine.log"))
+        .unwrap_or_default();
+    assert!(
+        log.contains("vision: opencode/big-pickle cannot see"),
+        "{log}"
+    );
+
+    send_prompt(&mut j, "hello");
+    wait_for(&mut j.h, "Echo: hello", 30);
+    assert_eq!(prompts_with_models(&fx.log)[2].1, "big-pickle");
+    assert_eq!(saved_model_ref(&j), "opencode/big-pickle");
+
+    // The user's own pick sticks too.
+    pick_model(
+        &mut j,
+        "fin free",
+        "OpenCode \u{b7} Ling 3.0 Flash Fin Free",
+    );
+    send_prompt(&mut j, "sort my photos again");
+    wait_for(&mut j.h, "Looking at the photos.", 60);
+    assert!(j.h.screen_contents().contains(MUSE));
+    wait_for(&mut j.h, "OpenCode \u{b7} Ling 3.0 Flash Fin Free", 30);
+    send_prompt(&mut j, "hello again");
+    wait_for(&mut j.h, "Echo: hello again", 30);
+    snapshot(&j.h, &j.dir, "03-picked-model-sticks");
+    let sent = prompts_with_models(&fx.log);
+    assert_eq!(sent[3].1, "ling-3.0-flash-fin-free", "{sent:?}");
+    assert_eq!(sent[4].1, "muse-spark-1.3-contributor-free", "{sent:?}");
+    assert_eq!(sent[5].1, "ling-3.0-flash-fin-free", "{sent:?}");
+    assert_eq!(saved_model_ref(&j), "opencode/ling-3.0-flash-fin-free");
+
+    // A model that sees images keeps its turn.
+    pick_model(&mut j, "spark 1.3", MUSE);
+    send_prompt(&mut j, "sort my photos once more");
+    wait_for(&mut j.h, "Sorted 1 photo: a lion.", 30);
+    j.h.update(Duration::from_secs(1));
+    let sent = prompts_with_models(&fx.log);
+    assert_eq!(
+        sent.len(),
+        7,
+        "no hand-over for a model that sees: {sent:?}"
+    );
+    quit(&mut j);
+}
+
+/// Images a model that cannot see downloads are checked, before the turn ends, by one that can:
+/// the same engine conversation continues on Muse with the check, silently; the pick is back after.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn downloaded_images_are_checked_by_a_model_that_sees() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/downloaded-images-checked", &bin, &fx);
+    send_prompt(&mut j, "download cat photos to this folder");
+    wait_for(&mut j.h, "Checked: cat1.jpg is a real photo of a cat.", 60);
+    wait_for(&mut j.h, FIRST_RUN_LABEL, 15);
+    snapshot(&j.h, &j.dir, "01-checked");
+    let screen = j.h.screen_contents();
+    assert!(!screen.contains("Continue my request"), "{screen}");
+    let sent = prompts_with_models(&fx.log);
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert_eq!(sent[0].1, "big-pickle");
+    assert!(
+        sent[1]
+            .0
+            .starts_with("Continue my request: open each image you downloaded"),
+        "{sent:?}"
+    );
+    assert_eq!(sent[1].1, "muse-spark-1.3-contributor-free");
+    let log = std::fs::read_to_string(j.workshop_home().join("logs/opencode-engine.log"))
+        .unwrap_or_default();
+    assert!(log.contains("downloaded images it cannot see"), "{log}");
+    // A turn that downloads nothing is not checked.
+    send_prompt(&mut j, "hello");
+    wait_for(&mut j.h, "Echo: hello", 30);
+    j.h.update(Duration::from_secs(1));
+    assert_eq!(prompts_with_models(&fx.log).len(), 3);
+    quit(&mut j);
+}
+
+/// An 8×8 PNG (the composer refuses images under 8×8).
+const TINY_PNG: [u8; 78] = [
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x08, 0x02, 0x00, 0x00, 0x00, 0x4B, 0x6D, 0x29,
+    0xDC, 0x00, 0x00, 0x00, 0x15, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0x3C, 0x51, 0xA1, 0xC1,
+    0x80, 0x0D, 0x30, 0x31, 0xE0, 0x00, 0x83, 0x53, 0x02, 0x00, 0x1E, 0x27, 0x01, 0x78, 0x25, 0x96,
+    0xCA, 0x35, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+];
+
+/// A prompt that carries a pasted image goes, with the image, to a model that can see it — from
+/// the start; the picked model answers the next turn.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn pasted_image_goes_to_a_model_that_sees() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/pasted-image", &bin, &fx);
+    let png = j.cwd.path().join("cat.png");
+    std::fs::write(&png, TINY_PNG).unwrap();
+    j.h.inject_keys(format!("\x1b[200~{}\x1b[201~", png.display()).as_bytes())
+        .unwrap();
+    wait_for(&mut j.h, "[Image #1]", 15);
+    send_prompt(&mut j, " what is in this picture");
+    wait_for(&mut j.h, "Echo:", 30);
+    wait_for(&mut j.h, FIRST_RUN_LABEL, 15);
+    snapshot(&j.h, &j.dir, "01-answered");
+    let sent = engine_log(&fx.log);
+    let turn = sent
+        .iter()
+        .find(|v| {
+            v.get("text")
+                .and_then(|t| t.as_str())
+                .is_some_and(|t| t.contains("what is in this picture"))
+        })
+        .expect("the prompt reached the engine");
+    assert_eq!(
+        turn["model"]["modelID"], "muse-spark-1.3-contributor-free",
+        "{turn}"
+    );
+    assert_eq!(turn["files"][0]["mime"], "image/png", "{turn}");
+    send_prompt(&mut j, "hello");
+    wait_for(&mut j.h, "Echo: hello", 30);
+    assert_eq!(prompts_with_models(&fx.log).last().unwrap().1, "big-pickle");
+    quit(&mut j);
+}
+
+/// OpenCode's `question` tool opens Grok Build's question view: Enter on an option sends that
+/// answer back to the engine, which continues the turn with it; dismissing it (Ctrl+Y) declines.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn engine_question_uses_the_question_view() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/engine-question", &bin, &fx);
+    let replies = |log: &Path| -> Vec<serde_json::Value> {
+        engine_log(log)
+            .into_iter()
+            .filter(|v| v.get("question").is_some())
+            .map(|v| v["answers"].clone())
+            .collect()
+    };
+    send_prompt(&mut j, "ask me which install method");
+    wait_for(&mut j.h, "Which install method?", 30);
+    j.h.update(Duration::from_millis(600));
+    snapshot(&j.h, &j.dir, "01-question-view");
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains("PPA") && screen.contains(".deb"),
+        "{screen}"
+    );
+    j.h.inject_keys(b"\r").unwrap();
+    wait_for(&mut j.h, "You chose: PPA.", 30);
+    snapshot(&j.h, &j.dir, "02-answered");
+    assert_eq!(replies(&fx.log), [serde_json::json!([["PPA"]])]);
+
+    send_prompt(&mut j, "ask me again");
+    wait_for(&mut j.h, "Which install method?", 30);
+    j.h.update(Duration::from_millis(600));
+    j.h.inject_keys(b"\x19").unwrap();
+    wait_for(&mut j.h, "No answer.", 30);
+    assert_eq!(
+        replies(&fx.log),
+        [serde_json::json!([["PPA"]]), serde_json::Value::Null]
     );
     quit(&mut j);
 }
