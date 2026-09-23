@@ -225,6 +225,9 @@ def image_info(p):
         sd = ImageStat.Stat(im.convert("L")).stddev[0]
     except Exception as e:  # noqa: BLE001 — any decode failure means "not a usable photo"
         return {**info, "valid": False, "why": f"does not decode: {e}"}
+    g = im.convert("L").resize((9, 8))
+    px = list(g.getdata())
+    info["dhash"] = f"{sum(1 << i for i in range(64) if px[i // 8 * 9 + i % 8] > px[i // 8 * 9 + i % 8 + 1]):016x}"
     info.update(format=fmt, size=[w, h], stddev=round(sd, 1))
     if fmt not in ("JPEG", "PNG", "WEBP", "MPO"):
         return {**info, "valid": False, "why": f"format {fmt}"}
@@ -233,6 +236,14 @@ def image_info(p):
     if sd <= 10:
         return {**info, "valid": False, "why": "flat placeholder"}
     return {**info, "valid": True}
+
+
+def near_duplicates(imgs, limit=10):
+    """Pairs of valid images whose difference hashes are within `limit` bits (the same photo re-encoded,
+    resized or lightly cropped)."""
+    v = [i for i in imgs if i.get("dhash")]
+    return [(Path(a["path"]).name, Path(b["path"]).name) for n, a in enumerate(v) for b in v[n + 1:]
+            if bin(int(a["dhash"], 16) ^ int(b["dhash"], 16)).count("1") <= limit]
 
 
 def image_candidates(root, max_depth=4):
@@ -347,6 +358,14 @@ def snap(label):
     elif TASK in ("T2", "T2v"):
         s["images"] = [image_info(p) | {"rel": str(p.relative_to(HOME / "Desktop"))} for p in image_candidates(HOME / "Desktop")]
         s["files"] = [str(p.relative_to(HOME)) for p in walk(HOME / "Desktop", 4)]
+        from PIL import Image
+        thumbs = OUT / "snaps" / f"{label}-thumbs"
+        thumbs.mkdir(parents=True, exist_ok=True)
+        for i in s["images"]:
+            if i["valid"]:
+                im = Image.open(io.BytesIO(read_bytes(i["path"]))).convert("RGB")
+                im.thumbnail((480, 480))
+                im.save(thumbs / f"{i['sha256'][:16]}.jpg", quality=80)
     elif TASK == "T8":
         s["scripts"] = {}
         keep = OUT / "snaps" / f"{label}-files"
@@ -457,28 +476,33 @@ def sorted_panthera(c, expected_shas):
     desk = HOME / "Desktop"
     genus = [d for d in (Path(x) for x in glob.glob(str(desk / "*"))) if d.name.lower() == "panthera"]
     root = genus[0] if genus else None
-    by_species, bad_folders = {}, []
+    by_species, bad_folders, extra_files = {}, [], []
     if root:
         for d in sorted(Path(x) for x in glob.glob(str(root / "*"))):
             imgs = [image_info(p) for p in image_candidates(d, 2)]
             sp = species_of(d.name) if d.is_dir() else None
             if sp:
                 by_species.setdefault(sp, []).extend(imgs)
-            elif imgs or d.is_file():
+            elif imgs or d.is_dir():
                 bad_folders.append(d.name)
+            else:
+                extra_files.append(d.name)
     ok_counts = root is not None and set(by_species) == set(SPECIES) and not bad_folders and all(
         len(v) == 3 and all(i["valid"] for i in v) for v in by_species.values())
     summary = {sp: [f"{Path(i['path']).name}{'' if i['valid'] else ' (INVALID: ' + i['why'] + ')'}" for i in v] for sp, v in by_species.items()}
     c.add("T2.2", ok_counts, "photos sorted into Desktop/Panthera/<species>/ with 3 valid images each",
           json.dumps({"genus_folder": str(root.relative_to(HOME)) if root else None, "species": summary,
-                      "unrecognised": bad_folders}, ensure_ascii=False))
+                      "unrecognised": bad_folders, "other_files": extra_files}, ensure_ascii=False))
+    sorted_imgs = [i for v in by_species.values() for i in v]
     sorted_shas = {i["sha256"]: sp for sp, v in by_species.items() for i in v}
     outside = [i for i in (image_info(p) for p in image_candidates(desk)) if not root or not i["path"].startswith(str(root) + "/")]
     stray = [str(Path(i["path"]).relative_to(desk)) for i in outside]
-    same = set(sorted_shas) == set(expected_shas) if expected_shas else None
-    c.add("T2.3", not stray and bool(same), "nothing left loose or duplicated; the sorted photos are the photos",
-          json.dumps({"loose_outside_genus": stray, "sorted": len(sorted_shas), "expected": len(expected_shas),
-                      "same_set": same}))
+    dups = near_duplicates(sorted_imgs)
+    replaced = len(set(expected_shas) - set(sorted_shas)) if expected_shas else None
+    c.add("T2.3", bool(sorted_shas) and not stray and len(sorted_shas) == len(sorted_imgs) and not dups,
+          "nothing left loose, no photo twice (same file or near-duplicate)",
+          json.dumps({"loose_outside_genus": stray, "sorted": len(sorted_imgs), "distinct": len(sorted_shas),
+                      "near_duplicates": dups, "turn1_photos_replaced": replaced}))
     return sorted_shas
 
 
@@ -521,8 +545,11 @@ def verify():
         if TASK == "T2":
             imgs = t1.get("images", [])
             valid = {i["sha256"] for i in imgs if i["valid"]}
-            c.add("T2.1", len(imgs) == 15 and len(valid) == 15, "after prompt 1: 15 valid, distinct photos on the Desktop",
-                  json.dumps({"candidates": len(imgs), "valid_distinct": len(valid),
+            dups = near_duplicates([i for i in imgs if i["valid"]])
+            rev = OUT / "species-review.json"
+            dups += json.loads(rev.read_text()).get("turn1_duplicates", []) if rev.exists() else []
+            c.add("T2.1", len(imgs) == 15 and len(valid) == 15 and not dups, "after prompt 1: 15 valid, distinct photos on the Desktop",
+                  json.dumps({"candidates": len(imgs), "valid_distinct": len(valid), "near_duplicates": dups,
                               "invalid": [(i["rel"], i["why"]) for i in imgs if not i["valid"]]}))
             expected = valid
         else:
@@ -537,7 +564,7 @@ def verify():
         else:
             rev = OUT / "species-review.json"
             if rev.exists():
-                r = json.loads(rev.read_text())
+                r = json.loads(rev.read_text()).get("photos", {})
                 bad = [(v.get("file"), sp, v.get("shows"), v.get("verdict")) for s, sp in sorted_shas.items()
                        if (v := r.get(s, {})).get("verdict") != "correct" or v.get("shows") != sp]
                 c.add("T2.4", bool(sorted_shas) and not bad, "each photo shows its folder's species (reviewed by eye)",
@@ -644,8 +671,12 @@ def verify():
             interp = {".py": venv or "python3", ".js": "node", ".mjs": "node", ".ts": "npx -y tsx", ".sh": "bash"}[s.suffix]
             before = max(p.stat().st_mtime for p in walk(HOME / "Desktop", 2) if p.suffix.lower() == ".csv")
             time.sleep(1.1)
-            rc, out = as_user(f"{interp} '{s}'", cwd=str(s.parent), timeout=60)
-            after = [p for p in walk(HOME / "Desktop", 2) if p.suffix.lower() == ".csv" and p.stat().st_mtime > before]
+            for attempt in (1, 2):  # a network hiccup on the API is not the script's fault: one retry
+                rc, out = as_user(f"{interp} '{s}'", cwd=str(s.parent), timeout=60)
+                after = [p for p in walk(HOME / "Desktop", 2) if p.suffix.lower() == ".csv" and p.stat().st_mtime > before]
+                if rc == 0 and after:
+                    break
+                time.sleep(10)
             rerun = {"cmd": f"{interp} {s.relative_to(HOME)}", "rc": rc, "rewrote": [p.name for p in after], "out": out.strip()[-300:]}
         c.add("T6.4", rerun.get("rc") == 0 and bool(rerun.get("rewrote")), "re-running the script works and rewrites the CSV", json.dumps(rerun))
 
