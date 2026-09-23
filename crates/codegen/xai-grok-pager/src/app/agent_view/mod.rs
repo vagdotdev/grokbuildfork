@@ -747,6 +747,8 @@ pub struct AgentView {
     /// flag so the per-agent input layer treats Ctrl+C as a cancellable activity (there is no ACP
     /// turn to detect). Cleared when the turn ends.
     pub(crate) workshop_turn_active: bool,
+    /// Workshop: the prompt whose Engine/Adapter turn failed; Enter on an empty composer resends it.
+    pub(crate) workshop_retry_prompt: Option<String>,
     /// Sticky: once the user types in the prompt, hide the tip for the session.
     pub tip_typing_dismissed: bool,
     pub todo: TodoPane,

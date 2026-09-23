@@ -216,16 +216,20 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
 }
 
 /// Open the connection picker overlay on `tab` (`/model` → Models, `/auth` → Subscriptions).
-/// Idempotent while already open. Only the welcome view renders the overlay, so a mid-session
-/// invocation stashes the caller's view in `auth_return_view` and switches to `Welcome`; Esc
-/// restores it.
+/// Idempotent while already open. The welcome and agent views paint the overlay themselves (an
+/// agent keeps its transcript visible around it); any other view stashes itself in
+/// `auth_return_view` and switches to `Welcome`. Esc restores the caller's view either way.
 pub(super) fn dispatch_open_connection_picker(
     app: &mut AppView,
     tab: workshop_auth::PickerTab,
 ) -> Vec<Effect> {
-    if !matches!(app.active_view, ActiveView::Welcome) {
-        app.auth_return_view = Some(app.active_view);
-        show_welcome(app);
+    match app.active_view {
+        ActiveView::Welcome => {}
+        ActiveView::Agent(_) => app.auth_return_view = Some(app.active_view),
+        _ => {
+            app.auth_return_view = Some(app.active_view);
+            show_welcome(app);
+        }
     }
     // A login attempt in flight (e.g. the optional xAI flow) is abandoned when the picker reopens.
     if matches!(app.auth_state, AuthState::Authenticating { .. }) {
@@ -518,6 +522,11 @@ fn start_optional_xai_login(app: &mut AppView) -> Vec<Effect> {
         acp::AuthMethodId::new(xai_grok_shell::agent::auth_method::GROK_COM_METHOD_ID)
     });
     app.login_label = Some("xAI (optional)".to_owned());
+    // The browser / device-code screen is drawn by the welcome view; a picker opened over a
+    // session already stashed that session in `auth_return_view`.
+    if !matches!(app.active_view, ActiveView::Welcome) {
+        show_welcome(app);
+    }
 
     abort_prior_auth(app);
 

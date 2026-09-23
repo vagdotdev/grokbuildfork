@@ -1477,6 +1477,11 @@ fn init_terminal(
         startup_typeahead.extend(event_loop::capture_startup_typeahead(
             std::time::Duration::from_millis(0),
         ));
+        // Workshop: save the terminal's own title (XTWINOPS 22) so shutdown can restore it
+        // instead of leaving "Workshop" in the tab; terminals without a title stack ignore it.
+        xai_grok_shell::util::with_locked_stderr(|stderr| {
+            let _ = stderr.write_all(crate::notifications::TITLE_SAVE.as_bytes());
+        });
         set_terminal_title("");
         if want_minimal && clear_main_screen {
             xai_grok_shell::util::with_locked_stderr(|stderr| {

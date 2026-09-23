@@ -91,6 +91,30 @@ pub const ENGINE_DISPLAY_NAME: &str = "OpenCode";
 /// Where the engine rows come from when they are live: the running `opencode serve`.
 pub const ENGINE_CATALOG_SOURCE: &str = "opencode serve /config/providers";
 
+/// Name fragments (lowercase) of models that are not chat models: classifiers, guard rails,
+/// routers, rerankers, embeddings. Matched against display names and ids.
+const NON_CHAT_MARKERS: [&str; 10] = [
+    "content safety",
+    "safety",
+    "guard",
+    "router",
+    "rerank",
+    "embed",
+    "classif",
+    "moderation",
+    "topic control",
+    "jailbreak",
+];
+
+/// Whether a model name reads as a chat model (see [`NON_CHAT_MARKERS`]).
+pub fn is_chat_model_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    !NON_CHAT_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// How many rows the Recommended group holds at most.
+pub const RECOMMENDED_MAX: usize = 4;
+
 /// A free model served through the OpenCode engine (`opencode serve`), mirrored from its catalog.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EngineModel {
@@ -168,21 +192,34 @@ impl ModelsRow {
             RowKind::XaiOptional => XAI_ROW_ID.into(),
         }
     }
-    /// Row name: the model name, or the connect action for a provider without a credential.
+    /// Row name: the model name, or `Provider — Sign in` / `Provider — API key` for a provider
+    /// that still has to be connected (one vocabulary for every connect row, the xAI card included).
     pub fn title(&self) -> String {
         match &self.kind {
             RowKind::Catalog { model, .. } => model.display_name.clone(),
-            RowKind::ConnectProvider { copy, .. } => copy.clone(),
+            RowKind::ConnectProvider { .. } | RowKind::XaiOptional => {
+                format!("{} \u{2014} {}", self.group, self.connect_action())
+            }
             RowKind::Engine(m) => m.name.clone(),
-            RowKind::XaiOptional => "xAI (optional)".into(),
+        }
+    }
+    /// How a connect row is acted on: a browser sign-in, or a pasted API key.
+    pub fn connect_action(&self) -> &'static str {
+        match &self.kind {
+            RowKind::ConnectProvider { provider_id, .. } => match provider_id.as_str() {
+                "openrouter" | "opencode" => "Sign in",
+                _ => "API key",
+            },
+            RowKind::XaiOptional => "Sign in",
+            RowKind::Catalog { .. } | RowKind::Engine(_) => "",
         }
     }
     /// Provider column of the row line.
     pub fn provider(&self) -> &str {
         &self.group
     }
-    /// Short badge for the row line: `free` / `free · key` / `key` / `connect` / `API key` /
-    /// `optional`.
+    /// Short badge for the row line: `free` / `free · key` / `key` / `key needed` for models;
+    /// connect rows carry their action in the title and only the xAI card is badged `optional`.
     pub fn short_badge(&self) -> &'static str {
         match &self.kind {
             RowKind::Catalog { model, locked } => {
@@ -197,11 +234,19 @@ impl ModelsRow {
                 }
             }
             RowKind::Engine(_) => "free",
-            RowKind::ConnectProvider { provider_id, .. } => match provider_id.as_str() {
-                "openrouter" | "opencode" => "connect",
-                _ => "API key",
-            },
+            RowKind::ConnectProvider { .. } => "",
             RowKind::XaiOptional => "optional",
+        }
+    }
+    /// Whether a model row is a chat model a user would pick to talk to. Classifiers, guard /
+    /// safety models, routers, rerankers and embedding models are hidden behind "show all".
+    pub fn is_chat_model(&self) -> bool {
+        match &self.kind {
+            RowKind::Catalog { model, .. } => {
+                is_chat_model_name(&model.display_name) && is_chat_model_name(&model.model_id)
+            }
+            RowKind::Engine(m) => is_chat_model_name(&m.name) && is_chat_model_name(&m.model_ref),
+            RowKind::ConnectProvider { .. } | RowKind::XaiOptional => true,
         }
     }
     /// Whether the row belongs to the Models view (selectable model) rather than Subscriptions.
@@ -333,13 +378,22 @@ pub enum PickerInput {
     Enter,
     /// Close the detail panel / cancel key entry, or the picker when nothing is open.
     Back,
-    /// Text typed while a key-entry prompt is open.
+    /// Text typed: a key-entry prompt takes it as the key, the Models view as its filter.
     Char(char),
     Backspace,
     /// Paste while a key-entry prompt is open.
     Paste(String),
-    /// Refresh live catalogs / re-probe rails.
+    /// Refresh live catalogs / re-probe rails (`Ctrl+R`).
     Refresh,
+    /// Show / hide the non-chat models (classifiers, routers…) on the Models view (`Ctrl+A`).
+    ToggleShowAll,
+}
+
+/// One line of the Models view as rendered: a group header or a selectable row.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ModelsLine<'a> {
+    Header(&'static str),
+    Row(&'a ModelsRow),
 }
 
 /// What the host must do after a key press.
@@ -413,6 +467,11 @@ pub struct PickerState {
     pub secret_backend: Option<&'static str>,
     /// Freshness of every model list on the Models view (see [`Self::catalog_note`]).
     pub catalog_status: Vec<CatalogStatus>,
+    /// Type-to-filter text on the Models view (case-insensitive, matched against name and
+    /// provider). Esc clears it before it closes the picker.
+    pub filter: String,
+    /// Show every model row, including the non-chat ones hidden by default (`Ctrl+A`).
+    pub show_all: bool,
 }
 
 impl Default for PickerState {
@@ -443,6 +502,8 @@ impl PickerState {
             default_selection: None,
             secret_backend: None,
             catalog_status: Vec::new(),
+            filter: String::new(),
+            show_all: false,
         };
         s.set_rows(models_rows(
             &workshop_providers::Catalog::default(),
@@ -467,16 +528,126 @@ impl PickerState {
 
     fn set_rows(&mut self, all: Vec<ModelsRow>) {
         let (models, auth): (Vec<_>, Vec<_>) = all.into_iter().partition(ModelsRow::is_model);
-        self.rows = models;
+        // A refresh that lands while the list is on screen must not reshuffle what the user is
+        // reading: rows already shown keep their order, new rows join their provider's band.
+        self.rows = if self.loading || self.rows.is_empty() {
+            models
+        } else {
+            stable_merge(&self.rows, models)
+        };
         self.auth_rows = auth;
     }
 
     fn select_active(&mut self) {
-        if let Some(id) = &self.active_id
-            && let Some(idx) = self.rows.iter().position(|r| r.id() == *id)
+        if let Some(id) = self.active_id.clone()
+            && let Some(idx) = self.visible_models().iter().position(|r| r.id() == id)
         {
             self.models_selected = idx;
         }
+    }
+
+    /// The Models view's rows in display order: the Recommended group first, then every other
+    /// visible row in its stable order. Non-chat rows are hidden unless `show_all` (the active
+    /// row is always shown); a non-empty `filter` narrows by name / provider substring.
+    pub fn visible_models(&self) -> Vec<&ModelsRow> {
+        let filter = self.filter.trim().to_ascii_lowercase();
+        let passes = |row: &ModelsRow| {
+            (self.show_all || self.is_active(row) || row.is_chat_model())
+                && (filter.is_empty() || {
+                    let hay = format!("{} {}", row.title(), row.provider()).to_ascii_lowercase();
+                    filter.split_whitespace().all(|word| hay.contains(word))
+                })
+        };
+        let recommended = self.recommended_ids();
+        let mut out: Vec<&ModelsRow> = recommended
+            .iter()
+            .filter_map(|id| self.rows.iter().find(|r| r.id() == *id))
+            .filter(|r| passes(r))
+            .collect();
+        out.extend(
+            self.rows
+                .iter()
+                .filter(|r| passes(r) && !recommended.contains(&r.id())),
+        );
+        out
+    }
+
+    /// Row ids of the Recommended group, in order: the active model, the engine's default, the
+    /// engine's other tool-calling chat models, then the Kilo auto-router — at most
+    /// [`RECOMMENDED_MAX`]. Empty while a filter is typed (a search result needs no groups).
+    pub fn recommended_ids(&self) -> Vec<String> {
+        if !self.filter.trim().is_empty() {
+            return Vec::new();
+        }
+        let mut ids: Vec<String> = Vec::new();
+        let mut push = |row: &ModelsRow| {
+            let id = row.id();
+            if ids.len() < RECOMMENDED_MAX && row.is_chat_model() && !ids.contains(&id) {
+                ids.push(id);
+            }
+        };
+        if let Some(active) = self.active_id.as_deref()
+            && let Some(row) = self.rows.iter().find(|r| r.id() == active)
+        {
+            push(row);
+        }
+        for row in &self.rows {
+            if let RowKind::Engine(m) = &row.kind
+                && m.is_default
+            {
+                push(row);
+            }
+        }
+        for row in &self.rows {
+            if let RowKind::Engine(m) = &row.kind
+                && m.tool_call
+            {
+                push(row);
+            }
+        }
+        for row in &self.rows {
+            if let RowKind::Catalog {
+                model,
+                locked: false,
+            } = &row.kind
+                && model.provider_id == "kilo"
+                && model.model_id.contains("auto")
+            {
+                push(row);
+            }
+        }
+        ids
+    }
+
+    /// The Models view as lines: `Recommended` and `All models` headers around the groups when
+    /// no filter is typed, else the flat filtered list. Rows appear in [`Self::visible_models`]
+    /// order, so `models_selected` indexes the `Row` lines.
+    pub fn models_lines(&self) -> Vec<ModelsLine<'_>> {
+        let rows = self.visible_models();
+        let recommended = self.recommended_ids().len();
+        let grouped = self.filter.trim().is_empty() && recommended > 0 && rows.len() > recommended;
+        let mut lines = Vec::with_capacity(rows.len() + 2);
+        for (i, row) in rows.into_iter().enumerate() {
+            if grouped && i == 0 {
+                lines.push(ModelsLine::Header("Recommended"));
+            }
+            if grouped && i == recommended {
+                lines.push(ModelsLine::Header("All models"));
+            }
+            lines.push(ModelsLine::Row(row));
+        }
+        lines
+    }
+
+    /// How many model rows the default view hides (non-chat rows behind `Ctrl+A`).
+    pub fn hidden_models(&self) -> usize {
+        if self.show_all {
+            return 0;
+        }
+        self.rows
+            .iter()
+            .filter(|r| !r.is_chat_model() && !self.is_active(r))
+            .count()
     }
 
     /// Replace rows and rails with a finished snapshot. Keeps the selection on the same row id
@@ -499,7 +670,7 @@ impl PickerState {
         self.loading = false;
         self.models_selected = prev_model
             .filter(|_| !first_load)
-            .and_then(|id| self.rows.iter().position(|r| r.id() == id))
+            .and_then(|id| self.visible_models().iter().position(|r| r.id() == id))
             .unwrap_or(0);
         if first_load {
             self.select_active();
@@ -520,7 +691,7 @@ impl PickerState {
     }
 
     pub fn selected_row(&self) -> Option<&ModelsRow> {
-        self.rows.get(self.models_selected)
+        self.visible_models().get(self.models_selected).copied()
     }
 
     /// Number of entries on the Subscriptions view (rails + connect rows + xAI).
@@ -633,9 +804,33 @@ impl PickerState {
         }
         match (self.tab, input) {
             (_, PickerInput::Refresh) => PickerOutcome::Refresh,
-            (_, PickerInput::Char(_) | PickerInput::Backspace | PickerInput::Paste(_)) => {
+            // Type-to-filter on the Models view; every printable key is consumed here and none
+            // reaches the composer behind the overlay.
+            (PickerTab::Models, PickerInput::Char(c)) if !c.is_control() => {
+                self.filter.push(c);
+                self.models_selected = 0;
                 PickerOutcome::Changed
             }
+            (PickerTab::Models, PickerInput::Backspace) => {
+                self.filter.pop();
+                self.models_selected = 0;
+                PickerOutcome::Changed
+            }
+            (PickerTab::Models, PickerInput::ToggleShowAll) => {
+                let keep = self.selected_row().map(ModelsRow::id);
+                self.show_all = !self.show_all;
+                self.models_selected = keep
+                    .and_then(|id| self.visible_models().iter().position(|r| r.id() == id))
+                    .unwrap_or(0);
+                PickerOutcome::Changed
+            }
+            (
+                _,
+                PickerInput::Char(_)
+                | PickerInput::Backspace
+                | PickerInput::Paste(_)
+                | PickerInput::ToggleShowAll,
+            ) => PickerOutcome::Changed,
             (_, PickerInput::SwitchTab) => {
                 self.tab = self.tab.other();
                 self.detail_open = false;
@@ -647,7 +842,7 @@ impl PickerState {
                 PickerOutcome::Changed
             }
             (PickerTab::Models, PickerInput::Down) => {
-                if self.models_selected + 1 < self.rows.len() {
+                if self.models_selected + 1 < self.visible_models().len() {
                     self.models_selected += 1;
                 }
                 PickerOutcome::Changed
@@ -672,6 +867,12 @@ impl PickerState {
                     self.rail_model_selected = 0;
                 }
                 self.xai_armed = false;
+                PickerOutcome::Changed
+            }
+            (PickerTab::Models, PickerInput::Back) if !self.filter.is_empty() => {
+                self.filter.clear();
+                self.models_selected = 0;
+                self.select_active();
                 PickerOutcome::Changed
             }
             (_, PickerInput::Back) => {
@@ -771,6 +972,27 @@ impl PickerState {
     }
 }
 
+/// Merge a refreshed row list into the one on screen: rows the user can already see keep their
+/// relative order (updated in place from `fresh`), rows that disappeared are dropped, and new rows
+/// are inserted after the last shown row of the same provider (else appended).
+fn stable_merge(shown: &[ModelsRow], fresh: Vec<ModelsRow>) -> Vec<ModelsRow> {
+    let mut out: Vec<ModelsRow> = shown
+        .iter()
+        .filter_map(|old| fresh.iter().find(|new| new.id() == old.id()).cloned())
+        .collect();
+    for row in fresh {
+        if out.iter().any(|r| r.id() == row.id()) {
+            continue;
+        }
+        let after = out.iter().rposition(|r| r.group == row.group);
+        match after {
+            Some(i) => out.insert(i + 1, row),
+            None => out.push(row),
+        }
+    }
+    out
+}
+
 /// Path of the user config file the picker writes (`$WORKSHOP_HOME/config.toml`).
 pub fn config_path() -> PathBuf {
     xai_dirs::resolve_grok_home()
@@ -808,9 +1030,9 @@ fn row_detail_lines(row: &ModelsRow, xai_armed: bool, list_note: Option<String>)
         RowKind::ConnectProvider {
             provider_id,
             credential_url,
-            ..
+            copy,
         } => {
-            lines.push(row.badge.clone());
+            lines.push(format!("{copy} \u{b7} {}", row.badge));
             match provider_id.as_str() {
                 "openrouter" => lines.push(
                     "Enter starts OpenRouter's sign-in in your browser; the key it issues goes to your OS keyring."
@@ -831,7 +1053,7 @@ fn row_detail_lines(row: &ModelsRow, xai_armed: bool, list_note: Option<String>)
                     .into(),
             );
             lines.push(
-                "Loopback only; opencode.ai is contacted by opencode itself. Prompts may be logged upstream."
+                "Runs on this machine; only opencode itself talks to opencode.ai, where prompts may be logged."
                     .into(),
             );
             if let Some(note) = &list_note {
@@ -915,7 +1137,7 @@ mod tests {
 
     fn select_row(p: &mut PickerState, needle: &str) {
         p.models_selected = p
-            .rows
+            .visible_models()
             .iter()
             .position(|r| r.title().contains(needle))
             .unwrap_or_else(|| panic!("row {needle:?}"));
@@ -1118,7 +1340,8 @@ mod tests {
     #[test]
     fn non_xai_rows_never_start_a_login() {
         let mut p = loaded();
-        for i in 0..p.rows.len() {
+        p.show_all = true;
+        for i in 0..p.visible_models().len() {
             p.models_selected = i;
             p.xai_armed = false;
             let out = p.handle(PickerInput::Enter);
@@ -1213,7 +1436,8 @@ mod tests {
     #[test]
     fn detail_is_at_most_three_lines_everywhere() {
         let mut p = loaded();
-        for i in 0..p.rows.len() {
+        p.show_all = true;
+        for i in 0..p.visible_models().len() {
             p.models_selected = i;
             let n = p.detail_lines().len();
             assert!((1..=3).contains(&n), "row {i}: {n} lines");
@@ -1230,5 +1454,218 @@ mod tests {
     fn esc_closes_the_picker() {
         let mut p = loaded();
         assert_eq!(p.handle(PickerInput::Back), PickerOutcome::Close);
+    }
+
+    fn engine(name: &str, model_ref: &str, is_default: bool, tool_call: bool) -> EngineModel {
+        EngineModel {
+            model_ref: model_ref.into(),
+            name: name.into(),
+            is_default,
+            tool_call,
+            context_limit: None,
+        }
+    }
+
+    fn loaded_with_engine(models: &[EngineModel]) -> PickerState {
+        let mut p = PickerState::new().with_active(Some(EngineModel::big_pickle_seed().row_id()));
+        let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, models);
+        p.apply_snapshot(PickerSnapshot {
+            rows,
+            ..PickerSnapshot::default()
+        });
+        p
+    }
+
+    #[test]
+    fn typing_filters_the_models_view_and_never_closes_it() {
+        let mut p = loaded();
+        let all = p.visible_models().len();
+        for c in "qwen".chars() {
+            assert_eq!(
+                p.handle(PickerInput::Char(c)),
+                PickerOutcome::Changed,
+                "{c}"
+            );
+        }
+        assert_eq!(p.filter, "qwen");
+        let shown = p.visible_models();
+        assert!(shown.len() < all);
+        assert!(
+            shown
+                .iter()
+                .all(|r| r.title().to_ascii_lowercase().contains("qwen")),
+            "{:?}",
+            shown.iter().map(|r| r.title()).collect::<Vec<_>>()
+        );
+        assert!(
+            !p.models_lines()
+                .iter()
+                .any(|l| matches!(l, ModelsLine::Header(_))),
+            "a search result has no groups"
+        );
+        // Esc clears the filter first; only an empty filter closes the picker.
+        assert_eq!(p.handle(PickerInput::Back), PickerOutcome::Changed);
+        assert!(p.filter.is_empty());
+        assert_eq!(p.visible_models().len(), all);
+        assert_eq!(p.handle(PickerInput::Back), PickerOutcome::Close);
+        // Backspace edits the filter; `q` is a letter, not a close key.
+        p.handle(PickerInput::Char('q'));
+        assert_eq!(p.filter, "q");
+        p.handle(PickerInput::Backspace);
+        assert!(p.filter.is_empty());
+    }
+
+    #[test]
+    fn non_chat_models_hide_behind_show_all() {
+        let models = vec![
+            engine("Big Pickle", "opencode/big-pickle", true, true),
+            engine(
+                "Nemotron 3.5 Content Safety",
+                "opencode/nemotron-safety",
+                false,
+                false,
+            ),
+            engine(
+                "OpenRouter Free Models Router",
+                "opencode/free-router",
+                false,
+                false,
+            ),
+            engine("Qwen3.8 27B Free", "opencode/qwen", false, true),
+        ];
+        let baseline_hidden = loaded_with_engine(&[]).hidden_models();
+        let mut p = loaded_with_engine(&models);
+        let titles = |p: &PickerState| {
+            p.visible_models()
+                .iter()
+                .map(|r| r.title())
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            !titles(&p)
+                .iter()
+                .any(|t| t.contains("Content Safety") || t.contains("Router"))
+        );
+        assert_eq!(p.hidden_models(), baseline_hidden + 2);
+        assert_eq!(p.handle(PickerInput::ToggleShowAll), PickerOutcome::Changed);
+        assert!(p.show_all);
+        assert!(titles(&p).iter().any(|t| t.contains("Content Safety")));
+        assert_eq!(p.hidden_models(), 0);
+        assert!(is_chat_model_name("Qwen3.8 27B (free)"));
+        assert!(!is_chat_model_name(
+            "nvidia/llama-3.1-nemoguard-8b-topic-control"
+        ));
+    }
+
+    #[test]
+    fn recommended_group_leads_with_the_default_and_tool_callers() {
+        let models = vec![
+            engine("Big Pickle", "opencode/big-pickle", true, true),
+            engine(
+                "Nemotron 3 Ultra Free",
+                "opencode/nemotron-ultra",
+                false,
+                true,
+            ),
+            engine(
+                "Nemotron 3.5 Lightning Free",
+                "opencode/nemotron-lightning",
+                false,
+                true,
+            ),
+            engine("No Tools Free", "opencode/no-tools", false, false),
+            engine("MiMo Free", "opencode/mimo", false, true),
+        ];
+        let p = loaded_with_engine(&models);
+        let ids = p.recommended_ids();
+        assert_eq!(ids.len(), RECOMMENDED_MAX);
+        assert_eq!(
+            ids[0],
+            EngineModel::big_pickle_seed().row_id(),
+            "active first"
+        );
+        assert!(ids.iter().all(|id| !id.contains("no-tools")));
+        let lines = p.models_lines();
+        assert_eq!(lines[0], ModelsLine::Header("Recommended"));
+        assert!(matches!(lines[1], ModelsLine::Row(r) if r.title() == "Big Pickle"));
+        assert!(
+            lines.iter().any(|l| *l == ModelsLine::Header("All models")),
+            "{lines:?}"
+        );
+        // The highlighted row is the active one, at row index 0 under the header.
+        assert_eq!(p.models_selected, 0);
+        assert_eq!(
+            p.selected_row().map(|r| r.title()),
+            Some("Big Pickle".into())
+        );
+    }
+
+    #[test]
+    fn a_refresh_while_open_keeps_the_shown_order() {
+        let mut p = loaded_with_engine(&[
+            engine("Big Pickle", "opencode/big-pickle", true, true),
+            engine("Bravo Free", "opencode/bravo", false, true),
+            engine("Alpha Free", "opencode/alpha", false, true),
+        ]);
+        let before: Vec<String> = p.rows.iter().map(ModelsRow::id).collect();
+        // The live list comes back reordered, with a new row and one gone.
+        let rows = models_rows(
+            &workshop_providers::Catalog::builtin(),
+            |_| false,
+            &[
+                engine("Alpha Free", "opencode/alpha", false, true),
+                engine("Charlie Free", "opencode/charlie", false, true),
+                engine("Big Pickle", "opencode/big-pickle", true, true),
+            ],
+        );
+        p.apply_snapshot(PickerSnapshot {
+            rows,
+            live: true,
+            ..PickerSnapshot::default()
+        });
+        let after: Vec<String> = p.rows.iter().map(ModelsRow::id).collect();
+        let big = after
+            .iter()
+            .position(|id| id.contains("big-pickle"))
+            .unwrap();
+        let alpha = after.iter().position(|id| id.contains("alpha")).unwrap();
+        let charlie = after.iter().position(|id| id.contains("charlie")).unwrap();
+        assert!(big < alpha, "shown rows keep their order: {after:?}");
+        assert_eq!(
+            charlie,
+            alpha + 1,
+            "a new engine row joins the engine band: {after:?}"
+        );
+        assert!(!after.iter().any(|id| id.contains("bravo")));
+        assert_eq!(
+            before.iter().filter(|id| id.contains("kilo")).count(),
+            after.iter().filter(|id| id.contains("kilo")).count(),
+            "untouched provider bands are unchanged"
+        );
+    }
+
+    #[test]
+    fn connect_rows_share_one_vocabulary() {
+        let p = loaded();
+        let titles: Vec<String> = p.auth_rows.iter().map(ModelsRow::title).collect();
+        assert!(
+            titles.iter().any(|t| t == "OpenRouter \u{2014} Sign in"),
+            "{titles:?}"
+        );
+        assert!(
+            titles.iter().any(|t| t == "OpenAI \u{2014} API key"),
+            "{titles:?}"
+        );
+        assert!(
+            titles.iter().any(|t| t == "Anthropic \u{2014} API key"),
+            "{titles:?}"
+        );
+        let xai = p.auth_rows.last().unwrap();
+        assert_eq!(xai.title(), "xAI \u{2014} Sign in");
+        assert_eq!(xai.short_badge(), "optional");
+        assert!(
+            titles.iter().all(|t| t.contains(" \u{2014} ")),
+            "{titles:?}"
+        );
     }
 }

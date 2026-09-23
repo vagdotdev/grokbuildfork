@@ -540,6 +540,15 @@ impl AgentView {
                         self.prompt_input_mode = PromptInputMode::Normal;
                         return InputOutcome::Action(action);
                     }
+                    // Workshop: after an Engine/Adapter failure, Enter on the empty composer
+                    // resends the prompt that failed (the error line says so).
+                    if matches!(self.prompt_mode, PromptMode::Normal)
+                        && self.prompt.text().trim().is_empty()
+                        && !self.workshop_turn_active
+                        && let Some(text) = self.workshop_retry_prompt.take()
+                    {
+                        return InputOutcome::Action(Action::SendPrompt(text));
+                    }
                     // Mid-turn with a queued follow-up: bare Enter force-sends the top queue row so users discover send-now without a chord
                     // Skip while editing a queued row (edit-mode Enter is handled earlier for non-empty; empty must stay a no-op)
                     // That Enter must only insert the newline, not fire a queued follow-up

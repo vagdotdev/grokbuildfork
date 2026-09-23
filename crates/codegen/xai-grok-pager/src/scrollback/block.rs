@@ -677,6 +677,11 @@ impl RenderBlock {
         RenderBlock::System(SystemMessageBlock::new(text))
     }
 
+    /// Workshop: a system line styled as an error (engine / adapter failures the user must act on).
+    pub fn system_error(text: impl Into<String>) -> Self {
+        RenderBlock::System(SystemMessageBlock::error(text))
+    }
+
     /// Create a `/context` snapshot block.
     /// The block stores the raw `ContextInfo` snapshot and model name and rebuilds its styled output on every redraw.
     /// Theme switches thus take effect without re-running `/context`.

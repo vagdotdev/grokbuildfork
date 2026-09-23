@@ -4467,7 +4467,7 @@
             let mut buf = Buffer::empty(area);
             pw.draw(&mut buf, area, None, &style, None, None);
             assert!(
-                buf_text_at(&buf, 0, 14, 0).contains("Build anything"),
+                buf_text_at(&buf, 0, 14, 0).contains("Ask anything"),
                 "placeholder text missing"
             );
             buf.cell((0, 0)).unwrap().style()

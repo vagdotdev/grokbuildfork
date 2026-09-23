@@ -38,17 +38,74 @@ pub use mode_support::{ModeSupport, Remedy};
 /// Maximum number of visible rows in the dropdown (scroll beyond this).
 pub const MAX_VISIBLE_SUGGESTIONS: usize = 8;
 
-/// Grouping for the bare `/` menu, ordered top to bottom. Skills sink below the commands because there can be far more of them than fit on screen.
+/// Workshop: the eight commands a first-time user needs, in the order the bare `/` menu shows
+/// them, ahead of everything else.
+pub const COMMON_COMMANDS: [&str; 8] = [
+    "model", "auth", "help", "new", "resume", "compact", "theme", "quit",
+];
+
+/// Workshop: power tools. They sit at the bottom of the bare `/` menu under an `[advanced]` tag
+/// (and in the command palette's Advanced section) so day one is `/model`, `/auth` and a few
+/// verbs, not sixty rows.
+pub const ADVANCED_COMMANDS: &[&str] = &[
+    "deep-research",
+    "goal",
+    "loop",
+    "workflow",
+    "workflows",
+    "personas",
+    "import-claude",
+    "marketplace",
+    "hooks",
+    "skills",
+    "mcps",
+    "plugins",
+    "config-agents",
+    "fork",
+    "timeline",
+    "vim-mode",
+    "minimal",
+    "compact-mode",
+    "dream",
+    "flush",
+    "audit",
+    "debug",
+    "scroll-debug",
+    "gboom",
+    "effort",
+    "agent-budget",
+    "toggle-mouse-reporting",
+    "timestamps",
+    "transcript",
+    "announcements",
+    "privacy",
+    "expand",
+    "active-one",
+    "sprint-2",
+    "demo",
+    "demo-2",
+];
+
+/// Whether `canonical` (bare command name) is one of the power tools.
+pub fn is_advanced_command(canonical: &str) -> bool {
+    ADVANCED_COMMANDS.contains(&canonical)
+}
+
+/// Grouping for the bare `/` menu, ordered top to bottom: the common eight, the everyday
+/// commands, the advanced tools, then skills (which sink below the commands because there can be
+/// far more of them than fit on screen).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum MenuGroup {
+    Common,
     Command,
+    Advanced,
     BundledSkill,
     /// User, project, server and plugin skills.
     OtherSkill,
 }
 
 impl MenuGroup {
-    fn of(provenance: &CommandProvenance) -> Self {
+    fn of(provenance: &CommandProvenance, canonical: &str) -> Self {
         match provenance {
             // A skill's source is its plugin name when it has one, else its scope, and bundled skills never come from a plugin.
             CommandProvenance::Skill { source }
@@ -57,7 +114,15 @@ impl MenuGroup {
                 Self::BundledSkill
             }
             CommandProvenance::Skill { .. } => Self::OtherSkill,
-            CommandProvenance::Builtin | CommandProvenance::Shell => Self::Command,
+            CommandProvenance::Builtin | CommandProvenance::Shell => {
+                if COMMON_COMMANDS.contains(&canonical) {
+                    Self::Common
+                } else if is_advanced_command(canonical) {
+                    Self::Advanced
+                } else {
+                    Self::Command
+                }
+            }
         }
     }
 }
@@ -82,7 +147,18 @@ impl MenuKey {
         mru: &mut mru::SlashMru,
     ) -> Self {
         let (recency, name) = match group {
-            MenuGroup::Command => (mru.rank_score("", canonical), String::new()),
+            // The common eight keep their fixed, documented order.
+            MenuGroup::Common => (
+                u64::MAX
+                    - COMMON_COMMANDS
+                        .iter()
+                        .position(|c| *c == canonical)
+                        .unwrap_or(COMMON_COMMANDS.len()) as u64,
+                String::new(),
+            ),
+            MenuGroup::Command | MenuGroup::Advanced => {
+                (mru.rank_score("", canonical), String::new())
+            }
             // Nothing ranks skills, so alphabetical is the only order predictable enough to find one in.
             _ => (0, row.display.to_lowercase()),
         };
@@ -1041,14 +1117,20 @@ impl SlashController {
                         colliding_command_indices.contains(&trigger.command_index),
                     ));
                     canonicals.push(trigger.canonical.as_str());
-                    groups.push(MenuGroup::of(&trigger.provenance));
+                    groups.push(MenuGroup::of(&trigger.provenance, &trigger.canonical));
                 }
             }
-            // Tag from the data map in one scoped borrow; key off canonical (never the alias/display)
+            // Tag from the data map in one scoped borrow; key off canonical (never the alias/display).
+            // Workshop: the power tools carry a visible `[advanced]` tag when nothing else tags them.
             {
                 let command_tags = self.command_tags.borrow();
-                for (row, canonical) in rows.iter_mut().zip(canonicals.iter()) {
+                for ((row, canonical), group) in
+                    rows.iter_mut().zip(canonicals.iter()).zip(groups.iter())
+                {
                     row.tag = command_tags.get(*canonical).cloned();
+                    if row.tag.is_none() && *group == MenuGroup::Advanced {
+                        row.tag = Some("advanced".to_owned());
+                    }
                 }
             }
 
@@ -3005,6 +3087,35 @@ mod tests {
             .map(|r| r.display.clone())
             .collect();
         assert_eq!(order, vec!["/alpha", "/zulu"]);
+    }
+
+    /// Workshop: the common eight lead the bare menu in their fixed order, the power tools sink
+    /// below the everyday commands under an `[advanced]` tag, whatever the recency says.
+    #[test]
+    fn empty_query_leads_with_common_commands_and_sinks_advanced_ones() {
+        let mut ctrl = tie_controller(
+            &["deep-research", "alpha", "auth", "model"],
+            &[("deep-research", 1_700_000_999), ("auth", 1_700_000_500)],
+        );
+        let state = SlashState::default();
+        let models = ModelState::default();
+
+        ctrl.refresh(&state, "/", 1, &models);
+
+        let rows = state.snapshot().matches.clone();
+        let order: Vec<String> = rows.iter().map(|r| r.display.clone()).collect();
+        assert_eq!(
+            order,
+            vec!["/model", "/auth", "/alpha", "/deep-research"],
+            "common (fixed order), everyday, advanced"
+        );
+        assert_eq!(
+            rows.last().and_then(|r| r.tag.clone()).as_deref(),
+            Some("advanced")
+        );
+        assert!(rows[0].tag.is_none());
+        assert!(is_advanced_command("hooks") && !is_advanced_command("model"));
+        assert!(COMMON_COMMANDS.iter().all(|c| !is_advanced_command(c)));
     }
 
     /// Within the command group the menu leads with what you actually use.

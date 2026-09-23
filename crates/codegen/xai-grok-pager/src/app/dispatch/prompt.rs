@@ -674,6 +674,9 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
     app.workshop_turn_active = true;
     app.workshop_turn_agent = Some(id);
     app.workshop_turn_stream_entry = None;
+    app.workshop_turn_progress = None;
+    app.workshop_turn_started = Some(std::time::Instant::now());
+    app.workshop_last_prompt = Some(text.clone());
 
     if let Some(agent) = app.agents.get_mut(&id) {
         agent.record_prompt_in_history(text.trim());
@@ -683,6 +686,12 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
         app.workshop_turn_prompt_entry = Some(entry);
         agent.prompt.set_text("");
         agent.workshop_turn_active = true;
+        agent.workshop_retry_prompt = None;
+        // The terminal title follows the session topic: Engine/Adapter turns never reach the
+        // shell's auto-titling, so the first prompt names the session.
+        if agent.display_name.is_none() && agent.generated_session_title.is_none() {
+            agent.generated_session_title = Some(workshop::session_topic(&text));
+        }
     }
 
     tokio::spawn(workshop::run_workshop_turn(spec, tx, cancel_rx));

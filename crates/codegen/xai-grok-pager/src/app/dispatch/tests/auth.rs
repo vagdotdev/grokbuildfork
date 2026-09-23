@@ -584,8 +584,8 @@ fn login_with_empty_auth_methods_opens_picker_and_fails_closed() {
     );
     assert_eq!(
         app.active_view,
-        ActiveView::Welcome,
-        "the picker renders on the welcome view"
+        ActiveView::Agent(AgentId(0)),
+        "the picker is an overlay: the session stays up behind it"
     );
     assert_eq!(
         app.auth_return_view,

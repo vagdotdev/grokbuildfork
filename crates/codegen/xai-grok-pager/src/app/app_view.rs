@@ -758,9 +758,15 @@ pub struct AppView {
     pub welcome_menu_index: Option<usize>,
     /// Hit-test rects for welcome menu items (populated during render).
     pub welcome_menu_rects: Vec<ratatui::layout::Rect>,
-    /// Whether the welcome menu currently includes a "Changelog" row (above Quit).
+    /// Whether the welcome menu currently includes a "Release notes" row (above Quit).
     /// Set during render; the input handler uses it to size the menu and map the extra row to the release-notes action.
     pub welcome_show_changelog_action: bool,
+    /// Whether the welcome menu currently includes the "Resume session" row (Workshop hides it
+    /// while this directory has nothing to resume). Set during render.
+    pub welcome_show_resume_action: bool,
+    /// Workshop: whether this directory has a session worth resuming, probed once per launch by
+    /// the first welcome frame that asks (the answer cannot change while the home screen is up).
+    pub welcome_has_resumable_sessions: std::cell::OnceCell<bool>,
     /// Hit-test rect for the import-claude banner on the welcome screen.
     pub welcome_import_banner_rect: Option<ratatui::layout::Rect>,
     /// Last known mouse position (column, row), updated on every Mouse event.
@@ -1034,6 +1040,16 @@ pub struct AppView {
     /// The bring-up status line ("Installing the OpenCode engine…") of the current turn; replaced
     /// by each newer status and removed once the turn produces output or ends.
     pub workshop_turn_progress_entry: Option<crate::scrollback::EntryId>,
+    /// The phase text behind `workshop_turn_progress_entry` ("Waiting for Big Pickle…"); the
+    /// entry is repainted every few ticks with the spinner frame and the elapsed seconds.
+    pub workshop_turn_progress: Option<String>,
+    /// When the current Workshop turn was submitted (the waiting line's elapsed clock).
+    pub workshop_turn_started: Option<Instant>,
+    /// Tick counter driving the waiting line's spinner.
+    pub workshop_progress_tick: u64,
+    /// Workshop: the prompt of the last Engine/Adapter turn, kept so Enter on an empty composer
+    /// can retry it after a failure.
+    pub workshop_last_prompt: Option<String>,
     /// True while an Engine/Adapter turn streams; a second submit is rejected and Esc/Ctrl-C cancels.
     pub workshop_turn_active: bool,
     /// Sender the event loop installs once so submit handlers can stream a turn's events back into
@@ -1476,6 +1492,8 @@ impl AppView {
             welcome_menu_index: None,
             welcome_menu_rects: Vec::new(),
             welcome_show_changelog_action: false,
+            welcome_show_resume_action: true,
+            welcome_has_resumable_sessions: std::cell::OnceCell::new(),
             welcome_import_banner_rect: None,
             last_mouse_pos: None,
             last_scroll_pos: None,
@@ -1592,6 +1610,10 @@ impl AppView {
             workshop_engine_warm_started: false,
             workshop_engine_session: None,
             workshop_turn_progress_entry: None,
+            workshop_turn_progress: None,
+            workshop_turn_started: None,
+            workshop_progress_tick: 0,
+            workshop_last_prompt: None,
             workshop_turn_active: false,
             workshop_turn_tx: None,
             workshop_turn_cancel: None,
@@ -2464,6 +2486,15 @@ impl AppView {
             }
             return InputOutcome::Changed;
         }
+        // Workshop: `/model` and `/auth` are overlays on whichever view is up; while one is open
+        // it owns every key (typing filters the list; nothing reaches the composer behind it).
+        if let Some(picker) = self.connection_picker.as_ref() {
+            return handle_connection_picker_input(
+                ev,
+                self.auth_return_view.is_some(),
+                picker.key_entry.is_some(),
+            );
+        }
         let zdr_blocked = self.is_zdr_blocked();
         let has_access = self.has_access();
         let welcome_pinned_upgrade_cta = crate::views::announcements::promo_cta(
@@ -2493,11 +2524,6 @@ impl AppView {
                     arrived_at,
                     cwd: &self.cwd,
                     mid_session_login: self.auth_return_view.is_some(),
-                    connection_picker_open: self.connection_picker.is_some(),
-                    connection_picker_key_entry: self
-                        .connection_picker
-                        .as_ref()
-                        .is_some_and(|p| p.key_entry.is_some()),
                     auth_code_input: &mut self.auth_code_input,
                     prompt: &mut self.welcome_prompt,
                     prompt_focused: &mut self.welcome_prompt_focused,
@@ -2507,7 +2533,8 @@ impl AppView {
                     menu_count: if zdr_blocked {
                         2
                     } else {
-                        3 + if self.has_claude_import { 1 } else { 0 }
+                        2 + if self.has_claude_import { 1 } else { 0 }
+                            + if self.welcome_show_resume_action { 1 } else { 0 }
                             + if self.welcome_show_changelog_action {
                                 1
                             } else {
@@ -2548,6 +2575,7 @@ impl AppView {
                     welcome_doc_viewer: &mut self.welcome_doc_viewer,
                     changelog_markdown: &self.changelog_markdown,
                     show_changelog_action: self.welcome_show_changelog_action,
+                    show_resume_action: self.welcome_show_resume_action,
                     has_pending_update: self.pending_update_version.is_some(),
                     has_foreign_resume,
                     cwd_has_git_ancestor: self.cwd_has_git_ancestor,
@@ -3155,10 +3183,6 @@ struct WelcomeInputCtx<'a> {
     /// `true` when the welcome screen is showing only to host a login flow that was started from inside a session.
     /// Esc / `q` then cancel the login and return to the session rather than quitting the app.
     mid_session_login: bool,
-    /// Workshop connection picker is open: it owns every key until it closes.
-    connection_picker_open: bool,
-    /// The picker's paste-key prompt is open: printable keys are text, not shortcuts.
-    connection_picker_key_entry: bool,
     auth_code_input: &'a mut LineEditor,
     prompt: &'a mut PromptWidget,
     prompt_focused: &'a mut bool,
@@ -3212,8 +3236,10 @@ struct WelcomeInputCtx<'a> {
     import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
     welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
     changelog_markdown: &'a Option<String>,
-    /// Whether the welcome menu currently includes a "Changelog" row (above Quit), so index-to-action mapping accounts for it.
+    /// Whether the welcome menu currently includes a "Release notes" row (above Quit), so index-to-action mapping accounts for it.
     show_changelog_action: bool,
+    /// Whether the welcome menu currently includes the "Resume session" row.
+    show_resume_action: bool,
     has_pending_update: bool,
     /// A recent foreign session is available to resume when no update is pending.
     has_foreign_resume: bool,
@@ -3240,65 +3266,75 @@ struct WelcomeInputCtx<'a> {
     #[cfg(feature = "local-workspace")]
     session_picker_open: bool,
 }
+/// Workshop: the connection picker (`/model`, `/auth`) owns the keyboard while it is open, on
+/// every view. Every key is consumed here — printable ones filter the Models view — so nothing
+/// leaks into the composer behind the overlay. It never starts a login on its own; `Enter`
+/// outcomes are decided by `workshop_auth::PickerState` in the dispatcher.
+fn handle_connection_picker_input(
+    ev: &Event,
+    mid_session: bool,
+    key_entry_open: bool,
+) -> InputOutcome {
+    use workshop_auth::PickerInput;
+    match ev {
+        Event::Paste(text) => {
+            InputOutcome::Action(Action::ConnectionPicker(PickerInput::Paste(text.clone())))
+        }
+        Event::Key(key) if key.kind != KeyEventKind::Release => {
+            if key!('c', CONTROL).matches(key) || key!('d', CONTROL).matches(key) {
+                return if mid_session {
+                    InputOutcome::Action(Action::ConnectionPicker(PickerInput::Back))
+                } else {
+                    InputOutcome::Action(Action::Quit)
+                };
+            }
+            if crate::input::key::is_paste_key(key) {
+                return match crate::clipboard::system_clipboard_get() {
+                    Some(text) => {
+                        InputOutcome::Action(Action::ConnectionPicker(PickerInput::Paste(text)))
+                    }
+                    None => InputOutcome::Changed,
+                };
+            }
+            let ctrl = key
+                .modifiers
+                .intersects(crossterm::event::KeyModifiers::CONTROL);
+            let alt = key
+                .modifiers
+                .intersects(crossterm::event::KeyModifiers::ALT);
+            // While a key-entry prompt is open every printable key is text.
+            if key_entry_open {
+                let input = match key.code {
+                    KeyCode::Enter => PickerInput::Enter,
+                    KeyCode::Esc => PickerInput::Back,
+                    KeyCode::Backspace => PickerInput::Backspace,
+                    KeyCode::Char(c) if !ctrl => PickerInput::Char(c),
+                    _ => return InputOutcome::Changed,
+                };
+                return InputOutcome::Action(Action::ConnectionPicker(input));
+            }
+            let input = match key.code {
+                KeyCode::Up => PickerInput::Up,
+                KeyCode::Down => PickerInput::Down,
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                    PickerInput::SwitchTab
+                }
+                KeyCode::Enter => PickerInput::Enter,
+                KeyCode::Esc => PickerInput::Back,
+                KeyCode::Backspace => PickerInput::Backspace,
+                KeyCode::Char('r') if ctrl => PickerInput::Refresh,
+                KeyCode::Char('a') if ctrl => PickerInput::ToggleShowAll,
+                KeyCode::Char(c) if !ctrl && !alt => PickerInput::Char(c),
+                _ => return InputOutcome::Changed,
+            };
+            InputOutcome::Action(Action::ConnectionPicker(input))
+        }
+        // Mouse and everything else stays with the overlay: nothing behind it reacts.
+        _ => InputOutcome::Unchanged,
+    }
+}
 /// Welcome view input: overlays first, then composer, then the menu.
 fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
-    // Workshop: the connection picker owns the keyboard while open. It never starts a login on its
-    // own; `Enter` outcomes are decided by `workshop_auth::PickerState` in the dispatcher.
-    if ctx.connection_picker_open {
-        use workshop_auth::PickerInput;
-        return match ev {
-            Event::Paste(text) => {
-                InputOutcome::Action(Action::ConnectionPicker(PickerInput::Paste(text.clone())))
-            }
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                if key!('c', CONTROL).matches(key) || key!('d', CONTROL).matches(key) {
-                    return if ctx.mid_session_login {
-                        InputOutcome::Action(Action::ConnectionPicker(PickerInput::Back))
-                    } else {
-                        InputOutcome::Action(Action::Quit)
-                    };
-                }
-                if crate::input::key::is_paste_key(key) {
-                    return match crate::clipboard::system_clipboard_get() {
-                        Some(text) => InputOutcome::Action(Action::ConnectionPicker(
-                            PickerInput::Paste(text),
-                        )),
-                        None => InputOutcome::Unchanged,
-                    };
-                }
-                // While a key-entry prompt is open every printable key is text.
-                if ctx.connection_picker_key_entry {
-                    let input = match key.code {
-                        KeyCode::Enter => PickerInput::Enter,
-                        KeyCode::Esc => PickerInput::Back,
-                        KeyCode::Backspace => PickerInput::Backspace,
-                        KeyCode::Char(c)
-                            if !key
-                                .modifiers
-                                .intersects(crossterm::event::KeyModifiers::CONTROL) =>
-                        {
-                            PickerInput::Char(c)
-                        }
-                        _ => return InputOutcome::Unchanged,
-                    };
-                    return InputOutcome::Action(Action::ConnectionPicker(input));
-                }
-                let input = match key.code {
-                    KeyCode::Up | KeyCode::Char('k') => PickerInput::Up,
-                    KeyCode::Down | KeyCode::Char('j') => PickerInput::Down,
-                    KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
-                        PickerInput::SwitchTab
-                    }
-                    KeyCode::Enter => PickerInput::Enter,
-                    KeyCode::Esc | KeyCode::Char('q') => PickerInput::Back,
-                    KeyCode::Char('r') => PickerInput::Refresh,
-                    _ => return InputOutcome::Unchanged,
-                };
-                InputOutcome::Action(Action::ConnectionPicker(input))
-            }
-            _ => InputOutcome::Unchanged,
-        };
-    }
     if let Some(modal) = ctx.import_claude_modal.as_mut() {
         use crate::views::import_claude_modal::ImportClaudeModalOutcome;
         let outcome_to_input = |o: ImportClaudeModalOutcome| match o {
@@ -3876,6 +3912,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                 return dispatch_menu_action(
                     idx,
                     ctx.has_claude_import,
+                    ctx.show_resume_action,
                     ctx.show_changelog_action,
                     ctx.changelog_markdown.as_deref(),
                 );
@@ -4014,6 +4051,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                         return dispatch_menu_action(
                             i,
                             ctx.has_claude_import,
+                            ctx.show_resume_action,
                             ctx.show_changelog_action,
                             ctx.changelog_markdown.as_deref(),
                         );
@@ -4264,39 +4302,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
     }
 }
 /// Dispatch an action for a welcome menu item by index.
-/// Menu order: `[Import]`, New worktree, Resume session, `[Changelog]`, Quit.
-/// `show_changelog_action` is true when the Changelog row is rendered; release notes open only once `changelog_md` is available.
+/// Menu order: `[Import]`, New worktree, `[Resume session]`, `[Release notes]`, Quit.
+/// `show_resume_action` / `show_changelog_action` say which optional rows are rendered. Release
+/// notes always open: the fetched markdown when there is one, else the bundled Workshop notes.
 fn dispatch_menu_action(
     index: usize,
     has_claude_import: bool,
+    show_resume_action: bool,
     show_changelog_action: bool,
     changelog_md: Option<&str>,
 ) -> InputOutcome {
     let base = if has_claude_import { 1 } else { 0 };
     let worktree_idx = base;
-    let resume_idx = base + 1;
-    let (changelog_idx, quit_idx) = if show_changelog_action {
-        (Some(base + 2), base + 3)
-    } else {
-        (None, base + 2)
-    };
+    let mut next = base + 1;
+    let resume_idx = show_resume_action.then(|| {
+        next += 1;
+        next - 1
+    });
+    let changelog_idx = show_changelog_action.then(|| {
+        next += 1;
+        next - 1
+    });
+    let quit_idx = next;
     if has_claude_import && index == 0 {
         return InputOutcome::Action(Action::ImportClaudeSettings);
     }
     if index == worktree_idx {
         return InputOutcome::Action(Action::OpenNewWorktreeDialog);
     }
-    if index == resume_idx {
+    if Some(index) == resume_idx {
         return InputOutcome::Action(Action::FetchSessionList);
     }
     if Some(index) == changelog_idx {
-        if let Some(md) = changelog_md {
-            return InputOutcome::Action(Action::ShowReleaseNotes {
-                title: "Release Notes".to_string(),
-                content: md.trim().to_string(),
-            });
-        }
-        return InputOutcome::Unchanged;
+        let (title, content) = crate::slash::commands::release_notes::release_notes_document(
+            changelog_md.map(str::to_owned),
+        );
+        return InputOutcome::Action(Action::ShowReleaseNotes { title, content });
     }
     if index == quit_idx {
         return InputOutcome::Action(Action::Quit);
@@ -4645,6 +4686,11 @@ impl AppView {
                                 .filter(|a| {
                                     workshop_brand::hero_shows_announcement(a.severity.as_deref())
                                 });
+                            let has_resumable_sessions = *self
+                                .welcome_has_resumable_sessions
+                                .get_or_init(|| {
+                                    crate::app::workshop::has_resumable_sessions(&self.cwd)
+                                });
                             let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                 prompt_focus: if self.welcome_prompt_focused {
                                     WelcomePromptFocus::Focused
@@ -4670,6 +4716,7 @@ impl AppView {
                                 team_name: self.team_name.as_deref(),
                                 has_access,
                                 has_claude_import: self.has_claude_import,
+                                has_resumable_sessions,
                                 mouse_pos: self.last_mouse_pos,
                                 is_zdr_blocked: zdr_blocked_for_draw,
                                 session_picker: self.session_picker_entries.as_deref(),
@@ -4727,6 +4774,7 @@ impl AppView {
                             );
                             self.welcome_menu_rects = result.menu_rects;
                             self.welcome_show_changelog_action = result.changelog_action_present;
+                            self.welcome_show_resume_action = result.resume_action_present;
                             self.welcome_prompt_rect = result.prompt_rect;
                             self.welcome_import_banner_rect = result.import_banner_rect;
                             self.welcome_auth_url_rect = result.auth_url_rect;
@@ -4974,6 +5022,23 @@ impl AppView {
                                         compact,
                                     );
                                 }
+                                // Workshop: `/model` / `/auth` paint over the transcript, which
+                                // stays visible around the box.
+                                if let Some(picker) = self.connection_picker.as_ref() {
+                                    let theme = crate::theme::Theme::current();
+                                    // Leave the composer and its footer visible under the box.
+                                    let above_composer = ratatui::layout::Rect {
+                                        height: view_area.height.saturating_sub(5),
+                                        ..view_area
+                                    };
+                                    crate::views::connection_picker::render(
+                                        above_composer,
+                                        f.buffer_mut(),
+                                        &theme,
+                                        picker,
+                                        if compact { 1 } else { 4 },
+                                    );
+                                }
                                 if let Some(fps) = &fps_overlay {
                                     fps.render(full_area, f.buffer_mut());
                                 }
@@ -4982,13 +5047,15 @@ impl AppView {
                                 }
                                 let (cursor_pos, post_flush) = result;
                                 let has_cloud = false;
+                                let picker_open = self.connection_picker.is_some();
                                 if has_cloud
                                     || self.import_claude_modal.is_some()
                                     || self.tutorial.is_some()
+                                    || picker_open
                                 {
                                     link_spans.clear();
                                 }
-                                let cursor = if has_cloud || self.tutorial.is_some() {
+                                let cursor = if has_cloud || self.tutorial.is_some() || picker_open {
                                     None
                                 } else {
                                     cursor_pos
@@ -5270,6 +5337,7 @@ impl AppView {
             || self.new_worktree_dialog.is_some()
             || self.welcome_doc_viewer.is_some()
             || self.tutorial.is_some()
+            || self.connection_picker.is_some()
             || matches!(self.active_view, ActiveView::AgentDashboard
                 if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
             || matches!(self.active_view, ActiveView::AgentDashboard
@@ -5432,6 +5500,7 @@ impl AppView {
         let mut needs_redraw = false;
         needs_redraw |= self.minimal_state.transcript.is_some();
         needs_redraw |= self.poll_clipboard_focus_tip();
+        needs_redraw |= self.tick_workshop_progress();
         if matches!(self.active_view, ActiveView::Welcome) {
             self.welcome_tick = self.welcome_tick.wrapping_add(1);
             if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
@@ -5787,6 +5856,10 @@ impl AppView {
         if self.pending_action.is_some() {
             return TickDemand::Fast;
         }
+        // Workshop: the waiting line animates while an Engine/Adapter turn has produced nothing.
+        if self.workshop_turn_active && self.workshop_turn_progress.is_some() {
+            return TickDemand::Fast;
+        }
         if self.minimal_state.transcript.is_some() {
             return TickDemand::Fast;
         }
@@ -5934,6 +6007,54 @@ impl AppView {
             ActiveView::Welcome => TickDemand::Slow,
         }
     }
+    /// Workshop: advance the waiting line of an Engine/Adapter turn (spinner frame, elapsed
+    /// seconds) while it has produced nothing yet. Every third tick: ~10 frames a second at 30 fps.
+    fn tick_workshop_progress(&mut self) -> bool {
+        if !self.workshop_turn_active || self.workshop_turn_progress.is_none() {
+            return false;
+        }
+        self.workshop_progress_tick = self.workshop_progress_tick.wrapping_add(1);
+        if !self.workshop_progress_tick.is_multiple_of(3) {
+            return false;
+        }
+        self.repaint_workshop_progress()
+    }
+    /// Workshop: (re)paint the waiting line from `workshop_turn_progress` — in place when its
+    /// scrollback entry exists, else as a new system block at the end of the transcript.
+    pub(crate) fn repaint_workshop_progress(&mut self) -> bool {
+        use crate::scrollback::block::RenderBlock;
+        let (Some(agent_id), Some(text)) = (
+            self.workshop_turn_agent,
+            self.workshop_turn_progress.as_deref(),
+        ) else {
+            return false;
+        };
+        let elapsed = self
+            .workshop_turn_started
+            .map(|t| t.elapsed())
+            .unwrap_or_default();
+        let frame = (self.workshop_progress_tick / 3) as usize;
+        let line = crate::app::workshop::waiting_line(text, elapsed, frame);
+        let Some(agent) = self.agents.get_mut(&agent_id) else {
+            return false;
+        };
+        if let Some(id) = self.workshop_turn_progress_entry
+            && let Some(entry) = agent.scrollback.get_by_id_mut(id)
+            && let RenderBlock::System(block) = &mut entry.block
+        {
+            if block.text != line {
+                block.text = line;
+                entry.invalidate_cache();
+                agent.scrollback.mark_height_dirty(id);
+            }
+            return true;
+        }
+        if let Some(id) = self.workshop_turn_progress_entry.take() {
+            agent.scrollback.remove_entry(id);
+        }
+        self.workshop_turn_progress_entry = Some(agent.scrollback.push_block(RenderBlock::system(line)));
+        true
+    }
     /// Update the terminal tab title and OSC 9;4 progress bar.
     /// Stores any resulting escape sequences in `pending_notification_escapes`.
     /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
@@ -5955,7 +6076,8 @@ impl AppView {
                 };
                 let has_perms = !agent.permission_queue.is_empty();
                 let elapsed = if parked { None } else { agent.turn_elapsed() };
-                let is_busy = agent.session.state.is_busy() && !parked;
+                // Workshop: an Engine/Adapter turn is busy too (the title spinner shows it).
+                let is_busy = (agent.session.state.is_busy() || agent.workshop_turn_active) && !parked;
                 (name, model, activity, has_perms, elapsed, is_busy)
             } else {
                 (None, None, None, false, None, false)

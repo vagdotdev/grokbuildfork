@@ -13355,12 +13355,14 @@ name = "workshop-gates"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
+ "clap",
  "serde_json",
  "serial_test",
  "tempfile",
  "walkdir",
  "workshop-adapters",
  "workshop-auth",
+ "workshop-brand",
  "workshop-detect",
  "workshop-providers",
  "xai-dirs",

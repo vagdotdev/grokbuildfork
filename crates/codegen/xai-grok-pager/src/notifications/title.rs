@@ -96,15 +96,23 @@ impl TitleManager {
         result
     }
 
+    /// Escapes that give the terminal its title back on exit: clear ours (terminals without a
+    /// title stack then show their default until the shell sets one), then pop the title saved
+    /// at startup ([`TITLE_SAVE`]).
     pub fn reset(&mut self) -> String {
-        let esc = build_title_escape("Workshop");
+        let mut esc = build_title_escape("");
+        esc.push_str(TITLE_RESTORE);
         self.last_title.clear();
-        self.last_title.push_str("Workshop");
         self.spinner_frame = 0;
         self.tick_count = 0;
         esc
     }
 }
+
+/// XTWINOPS: push the current window title onto the terminal's title stack.
+pub const TITLE_SAVE: &str = "\x1b[22;0t";
+/// XTWINOPS: pop the saved window title back.
+pub const TITLE_RESTORE: &str = "\x1b[23;0t";
 
 /// Render a single title item into `buf`. Returns `true` if a part was written.
 fn write_item(
@@ -727,8 +735,10 @@ mod tests {
         assert_eq!(mgr.last_title, "short");
     }
 
+    /// Workshop: exit clears the title and pops the one saved at startup, so the tab reads what
+    /// it read before `workshop` ran.
     #[test]
-    fn reset_clears_state_and_emits_workshop() {
+    fn reset_clears_state_and_restores_the_terminals_title() {
         let cfg = config_with_items(vec![TitleItem::SessionName, TitleItem::Grok]);
         let mut mgr = TitleManager::new(&cfg);
         let activity = TurnActivity::Thinking;
@@ -740,8 +750,11 @@ mod tests {
         mgr.update(&state);
         assert_ne!(mgr.last_title, "Workshop");
 
-        mgr.reset();
-        assert_eq!(mgr.last_title, "Workshop");
+        let esc = mgr.reset();
+        assert_eq!(esc, format!("{}{TITLE_RESTORE}", build_title_escape("")));
+        assert!(esc.ends_with("\x1b[23;0t"));
+        assert!(!esc.contains("Workshop"), "nothing of ours is left in the title: {esc:?}");
+        assert!(mgr.last_title.is_empty());
         assert_eq!(mgr.spinner_frame, 0);
         assert_eq!(mgr.tick_count, 0);
     }

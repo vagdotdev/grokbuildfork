@@ -31,7 +31,7 @@ async fn drag_autoscroll_no_bounce_pty() {
     let marker_text = format!("MARKER-{:04}", scrolled_topmost + 3);
     let (press_row, press_col) = locate_screen_text(&screen, &marker_text)
         .unwrap_or_else(|| panic!("could not locate {marker_text:?}; screen:\n{screen}"));
-    let (placeholder_row, _) = locate_screen_text(&screen, "Build anything")
+    let (placeholder_row, _) = locate_screen_text(&screen, "Ask anything")
         .unwrap_or_else(|| panic!("could not locate the prompt placeholder; screen:\n{screen}"));
     let hold_row = placeholder_row - 2;
     assert!(hold_row > press_row, "setup: hold point below the press");

@@ -19,7 +19,7 @@ pub use config::{
     NotificationCondition, NotificationConfig, NotificationEventKind, NotificationHook,
     NotificationMethod, TitleConfig, TitleItem,
 };
-pub use title::TitleState;
+pub use title::{TITLE_RESTORE, TITLE_SAVE, TitleState};
 
 pub struct NotificationEvent {
     pub kind: NotificationEventKind,

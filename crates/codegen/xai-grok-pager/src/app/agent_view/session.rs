@@ -137,6 +137,7 @@ impl AgentView {
             prompt,
             workshop_model_label: None,
             workshop_turn_active: false,
+            workshop_retry_prompt: None,
             tip_typing_dismissed: false,
             todo: TodoPane::new(),
             tasks: TasksPane::new(),
