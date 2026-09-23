@@ -96,8 +96,10 @@ txt=re.sub(r'\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b[=>]
 # ratatui positions the cursor between cells, so compare with all whitespace removed.
 flat=''.join(txt.split())
 ok=True
+# The picker is an overlay; ratatui repaints only changed cells, so a needle must be text a view
+# draws whole ("type to filter" is the Models view's search line, "Tab: Models" the /auth title).
 for needle in ["OpenCode · Big Pickle","/model to switch","/auth to connect subscriptions",
-               "Tab: Subscriptions","Kilo","Tab: Models","Claude","Codex","Cursor","[Sign in]","xAI — Sign in","optional",
+               "type to filter","Recommended","Kilo","Tab: Models","Claude","Codex","Cursor","[Sign in]","xAI — Sign in","optional",
                "cached list from 2026-09-21"]:
     if ''.join(needle.split()) not in flat:
         print("VIOLATION: TUI first run did not show %r" % needle); ok=False
