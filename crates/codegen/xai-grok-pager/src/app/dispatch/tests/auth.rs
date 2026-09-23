@@ -677,30 +677,133 @@ fn model_and_auth_open_their_views_and_switch_while_open() {
     let mut app = test_app();
     app.workshop_connection = crate::app::workshop::first_run_connection();
     let effects = dispatch(Action::OpenConnectionPicker(PickerTab::Models), &mut app);
+    // `/model` loads the cached rows at once and, because the user asked for the model lists,
+    // queues a refresh from their live sources behind that load (cache age respected; `r` forces).
     assert!(
-        effects
-            .iter()
-            .all(|e| matches!(e, Effect::WorkshopLoadPicker))
-            && effects.len() == 1
+        matches!(effects.as_slice(), [Effect::WorkshopLoadPicker]),
+        "got {effects:?}"
     );
     let picker = app.connection_picker.as_ref().expect("picker open");
     assert_eq!(picker.tab, PickerTab::Models);
+    assert!(
+        picker.refresh_pending && !picker.refresh_in_flight,
+        "the overlay says the lists are refreshing; the fetch waits for the cached load"
+    );
     assert!(
         picker.selected_row().is_some_and(
             |r| matches!(&r.kind, RowKind::Engine(m) if m.is_default) && picker.is_active(r)
         ),
         "the active engine model is the highlighted row"
     );
+    let cached = || workshop_auth::PickerSnapshot {
+        rows: workshop_auth::models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]),
+        ..workshop_auth::PickerSnapshot::default()
+    };
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::WorkshopPickerLoaded(cached())),
+        &mut app,
+    );
+    assert!(
+        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs {
+            force: false,
+            engine: None
+        }]),
+        "the cached load starts the live refresh, got {effects:?}"
+    );
+    let picker = app.connection_picker.as_ref().expect("picker open");
+    assert!(picker.refresh_pending && picker.refresh_in_flight);
+    assert!(
+        picker.selected_row().is_some_and(|r| picker.is_active(r)),
+        "the cached load keeps the active row highlighted"
+    );
+    // A second cached snapshot does not start a second refresh.
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::WorkshopPickerLoaded(cached())),
+        &mut app,
+    );
+    assert!(effects.is_empty(), "got {effects:?}");
     assert!(dispatch(Action::Login, &mut app).is_empty());
     assert_eq!(
         app.connection_picker.as_ref().unwrap().tab,
         PickerTab::Subscriptions
     );
-    dispatch(Action::OpenConnectionPicker(PickerTab::Models), &mut app);
+    // `/model` on an already open picker: switch the view and refresh right away.
+    let effects = dispatch(Action::OpenConnectionPicker(PickerTab::Models), &mut app);
     assert_eq!(
         app.connection_picker.as_ref().unwrap().tab,
         PickerTab::Models
     );
+    assert!(
+        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs {
+            force: false,
+            ..
+        }]),
+        "got {effects:?}"
+    );
+}
+
+/// Zero egress before the user acts: `Login` (first run's picker path, `l`, `/login`) and `/auth`
+/// only load the cached rows — no live-catalog refresh, no `Authenticate`. The refresh belongs to
+/// `/model` and to the picker's `r`, which fetches regardless of the cache age and re-reads the
+/// engine list only from an engine that is already up.
+#[test]
+fn login_and_auth_never_refresh_catalogs_but_model_and_r_do() {
+    use workshop_auth::{PickerInput, PickerTab};
+    let no_refresh = |effects: &[Effect]| {
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::WorkshopRefreshCatalogs { .. }))
+    };
+    let mut app = test_app_with_agent();
+    app.auth_methods.clear();
+    app.login_method_id = None;
+    let effects = dispatch(Action::Login, &mut app);
+    assert!(no_refresh(&effects), "Login fetches nothing, got {effects:?}");
+    assert!(!app.connection_picker.as_ref().unwrap().refresh_pending);
+    // `/auth` while the picker is open: still nothing.
+    let effects = dispatch(
+        Action::OpenConnectionPicker(PickerTab::Subscriptions),
+        &mut app,
+    );
+    assert!(no_refresh(&effects), "/auth fetches nothing, got {effects:?}");
+    app.connection_picker = None;
+    let effects = dispatch(
+        Action::OpenConnectionPicker(PickerTab::Subscriptions),
+        &mut app,
+    );
+    assert!(
+        matches!(effects.as_slice(), [Effect::WorkshopLoadPicker]),
+        "a fresh /auth only loads the cached rows, got {effects:?}"
+    );
+    // `r` in the picker: a forced refresh (plus the reload it ends with).
+    let effects = dispatch(Action::ConnectionPicker(PickerInput::Refresh), &mut app);
+    assert!(
+        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs {
+            force: true,
+            engine: None
+        }]),
+        "got {effects:?}"
+    );
+    let picker = app.connection_picker.as_ref().unwrap();
+    assert!(picker.refresh_pending && picker.loading);
+    // A live snapshot clears the pending flag; a cached one does not.
+    dispatch(
+        Action::TaskComplete(TaskResult::WorkshopPickerLoaded(
+            workshop_auth::PickerSnapshot::default(),
+        )),
+        &mut app,
+    );
+    assert!(app.connection_picker.as_ref().unwrap().refresh_pending);
+    dispatch(
+        Action::TaskComplete(TaskResult::WorkshopPickerLoaded(
+            workshop_auth::PickerSnapshot {
+                live: true,
+                ..workshop_auth::PickerSnapshot::default()
+            },
+        )),
+        &mut app,
+    );
+    assert!(!app.connection_picker.as_ref().unwrap().refresh_pending);
 }
 
 /// The OpenCode engine could not start for a turn: one system line, the Kilo keyless pool becomes
@@ -882,8 +985,7 @@ fn picker_with_signed_out_rails(app: &mut AppView) {
                 ..RailState::detecting(*r)
             })
             .collect(),
-        default_selection: None,
-        secret_backend: None,
+        ..PickerSnapshot::default()
     });
     assert_eq!(
         app.connection_picker.as_ref().unwrap().tab,

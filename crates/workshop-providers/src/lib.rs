@@ -10,7 +10,10 @@
 //!   rate-limit hint, and data badge.
 //! * [`catalog`] — [`CatalogModel`] rows (`provider:model:variant`) with protocol, base URL,
 //!   credential source, price, tools, context window, and a free claim with source + timestamp;
-//!   parsers for the Kilo / OpenRouter / NVIDIA / Models.dev list formats and a cached fetcher.
+//!   parsers for the Kilo / OpenRouter / NVIDIA / Models.dev list formats, a cached fetcher, and
+//!   [`catalog::live`]: the picker's live lists (keyless providers fetched on demand with a short
+//!   deadline, cached under the Workshop home, seeds only as the offline fallback, every list
+//!   stamped `fetched <age>` / `cached list from <date>`).
 //! * [`local`] — loopback-only probes that enumerate local models (Ollama `/api/tags` +
 //!   `/api/show`, llama.cpp `/v1/models` + `/props`, generic `/v1/models`) and the ≥ 7B,
 //!   tool-capable default rule.
@@ -40,8 +43,10 @@ pub mod secrets;
 
 pub use broker::{CredentialBroker, CredentialHandle, CredentialRef, ProviderError};
 pub use catalog::fetch::{CatalogFetcher, FetchedCatalog, Freshness};
+pub use catalog::live::{CatalogStatus, HostedCatalogs, RefreshOptions};
 pub use catalog::{
     Catalog, CatalogModel, CatalogSource, FreeTier, KILO_DEFAULT_CHAIN, PickerGroup, Price,
+    SEED_REVIEWED,
 };
 pub use config::{ConnectionRecord, ConnectionsFile, atomic_write_private};
 pub use default_selection::{ConnectOption, DefaultSelection, on_rate_limited, select_default};

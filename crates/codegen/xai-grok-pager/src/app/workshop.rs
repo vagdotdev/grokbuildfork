@@ -5,10 +5,16 @@
 //! `[model.<key>]` + `default` into `$WORKSHOP_HOME/config.toml`, exports a saved key as its
 //! `WORKSHOP_<PROVIDER>_API_KEY` env var (never into the file), asks the shell to reload its model
 //! list, and authenticates with the non-interactive method. Nothing here starts an OAuth flow.
+//!
+//! Model lists are live, not compiled in: [`load_picker_snapshot`] reads the last fetched lists
+//! from `$WORKSHOP_HOME/catalog-cache/` (never the network), [`refresh_picker_snapshot`] fetches
+//! the keyless hosted lists and the engine's `/config/providers` and then reloads. A refresh runs
+//! only after the user acted — an active connection at startup, `/model`, the picker's `r` — so
+//! the first-run, `/login` and `/auth` screens stay hermetic.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use tokio::sync::{mpsc, watch};
 use workshop_adapters::opencode_engine::{
@@ -21,10 +27,11 @@ use workshop_adapters::supervisor::{RunHandle, SupervisorOptions, spawn};
 use workshop_adapters::{
     AdapterEvent, AdapterId, DetectOptions, Detection, PermissionPolicy, RunRequest, detect,
 };
-use workshop_auth::{EngineModel, PickerSnapshot, models_rows};
+use workshop_auth::{ENGINE_PROVIDER_ID, EngineModel, PickerSnapshot, models_rows};
+use workshop_providers::catalog::live::{self as live_catalogs, HostedCatalogs};
 use workshop_providers::{
-    Catalog, CredentialBroker, CredentialInjection, FileSecretStore, KeyringSecretStore,
-    LayeredSecretStore, resolve_model_entry, select_default,
+    Catalog, CatalogStatus, CredentialBroker, CredentialInjection, FileSecretStore, Freshness,
+    KeyringSecretStore, LayeredSecretStore, RefreshOptions, resolve_model_entry, select_default,
 };
 
 /// Which runtime a prompt is routed through.
@@ -148,10 +155,14 @@ pub fn default_broker() -> CredentialBroker {
     CredentialBroker::new(Arc::new(store), home.join("connections.json"))
 }
 
+/// `$WORKSHOP_HOME/catalog-cache`: the hosted lists (`<provider>.json`, written by
+/// `workshop_providers::catalog::live`) and the engine list (`opencode-engine.json`).
+fn catalog_cache_dir() -> PathBuf {
+    workshop_providers::catalog::fetch::default_cache_dir(&workshop_home())
+}
+
 fn engine_cache_path() -> PathBuf {
-    workshop_home()
-        .join("catalog-cache")
-        .join("opencode-engine.json")
+    catalog_cache_dir().join("opencode-engine.json")
 }
 
 /// The last engine catalog this home saw (written after every engine launch).
@@ -172,17 +183,112 @@ pub fn store_engine_models(models: &[EngineModel]) {
     }
 }
 
-/// Build the picker snapshot: loopback local-server probe, builtin + cached catalogs, broker
-/// connection state, engine cache, and the CLI rail probe (child processes, so on the blocking pool).
+/// Where the engine rows come from: the cache file's write time when the engine list was ever
+/// fetched (`fetched <age>`), else the pinned seed (`cached list from <date>`). `error` is the
+/// reason the last live read failed, when one was attempted.
+fn engine_catalog_status(models: &[EngineModel], error: Option<String>) -> CatalogStatus {
+    let fetched_at = std::fs::metadata(engine_cache_path())
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    match fetched_at {
+        Some(at) if !models.is_empty() => CatalogStatus {
+            provider_id: ENGINE_PROVIDER_ID.into(),
+            freshness: Freshness::Cached,
+            fetched_at_secs: Some(at),
+            rows: models.len(),
+            error,
+        },
+        _ => CatalogStatus {
+            error,
+            ..CatalogStatus::seed(ENGINE_PROVIDER_ID, 1)
+        },
+    }
+}
+
+/// Read the engine's live free catalog (`GET /config/providers` on loopback) and cache it for
+/// `/model`. `Err` when the catalog cannot be read (old engine, server gone).
+pub async fn refresh_engine_catalog(engine: &OpenCodeEngine) -> Result<Vec<EngineModel>, String> {
+    let catalog = engine.free_models().await.map_err(|e| e.to_string())?;
+    let models: Vec<EngineModel> = catalog
+        .models
+        .iter()
+        .map(|m| EngineModel {
+            model_ref: m.model_ref.clone(),
+            name: m.name.clone(),
+            is_default: m.is_default,
+            tool_call: m.tool_call,
+            context_limit: m.context_limit,
+        })
+        .collect();
+    if models.is_empty() {
+        return Err("opencode reported no free models".into());
+    }
+    store_engine_models(&models);
+    Ok(models)
+}
+
+/// Build the picker snapshot: loopback local-server probe, the CLI rail probe (child processes,
+/// so on the blocking pool), then the model lists — the last fetched hosted lists and engine list
+/// from `catalog-cache/` (seeds where nothing was fetched yet), never the network — and the broker
+/// connection state.
 ///
 /// This is the single data entry point of the `/model` + `/auth` overlay: everything the two views
 /// list comes from the `PickerSnapshot` returned here (`workshop_auth::models_rows` builds the rows
-/// from a `Catalog` plus the engine models; `PickerState::apply_snapshot` takes it). Live provider
-/// catalogs plug in by widening the `Catalog` / engine models handed to `models_rows`, not by
-/// touching the views.
+/// from a `Catalog` plus the engine models; `PickerState::apply_snapshot` takes it). The lists are
+/// read last so a snapshot built while [`refresh_picker_snapshot`] runs still sees what it cached.
 pub async fn load_picker_snapshot() -> PickerSnapshot {
+    build_picker_snapshot(None, None).await
+}
+
+/// Refresh the model lists from their live sources, then build the snapshot: the keyless hosted
+/// lists (Kilo, OpenRouter, NVIDIA; concurrently, short deadline, cached on success) and, when an
+/// engine is up, its `/config/providers`. `force` ignores the cache age (the picker's `r`).
+/// Only ever called after the user acted; failures leave the last cached list or the dated seed.
+pub async fn refresh_picker_snapshot(
+    engine: Option<Arc<OpenCodeEngine>>,
+    force: bool,
+) -> PickerSnapshot {
+    let opts = if force {
+        RefreshOptions::forced()
+    } else {
+        RefreshOptions::default()
+    };
+    let cache_dir = catalog_cache_dir();
+    let hosted = live_catalogs::refresh(&cache_dir, opts);
+    let engine_result = async {
+        match engine {
+            Some(engine) => refresh_engine_catalog(&engine).await.err(),
+            None => None,
+        }
+    };
+    let (hosted, engine_error) = tokio::join!(hosted, engine_result);
+    let mut snap = build_picker_snapshot(Some(hosted), engine_error).await;
+    snap.live = true;
+    snap
+}
+
+async fn build_picker_snapshot(
+    hosted: Option<HostedCatalogs>,
+    engine_error: Option<String>,
+) -> PickerSnapshot {
     let local = workshop_providers::probe_all_local_servers(Duration::from_millis(600)).await;
-    let mut catalog = Catalog::builtin();
+    let rails = tokio::task::spawn_blocking(|| {
+        let probe = workshop_detect::probe_all(&workshop_detect::DetectConfig::default());
+        workshop_detect::rails(&probe, workshop_detect::model::default_models).to_vec()
+    })
+    .await
+    .unwrap_or_else(|_| {
+        workshop_detect::Rail::ALL
+            .iter()
+            .map(|r| workshop_detect::RailState::detecting(*r))
+            .collect()
+    });
+    let HostedCatalogs {
+        mut catalog,
+        status: hosted_status,
+    } = hosted.unwrap_or_else(|| live_catalogs::load_cached(&catalog_cache_dir()));
     let as_of = "live";
     for status in &local {
         if status.is_reachable()
@@ -199,22 +305,15 @@ pub async fn load_picker_snapshot() -> PickerSnapshot {
     let engine = cached_engine_models();
     let rows = models_rows(&catalog, |id| broker.is_connected(id), &engine);
     let default_selection = Some(select_default(&local, true));
-    let rails = tokio::task::spawn_blocking(|| {
-        let probe = workshop_detect::probe_all(&workshop_detect::DetectConfig::default());
-        workshop_detect::rails(&probe, workshop_detect::model::default_models).to_vec()
-    })
-    .await
-    .unwrap_or_else(|_| {
-        workshop_detect::Rail::ALL
-            .iter()
-            .map(|r| workshop_detect::RailState::detecting(*r))
-            .collect()
-    });
+    let mut catalog_status = vec![engine_catalog_status(&engine, engine_error)];
+    catalog_status.extend(hosted_status);
     PickerSnapshot {
         rows,
         rails,
         default_selection,
         secret_backend: Some(secret_backend),
+        catalog_status,
+        live: false,
     }
 }
 
@@ -708,6 +807,11 @@ async fn acquire_engine(
     match start_engine(slot, workspace, tx.clone()).await {
         Ok(engine) => {
             let engine = Arc::new(engine);
+            // Every engine start refreshes the engine's free list for `/model` (a loopback GET);
+            // the default-model resolution below and the picker read the cached result.
+            if let Err(e) = refresh_engine_catalog(&engine).await {
+                tracing::warn!("opencode free catalog not read after start: {e}");
+            }
             *guard = Some(engine.clone());
             Ok(engine)
         }
@@ -733,7 +837,7 @@ pub async fn warm_engine(
     let (quiet_tx, _quiet_rx) = mpsc::unbounded_channel();
     match acquire_engine(&slot, &workspace, &quiet_tx, false).await {
         Ok(engine) => {
-            if let Some(live) = live_engine_default(&engine).await {
+            if let Some(live) = live_engine_default(&cached_engine_models()) {
                 let _ = tx.send(WorkshopTurnMsg::EngineDefaultResolved { model: live });
             }
             let _ = tx.send(WorkshopTurnMsg::EngineWarm { engine });
@@ -742,29 +846,13 @@ pub async fn warm_engine(
     }
 }
 
-/// Fetch the engine's live free catalog, cache it for `/model`, and return OpenCode's current
-/// default model. `None` when the catalog cannot be read (offline, old engine).
-async fn live_engine_default(engine: &OpenCodeEngine) -> Option<EngineModel> {
-    let catalog = engine.free_models().await.ok()?;
-    let models: Vec<EngineModel> = catalog
-        .models
-        .iter()
-        .map(|m| EngineModel {
-            model_ref: m.model_ref.clone(),
-            name: m.name.clone(),
-            is_default: m.is_default,
-            tool_call: m.tool_call,
-            context_limit: m.context_limit,
-        })
-        .collect();
-    if models.is_empty() {
-        return None;
-    }
-    store_engine_models(&models);
-    let default = catalog.default_or_first()?;
+/// OpenCode's current default model out of the last live catalog the engine reported (the model
+/// it marks default, else the first free one). `None` while no catalog was ever read.
+fn live_engine_default(models: &[EngineModel]) -> Option<EngineModel> {
     models
         .iter()
-        .find(|m| m.model_ref == default.model_ref)
+        .find(|m| m.is_default)
+        .or_else(|| models.first())
         .cloned()
         .map(|mut m| {
             m.is_default = true;
@@ -787,10 +875,11 @@ async fn build_stream(
             let engine = acquire_engine(slot, &spec.cwd, tx, spec.always_approve)
                 .await
                 .map_err(TurnStartError::EngineUnavailable)?;
-            // The default engine model is whichever model OpenCode's live catalog marks as
-            // default; the pinned seed only stands in while that catalog is unreachable.
+            // The default engine model is whichever model OpenCode's live catalog (read at
+            // every engine start) marks as default; the pinned seed only stands in while that
+            // catalog is unreachable.
             if model.is_default
-                && let Some(live) = live_engine_default(&engine).await
+                && let Some(live) = live_engine_default(&cached_engine_models())
             {
                 if live.model_ref != model.model_ref {
                     let _ = tx.send(WorkshopTurnMsg::EngineDefaultResolved {

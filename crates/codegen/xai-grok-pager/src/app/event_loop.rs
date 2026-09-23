@@ -1351,7 +1351,13 @@ pub(crate) async fn run(
             dispatch::dispatch(Action::Login, &mut app)
         }
     } else {
-        vec![]
+        // Workshop: a connection is already active (a returning launch), so the model lists may
+        // be refreshed from their live sources in the background — never on a first run or while
+        // a credential is still missing, which stay hermetic until the user acts.
+        vec![super::actions::Effect::WorkshopRefreshCatalogs {
+            force: false,
+            engine: None,
+        }]
     };
     app.has_external_auth_provider =
         crate::slash::commands::usage::detect_external_auth_provider(&app.auth_methods);

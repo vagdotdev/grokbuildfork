@@ -2341,6 +2341,13 @@ pub(crate) fn execute(
                     TaskResult::WorkshopPickerLoaded(snap)
                 });
         }
+        Effect::WorkshopRefreshCatalogs { force, engine } => {
+            tasks
+                .spawn(async move {
+                    let snap = crate::app::workshop::refresh_picker_snapshot(engine, force).await;
+                    TaskResult::WorkshopPickerLoaded(snap)
+                });
+        }
         Effect::WorkshopActivateModel {
             request_seq,
             model_id,

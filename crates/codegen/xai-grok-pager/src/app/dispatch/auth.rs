@@ -243,11 +243,45 @@ pub(super) fn dispatch_open_connection_picker(
                     .with_tab(tab)
                     .with_active(app.workshop_connection.active_row_id()),
             );
-            // Rows and rails load asynchronously: loopback local-server probe, catalogs, and the
-            // official CLI detection (child processes on the blocking pool). No auth files.
+            // Rows and rails load asynchronously: loopback local-server probe, the cached model
+            // lists, and the official CLI detection (child processes on the blocking pool). No
+            // auth files, no network.
             vec![Effect::WorkshopLoadPicker]
         }
     }
+}
+
+/// `/model`: the Models view, and — because the user asked for the model lists — a live refresh.
+/// A freshly opened picker shows its cached rows first; the refresh is queued behind that load
+/// (`WorkshopPickerLoaded` starts it) so the live rows always land last. A picker that is already
+/// open refreshes right away.
+pub(super) fn dispatch_open_models_view(app: &mut AppView) -> Vec<Effect> {
+    let effects = dispatch_open_connection_picker(app, workshop_auth::PickerTab::Models);
+    let freshly_opened = effects
+        .iter()
+        .any(|e| matches!(e, Effect::WorkshopLoadPicker));
+    if freshly_opened {
+        if let Some(picker) = app.connection_picker.as_mut() {
+            picker.refresh_pending = true;
+        }
+        return effects;
+    }
+    dispatch_refresh_catalogs(app, false)
+}
+
+/// Refresh the model lists from their live sources now (the user acted: `/model`, `r`, or a
+/// launch with an active connection). The engine list is re-read only from an engine that is
+/// already up; nothing here installs or starts one. An open picker keeps its cached rows
+/// meanwhile and shows `refreshing lists…` until the live snapshot lands.
+pub(super) fn dispatch_refresh_catalogs(app: &mut AppView, force: bool) -> Vec<Effect> {
+    if let Some(picker) = app.connection_picker.as_mut() {
+        picker.refresh_pending = true;
+        picker.refresh_in_flight = true;
+    }
+    vec![Effect::WorkshopRefreshCatalogs {
+        force,
+        engine: app.workshop_engine.clone(),
+    }]
 }
 
 /// Make `conn` the active connection and remember it for the next launch.
@@ -336,9 +370,11 @@ pub(super) fn dispatch_connection_picker(
     match picker.handle(input) {
         PickerOutcome::Changed => vec![],
         PickerOutcome::Refresh => {
+            // `r`: re-probe local servers and rails, and fetch every model list again regardless
+            // of its cache age.
             picker.loading = true;
             picker.set_status("Refreshing…");
-            vec![Effect::WorkshopLoadPicker]
+            dispatch_refresh_catalogs(app, true)
         }
         PickerOutcome::Close => {
             // Before any connection is configured the welcome screen stays on the (auth-pending)

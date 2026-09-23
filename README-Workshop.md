@@ -38,6 +38,12 @@ target/debug/workshop login --xai                    # optional xAI account logi
 ```
 
 Home is `~/.workshop` (`$WORKSHOP_HOME`). `GROK_HOME` and `~/.grok` are never read, so a machine that also runs Grok Build keeps its settings, hooks, sessions and memory separate.
+The model lists on `/model` are live: the keyless catalogs (Kilo, OpenRouter, NVIDIA) are fetched
+when `/model` opens (lists younger than 5 min are reused; `r` forces) and on a launch that already
+has an active connection; the OpenCode rows are what the running `opencode serve` reports, fetched
+on every engine start. Results are cached under `~/.workshop/catalog-cache/` so the next launch is
+instant, and every row says `fetched <age>` or, offline, `cached list from <date>` (the compiled
+seed). Nothing is fetched on a first run, by `/auth`, `/login` or `workshop login`.
 Telemetry is off and no Mixpanel token or events URL is baked in. Background auto-update is off
 until a Workshop release channel and signature verification exist (`WORKSHOP_ENABLE_AUTOUPDATE=1`
 opts in); `workshop update` reads the channel manifest from the release repository baked at build
@@ -49,8 +55,9 @@ time (`WORKSHOP_RELEASE_REPO`).
 cargo test -p workshop-gates                          # compiled defaults: issuer, auth methods, endpoints, updater, model
 scripts/no-xai-scan.sh --sources                      # default-path sources + gate:no-theft markers
 scripts/no-xai-scan.sh --binary target/debug/workshop # forbidden-host strings must be reviewed contexts (scripts/no-xai-binary-baseline.txt)
-scripts/no-egress-smoke.sh target/debug/workshop      # zero xAI egress on startup, login, headless, first-run TUI (+ /model, /auth)
+scripts/no-egress-smoke.sh target/debug/workshop      # zero xAI egress on startup, login, headless, first-run TUI (+ /auth); /model reaches only the catalog hosts
 WORKSHOP_BIN=$PWD/target/debug/workshop cargo test -p workshop-gates --test pty_login_picker -- --include-ignored
+WORKSHOP_BIN=$PWD/target/debug/workshop cargo test -p workshop-gates --test pty_live_catalogs -- --include-ignored  # no fetch before the user acts; /model lists the engine's live rows
 ```
 
 ## Editing an upstream file
