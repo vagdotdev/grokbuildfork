@@ -1059,11 +1059,35 @@ pub struct AppView {
     pub workshop_turn_cancel: Option<tokio::sync::watch::Sender<bool>>,
     /// The streaming assistant block for the current turn, appended to as deltas arrive.
     pub workshop_turn_stream_entry: Option<crate::scrollback::EntryId>,
+    /// The streaming thinking block of the current turn (the model's reasoning), finished when
+    /// the answer or a tool call starts so reasoning never runs into the answer.
+    pub workshop_turn_thinking_entry: Option<crate::scrollback::EntryId>,
     /// Agent whose scrollback the current turn renders into.
     pub workshop_turn_agent: Option<crate::app::agent::AgentId>,
     /// The user bubble of the current Engine/Adapter turn (dropped when the turn is resent on the
     /// Kilo fallback).
     pub workshop_turn_prompt_entry: Option<crate::scrollback::EntryId>,
+    /// Tool rows of the current Engine/Adapter turn by the backend's call id, so the result
+    /// (diff, output, exit code) lands on the row that announced the call.
+    pub workshop_turn_tools: std::collections::HashMap<String, crate::scrollback::EntryId>,
+    /// The tool name and input behind each row in `workshop_turn_tools`, kept until the result
+    /// arrives (the finished row is built from input + result together).
+    pub workshop_turn_tool_inputs:
+        std::collections::HashMap<crate::scrollback::EntryId, (String, serde_json::Value)>,
+    /// Prompts submitted while an Engine/Adapter turn was running, oldest first; each becomes
+    /// its own turn when the running one ends.
+    pub workshop_turn_queue: std::collections::VecDeque<String>,
+    /// Workshop: the engine's last reported token usage for the active session (`Some` once the
+    /// first turn finished a step), what the context meter shows against the model's limit.
+    pub workshop_context_used: Option<u64>,
+    /// Workshop: the engine conversation a launch (`--resume`, `-c`) or the picker asked to
+    /// resume; replayed into the next agent created and then continued on the same session.
+    pub workshop_engine_resume: Option<crate::app::workshop_sessions::EngineSession>,
+    /// Workshop: what the current engine turn produced so far (answer text, reasoning, tool calls
+    /// with results), written to the engine session record when the turn ends.
+    pub workshop_turn_record: Vec<crate::app::workshop_sessions::Item>,
+    /// Workshop: the prompt of the current engine turn, for its record.
+    pub workshop_turn_prompt_text: Option<String>,
     /// A prompt to resend on the shell path once the Kilo fallback activation completes.
     pub workshop_resend: Option<(crate::app::agent::AgentId, String, String)>,
     /// Delivery state from the last clipboard copy during auth.
@@ -1618,8 +1642,16 @@ impl AppView {
             workshop_turn_tx: None,
             workshop_turn_cancel: None,
             workshop_turn_stream_entry: None,
+            workshop_turn_thinking_entry: None,
             workshop_turn_agent: None,
             workshop_turn_prompt_entry: None,
+            workshop_turn_tools: std::collections::HashMap::new(),
+            workshop_turn_tool_inputs: std::collections::HashMap::new(),
+            workshop_turn_queue: std::collections::VecDeque::new(),
+            workshop_context_used: None,
+            workshop_engine_resume: None,
+            workshop_turn_record: Vec::new(),
+            workshop_turn_prompt_text: None,
             workshop_resend: None,
             auth_clipboard_delivery: None,
             auth_clipboard_feedback_generation: 0,

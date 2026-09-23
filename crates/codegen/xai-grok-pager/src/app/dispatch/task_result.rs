@@ -1252,6 +1252,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => handle_auth_url_ready(app, request_seq, auth_url, external, mode),
         TaskResult::AuthCodeSubmitted { .. } => vec![],
         TaskResult::AuthCancelComplete => vec![],
+        TaskResult::WorkshopModelsReloaded => vec![],
         TaskResult::McpsListLoaded { agent_id, result } => {
             use crate::views::extensions_modal::TabDataState;
             if let Some(agent) = app.agents.get_mut(&agent_id)

@@ -39,6 +39,33 @@ pub(in crate::app::dispatch) fn dispatch_load_session(
     session_cwd: Option<std::path::PathBuf>,
     chat_kind: bool,
 ) -> Vec<Effect> {
+    // Workshop: an engine conversation is not a shell session — replay Workshop's record into a
+    // fresh agent and continue the same OpenCode session from there.
+    if let Some(record) = crate::app::workshop_sessions::load(&session_id) {
+        crate::unified_log::info(
+            "workshop.engine_resume",
+            None,
+            Some(serde_json::json!({
+                "session": record.id,
+                "turns": record.turns.len(),
+                "startup_allowed": app.session_startup_allowed(),
+            })),
+        );
+        invalidate_picker_fetch_on_dismiss(app);
+        if let Some(existing) = app.agents.iter().find_map(|(id, a)| {
+            (app.workshop_engine_session.as_deref() == Some(record.id.as_str())
+                && a.session.session_id.is_some())
+            .then_some(*id)
+        }) {
+            switch_to_agent(app, existing, SwitchCause::Load);
+            return vec![];
+        }
+        // The welcome screen's unused home husk is not needed once a real conversation opens.
+        let mut effects = abandon_unused_empty_for_load(app, &session_id);
+        app.workshop_engine_resume = Some(record);
+        effects.extend(super::lifecycle::dispatch_new_session_inner(app, None));
+        return effects;
+    }
     if !app.session_startup_allowed() {
         #[cfg(feature = "local-workspace")]
         {

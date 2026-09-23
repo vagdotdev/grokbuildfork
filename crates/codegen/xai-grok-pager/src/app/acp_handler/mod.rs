@@ -54,6 +54,8 @@ use permissions::{
     apply_recap_block, handle_permission_request, should_drop_duplicate_auto_recap,
     should_drop_late_auto_recap,
 };
+// Workshop: the OpenCode engine's permission asks reuse the same approval prompt.
+pub(crate) use permissions::enqueue_permission_for_workshop;
 
 pub(crate) use routing::task_view_by_session_id;
 use routing::{

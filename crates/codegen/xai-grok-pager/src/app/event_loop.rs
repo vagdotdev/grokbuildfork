@@ -1105,6 +1105,7 @@ pub(crate) async fn run(
     >,
     mut writer_event_rx: tokio::sync::mpsc::UnboundedReceiver<WriterEvent>,
     reader_thread: &mut ReaderThread,
+    workshop_engine_resume: Option<crate::app::workshop_sessions::EngineSession>,
 ) -> anyhow::Result<RunResult> {
     crate::unified_log::init(connection.tx.clone());
     crate::unified_log::info("pager started", None, None);
@@ -1335,6 +1336,9 @@ pub(crate) async fn run(
     // Workshop: Engine/Adapter connections are not shell models; restore the one this home last
     // activated so a restart lands on the same runtime (`OpenCode · Big Pickle`, `Claude · …`).
     app.workshop_connection = crate::app::workshop::load_active_connection();
+    // Workshop: `--resume ses_…` / `-c` on an engine conversation (resolved by `app::run`, which
+    // kept the shell on a new session) is replayed into the first agent shown.
+    app.workshop_engine_resume = workshop_engine_resume;
     let mut post_render_effects = if needs_interactive_login {
         // Workshop: an empty method list is the default cold start (no session-login provider,
         // no key, no cached session). Nothing connected yet → first run: land in the composer with
@@ -1838,6 +1842,16 @@ pub(crate) async fn run(
                 label: args.worktree.as_ref().filter(|s| !s.is_empty()).cloned(),
                 git_ref: args.worktree_ref.clone(),
             })
+        }
+        // Workshop: `--resume ses_…` / `-c` on an engine conversation opens it like a loaded
+        // session (the load path replays Workshop's record; deferred while auth is pending).
+        MaterializedStartup::NewAuto if app.workshop_engine_resume.is_some() => {
+            let id = app
+                .workshop_engine_resume
+                .as_ref()
+                .map(|s| s.id.clone())
+                .unwrap_or_default();
+            Some(Action::LoadSession(id, None, false))
         }
         MaterializedStartup::NewAuto => None,
     };
@@ -3204,6 +3218,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
     app.abandon_startup();
     let exit_info = app.active_agent().and_then(|agent| {
         let sid = agent.session.session_id.as_ref()?;
+        // Workshop: name the id that resumes what was actually said — the engine conversation
+        // for an Engine connection — and print no hint for a session nothing was said in.
+        let sid = crate::app::workshop_sessions::exit_resume_id(app, agent, sid.0.as_ref())?;
         let summary = if app.screen_mode.is_fullscreen() {
             use crate::views::session_title;
             let last_prompt = session_title::last_user_prompt_line(agent);
@@ -3217,7 +3234,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
             None
         };
         Some(super::ExitInfo {
-            session_id: sid.0.to_string(),
+            session_id: sid,
             minimal: app.screen_mode.is_minimal(),
             summary,
         })
@@ -4069,8 +4086,9 @@ fn handle_workshop_turn_msg(
     let clears_progress = matches!(
         msg,
         M::Delta(_)
+            | M::Thinking(_)
             | M::Tool { .. }
-            | M::Permission { .. }
+            | M::PermissionAsk { .. }
             | M::Error(_)
             | M::EngineUnavailable { .. }
             | M::Done { .. }
@@ -4082,6 +4100,14 @@ fn handle_workshop_turn_msg(
         {
             agent.scrollback.remove_entry(id);
         }
+    }
+    // Reasoning is its own (collapsed) block: the first answer text, tool call, or the end of
+    // the turn closes it, so thinking is never printed as part of the answer.
+    if !matches!(msg, M::Thinking(_) | M::Usage(_) | M::Progress(_))
+        && let Some(id) = app.workshop_turn_thinking_entry.take()
+        && let Some(agent) = app.agents.get_mut(&agent_id)
+    {
+        agent.scrollback.finish_running(id);
     }
     if let M::EngineUnavailable { reason, text } = msg {
         let effects = dispatch::dispatch(
@@ -4106,11 +4132,13 @@ fn handle_workshop_turn_msg(
             // OpenCode's live default replaces the pinned seed the first run activated.
             let conn = crate::app::workshop::WorkshopConnection::Engine { model };
             crate::app::workshop::save_active_connection(&conn);
-            let label = conn.composer_label();
-            for agent in app.agents.values_mut() {
-                agent.workshop_model_label = label.clone();
-            }
             app.workshop_connection = conn;
+            crate::app::workshop::sync_agent_views(app);
+            // The shell's placeholder entry names the model too (dashboard, session list):
+            // rename it and have the shell re-read its list.
+            if crate::app::workshop::activate_placeholder_session(&app.workshop_connection).is_ok() {
+                return (true, vec![super::actions::Effect::WorkshopReloadModels]);
+            }
             true
         }
         M::EngineReady { engine, session } => {
@@ -4125,6 +4153,7 @@ fn handle_workshop_turn_msg(
             false
         }
         M::Delta(text) => {
+            crate::app::workshop_sessions::record_text(&mut app.workshop_turn_record, &text);
             let entry = app.workshop_turn_stream_entry;
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 match entry {
@@ -4142,7 +4171,31 @@ fn handle_workshop_turn_msg(
             }
             true
         }
-        M::Tool { name, summary } => {
+        M::Thinking(text) => {
+            crate::app::workshop_sessions::record_thinking(&mut app.workshop_turn_record, &text);
+            // Reasoning after answer text starts a new paragraph for the answer that follows.
+            if let Some(id) = app.workshop_turn_stream_entry.take()
+                && let Some(agent) = app.agents.get_mut(&agent_id)
+            {
+                agent.scrollback.finish_running(id);
+            }
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                let id = match app.workshop_turn_thinking_entry {
+                    Some(id) => id,
+                    None => {
+                        let id = agent
+                            .scrollback
+                            .push_block(RenderBlock::thinking_streaming());
+                        agent.scrollback.set_entry_running(id, true);
+                        app.workshop_turn_thinking_entry = Some(id);
+                        id
+                    }
+                };
+                agent.scrollback.push_chunk_to_thinking(id, &text);
+            }
+            true
+        }
+        M::Tool { id, name, input } => {
             // A tool call ends the current assistant paragraph; the next delta starts a fresh block.
             if let Some(id) = app.workshop_turn_stream_entry.take()
                 && let Some(agent) = app.agents.get_mut(&agent_id)
@@ -4150,20 +4203,86 @@ fn handle_workshop_turn_msg(
                 agent.scrollback.finish_running(id);
             }
             if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent
+                let entry = agent
                     .scrollback
-                    .push_block(RenderBlock::tool_call(name, summary, true));
+                    .push_block(crate::app::workshop_tools::running_row(&name, &input));
+                agent.scrollback.set_entry_running(entry, true);
+                app.workshop_turn_tools.insert(id, entry);
+                app.workshop_turn_tool_inputs.insert(entry, (name, input));
             }
             true
         }
-        M::ToolResult { .. } => false,
-        M::Permission { summary, decision } => {
+        M::ToolResult {
+            id,
+            ok,
+            output,
+            title,
+            metadata,
+        } => {
+            // The result lands on the row that announced the call: the row becomes the pager's
+            // Edit block with the diff, or Run block with output + exit code, and stops running.
+            let Some(entry) = app.workshop_turn_tools.remove(&id) else {
+                return (false, vec![]);
+            };
+            let Some((name, input)) = app.workshop_turn_tool_inputs.remove(&entry) else {
+                return (false, vec![]);
+            };
             if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent
-                    .scrollback
-                    .push_block(RenderBlock::system(format!("Permission: {summary} — {decision}")));
+                let block = crate::app::workshop_tools::finished_row(
+                    &name,
+                    &input,
+                    ok,
+                    &output,
+                    title.as_deref(),
+                    &metadata,
+                );
+                agent.scrollback.replace_tool_block(entry, block, None);
+                agent.scrollback.finish_running(entry);
+            }
+            app.workshop_turn_record
+                .push(crate::app::workshop_sessions::Item::Tool {
+                    name,
+                    input,
+                    ok,
+                    output,
+                    title,
+                    metadata,
+                });
+            true
+        }
+        M::PermissionAsk { request, reply } => {
+            use workshop_adapters::opencode_engine::PermissionReply;
+            let Some(agent) = app.agents.get_mut(&agent_id) else {
+                let _ = reply.send(PermissionReply::Reject);
+                return (false, vec![]);
+            };
+            // The mode as of *now*, not of the prompt: a user who switched to always-approve
+            // mid-turn gets the remaining asks approved.
+            if dispatch::workshop_permission_mode(agent).auto_approves() {
+                let _ = reply.send(PermissionReply::Once);
+                return (false, vec![]);
+            }
+            let ui_tx = app.workshop_turn_tx.clone();
+            crate::app::workshop_permissions::enqueue_engine_permission(agent, request, reply, ui_tx);
+            true
+        }
+        M::Usage(usage) => {
+            // The engine reports the whole prompt per step (input + cached + output), which is
+            // the model's context after that step; keep the latest as the live usage.
+            let used = usage.input_tokens
+                + usage.cache_read_tokens
+                + usage.cache_write_tokens
+                + usage.output_tokens
+                + usage.reasoning_tokens;
+            if used > 0 {
+                app.workshop_context_used = Some(used);
+                crate::app::workshop::sync_agent_views(app);
             }
             true
+        }
+        M::FollowUp(text) => {
+            app.workshop_turn_queue.push_back(text);
+            false
         }
         M::Error(message) => {
             // Red, and actionable: Enter on the empty composer resends the prompt that failed.
@@ -4187,16 +4306,43 @@ fn handle_workshop_turn_msg(
                 && let Some(agent) = app.agents.get(&agent_id)
             {
                 let cwd = agent.session.cwd.clone();
-                let backend = match &app.workshop_connection {
+                match &app.workshop_connection {
                     crate::app::workshop::WorkshopConnection::Adapter { rail, .. } => {
-                        rail.vendor().id()
+                        crate::app::workshop::save_resume_id(rail.vendor().id(), &cwd, session);
                     }
-                    _ => "opencode",
-                };
-                crate::app::workshop::save_resume_id(backend, &cwd, session);
+                    crate::app::workshop::WorkshopConnection::Engine { model } => {
+                        // The engine conversation is Workshop's own record: what the resume
+                        // picker lists, what `--resume`/`-c` replay. Nothing is recorded for a
+                        // turn that produced nothing (cancelled before the model answered).
+                        let items = std::mem::take(&mut app.workshop_turn_record);
+                        if let Some(prompt) = app.workshop_turn_prompt_text.take()
+                            && !items.is_empty()
+                        {
+                            crate::app::workshop_sessions::record_turn(
+                                session,
+                                &cwd,
+                                &model.model_ref,
+                                &model.name,
+                                &prompt,
+                                items,
+                                app.workshop_context_used,
+                            );
+                        }
+                    }
+                    crate::app::workshop::WorkshopConnection::Shell => {}
+                }
             }
+            app.workshop_turn_record.clear();
+            app.workshop_turn_prompt_text = None;
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 agent.workshop_turn_active = false;
+                // A row still "running" when the turn ends (cancelled mid-call) stops animating,
+                // and an approval prompt nobody answered is withdrawn (its reject is implied).
+                for entry in app.workshop_turn_tools.drain().map(|(_, e)| e) {
+                    agent.scrollback.finish_running(entry);
+                }
+                app.workshop_turn_tool_inputs.clear();
+                dispatch::drain_workshop_permission_queue(agent);
                 if cancelled {
                     agent
                         .scrollback
@@ -4208,7 +4354,14 @@ fn handle_workshop_turn_msg(
             app.workshop_turn_agent = None;
             app.workshop_turn_prompt_entry = None;
             app.workshop_turn_started = None;
-            true
+            // Prompts typed during the turn go out now, one turn each, oldest first. A cancel
+            // drops them: the user stopped the conversation, not just this answer.
+            if cancelled {
+                app.workshop_turn_queue.clear();
+                return (true, vec![]);
+            }
+            let effects = dispatch::dispatch(Action::WorkshopNextQueuedPrompt { agent_id }, app);
+            return (true, effects);
         }
         // Handled above (needs the dispatcher).
         M::EngineUnavailable { .. } => false,
