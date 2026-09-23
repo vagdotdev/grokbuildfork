@@ -121,7 +121,7 @@ pub const REPO_URL: &str = "https://github.com/vagdotdev/grokbuildfork";
 
 /// A prefilled "new issue" link for a feedback note (title and body URL-encoded, capped so the
 /// URL stays within what browsers accept).
-pub fn feedback_issue_url(text: &str) -> String {
+pub fn feedback_issue_url(text: &str, version: &str) -> String {
     let text = text.trim();
     let title: String = text
         .lines()
@@ -130,8 +130,10 @@ pub fn feedback_issue_url(text: &str) -> String {
         .chars()
         .take(80)
         .collect();
-    // Short enough to stay one readable line in a transcript; the full note is on disk.
-    let body: String = text.chars().take(600).collect();
+    // Short enough to stay one readable line in a transcript; the full note is on disk. The
+    // version the user ran is the one fact the maintainer always needs.
+    let note: String = text.chars().take(600).collect();
+    let body = format!("{note}\n\n— Workshop {version}");
     format!(
         "{REPO_URL}/issues/new?title={}&body={}",
         url_encode(&format!("Feedback: {title}")),
@@ -348,13 +350,20 @@ mod tests {
 
     #[test]
     fn feedback_issue_url_is_prefilled_and_encoded() {
-        let url = feedback_issue_url("Picker closes on q\n\nTyping qwen leaves wen in the prompt.");
+        let url = feedback_issue_url(
+            "Picker closes on q\n\nTyping qwen leaves wen in the prompt.",
+            "0.2.2",
+        );
         assert!(url.starts_with("https://github.com/vagdotdev/grokbuildfork/issues/new?title="));
         assert!(url.contains("title=Feedback%3A%20Picker%20closes%20on%20q"));
         assert!(url.contains("&body=Picker%20closes%20on%20q%0A%0ATyping"));
+        assert!(
+            url.ends_with("Workshop%200.2.2"),
+            "the version the user ran closes the body: {url}"
+        );
         assert!(!url.contains(' ') && !url.contains('\n'));
         let long = "x".repeat(10_000);
-        assert!(feedback_issue_url(&long).len() < 1_000);
+        assert!(feedback_issue_url(&long, "0.2.2").len() < 1_000);
     }
 
     #[test]
