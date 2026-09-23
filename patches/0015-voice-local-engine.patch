@@ -155,10 +155,10 @@ index e16c9d24..d5305515 100644
          subscription_tier: Some("SuperGrok".into()),
          ..Default::default()
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs
-index ebbefb24..0cc4c166 100644
+index ebbefb24..ce9d7edf 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/voice.rs
-@@ -80,19 +80,26 @@ pub(super) fn dispatch_enable_voice_mode(app: &mut AppView, from_hold: bool) ->
+@@ -80,9 +80,9 @@ pub(super) fn dispatch_enable_voice_mode(app: &mut AppView, from_hold: bool) ->
      if !app.voice_mode_enabled {
          return vec![];
      }
@@ -170,24 +170,6 @@ index ebbefb24..0cc4c166 100644
      if app.is_voice_tier_restricted() {
          return open_voice_tier_upsell(app);
      }
-     // Leave home after the flag / tier gates so a disabled or restricted press stays a no-op.
-     // Deliberately before the audio gate: the audio-less Bazel build is the only CI that runs
-     // these dispatch tests, and it must still cover leave-home (Always isolation) from voice.
--    let effects = super::session::lifecycle::leave_welcome_for_session(app);
-+    let mut effects = super::session::lifecycle::leave_welcome_for_session(app);
-     if !xai_grok_voice::AUDIO_SUPPORTED {
-         return effects;
-     }
-+    // Workshop: a default install ships no voice helper or model; they arrive in the background.
-+    // Until both are here, the press says how far along that is instead of failing.
-+    if let Some((line, setup)) = crate::app::workshop::voice_getting_ready(app) {
-+        app.show_toast(&line);
-+        effects.extend(setup);
-+        return effects;
-+    }
- 
-     // Bind the dictation target at press time (the cold-start path defers capture to the event loop, where the view could have changed)
-     // `None` means a view with no box (occluded dashboard, or a welcome the gate kept closed), so stay a silent no-op
 diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs b/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs
 index 4647b2bb..f92323c4 100644
 --- a/crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs

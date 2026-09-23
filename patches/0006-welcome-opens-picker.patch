@@ -3040,7 +3040,7 @@ index 1c507697..89312ddd 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..6cf49f7b 100644
+index eda61b3c..00cd3d50 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -3279,7 +3279,30 @@ index eda61b3c..6cf49f7b 100644
          }
          if run_pending_mode_switch(
              &mut app,
-@@ -2314,6 +2423,7 @@ pub(crate) async fn run(
+@@ -1921,6 +2030,22 @@ pub(crate) async fn run(
+         ) {
+             break;
+         }
++        // Workshop: a default install ships no voice helper or model; they arrive in the
++        // background. A press before both are here says how far along that is (and asks for the
++        // setup if it is not running) instead of starting a pipeline that would fail.
++        if matches!(app.voice_state, VoiceState::ColdStart { .. })
++            && app.voice_cmd_tx.is_none()
++            && app.voice_config.provider == xai_grok_voice::VoiceProvider::Local
++            && let Some((line, setup)) = crate::app::workshop::voice_getting_ready(&mut app)
++        {
++            app.voice_state = VoiceState::Idle;
++            app.voice_ui_active = false;
++            app.show_toast(&line);
++            if process_effects(setup, &mut tasks, &mut app, &progress_tx) {
++                break;
++            }
++            presenter.request_presentation(&mut app, terminal, false);
++        }
+         if let VoiceState::ColdStart { hold, target } = app.voice_state {
+             if app.voice_cmd_tx.is_none() && app.voice_can_start_pipeline() {
+                 let voice_auth = crate::voice::build_voice_auth(voice_auth_factory.clone());
+@@ -2314,6 +2439,7 @@ pub(crate) async fn run(
              maybe_ev = input_rx.recv() => {
                  // `None` means the dedicated terminal reader thread has ended.
                  let Some(ev) = maybe_ev else { break };
@@ -3287,7 +3310,7 @@ index eda61b3c..6cf49f7b 100644
                  let handled_at = std::time::Instant::now();
                  let waited =
                      super::event_loop_stall::input_wait(ev.arrived_at, handled_at, loop_entry);
-@@ -2331,6 +2441,9 @@ pub(crate) async fn run(
+@@ -2331,6 +2457,9 @@ pub(crate) async fn run(
                  if result.should_quit {
                      break;
                  }
@@ -3297,7 +3320,7 @@ index eda61b3c..6cf49f7b 100644
                  if !app.pending_effects.is_empty() {
                      let effs = std::mem::take(&mut app.pending_effects);
                      if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
-@@ -2885,6 +2998,23 @@ pub(crate) async fn run(
+@@ -2885,6 +3014,23 @@ pub(crate) async fn run(
                  presenter.request(false);
              }
  
@@ -3321,7 +3344,7 @@ index eda61b3c..6cf49f7b 100644
              // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
              // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
              // Voice is only serviced when nothing else is pending
-@@ -3096,6 +3226,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3096,6 +3242,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
      app.abandon_startup();
      let exit_info = app.active_agent().and_then(|agent| {
          let sid = agent.session.session_id.as_ref()?;
@@ -3331,7 +3354,7 @@ index eda61b3c..6cf49f7b 100644
          let summary = if app.screen_mode.is_fullscreen() {
              use crate::views::session_title;
              let last_prompt = session_title::last_user_prompt_line(agent);
-@@ -3109,7 +3242,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3109,7 +3258,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
              None
          };
          Some(super::ExitInfo {
@@ -3340,7 +3363,7 @@ index eda61b3c..6cf49f7b 100644
              minimal: app.screen_mode.is_minimal(),
              summary,
          })
-@@ -3143,7 +3276,9 @@ struct RoutedInputEvent {
+@@ -3143,7 +3292,9 @@ struct RoutedInputEvent {
      is_startup_replay: bool,
  }
  fn tty_suspend_armed(app: &AppView) -> bool {
@@ -3351,7 +3374,7 @@ index eda61b3c..6cf49f7b 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4069,446 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4085,446 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
