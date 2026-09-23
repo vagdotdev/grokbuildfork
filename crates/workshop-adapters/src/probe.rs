@@ -155,16 +155,16 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_briefly_busy_executable_is_retried() {
+        use std::io::Write as _;
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("busy.sh");
-        std::fs::write(&script, "#!/bin/sh\necho ok\n").unwrap();
+        // The writer that created the script has not closed it yet (gate:no-theft keeps this
+        // crate to creating files, never opening existing ones).
+        let mut writer = std::fs::File::create(&script).unwrap();
+        writer.write_all(b"#!/bin/sh\necho ok\n").unwrap();
+        writer.flush().unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        // Hold the file open for writing for a moment, as a writer that has not closed it yet.
-        let writer = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&script)
-            .unwrap();
         let release = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(60)).await;
             drop(writer);
