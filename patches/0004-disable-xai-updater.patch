@@ -43,7 +43,7 @@ index 00000000..d02e5d1b
 +    );
 +}
 diff --git a/crates/codegen/xai-grok-update/src/auto_update.rs b/crates/codegen/xai-grok-update/src/auto_update.rs
-index b95cd59e..67c4b553 100644
+index b95cd59e..7e5ee0fb 100644
 --- a/crates/codegen/xai-grok-update/src/auto_update.rs
 +++ b/crates/codegen/xai-grok-update/src/auto_update.rs
 @@ -30,8 +30,8 @@ pub enum UpdateRunMode {
@@ -115,6 +115,29 @@ index b95cd59e..67c4b553 100644
          _ => format!("Please reinstall via:\n  {}", manual_install_cmd(channel)),
      }
  }
+@@ -197,11 +203,11 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
+     if status.update_available {
+         if let Some(latest_version) = status.latest_version.as_deref() {
+             println!(
+-                "A new version of Grok Build is available: {} -> {}{}",
++                "A new version of Workshop is available: {} -> {}{}",
+                 status.current_version, latest_version, channel_label
+             );
+         } else {
+-            println!("A new version of Grok Build is available.");
++            println!("A new version of Workshop is available.");
+         }
+         return Ok(());
+     }
+@@ -214,7 +220,7 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
+         return Ok(());
+     }
+ 
+-    println!("Grok Build - v{}{}", status.current_version, channel_label);
++    println!("Workshop - v{}{}", status.current_version, channel_label);
+     Ok(())
+ }
+ 
 @@ -449,23 +455,17 @@ fn disk_version_for_installer(installer: &str) -> Option<String> {
  }
  
@@ -157,7 +180,73 @@ index b95cd59e..67c4b553 100644
          None => Some("internal"),
      }
  }
-@@ -1242,20 +1241,6 @@ async fn remove_stale_models_cache() {
+@@ -584,7 +583,16 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
+     let policy = config::VersionPolicy::resolve();
+     let target_version = match fetch_update_plan(installer, update_config, &policy).await {
+         Ok(UpdatePlan::Install { target, .. }) => target,
+-        Ok(UpdatePlan::Skip { .. } | UpdatePlan::Unavailable { .. }) | Err(_) => {
++        Ok(UpdatePlan::Skip { .. } | UpdatePlan::Unavailable { .. }) => {
++            return BackgroundUpdateCheck::none();
++        }
++        Err(e) => {
++            // Workshop: offline or a broken channel is never shown, only logged.
++            xai_grok_telemetry::unified_log::info(
++                "update.check_failed",
++                None,
++                Some(serde_json::json!({ "error": format!("{e:#}") })),
++            );
+             return BackgroundUpdateCheck::none();
+         }
+     };
+@@ -619,6 +627,11 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
+ 
+     // Kick off a non-blocking download so the binary is ready when the user restarts (or accepts the in-TUI restart prompt)
+     let download = if disk_needs_download {
++        xai_grok_telemetry::unified_log::info(
++            "update.download_started",
++            None,
++            Some(serde_json::json!({ "from": current_version, "to": target_version })),
++        );
+         match run_update_subcommand(UpdateRunMode::NonBlocking, CliUpdateTrigger::AutoBackground)
+             .await
+         {
+@@ -706,7 +719,7 @@ pub async fn run_update_if_available(
+     let channel_label = format!(" [{}]", update_config.channel);
+     if auto_update {
+         eprintln!(
+-            "A new version of Grok Build is available: {} -> {}{}",
++            "A new version of Workshop is available: {} -> {}{}",
+             current_version, latest_version, channel_label
+         );
+         if interactive {
+@@ -734,7 +747,7 @@ pub async fn run_update_if_available(
+             return Ok(false);
+         }
+         eprintln!(
+-            "A new version of Grok Build is available: {} -> {}{}",
++            "A new version of Workshop is available: {} -> {}{}",
+             current_version, latest_version, channel_label
+         );
+         if interactive {
+@@ -805,7 +818,7 @@ async fn run_update_subcommand(
+             // The atomic install protocol makes mid-download kills safe
+             let status = cmd.status().await?;
+             if !status.success() {
+-                anyhow::bail!("grok update failed with {}", status);
++                anyhow::bail!("workshop update failed with {}", status);
+             }
+             Ok(None)
+         }
+@@ -842,7 +855,7 @@ pub fn restart_grok() -> Result<()> {
+     }
+     cmd.env_clear();
+     cmd.envs(std::env::vars_os().filter(|(k, _)| k != "GROK_AUTO_UPDATE"));
+-    eprintln!("Restarting Grok...");
++    eprintln!("Restarting Workshop...");
+ 
+     // Use exec on Unix to replace the current process, avoiding stdio issues when the parent exits
+     // On Windows, fall back to spawn and exit
+@@ -1242,20 +1255,6 @@ async fn remove_stale_models_cache() {
      }
  }
  
@@ -178,7 +267,7 @@ index b95cd59e..67c4b553 100644
  async fn download_plain(url: &str, dest: &std::path::Path, with_progress: bool) -> Result<()> {
      if with_progress {
          download_with_progress(url, dest).await
-@@ -1264,6 +1249,9 @@ async fn download_plain(url: &str, dest: &std::path::Path, with_progress: bool)
+@@ -1264,6 +1263,9 @@ async fn download_plain(url: &str, dest: &std::path::Path, with_progress: bool)
      }
  }
  
@@ -188,7 +277,7 @@ index b95cd59e..67c4b553 100644
  #[derive(Clone, Copy)]
  enum Codec {
      Zstd,
-@@ -1274,6 +1262,7 @@ enum Codec {
+@@ -1274,6 +1276,7 @@ enum Codec {
  // A real CLI binary is ~170 MiB; 512 MiB leaves 3x headroom
  const MAX_DECODED_BYTES: u64 = 512 * 1024 * 1024;
  
@@ -196,7 +285,7 @@ index b95cd59e..67c4b553 100644
  async fn download_and_decode(
      url: &str,
      dest: &std::path::Path,
-@@ -1324,6 +1313,7 @@ async fn download_and_decode(
+@@ -1324,6 +1327,7 @@ async fn download_and_decode(
  }
  
  /// Object-name candidates in fetch order; on Windows the `.exe` name comes first.
@@ -204,7 +293,7 @@ index b95cd59e..67c4b553 100644
  fn cli_object_candidates(object_name: &str, windows: bool) -> Vec<String> {
      if windows {
          vec![format!("{object_name}.exe"), object_name.to_string()]
-@@ -1332,7 +1322,8 @@ fn cli_object_candidates(object_name: &str, windows: bool) -> Vec<String> {
+@@ -1332,7 +1336,8 @@ fn cli_object_candidates(object_name: &str, windows: bool) -> Vec<String> {
      }
  }
  
@@ -214,7 +303,7 @@ index b95cd59e..67c4b553 100644
  async fn download_cli_artifact_from_gcs(
      gcs_base_url: &str,
      object_name: &str,
-@@ -1384,9 +1375,9 @@ pub async fn install_internal_from_bases(
+@@ -1384,9 +1389,9 @@ pub async fn install_internal_from_bases(
                      .map(|()| download.version)
                      .map_err(|e| InstallPhaseError::Activate(e).into());
              }
@@ -227,7 +316,7 @@ index b95cd59e..67c4b553 100644
                  return Err(e);
              }
              Err(e) => {
-@@ -1512,8 +1503,8 @@ pub async fn install_internal_from_base(
+@@ -1512,8 +1517,8 @@ pub async fn install_internal_from_base(
          .map_err(|e| InstallPhaseError::Activate(e).into())
  }
  
@@ -238,7 +327,7 @@ index b95cd59e..67c4b553 100644
  struct VerifiedDownload {
      version: String,
      binary_path: std::path::PathBuf,
-@@ -1522,43 +1513,52 @@ struct VerifiedDownload {
+@@ -1522,43 +1527,52 @@ struct VerifiedDownload {
      payload: windows_payload::Payload,
  }
  
@@ -304,7 +393,7 @@ index b95cd59e..67c4b553 100644
      let smoke_span = xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
          "update.smoke_test",
          elapsed_ms = tracing::field::Empty,
-@@ -1577,7 +1577,8 @@ async fn download_verified_from_base(
+@@ -1577,7 +1591,8 @@ async fn download_verified_from_base(
  
      // Best-effort and base-dependent, so it belongs to this phase; a miss never fails the install.
      #[cfg(windows)]
@@ -314,7 +403,7 @@ index b95cd59e..67c4b553 100644
      #[cfg(not(windows))]
      let payload = windows_payload::Payload::default();
  
-@@ -1588,6 +1589,121 @@ async fn download_verified_from_base(
+@@ -1588,6 +1603,121 @@ async fn download_verified_from_base(
      })
  }
  
@@ -436,7 +525,7 @@ index b95cd59e..67c4b553 100644
  /// Local activation phase: swap the managed bin links to the downloaded binary and finish bookkeeping.
  /// Nothing here depends on which base URL served the download, so callers must not retry another base on failure.
  async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
-@@ -1601,11 +1717,9 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
+@@ -1601,11 +1731,9 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
      let bin_dir = grok_home.join("bin");
      tokio::fs::create_dir_all(&bin_dir).await?;
  
@@ -449,7 +538,7 @@ index b95cd59e..67c4b553 100644
      // Hook exes beside grok.exe and the bundled MinGit; grok is already live, so a failure here is only logged.
      #[cfg(windows)]
      windows_payload::activate(&download.payload, &bin_dir, &download.version).await;
-@@ -1613,8 +1727,7 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
+@@ -1613,8 +1741,7 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
      eprintln!();
  
      // Current, N-1, and any leftover a live process is still executing.
@@ -459,7 +548,30 @@ index b95cd59e..67c4b553 100644
  
      // Persist installer to config.toml so future runs auto-detect internal.
      let _ = config::update_config(|st| {
-@@ -1686,22 +1799,22 @@ fn relative_symlink_target(target: &std::path::Path, link: &std::path::Path) ->
+@@ -1637,13 +1764,17 @@ async fn regenerate_completions(binary: &std::path::Path, grok_home: &std::path:
+     // Derive $HOME independently: grok_home may be overridden via GROK_HOME env var, so grok_home.parent() isn't necessarily the user's home dir
+     let user_home = xai_dirs::home_dir().unwrap_or_default();
+ 
+-    let completions: &[(&str, std::path::PathBuf)] = &[
+-        ("bash", grok_home.join("completions/bash/grok.bash")),
+-        ("zsh", grok_home.join("completions/zsh/_grok")),
+-        ("fish", user_home.join(".config/fish/completions/grok.fish")),
++    let mut completions: Vec<(&str, std::path::PathBuf)> = vec![
++        ("bash", grok_home.join("completions/bash/workshop.bash")),
++        ("zsh", grok_home.join("completions/zsh/_workshop")),
+     ];
++    // Only a fish user's own config gets a file; nothing is created for a shell they do not use.
++    let fish_config = user_home.join(".config/fish");
++    if fish_config.is_dir() {
++        completions.push(("fish", fish_config.join("completions/workshop.fish")));
++    }
+ 
+-    for (shell, dest) in completions {
++    for (shell, dest) in &completions {
+         if let Some(parent) = dest.parent() {
+             let _ = tokio::fs::create_dir_all(parent).await;
+         }
+@@ -1686,22 +1817,22 @@ fn relative_symlink_target(target: &std::path::Path, link: &std::path::Path) ->
      target.to_path_buf()
  }
  
@@ -493,7 +605,7 @@ index b95cd59e..67c4b553 100644
  }
  
  /// Point every `dest` in `pairs` at its `src` (a symlink on Unix, a copy through
-@@ -2202,9 +2315,9 @@ async fn gh_release_download(tag: &str, pattern: &str, dest: &std::path::Path) -
+@@ -2202,9 +2333,9 @@ async fn gh_release_download(tag: &str, pattern: &str, dest: &std::path::Path) -
      Ok(())
  }
  
@@ -506,7 +618,7 @@ index b95cd59e..67c4b553 100644
  async fn install_gh_release(target: Option<&str>) -> Result<()> {
      let (os, arch) = detect_platform()?;
      let platform = format!("{}-{}", os, arch);
-@@ -2220,60 +2333,62 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
+@@ -2220,60 +2351,62 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
      tokio::fs::create_dir_all(&download_dir).await?;
      tokio::fs::create_dir_all(&bin_dir).await?;
  
@@ -529,14 +641,7 @@ index b95cd59e..67c4b553 100644
 -    {
 -        use std::os::unix::fs::PermissionsExt;
 -        tokio::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755)).await?;
-+    let staging = tempfile_dir_in(&download_dir, &format!(".gh-{version}"))?;
-+    let sums_path = staging.join("SHA256SUMS");
-+    let asset_path = staging.join(&asset_name);
-+    let fetched = async {
-+        gh_release_download(&tag, "SHA256SUMS", &sums_path).await?;
-+        gh_release_download(&tag, &asset_name, &asset_path).await?;
-+        Ok::<(), anyhow::Error>(())
-     }
+-    }
 -
 -    // Atomic swap of ~/.grok/bin/{grok,agent} -> downloaded binary.
 -    swap_managed_bin_links(&binary_path, &bin_dir).await?;
@@ -551,7 +656,14 @@ index b95cd59e..67c4b553 100644
 -        if let Err(e) = atomic_symlink_swap(&rel_target, &latest_path).await {
 -            tracing::warn!("Failed to update grok-latest symlink: {e}");
 -        }
--    }
++    let staging = tempfile_dir_in(&download_dir, &format!(".gh-{version}"))?;
++    let sums_path = staging.join("SHA256SUMS");
++    let asset_path = staging.join(&asset_name);
++    let fetched = async {
++        gh_release_download(&tag, "SHA256SUMS", &sums_path).await?;
++        gh_release_download(&tag, &asset_name, &asset_path).await?;
++        Ok::<(), anyhow::Error>(())
+     }
 -
 -    // Also update /usr/local/bin/{grok,agent} if either points directly into
 -    // ~/.grok/downloads/ (legacy layout — skips the grok-latest indirection).
@@ -609,7 +721,7 @@ index b95cd59e..67c4b553 100644
  
      // Persist installer to config.toml so future runs auto-detect gh-release.
      let _ = config::update_config(|st| {
-@@ -2284,8 +2399,31 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
+@@ -2284,8 +2417,31 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
      Ok(())
  }
  
@@ -641,7 +753,7 @@ index b95cd59e..67c4b553 100644
  fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<std::path::PathBuf>> {
      if let Ok(token) = std::env::var("NPM_TOKEN") {
          let token = token.trim();
-@@ -2317,6 +2455,7 @@ fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<std::path::Pat
+@@ -2317,6 +2473,7 @@ fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<std::path::Pat
  /// SIGKILL'd by the kernel. macOS (Apple Silicon in particular) can no longer verify the code signature of the mmap'd
  /// executable pages once the backing inode is unlinked.
  #[cfg(target_os = "macos")]
@@ -649,7 +761,16 @@ index b95cd59e..67c4b553 100644
  fn warn_if_other_grok_processes_running() {
      let my_pid = std::process::id().to_string();
      let mut cmd = Command::new("pgrep");
-@@ -2355,70 +2494,9 @@ pub fn install_npm_for_test(
+@@ -2339,7 +2496,7 @@ fn warn_if_other_grok_processes_running() {
+             );
+             eprintln!("    Processes running from the npm vendored binary path may be");
+             eprintln!("    killed by macOS when npm replaces the package files.");
+-            eprintln!("    Consider closing other grok sessions before updating.");
++            eprintln!("    Consider closing other Workshop sessions before updating.");
+             eprintln!();
+         }
+     }
+@@ -2355,70 +2512,9 @@ pub fn install_npm_for_test(
      install_npm(target, channel, npm_registry)
  }
  
@@ -723,6 +844,71 @@ index b95cd59e..67c4b553 100644
  }
  
  pub async fn apply_channel_switch(channel_switch: Option<&str>, update_config: &mut UpdateConfig) {
+@@ -2485,8 +2581,8 @@ pub async fn run_update(
+         {
+             tracing::warn!("Failed to persist auto_update=false for pinned install: {e}");
+         }
+-        eprintln!("  ✓ grok v{} installed successfully!", version);
+-        eprintln!("  Please restart Grok.");
++        eprintln!("  ✓ Workshop v{} installed successfully!", version);
++        eprintln!("  Please restart Workshop.");
+         return Ok(Some(version.to_string()));
+     }
+ 
+@@ -2593,26 +2689,39 @@ pub async fn run_update(
+         .unwrap_or(true)
+     {
+         eprintln!(
+-            "Forcing reinstall of Grok {} (already up to date)",
++            "Forcing reinstall of Workshop {} (already up to date)",
+             effective_current
+         );
+         &effective_current
+     } else {
+-        eprintln!("Updating Grok {} → {}", effective_current, install_target);
++        eprintln!("Updating Workshop {} → {}", effective_current, install_target);
+         &install_target
+     };
+ 
+     eprintln!();
+-    run_install_script(installer, Some(target_version), update_config, trigger).await?;
++    if let Err(e) = run_install_script(installer, Some(target_version), update_config, trigger).await
++    {
++        xai_grok_telemetry::unified_log::warn(
++            "update.install_failed",
++            None,
++            Some(serde_json::json!({ "to": target_version, "error": format!("{e:#}") })),
++        );
++        return Err(e);
++    }
++    xai_grok_telemetry::unified_log::info(
++        "update.installed",
++        None,
++        Some(serde_json::json!({ "from": effective_current, "to": target_version })),
++    );
+     // Fetch the stable pointer now so the new binary has it immediately for channel_label() display
+     // Otherwise it would wait for the next TTL-gated update check (~30 min)
+     let stable_ptr = try_fetch_stable_pointer().await;
+     write_version_cache(target_version, stable_ptr.as_deref()).await;
+     refresh_deployment_config().await;
+-    eprintln!("  ✓ grok v{} installed successfully!", target_version);
++    eprintln!("  ✓ Workshop v{} installed successfully!", target_version);
+ 
+     if !force && std::env::var_os("GROK_AUTO_UPDATE").is_none() {
+-        eprintln!("  Please restart Grok.");
++        eprintln!("  Please restart Workshop.");
+     }
+     Ok(Some(target_version.to_string()))
+ }
+@@ -2639,7 +2748,7 @@ async fn refresh_deployment_config() {
+         Err(e) if e.is_auth_rejection() => tracing::debug!("managed config not applied: {e}"),
+         Err(e) if e.is_retryable() => {
+             tracing::debug!("managed config refresh failed: {e}");
+-            eprintln!("  Couldn't apply managed configuration. Run `grok setup` to retry.");
++            eprintln!("  Couldn't apply managed configuration. Run `workshop setup` to retry.");
+         }
+         Err(e) => eprintln!("  Couldn't apply managed configuration. {e}"),
+     }
 diff --git a/crates/codegen/xai-grok-update/src/auto_update_tests.rs b/crates/codegen/xai-grok-update/src/auto_update_tests.rs
 index 115fae28..c406dea6 100644
 --- a/crates/codegen/xai-grok-update/src/auto_update_tests.rs

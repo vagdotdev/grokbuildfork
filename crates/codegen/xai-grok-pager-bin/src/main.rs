@@ -2048,7 +2048,6 @@ const WORKSHOP_NATIVE_ENV: &[&str] = &[
     "WORKSHOP_RELEASE_REPO",
     "WORKSHOP_MANIFEST_URL",
     "WORKSHOP_DOWNLOAD_BASE",
-    "WORKSHOP_ENABLE_AUTOUPDATE",
     "WORKSHOP_HERO_ART",
     "WORKSHOP_BIN",
     "WORKSHOP_PTY_EVIDENCE_DIR",
@@ -2623,7 +2622,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
         Ok(true) => {
             let adopted = bg_update_wait.lock().await.take();
             if finish_update_on_exit(adopted, &update_config).await {
-                eprintln!("Update installed. Run `grok` to start.");
+                eprintln!("Update installed. Run `workshop` to start.");
             } else {
                 eprintln!("Update did not complete. Run `workshop update` to retry.");
             }
@@ -2710,14 +2709,10 @@ fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
     if no_auto_update_flag {
         return false;
     }
-    // Workshop (gate:no-xai, Gate 4): no Workshop update channel exists yet, so background
-    // update checks are off unless an operator opts in explicitly. This stays off until
-    // milestone F ships signature verification and a Workshop-owned channel.
-    if !std::env::var_os("WORKSHOP_ENABLE_AUTOUPDATE")
-        .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
-    {
-        return false;
-    }
+    // Workshop (gate:no-xai, Gate 4): updates install silently from Workshop's own release channel
+    // (`release-channel` branch of the release repo, SHA-256 checked per artifact; never an xAI
+    // host). `--no-auto-update`, `WORKSHOP_DISABLE_AUTOUPDATER=1` and `[cli] auto_update = false`
+    // turn it off.
     !std::env::var_os("GROK_DISABLE_AUTOUPDATER")
         .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
 }

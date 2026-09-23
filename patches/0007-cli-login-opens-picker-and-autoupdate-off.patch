@@ -1,5 +1,5 @@
 diff --git a/crates/codegen/xai-grok-pager-bin/src/main.rs b/crates/codegen/xai-grok-pager-bin/src/main.rs
-index aa448be7..a43d3e70 100644
+index aa448be7..562e537b 100644
 --- a/crates/codegen/xai-grok-pager-bin/src/main.rs
 +++ b/crates/codegen/xai-grok-pager-bin/src/main.rs
 @@ -261,7 +261,7 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
@@ -116,7 +116,7 @@ index aa448be7..a43d3e70 100644
          xai_grok_version::display_version_with_commit(
              xai_grok_version::full_version(),
              channel_label,
-@@ -2022,7 +2023,79 @@ fn dispatch_doctor_if_requested(args: &PagerArgs) -> bool {
+@@ -2022,7 +2023,78 @@ fn dispatch_doctor_if_requested(args: &PagerArgs) -> bool {
      }
      true
  }
@@ -145,7 +145,6 @@ index aa448be7..a43d3e70 100644
 +    "WORKSHOP_RELEASE_REPO",
 +    "WORKSHOP_MANIFEST_URL",
 +    "WORKSHOP_DOWNLOAD_BASE",
-+    "WORKSHOP_ENABLE_AUTOUPDATE",
 +    "WORKSHOP_HERO_ART",
 +    "WORKSHOP_BIN",
 +    "WORKSHOP_PTY_EVIDENCE_DIR",
@@ -196,7 +195,7 @@ index aa448be7..a43d3e70 100644
      xai_grok_version::set_full_version(env!("VERSION_WITH_COMMIT"));
      xai_grok_telemetry::startup::mark_process_start();
      if let Some(code) = xai_grok_pager::app::mermaid_worker::maybe_run_render_subprocess() {
-@@ -2054,16 +2127,16 @@ fn main() {
+@@ -2054,16 +2126,16 @@ fn main() {
          xai_grok_shell::agent::external_otel_pin::strip_conflicting_process_env();
      }
      let args = configure_process_env(args).unwrap_or_else(|err| {
@@ -216,7 +215,7 @@ index aa448be7..a43d3e70 100644
               to fix the managed requirements."
          );
          std::process::exit(2);
-@@ -2107,7 +2180,7 @@ fn main() {
+@@ -2107,7 +2179,7 @@ fn main() {
      builder.worker_threads(workers.get()).enable_all();
      let runtime =
          xai_tty_utils::runtime::build_with_blocking_pool(&mut builder).unwrap_or_else(|e| {
@@ -225,7 +224,7 @@ index aa448be7..a43d3e70 100644
              shutdown_and_flush_telemetry(1);
          });
      let result = run_and_shutdown(runtime, async_main(args), RUNTIME_SHUTDOWN_GRACE);
-@@ -2268,6 +2341,12 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2268,6 +2340,12 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
              }
              Command::Models => {
                  init_tracing_simple("cli");
@@ -238,7 +237,7 @@ index aa448be7..a43d3e70 100644
                  let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                  let agent_config = xai_grok_shell::config::load_agent_config_disk_only()
                      .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-@@ -2373,6 +2452,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2373,6 +2451,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
              }
              Command::Login {
                  legacy: _,
@@ -246,7 +245,7 @@ index aa448be7..a43d3e70 100644
                  oauth,
                  device_auth,
                  devbox,
-@@ -2381,8 +2461,29 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2381,8 +2460,29 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                  let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                  let config = xai_grok_shell::config::load_agent_config_disk_only()
                      .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
@@ -277,7 +276,7 @@ index aa448be7..a43d3e70 100644
                      config.login_device_flow,
                      config.endpoints.proxy_url(),
                      oauth,
-@@ -2440,7 +2541,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2440,7 +2540,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
              None,
          );
          if let Some(warning) = launch_yolo.blocked_warning {
@@ -286,31 +285,30 @@ index aa448be7..a43d3e70 100644
          }
          let json_schema = args
              .json_schema
-@@ -2524,7 +2625,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2522,9 +2622,9 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+         Ok(true) => {
+             let adopted = bg_update_wait.lock().await.take();
              if finish_update_on_exit(adopted, &update_config).await {
-                 eprintln!("Update installed. Run `grok` to start.");
+-                eprintln!("Update installed. Run `grok` to start.");
++                eprintln!("Update installed. Run `workshop` to start.");
              } else {
 -                eprintln!("Update did not complete. Run `grok update` to retry.");
 +                eprintln!("Update did not complete. Run `workshop update` to retry.");
              }
              Ok(())
          }
-@@ -2609,6 +2710,14 @@ fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
+@@ -2609,6 +2709,10 @@ fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
      if no_auto_update_flag {
          return false;
      }
-+    // Workshop (gate:no-xai, Gate 4): no Workshop update channel exists yet, so background
-+    // update checks are off unless an operator opts in explicitly. This stays off until
-+    // milestone F ships signature verification and a Workshop-owned channel.
-+    if !std::env::var_os("WORKSHOP_ENABLE_AUTOUPDATE")
-+        .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
-+    {
-+        return false;
-+    }
++    // Workshop (gate:no-xai, Gate 4): updates install silently from Workshop's own release channel
++    // (`release-channel` branch of the release repo, SHA-256 checked per artifact; never an xAI
++    // host). `--no-auto-update`, `WORKSHOP_DISABLE_AUTOUPDATER=1` and `[cli] auto_update = false`
++    // turn it off.
      !std::env::var_os("GROK_DISABLE_AUTOUPDATER")
          .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
  }
-@@ -2699,7 +2808,7 @@ async fn run_update_command(
+@@ -2699,7 +2803,7 @@ async fn run_update_command(
          );
      }
      let telemetry_cfg = xai_grok_shell::config::load_agent_config_disk_only()
@@ -319,7 +317,7 @@ index aa448be7..a43d3e70 100644
          .ok();
      if let Some(agent_cfg) = telemetry_cfg {
          let auth_manager =
-@@ -2726,7 +2835,7 @@ async fn run_update_command(
+@@ -2726,7 +2830,7 @@ async fn run_update_command(
      result?;
      Ok(())
  }
@@ -328,7 +326,7 @@ index aa448be7..a43d3e70 100644
  /// to relaunch onto the new binary. Best-effort and non-fatal: discovery/connect/control failures are logged and
  /// skipped.
  #[tracing::instrument(level = "debug", skip_all)]
-@@ -2886,7 +2995,7 @@ mod tests {
+@@ -2886,7 +2990,7 @@ mod tests {
          );
          assert_eq!(
              resolve_worker_override("100000", cores).notice().unwrap(),
@@ -337,7 +335,7 @@ index aa448be7..a43d3e70 100644
          );
      }
      #[test]
-@@ -2899,7 +3008,7 @@ mod tests {
+@@ -2899,7 +3003,7 @@ mod tests {
          }
          assert_eq!(
              resolve_worker_override("abc", cores).notice().unwrap(),
@@ -346,7 +344,7 @@ index aa448be7..a43d3e70 100644
          );
      }
      #[test]
-@@ -2913,7 +3022,7 @@ mod tests {
+@@ -2913,7 +3017,7 @@ mod tests {
              let mut output = Vec::new();
              write_version(&mut output, label).unwrap();
              let output = String::from_utf8(output).unwrap();
@@ -355,7 +353,7 @@ index aa448be7..a43d3e70 100644
              assert!(output.contains(env!("VERSION_WITH_COMMIT")));
              assert!(output.ends_with(expected_suffix), "{output:?}");
          }
-@@ -3080,30 +3189,37 @@ mod tests {
+@@ -3080,30 +3184,37 @@ mod tests {
      }
      #[cfg(unix)]
      #[test]

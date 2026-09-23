@@ -37,7 +37,6 @@ impl CleanEnv {
         "GROK_PRODUCTION_GATEWAY_WS_URL",
         "GROK_PRODUCTION_WS_ORIGIN",
         "GROK_CLI_BASE_URL",
-        "WORKSHOP_ENABLE_AUTOUPDATE",
     ];
     fn new() -> Self {
         let saved = Self::KEYS
@@ -334,8 +333,8 @@ fn gate4_updater_constants_are_not_xai_channels() {
     );
 }
 
-/// Background auto-update is off by default: the binary consults `WORKSHOP_ENABLE_AUTOUPDATE`
-/// (pager-bin `should_check_for_updates`), and the CLI base override is loopback-only.
+/// Background updates read only [`CHANNEL_BASE_URL`](xai_grok_update::version::CHANNEL_BASE_URL);
+/// the one override (`WORKSHOP_CLI_BASE_URL`, for the loopback proof) is loopback-only.
 #[test]
 #[serial]
 fn gate4_cli_base_override_is_loopback_only() {

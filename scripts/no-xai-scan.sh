@@ -100,9 +100,9 @@ scan_sources() {
   if grep -Eq 'format!\("grok-\{' "$upd/auto_update.rs"; then
     violation "gate4: updater still writes grok-<version>-<platform> downloads (layout must be workshop-<version>-<platform>)"
   else ok "gate4: managed layout is workshop-<version>-<platform>"; fi
-  if ! grep -q 'WORKSHOP_ENABLE_AUTOUPDATE' crates/codegen/xai-grok-pager-bin/src/main.rs; then
-    violation "gate4: background auto-update is not gated off by WORKSHOP_ENABLE_AUTOUPDATE"
-  else ok "gate4: background auto-update is off unless WORKSHOP_ENABLE_AUTOUPDATE"; fi
+  if ! grep -q 'GROK_DISABLE_AUTOUPDATER' crates/codegen/xai-grok-pager-bin/src/main.rs; then
+    violation "gate4: background updates cannot be switched off (WORKSHOP_DISABLE_AUTOUPDATER / GROK_DISABLE_AUTOUPDATER)"
+  else ok "gate4: background updates read only the Workshop channel and honor WORKSHOP_DISABLE_AUTOUPDATER"; fi
 
   # Default model / aux tools.
   local dm=crates/codegen/xai-grok-models/default_models.json
