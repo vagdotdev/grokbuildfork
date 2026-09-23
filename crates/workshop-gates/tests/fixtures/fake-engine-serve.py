@@ -258,6 +258,8 @@ def run_turn(sid, agent, text):
                             {"output": out, "exit": 0, "truncated": False}))
         if "think" in text_l:
             stream_text(sid, mid, "The listing is in. Summarize it.", ptype="reasoning")
+        if "slowly" in text_l:
+            time.sleep(3)
         answer = "Here is the listing."
     else:
         answer = "Echo: " + text.strip()

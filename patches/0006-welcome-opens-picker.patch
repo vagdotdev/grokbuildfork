@@ -3561,10 +3561,10 @@ index 60fe34f9..d5845f2c 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..1ee5af3c
+index 00000000..af6d3661
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1623 @@
+@@ -0,0 +1,1631 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -4518,6 +4518,11 @@ index 00000000..1ee5af3c
 +    Some(path)
 +}
 +
++/// The waiting line's text while `model` works and nothing new is on screen.
++fn waiting_for(model: &str) -> String {
++    format!("Waiting for {model}\u{2026}")
++}
++
 +fn engine_progress(tx: &mpsc::UnboundedSender<WorkshopTurnMsg>, text: impl Into<String>) {
 +    let _ = tx.send(WorkshopTurnMsg::Progress(text.into()));
 +}
@@ -4850,7 +4855,7 @@ index 00000000..1ee5af3c
 +                }
 +                model = live;
 +            }
-+            engine_progress(tx, format!("Waiting for {}…", model.name));
++            engine_progress(tx, waiting_for(&model.name));
 +            let session = match session {
 +                Some(s) if engine.session_exists(s).await.unwrap_or(false) => s.clone(),
 +                _ => engine.create_session(Some("Workshop")).await.map_err(|e| {
@@ -5040,6 +5045,9 @@ index 00000000..1ee5af3c
 +                        title,
 +                        metadata,
 +                    });
++                    // The model is at work again (thinking, hidden by default, or writing): the
++                    // waiting line says so until its next output.
++                    engine_progress(&tx, waiting_for(&model_name));
 +                }
 +                Some(AdapterEvent::Error { message }) => {
 +                    first_event_at = None;
@@ -5086,7 +5094,7 @@ index 00000000..1ee5af3c
 +                            Ok(turn) => {
 +                                stream = TurnStream::Engine(turn);
 +                                tail.clear();
-+                                engine_progress(&tx, format!("Waiting for {model_name}\u{2026}"));
++                                engine_progress(&tx, waiting_for(&model_name));
 +                                continue;
 +                            }
 +                            Err(e) => state::append_log(

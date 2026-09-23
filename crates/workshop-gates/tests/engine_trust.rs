@@ -535,6 +535,30 @@ fn reasoning_hidden_by_default() {
         !screen.lines().any(is_bare_timestamp),
         "the whitespace-only text part after the thinking opens no empty reply row:\n{screen}"
     );
+
+    // Hidden thinking after a tool call draws nothing, so the waiting line shows the model is
+    // still at work until its answer lands.
+    send_prompt(&mut j, "think slowly, then list files");
+    let waiting_after_tool = |screen: &str| {
+        let mut lines = screen.lines();
+        lines.any(|l| l.contains("\u{276f} think slowly, then list files"))
+            && lines.any(|l| l.contains("ls -1"))
+            && lines.any(|l| l.contains("Waiting for Big Pickle"))
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !waiting_after_tool(&j.h.screen_contents()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no waiting line under the tool row while the model thinks:\n{}",
+            j.h.screen_contents()
+        );
+        j.h.update(Duration::from_millis(150));
+    }
+    snapshot(&j.h, &j.dir, "03-waiting-line-during-hidden-thinking");
+    assert_no_thinking(&j.h.screen_contents());
+    wait_for(&mut j.h, "Here is the listing.", 30);
+    wait_gone(&mut j, "Waiting for Big Pickle", 30);
+    assert_no_thinking(&j.h.screen_contents());
     quit(&mut j);
 }
 

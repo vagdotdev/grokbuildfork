@@ -951,6 +951,11 @@ fn write_engine_instructions(log: &Path) -> Option<PathBuf> {
     Some(path)
 }
 
+/// The waiting line's text while `model` works and nothing new is on screen.
+fn waiting_for(model: &str) -> String {
+    format!("Waiting for {model}\u{2026}")
+}
+
 fn engine_progress(tx: &mpsc::UnboundedSender<WorkshopTurnMsg>, text: impl Into<String>) {
     let _ = tx.send(WorkshopTurnMsg::Progress(text.into()));
 }
@@ -1283,7 +1288,7 @@ async fn build_stream(
                 }
                 model = live;
             }
-            engine_progress(tx, format!("Waiting for {}…", model.name));
+            engine_progress(tx, waiting_for(&model.name));
             let session = match session {
                 Some(s) if engine.session_exists(s).await.unwrap_or(false) => s.clone(),
                 _ => engine.create_session(Some("Workshop")).await.map_err(|e| {
@@ -1473,6 +1478,9 @@ pub async fn run_workshop_turn(
                         title,
                         metadata,
                     });
+                    // The model is at work again (thinking, hidden by default, or writing): the
+                    // waiting line says so until its next output.
+                    engine_progress(&tx, waiting_for(&model_name));
                 }
                 Some(AdapterEvent::Error { message }) => {
                     first_event_at = None;
@@ -1519,7 +1527,7 @@ pub async fn run_workshop_turn(
                             Ok(turn) => {
                                 stream = TurnStream::Engine(turn);
                                 tail.clear();
-                                engine_progress(&tx, format!("Waiting for {model_name}\u{2026}"));
+                                engine_progress(&tx, waiting_for(&model_name));
                                 continue;
                             }
                             Err(e) => state::append_log(
