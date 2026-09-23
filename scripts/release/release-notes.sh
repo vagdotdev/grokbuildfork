@@ -48,10 +48,10 @@ Installs to \`~/.workshop/bin/workshop\` (override with \`WORKSHOP_HOME\`). Pin 
 
 ## macOS: unsigned binary
 
-Workshop is **not** signed with an Apple Developer ID and is not notarized. The installer removes the quarantine attribute after download, so \`workshop\` runs from the terminal. If macOS still refuses to start it ("cannot be opened because the developer cannot be verified"), run:
+Workshop is **not** signed with an Apple Developer ID and is not notarized. The installer removes the quarantine attribute after download, so \`workshop\` runs from the terminal. If macOS still refuses to start it ("cannot be opened because the developer cannot be verified"), for example after unpacking an archive in Finder, run this once; it also covers the voice helper and the OpenCode copy Workshop installs beside it:
 
 \`\`\`sh
-xattr -d com.apple.quarantine ~/.workshop/bin/workshop
+xattr -dr com.apple.quarantine ~/.workshop
 \`\`\`
 
 ## Assets

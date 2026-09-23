@@ -244,6 +244,11 @@ jobs:
       - name: Build workshop
         if: steps.present.outputs.skip != 'true'
         shell: bash
+        env:
+          # .cargo/config.toml (upstream) builds aarch64 Linux for Neoverse V2; v0.2.1's binary used
+          # SVE and died with SIGILL on Raspberry Pi, Graviton2 and Linux VMs on Apple Silicon.
+          # Cargo appends this to the config's flags and the last `target-cpu` wins.
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C target-cpu=generic"
         run: cargo build --locked --profile release-dist -p xai-grok-pager-bin --target ${{ matrix.target }}
 
       - name: Package
@@ -267,7 +272,17 @@ jobs:
       - name: Build voice-engine
         if: steps.present.outputs.skip != 'true'
         shell: bash
-        run: cargo build --release --manifest-path voice/engine/Cargo.toml --target ${{ matrix.target }}
+        # whisper.cpp otherwise compiles for the runner's CPU (v0.2.1: AVX-512 on linux-x86_64, SVE
+        # on linux-aarch64). Pin the baseline instead: x86-64-v3 on x86_64 (ggml's implicit defaults
+        # would drop AVX2 too); the compiler default on aarch64 (Apple M1 / Armv8.0-A).
+        env:
+          TARGET: ${{ matrix.target }}
+          GGML_NATIVE: "OFF"
+        run: |
+          if [[ "$TARGET" == x86_64-* ]]; then
+            export GGML_SSE42=ON GGML_AVX=ON GGML_AVX2=ON GGML_BMI2=ON GGML_FMA=ON GGML_F16C=ON
+          fi
+          cargo build --release --manifest-path voice/engine/Cargo.toml --target "$TARGET"
       - name: voice-engine --version
         if: steps.present.outputs.skip != 'true'
         shell: bash
@@ -281,6 +296,16 @@ jobs:
             --platform "${{ matrix.platform }}" \
             --target-dir "voice/engine/target/${{ matrix.target }}/release" \
             --out dist
+
+      # The arm64 runner has every recent Arm extension; prove the binaries also start on a plain
+      # Armv8.0-A core (Raspberry Pi 4 class) before they are uploaded.
+      - name: Both binaries start on a baseline Armv8.0 CPU (qemu cortex-a72)
+        if: steps.present.outputs.skip != 'true' && matrix.platform == 'linux-aarch64'
+        shell: bash
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user
+          qemu-aarch64 -cpu cortex-a72 target/${{ matrix.target }}/release-dist/workshop --version
+          qemu-aarch64 -cpu cortex-a72 voice/engine/target/${{ matrix.target }}/release/voice-engine --version
 
       - name: Per-asset checksums
         if: steps.present.outputs.skip != 'true'
@@ -418,6 +443,11 @@ jobs:
           mkdir -p scan
           tar -xzf "dist/workshop-${{ needs.meta.outputs.version }}-$platform.tar.gz" -C scan workshop
           scripts/no-xai-scan.sh --binary scan/workshop
+      - name: Voice helpers stay within each platform's CPU baseline (all four platforms)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq llvm
+          scripts/release/check-cpu-baseline.sh --dist dist --version "${{ needs.meta.outputs.version }}"
 
   publish:
     name: Publish GitHub Release
