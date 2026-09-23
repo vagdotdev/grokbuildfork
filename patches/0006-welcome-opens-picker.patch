@@ -43,7 +43,7 @@ index d63bea59..5663ad57 100644
          });
          let (needs, label, method_id, mode) = startup_auth_metadata(&built.methods);
 diff --git a/crates/codegen/xai-grok-pager/src/app/actions.rs b/crates/codegen/xai-grok-pager/src/app/actions.rs
-index f1602289..62052337 100644
+index f1602289..44a15fff 100644
 --- a/crates/codegen/xai-grok-pager/src/app/actions.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/actions.rs
 @@ -618,7 +618,23 @@ pub enum Action {
@@ -70,7 +70,7 @@ index f1602289..62052337 100644
      /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
      /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
      CancelLogin,
-@@ -1772,9 +1788,31 @@ pub enum Effect {
+@@ -1772,9 +1788,35 @@ pub enum Effect {
          method_id: acp::AuthMethodId,
          use_oauth: bool,
          force_interactive: bool,
@@ -90,6 +90,10 @@ index f1602289..62052337 100644
 +        force: bool,
 +        engine: Option<std::sync::Arc<workshop_adapters::opencode_engine::OpenCodeEngine>>,
 +    },
++    /// Workshop: a signed-in rail is still `Loading models…` after a picker load with no live
++    /// refresh queued (`/auth`, after a sign-in): ask those CLIs for their models, then reload the
++    /// picker. Child processes only; Workshop itself makes no request.
++    WorkshopRefreshRailModels,
 +    /// Workshop: a `[model.<key>]` was written; ask the shell to reload its model list, authenticate
 +    /// with the non-interactive method, and switch the active session (if any) to `model_id`.
 +    WorkshopActivateModel {
@@ -102,7 +106,7 @@ index f1602289..62052337 100644
      /// Submit a manually-pasted auth code (ext request).
      SubmitAuthCode { request_seq: u64, code: String },
      /// Fetch MCP server list from the shell (x.ai/mcp/list).
-@@ -2659,6 +2697,19 @@ pub enum TaskResult {
+@@ -2659,6 +2701,19 @@ pub enum TaskResult {
          /// Forwarded from `Effect::SwitchModel.prev_model_id` for rollback on `IncompatibleAgent`.
          prev_model_id: Option<acp::ModelId>,
      },
@@ -1651,7 +1655,7 @@ index 89c36b27..fd0b2022 100644
          Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
          Action::CopyAuthUrl => {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
-index b00317f2..94cc6bbf 100644
+index b00317f2..9684cc8e 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 @@ -281,7 +281,7 @@ pub(super) fn maybe_show_x11_primary_paste_hint(
@@ -1663,7 +1667,7 @@ index b00317f2..94cc6bbf 100644
  /// Every other failure (`TextRead`, `TargetInsertion`, `AlreadyReported`) is a real dead end and must keep toasting.
  pub(super) fn wrap_host_image_request_eligible(completion: ClipboardPasteCompletion) -> bool {
      matches!(
-@@ -999,6 +999,68 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -999,6 +999,77 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              }
              vec![]
          }
@@ -1680,6 +1684,15 @@ index b00317f2..94cc6bbf 100644
 +                        force: false,
 +                        engine: app.workshop_engine.clone(),
 +                    }];
++                }
++                // Nothing live is queued (`/auth`, after a sign-in) but a signed-in rail has no
++                // cached list yet: ask its CLI. That snapshot never comes back `Loading`.
++                if !picker.refresh_pending
++                    && picker.rails.iter().any(|r| {
++                        matches!(r.subscription, workshop_detect::RailModels::Loading)
++                    })
++                {
++                    return vec![Effect::WorkshopRefreshRailModels];
 +                }
 +            }
 +            vec![]
@@ -1732,7 +1745,7 @@ index b00317f2..94cc6bbf 100644
          TaskResult::ChangelogFetched { markdown, entries } => {
              app.changelog_markdown = markdown;
              app.changelog_bullets =
-@@ -1172,6 +1234,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1172,6 +1243,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              } = &app.auth_state
                  && *current_seq == request_seq
              {
@@ -1745,7 +1758,7 @@ index b00317f2..94cc6bbf 100644
                  app.auth_code_input.reset();
              }
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
-index 0cbf3632..9e5a95ce 100644
+index 0cbf3632..efc3d6bf 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 @@ -394,7 +394,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
@@ -1757,7 +1770,7 @@ index 0cbf3632..9e5a95ce 100644
      let seq = authenticating_seq(&app);
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -554,34 +554,551 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
+@@ -554,34 +554,615 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
      );
  }
  
@@ -2046,6 +2059,70 @@ index 0cbf3632..9e5a95ce 100644
 +    assert!(!app.connection_picker.as_ref().unwrap().refresh_pending);
 +}
 +
++/// A load that leaves a signed-in rail `Loading models…` (nothing cached yet: `/auth`, after a
++/// sign-in) asks the CLIs for their models, once; a `/model` refresh already queued covers it, and
++/// a rail that lists its models needs nothing.
++#[test]
++fn a_loading_rail_after_a_load_queues_one_rail_models_refresh() {
++    use workshop_auth::{PickerSnapshot, PickerTab};
++    use workshop_detect::{Pill, Rail, RailModels, RailState, SubscriptionModels};
++    let rails = |state: RailModels| -> Vec<RailState> {
++        Rail::ALL
++            .iter()
++            .map(|r| RailState {
++                pill: Pill::Ready,
++                installed: true,
++                subscription: state.clone(),
++                ..RailState::detecting(*r)
++            })
++            .collect()
++    };
++    let loaded = |state: RailModels| {
++        Action::TaskComplete(TaskResult::WorkshopPickerLoaded(PickerSnapshot {
++            rails: rails(state),
++            ..PickerSnapshot::default()
++        }))
++    };
++    let mut app = test_app();
++    dispatch(
++        Action::OpenConnectionPicker(PickerTab::Subscriptions),
++        &mut app,
++    );
++    let effects = dispatch(loaded(RailModels::Loading), &mut app);
++    assert!(
++        matches!(effects.as_slice(), [Effect::WorkshopRefreshRailModels]),
++        "got {effects:?}"
++    );
++    let listed = RailModels::Listed {
++        list: SubscriptionModels {
++            rail: Rail::Claude,
++            models: Vec::new(),
++            account: None,
++            documented_aliases: false,
++            fetched_at_secs: 0,
++        },
++        cached: false,
++        error: None,
++    };
++    assert!(dispatch(loaded(listed), &mut app).is_empty());
++    let failed = RailModels::Failed {
++        reason: "timed out".into(),
++    };
++    assert!(
++        dispatch(loaded(failed), &mut app).is_empty(),
++        "a failed rail waits for Ctrl+R"
++    );
++
++    // `/model`: the queued live refresh asks the CLIs itself; no second probe.
++    app.connection_picker = None;
++    dispatch(Action::OpenConnectionPicker(PickerTab::Models), &mut app);
++    let effects = dispatch(loaded(RailModels::Loading), &mut app);
++    assert!(
++        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs { .. }]),
++        "got {effects:?}"
++    );
++}
++
 +/// The OpenCode model could not start: Workshop falls back *silently*. The keyless pool's model is
 +/// activated as the shell's, the connection the user has stays what it is (the next launch tries
 +/// it again), the composer names the model that will answer, and the prompt goes out again once
@@ -2320,7 +2397,7 @@ index 0cbf3632..9e5a95ce 100644
  }
  
  /// Puts the app in `Authenticating` with a live task's abort handle installed, as the event loop would.
-@@ -591,7 +1108,7 @@ fn install_live_auth_task(
+@@ -591,7 +1172,7 @@ fn install_live_auth_task(
      app: &mut AppView,
      rt: &tokio::runtime::Runtime,
  ) -> (tokio::task::JoinHandle<()>, u64) {
@@ -2329,7 +2406,7 @@ index 0cbf3632..9e5a95ce 100644
      let task = rt.spawn(std::future::pending::<()>());
      match &mut app.auth_state {
          AuthState::Authenticating {
-@@ -621,7 +1138,7 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -621,7 +1202,7 @@ fn login_while_authenticating_aborts_prior_task() {
      let mut app = test_app_with_agent();
      let (prior_task, first_seq) = install_live_auth_task(&mut app, &rt);
  
@@ -2338,7 +2415,7 @@ index 0cbf3632..9e5a95ce 100644
  
      rt.block_on(async {
          assert!(
-@@ -651,12 +1168,12 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -651,12 +1232,12 @@ fn login_while_authenticating_aborts_prior_task() {
  #[test]
  fn stale_auth_complete_after_relogin_is_ignored() {
      let mut app = test_app_with_agent();
@@ -2353,7 +2430,7 @@ index 0cbf3632..9e5a95ce 100644
  
      dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -722,7 +1239,7 @@ fn cancel_login_aborts_prior_task() {
+@@ -722,7 +1303,7 @@ fn cancel_login_aborts_prior_task() {
  #[test]
  fn cancel_login_restores_view() {
      let mut app = test_app_with_agent();
@@ -2614,7 +2691,7 @@ index ac5de69d..bb7f2994 100644
      match acp_send(req, tx).await {
          Ok(resp) => {
 diff --git a/crates/codegen/xai-grok-pager/src/app/effects/mod.rs b/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
-index 1c507697..68fd7094 100644
+index 1c507697..ba619492 100644
 --- a/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
 @@ -214,7 +214,7 @@ pub(crate) fn execute(
@@ -2634,7 +2711,7 @@ index 1c507697..68fd7094 100644
          } => {
              let tx = acp_tx.clone();
              let abort_handle = tasks
-@@ -2327,11 +2328,88 @@ pub(crate) fn execute(
+@@ -2327,11 +2328,95 @@ pub(crate) fn execute(
                              method_id,
                              use_oauth,
                              force_interactive,
@@ -2655,6 +2732,13 @@ index 1c507697..68fd7094 100644
 +            tasks
 +                .spawn(async move {
 +                    let snap = crate::app::workshop::refresh_picker_snapshot(engine, force).await;
++                    TaskResult::WorkshopPickerLoaded(snap)
++                });
++        }
++        Effect::WorkshopRefreshRailModels => {
++            tasks
++                .spawn(async move {
++                    let snap = crate::app::workshop::refresh_rail_models_snapshot().await;
 +                    TaskResult::WorkshopPickerLoaded(snap)
 +                });
 +        }
@@ -3331,10 +3415,10 @@ index 60fe34f9..14e8431b 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..a5fe5ec7
+index 00000000..b272b549
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1287 @@
+@@ -0,0 +1,1313 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -3514,7 +3598,8 @@ index 00000000..a5fe5ec7
 +}
 +
 +/// `$WORKSHOP_HOME/catalog-cache`: the hosted lists (`<provider>.json`, written by
-+/// `workshop_providers::catalog::live`) and the engine list (`opencode-engine.json`).
++/// `workshop_providers::catalog::live`), the engine list (`opencode-engine.json`), and each
++/// subscription's last listed models (`<rail>-models.json`, `workshop_detect::ModelsCache`).
 +fn catalog_cache_dir() -> PathBuf {
 +    workshop_providers::catalog::fetch::default_cache_dir(&workshop_home())
 +}
@@ -3598,14 +3683,26 @@ index 00000000..a5fe5ec7
 +/// list comes from the `PickerSnapshot` returned here (`workshop_auth::models_rows` builds the rows
 +/// from a `Catalog` plus the engine models; `PickerState::apply_snapshot` takes it). The lists are
 +/// read last so a snapshot built while [`refresh_picker_snapshot`] runs still sees what it cached.
++/// A signed-in rail shows its last listed models, or `Loading models…` until
++/// [`refresh_rail_models_snapshot`] (or the `/model` refresh) asks its CLI.
 +pub async fn load_picker_snapshot() -> PickerSnapshot {
-+    build_picker_snapshot(None, None).await
++    build_picker_snapshot(None, None, workshop_detect::Refresh::CacheOnly).await
++}
++
++/// [`load_picker_snapshot`], but every signed-in rail asks its own CLI for its models (unless it
++/// listed them in the last minute). Child processes only: Workshop itself makes no request.
++pub async fn refresh_rail_models_snapshot() -> PickerSnapshot {
++    let refresh = workshop_detect::Refresh::Live {
++        max_age: workshop_detect::models::FRESH_FOR,
++    };
++    build_picker_snapshot(None, None, refresh).await
 +}
 +
 +/// Refresh the model lists from their live sources, then build the snapshot: the keyless hosted
-+/// lists (Kilo, OpenRouter, NVIDIA; concurrently, short deadline, cached on success) and, when an
-+/// engine is up, its `/config/providers`. `force` ignores the cache age (the picker's `r`).
-+/// Only ever called after the user acted; failures leave the last cached list or the dated seed.
++/// lists (Kilo, OpenRouter, NVIDIA; concurrently, short deadline, cached on success), when an
++/// engine is up its `/config/providers`, and each signed-in rail's CLI. `force` ignores the cache
++/// age (the picker's Ctrl+R). Only ever called after the user acted; failures leave the last
++/// cached list or the dated seed.
 +pub async fn refresh_picker_snapshot(
 +    engine: Option<Arc<OpenCodeEngine>>,
 +    force: bool,
@@ -3631,7 +3728,14 @@ index 00000000..a5fe5ec7
 +        }
 +    };
 +    let (hosted, engine_error) = tokio::join!(hosted, engine_result);
-+    let mut snap = build_picker_snapshot(Some(hosted), engine_error).await;
++    let rails = workshop_detect::Refresh::Live {
++        max_age: if force {
++            Duration::ZERO
++        } else {
++            workshop_detect::models::FRESH_FOR
++        },
++    };
++    let mut snap = build_picker_snapshot(Some(hosted), engine_error, rails).await;
 +    snap.live = true;
 +    snap
 +}
@@ -3655,11 +3759,17 @@ index 00000000..a5fe5ec7
 +async fn build_picker_snapshot(
 +    hosted: Option<HostedCatalogs>,
 +    engine_error: Option<String>,
++    rail_models: workshop_detect::Refresh,
 +) -> PickerSnapshot {
 +    let local = workshop_providers::probe_all_local_servers(Duration::from_millis(600)).await;
-+    let rails: Vec<workshop_detect::RailState> = tokio::task::spawn_blocking(|| {
-+        let probe = workshop_detect::probe_all(&workshop_detect::DetectConfig::default());
-+        workshop_detect::rails(&probe, workshop_detect::model::default_models).to_vec()
++    let rails: Vec<workshop_detect::RailState> = tokio::task::spawn_blocking(move || {
++        let cache = workshop_detect::ModelsCache::new(catalog_cache_dir());
++        workshop_detect::picker_rails(
++            &workshop_detect::DetectConfig::default(),
++            &cache,
++            rail_models,
++        )
++        .to_vec()
 +    })
 +    .await
 +    .unwrap_or_else(|_| {
