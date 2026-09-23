@@ -564,6 +564,20 @@ pub fn activate_catalog_model(
     activate_catalog_model_with(model, |_| {})
 }
 
+/// Whether `[ui]` records a permission mode the user chose: `permission_mode` or the legacy
+/// `approval_mode` key, or `yolo = true`. A bare `yolo = false` does not count — upstream's typed
+/// config save writes it as a default (the 0.2.2 updater did on every silent update), and Workshop's
+/// always-approve default must survive that; an explicit pick (persisted as `permission_mode`)
+/// still sticks.
+pub fn explicit_permission_choice(ui: &toml::Value) -> bool {
+    let Some(table) = ui.as_table() else {
+        return false;
+    };
+    table.contains_key("permission_mode")
+        || table.contains_key("approval_mode")
+        || table.get("yolo").and_then(|v| v.as_bool()) == Some(true)
+}
+
 /// `$WORKSHOP_HOME/tmp`: the engine's `TMPDIR`, so its scratch files (OpenCode's own temp dir is
 /// `<tmpdir>/opencode`) stay under the Workshop home.
 pub fn engine_scratch_dir() -> PathBuf {

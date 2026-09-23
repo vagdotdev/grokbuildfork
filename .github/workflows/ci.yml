@@ -257,6 +257,15 @@ jobs:
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test engine_trust -- --nocapture --include-ignored --test-threads=2
+      - name: PTY gates — updater (newer only, marker-only config write, always-approve survives)
+        # A loopback release channel: a version behind the running one installs nothing and writes
+        # nothing; a newer one is downloaded, verified and linked with nothing on screen, the config
+        # gains only `[cli] installer`, and the next launch still opens in always-approve; a bare
+        # `[ui] yolo = false` (what the 0.2.2 updater wrote) is not a mode choice, an explicit
+        # `permission_mode` still is.
+        env:
+          WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
+        run: cargo test -p workshop-gates --test updater -- --nocapture --include-ignored
       - name: PTY smoke — live model lists (hermetic)
         # Zero egress before the user acts (logging proxy: first run, /auth, `workshop login` and
         # /model on a fresh home ask for nothing; once an API key is configured /model asks exactly

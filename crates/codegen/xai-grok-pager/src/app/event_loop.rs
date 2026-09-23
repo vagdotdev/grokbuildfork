@@ -1160,10 +1160,12 @@ pub(crate) async fn run(
         .as_ref()
         .and_then(|root| root.get("ui").cloned());
     let cli_owns_mode = args.yolo || args.permission_mode_flag.is_some();
+    // Workshop: a mode the user chose (`permission_mode`, the legacy `approval_mode`, or
+    // `yolo = true`) is kept; a bare `yolo = false` is what any whole-config save writes as a
+    // default (the 0.2.2 updater did, on every silent update) and is not a choice.
     let toml_owns_mode = launch_effective_ui
         .as_ref()
-        .and_then(xai_grok_shell::util::config::permission_mode_from_ui_if_set)
-        .is_some();
+        .is_some_and(crate::app::workshop::explicit_permission_choice);
     app.permission_mode_from_soft_default = !cli_owns_mode && !toml_owns_mode;
     // Workshop: nothing chose a mode (no CLI flag, no `[ui]` permission key, no remote setting),
     // so the launch is always-approve. Plan and the asking mode stay one Shift+Tab away, and that

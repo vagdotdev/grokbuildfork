@@ -2707,7 +2707,9 @@ fn build_update_config() -> UpdateConfig {
 }
 /// Central gate for auto-update checks; add new suppression rules here, not at call sites.
 fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
-    if cfg!(debug_assertions) {
+    // Workshop: a debug build updates only from a loopback channel a PTY gate stands up
+    // (`WORKSHOP_CLI_BASE_URL`, loopback-only), never from the published one.
+    if cfg!(debug_assertions) && !xai_grok_update::version::loopback_channel_override() {
         return false;
     }
     if no_auto_update_flag {

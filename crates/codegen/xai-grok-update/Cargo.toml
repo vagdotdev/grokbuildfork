@@ -28,6 +28,8 @@ xai-grok-version = { workspace = true }
 flate2 = { workspace = true }
 # Workshop: release artifacts are `.tar.gz`; the updater extracts the single `workshop` member.
 tar = { workspace = true }
+# Workshop: the installer marker is one key edited in place, never a whole-config save.
+toml_edit = { workspace = true }
 zstd = { workspace = true }
 sha2 = { workspace = true }
 xai-tty-utils = { workspace = true }

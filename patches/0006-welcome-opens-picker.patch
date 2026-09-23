@@ -3131,7 +3131,7 @@ index 1c507697..89312ddd 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..0b670a63 100644
+index eda61b3c..91806bba 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -3262,9 +3262,18 @@ index eda61b3c..0b670a63 100644
          args.yolo,
          args.permission_mode_flag.as_deref(),
          remote_permission_mode,
-@@ -1103,6 +1165,19 @@ pub(crate) async fn run(
-         .and_then(xai_grok_shell::util::config::permission_mode_from_ui_if_set)
-         .is_some();
+@@ -1098,11 +1160,26 @@ pub(crate) async fn run(
+         .as_ref()
+         .and_then(|root| root.get("ui").cloned());
+     let cli_owns_mode = args.yolo || args.permission_mode_flag.is_some();
++    // Workshop: a mode the user chose (`permission_mode`, the legacy `approval_mode`, or
++    // `yolo = true`) is kept; a bare `yolo = false` is what any whole-config save writes as a
++    // default (the 0.2.2 updater did, on every silent update) and is not a choice.
+     let toml_owns_mode = launch_effective_ui
+         .as_ref()
+-        .and_then(xai_grok_shell::util::config::permission_mode_from_ui_if_set)
+-        .is_some();
++        .is_some_and(crate::app::workshop::explicit_permission_choice);
      app.permission_mode_from_soft_default = !cli_owns_mode && !toml_owns_mode;
 +    // Workshop: nothing chose a mode (no CLI flag, no `[ui]` permission key, no remote setting),
 +    // so the launch is always-approve. Plan and the asking mode stay one Shift+Tab away, and that
@@ -3282,7 +3291,7 @@ index eda61b3c..0b670a63 100644
      app.yolo_policy_block = launch_yolo.policy_block;
      if let Some(warning) = launch_yolo.blocked_warning {
          tracing::warn!("{warning}");
-@@ -1271,19 +1346,42 @@ pub(crate) async fn run(
+@@ -1271,19 +1348,42 @@ pub(crate) async fn run(
              "auto-triggering login at startup"
          );
      }
@@ -3332,7 +3341,7 @@ index eda61b3c..0b670a63 100644
      };
      app.has_external_auth_provider =
          crate::slash::commands::usage::detect_external_auth_provider(&app.auth_methods);
-@@ -1359,6 +1457,14 @@ pub(crate) async fn run(
+@@ -1359,6 +1459,14 @@ pub(crate) async fn run(
      }
      app.voice_config.client_identifier = crate::client_identity::HEADLESS_CLIENT_TYPE.to_string();
      app.voice_config.user_agent = crate::client_identity::client_user_agent();
@@ -3347,7 +3356,7 @@ index eda61b3c..0b670a63 100644
      app.zdr_access_enabled = xai_grok_shell::util::config::resolve_zdr_access_enabled(
          requirements.as_ref(),
          user_config.as_ref(),
-@@ -1632,6 +1738,15 @@ pub(crate) async fn run(
+@@ -1632,6 +1740,15 @@ pub(crate) async fn run(
      let (progress_tx, mut progress_rx) =
          tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
      let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
@@ -3363,7 +3372,7 @@ index eda61b3c..0b670a63 100644
      let voice_auth_factory = connection.auth_manager.clone();
      let mut tick_interval = tick_interval;
      let mut animation_tick_at: Option<Instant> = None;
-@@ -1759,6 +1874,16 @@ pub(crate) async fn run(
+@@ -1759,6 +1876,16 @@ pub(crate) async fn run(
                  git_ref: args.worktree_ref.clone(),
              })
          }
@@ -3380,7 +3389,7 @@ index eda61b3c..0b670a63 100644
          MaterializedStartup::NewAuto => None,
      };
      if let Some(action) = startup_action {
-@@ -1892,7 +2017,7 @@ pub(crate) async fn run(
+@@ -1892,7 +2019,7 @@ pub(crate) async fn run(
          if process_effects(workspace_effects, &mut tasks, &mut app, &progress_tx) {
              break;
          }
@@ -3389,7 +3398,7 @@ index eda61b3c..0b670a63 100644
              &mut app,
              terminal,
              &input_paused,
-@@ -1902,9 +2027,16 @@ pub(crate) async fn run(
+@@ -1902,9 +2029,16 @@ pub(crate) async fn run(
              &mut suspend_retry_after,
              &mut suspend_wait_reports,
          ) {
@@ -3409,7 +3418,7 @@ index eda61b3c..0b670a63 100644
          }
          if run_pending_mode_switch(
              &mut app,
-@@ -1921,6 +2053,22 @@ pub(crate) async fn run(
+@@ -1921,6 +2055,22 @@ pub(crate) async fn run(
          ) {
              break;
          }
@@ -3432,7 +3441,7 @@ index eda61b3c..0b670a63 100644
          if let VoiceState::ColdStart { hold, target } = app.voice_state {
              if app.voice_cmd_tx.is_none() && app.voice_can_start_pipeline() {
                  let voice_auth = crate::voice::build_voice_auth(voice_auth_factory.clone());
-@@ -2314,6 +2462,7 @@ pub(crate) async fn run(
+@@ -2314,6 +2464,7 @@ pub(crate) async fn run(
              maybe_ev = input_rx.recv() => {
                  // `None` means the dedicated terminal reader thread has ended.
                  let Some(ev) = maybe_ev else { break };
@@ -3440,7 +3449,7 @@ index eda61b3c..0b670a63 100644
                  let handled_at = std::time::Instant::now();
                  let waited =
                      super::event_loop_stall::input_wait(ev.arrived_at, handled_at, loop_entry);
-@@ -2331,6 +2480,9 @@ pub(crate) async fn run(
+@@ -2331,6 +2482,9 @@ pub(crate) async fn run(
                  if result.should_quit {
                      break;
                  }
@@ -3450,7 +3459,7 @@ index eda61b3c..0b670a63 100644
                  if !app.pending_effects.is_empty() {
                      let effs = std::mem::take(&mut app.pending_effects);
                      if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
-@@ -2885,6 +3037,23 @@ pub(crate) async fn run(
+@@ -2885,6 +3039,23 @@ pub(crate) async fn run(
                  presenter.request(false);
              }
  
@@ -3474,7 +3483,7 @@ index eda61b3c..0b670a63 100644
              // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
              // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
              // Voice is only serviced when nothing else is pending
-@@ -3096,6 +3265,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3096,6 +3267,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
      app.abandon_startup();
      let exit_info = app.active_agent().and_then(|agent| {
          let sid = agent.session.session_id.as_ref()?;
@@ -3484,7 +3493,7 @@ index eda61b3c..0b670a63 100644
          let summary = if app.screen_mode.is_fullscreen() {
              use crate::views::session_title;
              let last_prompt = session_title::last_user_prompt_line(agent);
-@@ -3109,7 +3281,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3109,7 +3283,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
              None
          };
          Some(super::ExitInfo {
@@ -3493,7 +3502,7 @@ index eda61b3c..0b670a63 100644
              minimal: app.screen_mode.is_minimal(),
              summary,
          })
-@@ -3143,7 +3315,9 @@ struct RoutedInputEvent {
+@@ -3143,7 +3317,9 @@ struct RoutedInputEvent {
      is_startup_replay: bool,
  }
  fn tty_suspend_armed(app: &AppView) -> bool {
@@ -3504,7 +3513,7 @@ index eda61b3c..0b670a63 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4108,559 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4110,559 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -4243,10 +4252,10 @@ index 60fe34f9..8b49336e 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..a4e25065
+index 00000000..121a49c7
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,2534 @@
+@@ -0,0 +1,2548 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -4811,6 +4820,20 @@ index 00000000..a4e25065
 +    model: &workshop_providers::CatalogModel,
 +) -> Result<ActivationPlan, String> {
 +    activate_catalog_model_with(model, |_| {})
++}
++
++/// Whether `[ui]` records a permission mode the user chose: `permission_mode` or the legacy
++/// `approval_mode` key, or `yolo = true`. A bare `yolo = false` does not count — upstream's typed
++/// config save writes it as a default (the 0.2.2 updater did on every silent update), and Workshop's
++/// always-approve default must survive that; an explicit pick (persisted as `permission_mode`)
++/// still sticks.
++pub fn explicit_permission_choice(ui: &toml::Value) -> bool {
++    let Some(table) = ui.as_table() else {
++        return false;
++    };
++    table.contains_key("permission_mode")
++        || table.contains_key("approval_mode")
++        || table.get("yolo").and_then(|v| v.as_bool()) == Some(true)
 +}
 +
 +/// `$WORKSHOP_HOME/tmp`: the engine's `TMPDIR`, so its scratch files (OpenCode's own temp dir is
