@@ -17,8 +17,9 @@ from the real server:
     (OPENCODE_CONFIG_CONTENT) when one is set, else with the model family's prompt ("You are
     opencode, …", feedback at github.com/anomalyco/opencode), and appends `instructions` after it.
     Any agent, Plan included.
-  * "think"                           -> a reasoning part streamed before the answer part (and
-    another one after the tool call of "list files").
+  * "think"                           -> a reasoning part streamed before the answer part (and, on
+    "list files", a whitespace-only text part after it and another reasoning part after the tool
+    call — the shapes a real model sends).
   * "slow"                            -> waits 3 s before answering (to queue prompts behind it).
   * agent == plan                     -> never a tool part, never a permission ask: text only.
 
@@ -230,6 +231,8 @@ def run_turn(sid, agent, text):
                             {"diagnostics": {}, "diff": diff, "filediff": {"file": path, "patch": diff, "additions": 1, "deletions": 1}, "truncated": False}))
         answer = "Changed hi to hello in hello.txt."
     elif "list files" in text_l or text_l.strip() == "ls":
+        if "think" in text_l:
+            stream_text(sid, mid, "\n\n")
         call_id = next_id("call")
         out = subprocess.run(["ls", "-1"], cwd=CWD, capture_output=True, text=True).stdout or "(no output)"
         emit_part(tool_part(sid, mid, "bash", call_id, {"command": "ls -1"}, out, "ls -1",

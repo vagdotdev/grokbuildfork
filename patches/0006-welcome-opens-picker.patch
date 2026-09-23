@@ -2733,7 +2733,7 @@ index 1c507697..6b5e925c 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..87e0f568 100644
+index eda61b3c..d8b3a8d3 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -3029,7 +3029,7 @@ index eda61b3c..87e0f568 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4061,360 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4061,368 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -3053,6 +3053,14 @@ index eda61b3c..87e0f568 100644
 +    let Some(agent_id) = app.workshop_turn_agent else {
 +        return (false, vec![]);
 +    };
++    // A whitespace-only text part (models send "\n\n" right after their reasoning) is not an
++    // answer: it opens no reply row, is not recorded, and leaves the waiting line up.
++    if let M::Delta(text) = &msg
++        && text.trim().is_empty()
++        && app.workshop_turn_stream_entry.is_none()
++    {
++        return (false, vec![]);
++    }
 +    // Bring-up status is transient: the first real output, a fallback, or the end of the turn
 +    // removes it.
 +    // Hidden thinking (the default) draws nothing, so the waiting line stays up through it.

@@ -4081,6 +4081,14 @@ fn handle_workshop_turn_msg(
     let Some(agent_id) = app.workshop_turn_agent else {
         return (false, vec![]);
     };
+    // A whitespace-only text part (models send "\n\n" right after their reasoning) is not an
+    // answer: it opens no reply row, is not recorded, and leaves the waiting line up.
+    if let M::Delta(text) = &msg
+        && text.trim().is_empty()
+        && app.workshop_turn_stream_entry.is_none()
+    {
+        return (false, vec![]);
+    }
     // Bring-up status is transient: the first real output, a fallback, or the end of the turn
     // removes it.
     // Hidden thinking (the default) draws nothing, so the waiting line stays up through it.

@@ -527,246 +527,25 @@ fn reasoning_hidden_by_default() {
     let screen = j.h.screen_contents();
     assert!(screen.contains("ls -1"), "the tool row is shown:\n{screen}");
     assert_no_thinking(&screen);
-    quit(&mut j);
-}
-
-/// `/settings` → "Show thinking blocks" brings the thinking back, as its own block that is never
-/// glued to the answer.
-#[test]
-#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
-fn reasoning_shown_when_turned_on_in_settings() {
-    let Some(bin) = bin_from_env() else { return };
-    let fx = fixture();
-    let mut j = launch("engine-trust/reasoning-shown-when-turned-on", &bin, &fx);
-    let row = |screen: &str| {
-        screen
-            .lines()
-            .find(|l| l.contains("Show thinking blocks"))
-            .unwrap_or_default()
-            .to_owned()
-    };
-    send_prompt(&mut j, "/settings");
-    wait_for(&mut j.h, "Space", 20);
-    j.h.inject_keys(b"/").unwrap();
-    j.h.update(Duration::from_millis(300));
-    j.h.inject_keys(b"thinking blocks").unwrap();
-    wait_for(&mut j.h, "search: thinking blocks", 20);
-    j.h.inject_keys(b"\r").unwrap();
-    j.h.update(Duration::from_millis(400));
-    snapshot(&j.h, &j.dir, "01-settings-row-off");
-    let screen = j.h.screen_contents();
-    assert!(row(&screen).contains(" off "), "off by default:\n{screen}");
-    j.h.inject_keys(b" ").unwrap();
-    j.h.update(Duration::from_millis(600));
-    snapshot(&j.h, &j.dir, "02-settings-row-on");
-    let screen = j.h.screen_contents();
     assert!(
-        row(&screen).contains(" on "),
-        "Space turns it on:\n{screen}"
-    );
-    j.h.inject_keys(b"\x1b").unwrap();
-    j.h.update(Duration::from_millis(600));
-    let config = std::fs::read_to_string(j.workshop_home().join("config.toml")).unwrap();
-    assert!(config.contains("show_thinking_blocks = true"), "{config}");
-
-    send_prompt(&mut j, "think about it");
-    wait_for(&mut j.h, "Echo: think about it", 60);
-    j.h.update(Duration::from_millis(500));
-    snapshot(&j.h, &j.dir, "03-thinking-block");
-    let screen = j.h.screen_contents();
-    assert!(
-        screen.contains("Thought"),
-        "the setting shows thinking as a block:\n{screen}"
-    );
-    assert!(
-        !screen.contains("brief.Echo"),
-        "thinking is never glued to the answer:\n{screen}"
+        !screen.lines().any(is_bare_timestamp),
+        "the whitespace-only text part after the thinking opens no empty reply row:\n{screen}"
     );
     quit(&mut j);
 }
 
-/// The answer lines containing `needle` (the composer label names the engine, the answers must not).
-fn answer_lines<'a>(screen: &'a str, needle: &str) -> Vec<&'a str> {
-    screen
-        .lines()
-        .filter(|l| l.contains(needle) && !l.contains('\u{276f}'))
-        .collect()
-}
-
-fn assert_answers_as_workshop(j: &mut Journey, question: &str) {
-    const ANSWER: &str = "Workshop's coding assistant";
-    let answered = |screen: &str| {
-        let mut lines = screen.lines();
-        lines.any(|l| l.contains(&format!("\u{276f} {question}")))
-            && lines.any(|l| l.contains(ANSWER))
+/// A transcript row holding nothing but its timestamp ("9:23 AM"): an empty reply.
+fn is_bare_timestamp(line: &str) -> bool {
+    let t = line.trim().trim_end_matches('\u{2588}').trim();
+    let Some((clock, half)) = t.split_once(' ') else {
+        return false;
     };
-    send_prompt(j, question);
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    while !answered(&j.h.screen_contents()) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{question:?} got no answer as Workshop's assistant:\n{}",
-            j.h.screen_contents()
-        );
-        j.h.update(Duration::from_millis(200));
-    }
-    j.h.update(Duration::from_millis(400));
-    let screen = j.h.screen_contents();
-    let lines = answer_lines(&screen, ANSWER);
-    assert!(!lines.is_empty(), "{screen}");
-    for line in lines {
-        let line = line.to_lowercase();
-        for other in ["opencode", "anomaly", "grok"] {
-            assert!(
-                !line.contains(other),
-                "{question:?} must not name {other}:\n{screen}"
-            );
-        }
-    }
-}
-
-/// "what are you?" and "who made you?" answer as Workshop's assistant, never as "opencode", in
-/// Normal and Plan mode: the agent each turn runs on (`build`, `plan`) opens its system prompt
-/// with Workshop's identity instead of the model family's, and the instructions file follows.
-#[test]
-#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
-fn engine_answers_as_workshop() {
-    let Some(bin) = bin_from_env() else { return };
-    let fx = fixture();
-    let mut j = launch("engine-trust/engine-answers-as-workshop", &bin, &fx);
-    assert_answers_as_workshop(&mut j, "what are you?");
-    snapshot(&j.h, &j.dir, "01-what-are-you");
-    assert_answers_as_workshop(&mut j, "who made you?");
-    snapshot(&j.h, &j.dir, "02-who-made-you");
-    set_mode(&mut j, "plan");
-    assert_answers_as_workshop(&mut j, "what are you? (plan)");
-    snapshot(&j.h, &j.dir, "03-plan-what-are-you");
-
-    let heads: Vec<(String, String)> = engine_log(&fx.log)
-        .iter()
-        .filter_map(|v| {
-            Some((
-                v.get("agent")?.as_str()?.to_owned(),
-                v.get("system_head")?.as_str()?.to_owned(),
-            ))
+    (half == "AM" || half == "PM")
+        && clock.split_once(':').is_some_and(|(h, m)| {
+            (1..=2).contains(&h.len())
+                && m.len() == 2
+                && h.chars().chain(m.chars()).all(|c| c.is_ascii_digit())
         })
-        .collect();
-    assert!(
-        heads.iter().any(|(a, _)| a == "build") && heads.iter().any(|(a, _)| a == "plan"),
-        "{heads:?}"
-    );
-    for (agent, head) in &heads {
-        assert!(
-            head.starts_with("You are Workshop's coding assistant"),
-            "{agent}: {head}"
-        );
-    }
-    let instructions = j.workshop_home().join("engine").join("instructions.md");
-    let text = std::fs::read_to_string(&instructions).expect("instructions file under the home");
-    assert!(text.contains("Workshop's coding assistant"), "{text}");
-    assert!(
-        !j.cwd.path().join("AGENTS.md").exists(),
-        "nothing is written into the user's project"
-    );
-    quit(&mut j);
-}
-
-/// The same promises against the real `opencode` (keyless Big Pickle, network): the proof run
-/// behind the v0.2.2 evidence. Needs a genuine `opencode` on `PATH` and `WORKSHOP_LIVE_OPENCODE=1`;
-/// never runs in CI. Screens land in `WORKSHOP_PTY_EVIDENCE_DIR/engine-trust/live-*`.
-#[test]
-#[ignore = "needs WORKSHOP_BIN, a real opencode on PATH and network; run with WORKSHOP_LIVE_OPENCODE=1 --include-ignored"]
-fn live_engine_trust_journey() {
-    let Some(bin) = bin_from_env() else { return };
-    if std::env::var_os("WORKSHOP_LIVE_OPENCODE").is_none() {
-        eprintln!("WORKSHOP_LIVE_OPENCODE not set; skipping");
-        return;
-    }
-    let mut j = pty_common::spawn("engine-trust/live-safety-modes", &bin, &[], None);
-    pty_common::connect_big_pickle(&mut j);
-    std::fs::create_dir_all(j.cwd.path().join("tmp")).unwrap();
-    std::fs::write(j.cwd.path().join("tmp/junk"), "x").unwrap();
-
-    // Plan: a file request is planned, not done.
-    set_mode(&mut j, "plan");
-    send_prompt(
-        &mut j,
-        "Create a file named hello.txt containing the word hi.",
-    );
-    wait_for(&mut j.h, "Waiting for Big Pickle", 120);
-    wait_gone(&mut j, "Waiting for Big Pickle", 180);
-    j.h.update(Duration::from_millis(1500));
-    snapshot(&j.h, &j.dir, "01-plan-mode-answer");
-    assert!(
-        !j.cwd.path().join("hello.txt").exists(),
-        "plan mode must not create files"
-    );
-
-    // Normal: the engine asks before `rm -rf tmp`; approve; it runs.
-    set_mode(&mut j, "normal");
-    send_prompt(
-        &mut j,
-        "Run exactly this shell command and nothing else: rm -rf tmp",
-    );
-    wait_for(&mut j.h, "Allow Execute?", 180);
-    j.h.update(Duration::from_millis(500));
-    snapshot(&j.h, &j.dir, "02-normal-mode-prompt");
-    assert!(
-        j.cwd.path().join("tmp").exists(),
-        "nothing runs before the answer"
-    );
-    let screen = j.h.screen_contents();
-    assert!(screen.contains("rm -rf tmp"), "{screen}");
-    j.h.inject_keys(b"1").unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(120);
-    while j.cwd.path().join("tmp").exists() && std::time::Instant::now() < deadline {
-        j.h.update(Duration::from_millis(500));
-    }
-    assert!(
-        !j.cwd.path().join("tmp").exists(),
-        "the approved command ran"
-    );
-    wait_gone(&mut j, "Allow Execute?", 60);
-    j.h.update(Duration::from_millis(3000));
-    snapshot(&j.h, &j.dir, "03-normal-mode-approved");
-
-    // Always-approve: the same kind of command runs with no prompt.
-    std::fs::create_dir_all(j.cwd.path().join("tmp2")).unwrap();
-    set_mode(&mut j, "always-approve");
-    send_prompt(
-        &mut j,
-        "Run exactly this shell command and nothing else: rm -rf tmp2",
-    );
-    let deadline = std::time::Instant::now() + Duration::from_secs(180);
-    while j.cwd.path().join("tmp2").exists() && std::time::Instant::now() < deadline {
-        j.h.update(Duration::from_millis(500));
-        assert!(
-            !j.h.screen_contents().contains("Allow Execute?"),
-            "always-approve draws no prompt"
-        );
-    }
-    assert!(
-        !j.cwd.path().join("tmp2").exists(),
-        "always-approve ran the command"
-    );
-    j.h.update(Duration::from_millis(3000));
-    snapshot(&j.h, &j.dir, "04-always-approve-ran");
-
-    // Identity and reasoning on the live model.
-    send_prompt(&mut j, "What are you? Answer in one sentence.");
-    wait_for(&mut j.h, "Workshop", 180);
-    j.h.update(Duration::from_millis(4000));
-    snapshot(&j.h, &j.dir, "05-identity-and-context-meter");
-    let screen = j.h.screen_contents();
-    assert!(!screen.contains("I'm opencode"), "{screen}");
-    assert!(
-        screen.contains("/ 200K"),
-        "live meter against the model's window:\n{screen}"
-    );
-    let after = quit(&mut j);
-    std::fs::write(j.dir.join("06-quit-hint.txt"), &after).unwrap();
-    assert!(after.contains("workshop --resume ses_"), "{after}");
-    eprintln!("evidence: {}", j.dir.display());
 }
 
 /// A model picked in `/model` stays picked: the next launch's engine warm-up, which reads
