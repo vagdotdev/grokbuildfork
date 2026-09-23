@@ -231,8 +231,7 @@ fn split_simple_commands(command: &str) -> Vec<String> {
     let mut cur = String::new();
     let (mut single, mut double, mut escape) = (false, false, false);
     let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
+    while let Some(&c) = chars.get(i) {
         if escape {
             cur.push(c);
             escape = false;
@@ -253,7 +252,11 @@ fn split_simple_commands(command: &str) -> Vec<String> {
             }
             out.push(std::mem::take(&mut cur));
         } else if c == '&' {
-            let prev = if i > 0 { chars[i - 1] } else { ' ' };
+            let prev = i
+                .checked_sub(1)
+                .and_then(|p| chars.get(p))
+                .copied()
+                .unwrap_or(' ');
             let next = chars.get(i + 1).copied().unwrap_or(' ');
             if prev == '>' || prev == '<' || next == '>' || next.is_ascii_digit() {
                 cur.push(c); // `>&1`, `2>&1`, `&>file`
@@ -434,8 +437,7 @@ fn simple_command_is_read_only(segment: &str) -> bool {
     // Redirections: only to /dev/null or another descriptor. A `<` reads.
     let mut args: Vec<String> = Vec::new();
     let mut i = 0;
-    while i < toks.len() {
-        let t = &toks[i];
+    while let Some(t) = toks.get(i) {
         let (op, target) = redirection(t);
         if let Some(op) = op {
             let target = match target {
@@ -464,7 +466,10 @@ fn simple_command_is_read_only(segment: &str) -> bool {
     };
     let program = program.rsplit('/').next().unwrap_or(program).to_owned();
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
-    if rest.len() == 1 && VERSION_FLAGS.contains(&rest[0]) && !program.is_empty() {
+    if let [only] = rest.as_slice()
+        && VERSION_FLAGS.contains(only)
+        && !program.is_empty()
+    {
         return true;
     }
     match program.as_str() {
@@ -575,14 +580,16 @@ fn git_is_read_only(rest: &[&str]) -> bool {
                     | "--show-current"
             )
         }),
-        "remote" => tail.is_empty() || matches!(tail[0], "-v" | "show" | "get-url"),
+        "remote" => tail
+            .first()
+            .is_none_or(|a| matches!(*a, "-v" | "show" | "get-url")),
         "stash" => tail.first().is_some_and(|a| matches!(*a, "list" | "show")),
         "tag" => tail.is_empty() || tail.iter().all(|a| matches!(*a, "-l" | "--list" | "-n")),
         "config" => tail
             .first()
             .is_some_and(|a| matches!(*a, "--get" | "--list" | "-l" | "--get-all")),
         "worktree" => tail.first() == Some(&"list"),
-        "reflog" => tail.is_empty() || tail[0] == "show",
+        "reflog" => tail.first().is_none_or(|a| *a == "show"),
         _ => false,
     }
 }
