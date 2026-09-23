@@ -209,7 +209,8 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
         "rail order Claude, Codex, Cursor:\n{screen}"
     );
     assert!(
-        screen.contains("[Sign in]")
+        screen.contains("[Install]")
+            || screen.contains("[Sign in]")
             || screen.contains("[Detecting]")
             || screen.contains("[Ready]"),
         "a pill is shown:\n{screen}"

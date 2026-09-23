@@ -102,10 +102,14 @@ ok=True
 # The composer label is the model name only; the Models view groups rows under "OpenCode" and
 # never lists Kilo Gateway; no user-visible text names the engine.
 for needle in ["Big Pickle","/model to switch","/auth to connect subscriptions",
-               "type to filter","OpenCode","Tab: Models","Claude","Codex","Cursor","[Sign in]","xAI — Sign in","optional",
+               "type to filter","OpenCode","Tab: Models","Claude","Codex","Cursor","xAI — Sign in","optional",
                "cached list from 2026-09-21"]:
     if ''.join(needle.split()) not in flat:
         print("VIOLATION: TUI first run did not show %r" % needle); ok=False
+# A rail's pill: [Install] when its CLI is missing (a hosted runner), [Sign in] when it is
+# installed but signed out (a developer machine).
+if not any(''.join(p.split()) in flat for p in ["[Install]","[Sign in]","[Ready]"]):
+    print("VIOLATION: TUI first run showed no rail pill"); ok=False
 for bad in ["Login with grok.com","auth.x.ai/.well-known","Login with Grok","accounts.x.ai",
             "connect a model","Connection classes","refreshing lists","OpenCode · Big Pickle","Kilo","engine"]:
     if ''.join(bad.split()) in flat:
