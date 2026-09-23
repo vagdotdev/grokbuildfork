@@ -296,7 +296,11 @@ def book_info(p):
         dc = {k: re.findall(rf"<dc:{k}[^>]*>([^<]*)", meta) for k in ("title", "creator", "source", "rights", "publisher")}
         info.update(kind="epub", mimetype=mt, **{k: v[:2] for k, v in dc.items()})
         ok = bad is None and mt == "application/epub+zip" and dc["title"] and dc["creator"]
-        info["pd_marker"] = bool(re.search(r"gutenberg|standard ?ebooks|public domain", meta, re.I))
+        # provenance in the package metadata, or in the book's own text (Gutenberg's header, e.g. an EPUB
+        # built from Gutenberg's plain text)
+        text = " ".join(z.read(n).decode(errors="replace")[:20000] for n in z.namelist()
+                        if re.search(r"\.x?html?$", n))[:400000]
+        info["pd_marker"] = bool(re.search(r"gutenberg|standard ?ebooks|public domain", meta + text, re.I))
         return {**info, "valid": bool(ok), "why": "" if ok else "not a complete EPUB"}
     if data[:5] == b"%PDF-":
         tmp = Path(tempfile.mkstemp(suffix=".pdf")[1])
