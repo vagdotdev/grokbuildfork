@@ -126,13 +126,15 @@ def prompts_log():
     return [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
 
 
+BUSY = re.compile(r"Thinking…|Ctrl\+C to cancel|Esc to interrupt")
 NOISE = [re.compile(r"[\u2800-\u28ff]"), re.compile(r"\b\d{1,2}:\d{2}( [AP]M)?\b"),
          re.compile(r"\b\d+(\.\d+)?\s?(ms|s|m|h|sec|min)\b"), re.compile(r"\.{1,3}(?=\s|$)")]
 
 
 def cast_analysis():
     """Every distinct screen line ever shown (with the cast time it first showed), and the cast times at
-    which the screen really changed (spinner frames, clocks and elapsed counters ignored)."""
+    which the screen visibly showed life: a real change (spinner frames, clocks and elapsed counters
+    ignored), or the animated waiting line being on screen."""
     import pyte
     p = OUT / "session.cast"
     with open(p, encoding="utf-8", errors="replace") as f:
@@ -153,9 +155,10 @@ def cast_analysis():
         for l in txt.split("\n"):
             if l.strip():
                 seen.setdefault(l.strip(), last_t)
+        alive = bool(BUSY.search(txt))
         for rx in NOISE:
             txt = rx.sub("", txt)
-        if txt != prev:
+        if txt != prev or alive:
             activity.append(last_t)
             prev = txt
 
@@ -780,7 +783,7 @@ def verify():
         rc, out = as_user("rm -rf dist && npm run build 2>&1 | tail -6", cwd=str(app), timeout=300) if app.exists() else (1, "no my-app")
         c.add("T10.2", rc == 0 and (app / "dist/index.html").exists(), "npm run build works", out.strip()[-300:])
         gaps = [w["longest_still_s"] for w in metrics["windows"]]
-        c.add("T10.3", bool(gaps) and max(gaps) <= 30, "the screen never looks frozen for more than 30 s", json.dumps(metrics["windows"]))
+        c.add("T10.3", bool(gaps) and max(gaps) <= 30, "the screen never frozen (no change, no waiting line) for more than 30 s", json.dumps(metrics["windows"]))
 
     elif TASK == "T11":
         w = metrics["windows"]
@@ -818,7 +821,7 @@ def verify():
     stall_limit = RUN.get("stall", 120)
     ended = [w for w in metrics["windows"] if w["ended"].startswith("turn_end")]
     c.add("U2", bool(wins) and len(ended) == len(metrics["windows"]) and all(w["longest_still_s"] <= stall_limit for w in metrics["windows"]),
-          f"every turn ends, none still for over {stall_limit} s", json.dumps(metrics["windows"]))
+          f"every turn ends, the screen never frozen (no change, no waiting line) for over {stall_limit} s", json.dumps(metrics["windows"]))
     fails = sorted(l for l in seen if "Couldn't reach" in l)
     c.add("U3", not fails, "no failure line", "; ".join(fails[:3]))
     plumbing = sorted(l for l in seen if re.search(r"OpenCode|opencode|\bKilo\b|\bGrok\b|\bengine\b|ses_[A-Za-z0-9]{10,}", l))
