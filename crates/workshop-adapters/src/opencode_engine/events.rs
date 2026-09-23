@@ -67,6 +67,37 @@ impl PermissionRequest {
     }
 }
 
+/// One choice of a [`QuestionPrompt`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct QuestionChoice {
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// One question of a [`QuestionRequest`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct QuestionPrompt {
+    pub question: String,
+    #[serde(default)]
+    pub header: String,
+    #[serde(default)]
+    pub options: Vec<QuestionChoice>,
+    /// More than one choice may be picked.
+    #[serde(default)]
+    pub multiple: bool,
+}
+
+/// The agent asked the user something (OpenCode's `question` tool, 1.18.31 `question.asked`):
+/// answered with one list of chosen labels (or typed text) per question, or rejected.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct QuestionRequest {
+    pub id: String,
+    pub session_id: String,
+    pub questions: Vec<QuestionPrompt>,
+    pub call_id: Option<String>,
+}
+
 fn string_list(v: Option<&Value>) -> Vec<String> {
     match v {
         Some(Value::String(s)) => vec![s.clone()],
@@ -117,6 +148,7 @@ pub struct ServeTurn {
     aborted: bool,
     terminal: Option<Terminal>,
     pending_permissions: Vec<PermissionRequest>,
+    pending_questions: Vec<QuestionRequest>,
 }
 
 impl ServeTurn {
@@ -133,6 +165,7 @@ impl ServeTurn {
             aborted: false,
             terminal: None,
             pending_permissions: Vec::new(),
+            pending_questions: Vec::new(),
         }
     }
 
@@ -153,6 +186,11 @@ impl ServeTurn {
     /// Permission requests seen since the last drain.
     pub fn take_permissions(&mut self) -> Vec<PermissionRequest> {
         std::mem::take(&mut self.pending_permissions)
+    }
+
+    /// Questions for the user seen since the last drain.
+    pub fn take_questions(&mut self) -> Vec<QuestionRequest> {
+        std::mem::take(&mut self.pending_questions)
     }
 
     /// Feed one SSE event (any session; foreign sessions are ignored).
@@ -310,6 +348,22 @@ impl ServeTurn {
                         out.push(AdapterEvent::Error { message });
                     }
                 }
+            }
+            Some("question.asked") => {
+                let questions = props
+                    .get("questions")
+                    .cloned()
+                    .and_then(|q| serde_json::from_value(q).ok())
+                    .unwrap_or_default();
+                self.pending_questions.push(QuestionRequest {
+                    id: json::str(props, "id").unwrap_or_default().to_string(),
+                    session_id: self.session_id.clone(),
+                    questions,
+                    call_id: props
+                        .get("tool")
+                        .and_then(|t| json::str(t, "callID"))
+                        .map(str::to_string),
+                });
             }
             Some("permission.updated") | Some("permission.asked") => {
                 // 1.18.31: `permission` + `patterns` + `metadata` + `always` + `tool.callID`;
@@ -595,6 +649,35 @@ mod tests {
             json!({"id": "x", "sessionID": "other", "permission": "bash", "patterns": []}),
         ));
         assert!(turn.take_permissions().is_empty());
+    }
+
+    /// 1.18.31 `question.asked` (the `question` tool): the questions with their options and the
+    /// tool call they belong to; another session's question is not ours.
+    #[test]
+    fn question_asked_is_collected() {
+        let mut turn = ServeTurn::new(SID);
+        let asked = json!({"id": "que_1", "sessionID": SID, "tool": {"messageID": "m1", "callID": "call_9"},
+            "questions": [{"question": "How should Ghostty be installed?", "header": "Install method",
+                "options": [{"label": "PPA (Recommended)", "description": "Community apt repository"},
+                            {"label": ".deb", "description": "One package file"}]}]});
+        assert!(
+            turn.on_event(&ev("question.asked", asked.clone()))
+                .is_empty()
+        );
+        let mut other = asked.clone();
+        other["sessionID"] = json!("ses_other");
+        turn.on_event(&ev("question.asked", other));
+        let questions = turn.take_questions();
+        assert_eq!(questions.len(), 1);
+        let q = &questions[0];
+        assert_eq!(
+            (q.id.as_str(), q.call_id.as_deref()),
+            ("que_1", Some("call_9"))
+        );
+        assert_eq!(q.questions[0].header, "Install method");
+        assert_eq!(q.questions[0].options[0].label, "PPA (Recommended)");
+        assert!(!q.questions[0].multiple);
+        assert!(turn.take_questions().is_empty());
     }
 
     /// Live ordering on 1.18.31: the reasoning part is announced (`message.part.updated`, type

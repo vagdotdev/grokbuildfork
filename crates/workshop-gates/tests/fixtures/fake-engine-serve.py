@@ -27,10 +27,20 @@ from the real server:
   * "install the tool"                -> ends the turn on "I'll run the installer:" with no tool call;
     a following "Continue: …" prompt runs `echo installed` and answers "Installed the tool.".
   * "keep announcing"                 -> every turn, continued or not, ends on "Let me run it:".
+  * "download cat photos"             -> a `curl … -o cat1.jpg` bash part and "Downloaded 1 cat photo."; the
+    "Continue my request: open each image …" prompt sent to a model that sees opens it and says
+    "Checked: cat1.jpg is a real photo of a cat.".
   * "create todo.py"                  -> pastes the file in a fenced block and writes nothing; a
     following "Continue: …" prompt writes ./todo.py with a `write` part and answers "Wrote todo.py.".
   * "create stubborn.py"              -> pastes the file every time, continued or not.
   * "show me a loop"                  -> answers with a fenced example (no file was asked for).
+  * "show the tree"                   -> a finished answer that ends on a colon and a fenced tree.
+  * "ask me"                          -> the `question` tool: question.asked ("Which install method?",
+    PPA / .deb), then waits for POST /question/{id}/reply or /reject and answers with the choice.
+  * "sort my photos"                  -> a `read` of img01.jpg ("Image read successfully"). A model
+    that cannot see images then waits for the abort (up to 5 s, else says it can't see them); one
+    that can (muse-spark-*, mimo-*), or the "Continue my request …" prompt sent to one, answers
+    "Looking at the photos." and, 2 s later, "Sorted 1 photo: a lion.".
   * "slow"                            -> waits 3 s before answering (to queue prompts behind it).
   * "install htop"                    -> permission.asked (bash `sudo touch installed-htop.txt`) and
     the command really runs (through the `sudo` on PATH, with this server's environment — the
@@ -74,6 +84,9 @@ sessions = {}  # id -> {"messages": [...]}
 permission_replies = {}  # permission id -> reply string
 stalled_sessions = set()  # sessions whose turn went silent on purpose ("stall")
 permission_events = {}  # permission id -> threading.Event
+aborts = {}  # session id -> threading.Event, set by POST /session/{id}/abort
+question_events = {}  # question id -> threading.Event, set by POST /question/{id}/reply|reject
+question_answers = {}  # question id -> the answers posted (None when rejected)
 counter = [0]
 
 
@@ -195,10 +208,14 @@ def unified_diff(path, old, new):
     return "".join(out)
 
 
-def run_turn(sid, agent, text):
+def run_turn(sid, agent, text, model=None):
     text_l = text.lower()
+    model_id = (model or {}).get("modelID", "big-pickle")
+    sees_images = model_id.startswith(("muse-spark", "mimo"))
+    aborted = aborts.setdefault(sid, threading.Event())
+    aborted.clear()
     # A continuation carries on the request that came before it.
-    continued = text.startswith("Continue:")
+    continued = text.startswith("Continue:") or text.startswith("Continue my request")
     if continued:
         first = next((m["text"] for m in reversed(sessions[sid]["messages"])
                       if m["role"] == "user" and not m["text"].startswith("Continue:")), "")
@@ -229,6 +246,46 @@ def run_turn(sid, agent, text):
         answer = identity_answer(agent, text_l)
     elif agent == "plan":
         answer = "Plan: I would create the file, but plan mode is read-only. Ready when you exit plan mode."
+    elif "sort my photos" in text_l:
+        if not continued:
+            emit_part(tool_part(sid, mid, "read", next_id("call"), {"filePath": os.path.join(CWD, "img01.jpg")},
+                                "Image read successfully", "img01.jpg", {"preview": "", "truncated": False}))
+        if not sees_images:
+            if aborted.wait(5):
+                sessions[sid]["messages"].append({"role": "user", "text": text})
+                return
+            answer = "I can't see images with this model."
+        else:
+            stream_text(sid, mid, "Looking at the photos.\n\n")
+            time.sleep(2)
+            answer = "Sorted 1 photo: a lion."
+    elif "ask me" in text_l:
+        qid, call_id = next_id("que"), next_id("call")
+        question_events[qid] = threading.Event()
+        questions = [{"question": "Which install method?", "header": "Install",
+                      "options": [{"label": "PPA", "description": "apt repository"},
+                                  {"label": ".deb", "description": "one package file"}]}]
+        emit_part(part(sid, mid, "tool", {"tool": "question", "callID": call_id,
+                                          "state": {"status": "running", "input": {"questions": questions},
+                                                    "time": {"start": now_ms()}}}))
+        broadcast({"type": "question.asked", "properties": {"id": qid, "sessionID": sid, "questions": questions,
+                                                            "tool": {"messageID": mid, "callID": call_id}}})
+        question_events[qid].wait(60)
+        answers = question_answers.get(qid)
+        emit_part(tool_part(sid, mid, "question", call_id, {"questions": questions},
+                            "User has answered your questions." if answers else "The user dismissed this question",
+                            "Asked 1 question", {"answers": answers or []}, status="completed" if answers else "error"))
+        answer = ("You chose: %s." % answers[0][0]) if answers else "No answer."
+    elif "download cat photos" in text_l:
+        if sees_images and continued:
+            emit_part(tool_part(sid, mid, "read", next_id("call"), {"filePath": os.path.join(CWD, "cat1.jpg")},
+                                "Image read successfully", "cat1.jpg", {"preview": "", "truncated": False}))
+            answer = "Checked: cat1.jpg is a real photo of a cat."
+        else:
+            emit_part(tool_part(sid, mid, "bash", next_id("call"),
+                                {"command": "curl -fsSL -o cat1.jpg https://example.org/cat1.jpg"}, "(no output)",
+                                "curl", {"output": "(no output)", "exit": 0, "truncated": False}))
+            answer = "Downloaded 1 cat photo."
     elif "keep announcing" in text_l:
         answer = "Let me run it:"
     elif "create todo.py" in text_l and continued:
@@ -242,6 +299,8 @@ def run_turn(sid, agent, text):
         answer = "Wrote todo.py."
     elif "create todo.py" in text_l or "create stubborn.py" in text_l:
         answer = "Here is the file.\n\n```python\nprint(\"todo\")\n```"
+    elif "show the tree" in text_l:
+        answer = "Sorted all 15 photos into ~/Desktop/Panthera:\n\n```\nPanthera/\n  lion/\n  tiger/\n```"
     elif "show me a loop" in text_l:
         answer = "```python\nfor i in range(3):\n    print(i)\n```"
     elif "install the tool" in text_l:
@@ -449,8 +508,10 @@ class H(BaseHTTPRequestHandler):
             sessions.setdefault(sid, {"messages": []})
             text = "".join(p.get("text", "") for p in body.get("parts", []))
             log({"session": sid, "agent": body.get("agent"), "text": text, "model": body.get("model"),
-                 "system_head": system_prompt(body.get("agent")).split("\n", 1)[0]})
-            threading.Thread(target=run_turn, args=(sid, body.get("agent"), text), daemon=True).start()
+                 "system_head": system_prompt(body.get("agent")).split("\n", 1)[0],
+                 "files": [{"mime": p.get("mime"), "url": (p.get("url") or "")[:40]}
+                           for p in body.get("parts", []) if p.get("type") == "file"]})
+            threading.Thread(target=run_turn, args=(sid, body.get("agent"), text, body.get("model")), daemon=True).start()
             self.send_response(204)
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -463,10 +524,20 @@ class H(BaseHTTPRequestHandler):
             if ev:
                 ev.set()
             return self._json(200, True)
+        if path.startswith("/question/") and (path.endswith("/reply") or path.endswith("/reject")):
+            qid = path.split("/")[2]
+            question_answers[qid] = body.get("answers") if path.endswith("/reply") else None
+            log({"question": qid, "answers": question_answers[qid]})
+            ev = question_events.get(qid)
+            if ev:
+                ev.set()
+            return self._json(200, True)
         if path.startswith("/session/") and path.endswith("/abort"):
             sid = path.split("/")[2]
             log({"aborted": sid, "time": time.time()})
             stalled_sessions.discard(sid)
+            log({"abort": sid})
+            aborts.setdefault(sid, threading.Event()).set()
             broadcast({"type": "session.error", "properties": {"sessionID": sid, "error": {"name": "MessageAbortedError", "data": {"message": "Aborted"}}}})
             broadcast({"type": "session.idle", "properties": {"sessionID": sid}})
             return self._json(200, True)
