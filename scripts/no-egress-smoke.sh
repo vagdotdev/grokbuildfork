@@ -7,8 +7,9 @@
 # HTTP(S)_PROXY pointed at a logging proxy that records every hostname and refuses to forward, under
 # `strace -f -e trace=network` so DNS query payloads and connect() targets are captured too.
 # Scenarios: `--version`, `login` (text picker), headless prompt without a connection (must fail
-# closed), the TUI first run with `/auth` (hermetic: loopback only), and `/model` on that first run
-# (the one user action that fetches: exactly the keyless catalog hosts, nothing else). Fails if any
+# closed), the TUI first run with `/auth` (hermetic: loopback only), and `/model` on a first run
+# that has one API key configured (the one user action that fetches: exactly that provider's host,
+# nothing else — a fresh home with no key lists nothing hosted and fetches nothing). Fails if any
 # recorded hostname matches *.x.ai, *.grok.com, api.mixpanel.com or storage.googleapis.com.
 set -euo pipefail
 BIN="${1:?path to workshop binary}"
@@ -98,13 +99,15 @@ flat=''.join(txt.split())
 ok=True
 # The picker is an overlay; ratatui repaints only changed cells, so a needle must be text a view
 # draws whole ("type to filter" is the Models view's search line, "Tab: Models" the /auth title).
-for needle in ["OpenCode · Big Pickle","/model to switch","/auth to connect subscriptions",
-               "type to filter","Recommended","Kilo","Tab: Models","Claude","Codex","Cursor","[Sign in]","xAI — Sign in","optional",
+# The composer label is the model name only; the Models view groups rows under "OpenCode" and
+# never lists Kilo Gateway; no user-visible text names the engine.
+for needle in ["Big Pickle","/model to switch","/auth to connect subscriptions",
+               "type to filter","OpenCode","Tab: Models","Claude","Codex","Cursor","[Sign in]","xAI — Sign in","optional",
                "cached list from 2026-09-21"]:
     if ''.join(needle.split()) not in flat:
         print("VIOLATION: TUI first run did not show %r" % needle); ok=False
 for bad in ["Login with grok.com","auth.x.ai/.well-known","Login with Grok","accounts.x.ai",
-            "connect a model","Connection classes","refreshing lists"]:
+            "connect a model","Connection classes","refreshing lists","OpenCode · Big Pickle","Kilo","engine"]:
     if ''.join(bad.split()) in flat:
         print("VIOLATION: TUI showed %r" % bad); ok=False
 if not any("Workshop" in t for t in titles) or any("grok" in t.lower() for t in titles):
@@ -118,31 +121,34 @@ if [ -d "$HOME_DIR/.workshop/tools" ]; then
   echo "VIOLATION: TUI first run installed opencode before the first message" >&2; fail=1
 fi
 
-# TUI `/model` on a fresh first run: the one action that fetches. Nothing is asked for during the
-# first 7 s on the composer; `/model` then asks exactly the keyless catalog hosts (Kilo, OpenRouter,
-# NVIDIA — the proxy refuses, so the overlay keeps the dated seeds and says the refresh failed) and
-# never an xAI host; opencode is neither installed nor started.
+# TUI `/model` on a fresh first run with one API key configured (NVIDIA's environment variable):
+# the one action that fetches. Nothing is asked for during the first 7 s on the composer; `/model`
+# then lists that provider and asks exactly its host (the proxy refuses, so the overlay keeps the
+# dated seed and says the refresh failed) — never Kilo, OpenRouter or an xAI host; opencode is
+# neither installed nor started. Typing `nemotron` filters to that provider's rows so the selected
+# row's detail line shows the list's date.
 MODEL_HOME="$OUT/home-model"; rm -rf "$MODEL_HOME"; mkdir -p "$MODEL_HOME"
-MODEL_ENV=(env "HOME=$MODEL_HOME" "WORKSHOP_HOME=$MODEL_HOME/.workshop" TERM=xterm-256color NO_COLOR=1)
+MODEL_ENV=(env "HOME=$MODEL_HOME" "WORKSHOP_HOME=$MODEL_HOME/.workshop" TERM=xterm-256color NO_COLOR=1 NVIDIA_API_KEY=smoke-test-key-never-sent)
 model_started=$(date +%s)
 observed tui-model -- "${MODEL_ENV[@]}" python3 "$HERE/no-egress/pty_drive.py" --bin "$BIN" --out "$OUT/tui-model/raw.log" --cwd "$CWD_DIR" \
-  --script "wait:7000,text:/model,wait:500,key:Enter,wait:6000,key:Down,wait:1000,key:Esc,wait:800,key:C-c,wait:800,key:C-c,wait:500" || fail=1
+  --script "wait:7000,text:/model,wait:500,key:Enter,wait:6000,text:nemotron,wait:1500,key:Esc,wait:800,key:Esc,wait:800,key:C-c,wait:800,key:C-c,wait:500" || fail=1
 python3 - "$OUT/tui-model/raw.log" <<'PY' || fail=1
 import re,sys
 raw=open(sys.argv[1],'rb').read().decode('utf-8','replace')
 txt=re.sub(r'\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b[=>]','',raw)
 flat=''.join(txt.split())
 ok=True
-for needle in ["OpenCode · Big Pickle","Tab: Subscriptions","Kilo Gateway","cached list from 2026-09-21","refresh failed"]:
+for needle in ["Big Pickle","Tab: Subscriptions","OpenCode","NVIDIA","cached list from 2026-09-21","refresh failed"]:
     if ''.join(needle.split()) not in flat:
         print("VIOLATION: TUI /model did not show %r" % needle); ok=False
-for bad in ["Login with grok.com","auth.x.ai/.well-known","Login with Grok","accounts.x.ai","connect a model"]:
+for bad in ["Login with grok.com","auth.x.ai/.well-known","Login with Grok","accounts.x.ai","connect a model",
+            "OpenCode · Big Pickle","Kilo","engine"]:
     if ''.join(bad.split()) in flat:
         print("VIOLATION: TUI showed %r" % bad); ok=False
 print("tui /model screen check:", "ok" if ok else "FAILED")
 sys.exit(0 if ok else 1)
 PY
-proxy_hosts tui-model api.kilo.ai openrouter.ai integrate.api.nvidia.com || fail=1
+proxy_hosts tui-model integrate.api.nvidia.com || fail=1
 # Every fetch happened after `/model` was typed (7 s into the run), none on the bare composer.
 python3 - "$OUT/tui-model/proxy.log" "$model_started" <<'PY' || fail=1
 import re,sys,time

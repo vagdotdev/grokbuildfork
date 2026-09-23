@@ -2,10 +2,12 @@
 //!
 //! * `catalogs_are_fetched_only_after_the_user_acts` — the zero-egress gate. Every request that
 //!   honours `HTTP(S)_PROXY` lands on a logging proxy inside the test that refuses to forward.
-//!   A first run, `/auth` (and its Models view via Tab) and `workshop login` ask the proxy for
-//!   nothing; `/model` asks for exactly the keyless catalog hosts (Kilo, OpenRouter, NVIDIA),
-//!   never an xAI host; and with the proxy refusing, every list is shown as the dated seed with
-//!   `refresh failed`. A returning launch (a connection is active) refreshes in the background.
+//!   A first run, `/auth` (and its Models view via Tab), `workshop login` and — on a fresh home,
+//!   where no API-key provider is configured and so none is listed — `/model` ask the proxy for
+//!   nothing. Once a key is configured (`NVIDIA_API_KEY`), that provider is listed and `/model`
+//!   (and a returning launch, in the background) asks for exactly its host, never an xAI host;
+//!   with the proxy refusing, its list is the dated seed with `refresh failed`. Kilo Gateway is
+//!   never listed and never fetched.
 //! * `model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up` — a fake `opencode`
 //!   whose `serve` is a loopback HTTP/SSE stand-in (the adapter crate's captured fixtures). The
 //!   first message starts it; `/model` then lists every free model the engine reports (8 in the
@@ -24,7 +26,8 @@ use std::time::{Duration, Instant};
 
 use xai_grok_pager_pty_harness::PtyHarness;
 
-const FIRST_RUN_LABEL: &str = "OpenCode \u{b7} Big Pickle";
+/// The composer label on a first run: the model name only, no provider.
+const FIRST_RUN_LABEL: &str = "Big Pickle";
 const SEED_NOTE: &str = "cached list from 2026-09-21";
 
 fn evidence_dir() -> PathBuf {
@@ -91,12 +94,17 @@ fn move_selection_to(h: &mut PtyHarness, needle: &str) {
     );
 }
 
-/// Rows of the open Models overlay whose provider column is `provider` (`OpenCode`, `Kilo Gateway`):
-/// `name  provider  badge[ · active]` inside the box border.
+/// Rows of the open Models overlay whose provider column is `provider` (`OpenCode`, `Claude`):
+/// `name  provider  badge[ · active]` between the box borders (the overlay is narrower than the
+/// screen, so the transcript shows on either side of it).
 fn overlay_rows_for(h: &PtyHarness, provider: &str) -> Vec<String> {
     h.screen_contents()
         .lines()
-        .map(|l| l.trim().trim_end_matches('\u{2502}').trim().to_owned())
+        .filter_map(|l| {
+            let start = l.find('\u{2502}')?;
+            let end = l.rfind('\u{2502}')?;
+            (end > start).then(|| l[start + '\u{2502}'.len_utf8()..end].trim().to_owned())
+        })
         .filter(|l| {
             l.contains(provider)
                 && ["free", "free · active", "free · key", "key", "key needed"]
@@ -107,10 +115,14 @@ fn overlay_rows_for(h: &PtyHarness, provider: &str) -> Vec<String> {
 }
 
 fn quit(mut h: PtyHarness) {
+    // Close any open overlay first, then the two-step Ctrl+C quit; otherwise the first Ctrl+C only
+    // closes the overlay and the process lingers on the home the next launch reuses.
+    h.inject_keys(b"\x1b").unwrap();
+    h.update(Duration::from_millis(300));
     h.inject_keys(b"\x03").unwrap();
     h.update(Duration::from_millis(400));
     h.inject_keys(b"\x03").unwrap();
-    let _ = h.wait_exit_code(Duration::from_secs(5));
+    let _ = h.wait_exit_code(Duration::from_secs(10));
     let _ = h.quit();
 }
 
@@ -270,7 +282,7 @@ fn spawn(bin: &Path, home: &Path, extra_env: &[(&str, String)], extra_path: Opti
     Run { h, _cwd: cwd }
 }
 
-/// Zero egress before the user acts; `/model` reaches only the catalog hosts.
+/// Zero egress before the user acts; `/model` reaches only the hosts of the lists it shows.
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (logging proxy, no network); run with --include-ignored"]
 fn catalogs_are_fetched_only_after_the_user_acts() {
@@ -318,7 +330,7 @@ fn catalogs_are_fetched_only_after_the_user_acts() {
     wait_for(&mut run.h, "Tab: Models", 10);
     run.h.inject_keys(b"\t").unwrap();
     wait_for(&mut run.h, "Tab: Subscriptions", 5);
-    wait_for(&mut run.h, "Kilo", 10);
+    wait_for(&mut run.h, "OpenCode", 10);
     run.h.update(Duration::from_millis(2000));
     snapshot(&run.h, &dir, "02-auth-then-tab-models-no-fetch");
     assert!(
@@ -329,20 +341,87 @@ fn catalogs_are_fetched_only_after_the_user_acts() {
     run.h.inject_keys(b"\x1b").unwrap();
     wait_gone(&mut run.h, "Tab: Subscriptions", 5);
 
-    // 3. `/model`: the cached rows first, then — the user asked for the lists — a refresh that
-    //    reaches exactly the keyless catalog hosts, no xAI host.
+    // 3. `/model` on a fresh home lists OpenCode's models (the dated seed row until the first
+    //    message) and the installed subscription CLIs — no hosted API-key provider has a key, so
+    //    there is no list to fetch and the proxy is never asked. Kilo Gateway is never a row.
     slash(&mut run.h, "/model");
     wait_for(&mut run.h, "Tab: Subscriptions", 10);
     wait_gone(&mut run.h, "loading\u{2026}", 20);
-    let hosts = proxy.wait_for_hosts(3, 20);
+    wait_gone(&mut run.h, "refreshing lists", 15);
+    run.h.update(Duration::from_millis(2000));
+    let screen = run.h.screen_contents();
+    assert!(
+        proxy.remote_hosts().is_empty(),
+        "/model on a fresh home has no hosted list to fetch, asked for {:?}",
+        proxy.remote_hosts()
+    );
+    assert!(
+        selected_line(&run.h).is_some_and(|l| l.contains("Big Pickle"))
+            && screen.contains(SEED_NOTE)
+            && screen.contains("live list arrives after your first message"),
+        "the OpenCode seed row is highlighted and dated:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Kilo")
+            && !screen.contains("refresh failed")
+            && !screen.contains("engine"),
+        "nothing hosted is listed or fetched on a fresh home, Kilo never, no plumbing:\n{screen}"
+    );
+    snapshot(&run.h, &dir, "03-model-fresh-home-no-fetch");
+    assert!(
+        !workshop_home.join("tools").exists(),
+        "/model never installs or starts opencode"
+    );
+    quit(run.h);
+
+    // 4. A returning launch (a connection is active) refreshes the lists it shows in the
+    //    background — on this home no API key is configured, so still nothing.
+    proxy.targets.lock().unwrap().clear();
+    let mut run = spawn(&bin, home.path(), &proxy.env(), None);
+    wait_for(&mut run.h, FIRST_RUN_LABEL, 30);
+    run.h.update(Duration::from_millis(3000));
+    assert!(
+        proxy.remote_hosts().is_empty(),
+        "a returning launch with no configured API key has nothing to fetch, asked for {:?}",
+        proxy.remote_hosts()
+    );
+    quit(run.h);
+
+    // 5. With an API key configured (NVIDIA's environment variable here), that provider is listed
+    //    on the Models view and its list is refreshed — exactly its host, nothing else, never an
+    //    xAI host: in the background on this returning launch and again by `/model`. The proxy
+    //    refuses, so its rows stay the dated seed and say the refresh failed.
+    proxy.targets.lock().unwrap().clear();
+    let mut env = proxy.env();
+    env.push(("NVIDIA_API_KEY", "test-key-never-sent".to_owned()));
+    let mut run = spawn(&bin, home.path(), &env, None);
+    wait_for(&mut run.h, FIRST_RUN_LABEL, 30);
+    let hosts = proxy.wait_for_hosts(1, 20);
     assert_eq!(
         hosts,
-        BTreeSet::from([
-            "api.kilo.ai".to_owned(),
-            "openrouter.ai".to_owned(),
-            "integrate.api.nvidia.com".to_owned(),
-        ]),
-        "/model fetches the keyless catalog hosts and nothing else"
+        BTreeSet::from(["integrate.api.nvidia.com".to_owned()]),
+        "a returning launch refreshes the configured provider's list, and only that"
+    );
+    slash(&mut run.h, "/model");
+    wait_for(&mut run.h, "Tab: Subscriptions", 10);
+    wait_gone(&mut run.h, "loading\u{2026}", 20);
+    wait_gone(&mut run.h, "refreshing lists", 15);
+    wait_for(&mut run.h, "NVIDIA", 10);
+    move_selection_to(&mut run.h, "nemotron-3-super");
+    wait_for(&mut run.h, "refresh failed", 10);
+    let screen = run.h.screen_contents();
+    assert!(
+        screen.contains(&format!("{SEED_NOTE} \u{b7} refresh failed")),
+        "seed rows are marked as such after a failed fetch:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Kilo") && !screen.contains("OpenRouter"),
+        "only the configured provider joins the Models view:\n{screen}"
+    );
+    assert_eq!(
+        proxy.remote_hosts(),
+        BTreeSet::from(["integrate.api.nvidia.com".to_owned()]),
+        "/model fetches the listed provider's host and nothing else"
     );
     let all = proxy.targets.lock().unwrap().clone();
     assert!(
@@ -350,38 +429,10 @@ fn catalogs_are_fetched_only_after_the_user_acts() {
             .any(|t| t.contains("x.ai") || t.contains("grok.com")),
         "no xAI host may ever be contacted: {all:?}"
     );
-    // The proxy refused, so the rows are the dated seeds and say the refresh failed. The engine
-    // seed row (highlighted: it is the active connection) is dated too.
-    wait_gone(&mut run.h, "refreshing lists", 15);
-    let screen = run.h.screen_contents();
-    assert!(
-        selected_line(&run.h).is_some_and(|l| l.contains("Big Pickle"))
-            && screen.contains(SEED_NOTE)
-            && screen.contains("live list arrives when the engine starts"),
-        "the engine seed row is dated:\n{screen}"
-    );
-    move_selection_to(&mut run.h, "Auto Free");
-    wait_for(&mut run.h, "refresh failed", 10);
-    let screen = run.h.screen_contents();
-    assert!(
-        screen.contains(&format!("{SEED_NOTE} \u{b7} refresh failed")),
-        "seed rows are marked as such after a failed fetch:\n{screen}"
-    );
-    snapshot(&run.h, &dir, "03-model-after-refused-refresh");
+    snapshot(&run.h, &dir, "04-model-with-key-after-refused-refresh");
     assert!(
         !workshop_home.join("tools").exists(),
         "/model never installs or starts opencode"
-    );
-    quit(run.h);
-
-    // 4. A returning launch has an active connection: the lists refresh in the background.
-    proxy.targets.lock().unwrap().clear();
-    let mut run = spawn(&bin, home.path(), &proxy.env(), None);
-    wait_for(&mut run.h, FIRST_RUN_LABEL, 30);
-    let hosts = proxy.wait_for_hosts(3, 20);
-    assert!(
-        hosts.contains("api.kilo.ai"),
-        "a returning launch refreshes the catalogs in the background, asked for {hosts:?}"
     );
     quit(run.h);
     eprintln!("evidence: {}", dir.display());
@@ -553,7 +604,7 @@ fn model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up() {
     // Before: the engine has never run, so `/model` shows the one pinned engine row, dated.
     slash(&mut run.h, "/model");
     wait_for(&mut run.h, "Tab: Subscriptions", 10);
-    wait_for(&mut run.h, "Kilo", 15);
+    wait_for(&mut run.h, "OpenCode", 15);
     wait_gone(&mut run.h, "loading\u{2026}", 20);
     wait_gone(&mut run.h, "refreshing lists", 15);
     let before = overlay_rows_for(&run.h, "OpenCode");

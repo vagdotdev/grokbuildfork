@@ -294,7 +294,7 @@ fn docs_guide_names_workshop_not_grok() {
     }
     for right in [
         "curl -fsSL https://raw.githubusercontent.com/vagdotdev/grokbuildfork/release-channel/install.sh | sh",
-        "OpenCode · Big Pickle",
+        "Big Pickle",
         "`/model`",
         "`/auth`",
     ] {
@@ -334,6 +334,120 @@ fn welcome_copy_is_one_name_and_an_invitation_to_type() {
             !mentions_grok(line) || line.contains("grokbuildfork") || line.contains("`~/.grok`"),
             "release notes mention the other product: {line:?}"
         );
+    }
+}
+
+/// Nothing a first-time user reads names what runs underneath. No "engine" (the OpenCode engine,
+/// its start, its install) in the slash menu, settings, tutorial, guide, release notes, welcome
+/// copy, the waiting and failure lines, the composer label or the `/model` rows — and Kilo
+/// Gateway, the silent stand-in, is never a row and never a word. The `voice-engine` helper
+/// binary's own file name is the one allowed spelling.
+#[test]
+fn user_visible_text_never_names_the_engine_or_the_fallback() {
+    use workshop_auth::{EngineModel, models_rows, plain_model_name};
+    use xai_grok_pager::app::workshop::{
+        THINKING, WorkshopConnection, failure_line, install_progress_line,
+    };
+
+    fn plumbing(line: &str) -> Option<&'static str> {
+        let lower = line.to_ascii_lowercase();
+        if lower.replace("voice-engine", "").contains("engine") {
+            return Some("engine");
+        }
+        if lower.contains("kilo") {
+            return Some("Kilo");
+        }
+        None
+    }
+    fn assert_clean(what: &str, text: &str) {
+        for line in text.lines() {
+            if let Some(word) = plumbing(line) {
+                panic!("{what} names the plumbing ({word}): {line:?}");
+            }
+        }
+    }
+
+    for cmd in builtin_commands() {
+        for text in [cmd.name(), cmd.description(), cmd.usage()] {
+            assert_clean(&format!("/{}", cmd.name()), text);
+        }
+    }
+    for def in default_settings() {
+        assert_clean(&format!("setting {:?} label", def.key), def.label);
+        assert_clean(
+            &format!("setting {:?} description", def.key),
+            def.description,
+        );
+    }
+    for topic in xai_grok_pager::tutorial_docs::TUTORIAL_TOPICS {
+        for text in [topic.title, topic.blurb, topic.content] {
+            assert_clean(&format!("tutorial {:?}", topic.title), text);
+        }
+    }
+    for doc in xai_grok_pager::docs::USER_GUIDE {
+        for text in [doc.title, doc.description, doc.content] {
+            assert_clean(&format!("guide {:?}", doc.title), text);
+        }
+    }
+    assert_clean("release notes", workshop_brand::RELEASE_NOTES);
+    assert_clean("welcome subtitle", &workshop_brand::hero_subtitle());
+    assert_clean("prompt placeholder", workshop_brand::PROMPT_PLACEHOLDER);
+
+    // The waiting line is one neutral word whatever happens behind it; the failure line names the
+    // model and the two ways out, nothing else.
+    assert_eq!(THINKING, "Thinking\u{2026}");
+    assert!(install_progress_line(2_500_000).starts_with(THINKING));
+    assert_clean("download progress line", &install_progress_line(2_500_000));
+    assert_eq!(
+        failure_line("Big Pickle"),
+        "Couldn't reach Big Pickle \u{2014} Enter to retry \u{b7} /model to switch"
+    );
+    for text in [
+        THINKING.to_owned(),
+        install_progress_line(0),
+        failure_line("Big Pickle"),
+    ] {
+        assert_clean("turn status line", &text);
+        assert!(
+            !text.to_ascii_lowercase().contains("fallback")
+                && !text.contains("OpenCode")
+                && !text.contains("opencode"),
+            "turn status line names the plumbing: {text:?}"
+        );
+    }
+
+    // The composer names the model only: no provider, no runtime, no vendor prefix, no `(free)`.
+    let engine = WorkshopConnection::Engine {
+        model: EngineModel::big_pickle_seed(),
+    };
+    assert_eq!(engine.composer_label().as_deref(), Some("Big Pickle"));
+    assert_eq!(WorkshopConnection::Shell.composer_label(), None);
+    assert_eq!(
+        plain_model_name("NVIDIA: Nemotron 3 Super (free)"),
+        "Nemotron 3 Super"
+    );
+
+    // `/model` rows: whether nothing or everything is connected, no row is Kilo's and no title,
+    // group or badge says engine.
+    let catalog = workshop_providers::Catalog::builtin();
+    for (connected, label) in [(false, "nothing connected"), (true, "everything connected")] {
+        let rows = models_rows(&catalog, |_| connected, &[], &[]);
+        assert!(
+            rows.iter()
+                .any(|r| r.title() == "Big Pickle" && r.provider() == "OpenCode"),
+            "{label}: the OpenCode default heads the Models view"
+        );
+        for row in &rows {
+            for text in [row.title(), row.provider().to_owned(), row.badge.clone()] {
+                assert_clean(&format!("/model row ({label})"), &text);
+            }
+            assert_ne!(
+                row.provider_id(),
+                Some("kilo"),
+                "{label}: Kilo Gateway is never a row: {:?}",
+                row.title()
+            );
+        }
     }
 }
 

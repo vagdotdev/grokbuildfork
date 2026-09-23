@@ -185,27 +185,34 @@ jobs:
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test live_tui_turns rails_ -- --nocapture --include-ignored
-      - name: PTY gates — engine failures are one visible line, config isolation, /models view
+      - name: PTY gates — engine failures are one plain line, silent fallback, config isolation, /models view
         # Fault-injected `opencode` (crash, never binds, silent model, offline installer, Ctrl+C
-        # during bring-up) must each end in one line with the cause and `/model`; a populated
-        # ~/.grok + GROK_HOME + ~/.claude/settings.json is ignored; /models lists no Grok row.
+        # during bring-up) with the stand-in refusing too must each end in one plain line
+        # (`Couldn't reach Big Pickle — Enter to retry · /model to switch`) — the cause goes to the
+        # log, never the screen, and no "engine" / "Kilo" / "fallback" is ever shown. With the
+        # stand-in answering (loopback mock), a forced OpenCode start failure still yields the
+        # reply and the composer names the model that answered. A populated ~/.grok + GROK_HOME +
+        # ~/.claude/settings.json is ignored; /models lists no Grok row and no Kilo row.
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: |
           cargo test -p workshop-gates --test config_isolation --test models_view -- --nocapture --include-ignored
           cargo test -p workshop-gates --test engine_failures -- --nocapture --include-ignored --test-threads=2
+          cargo test -p workshop-gates --test pty_fallback -- --nocapture --include-ignored
       - name: PTY gates — surface polish (welcome copy, picker filter + key containment, waiting line, title restore)
         # One product name and an invitation to type on the welcome card; `/model` is an overlay
-        # whose typed keys filter the list and never reach the composer; the waiting line animates,
-        # counts seconds and names Ctrl+C; the terminal title follows the topic and is restored.
+        # whose typed keys filter the list and never reach the composer; the waiting line is
+        # `Thinking…`, animates, counts seconds and names Ctrl+C; the terminal title follows the
+        # topic and is restored.
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test pty_surface_polish -- --nocapture --include-ignored --test-threads=2
       - name: PTY smoke — live model lists (hermetic)
-        # Zero egress before the user acts (logging proxy: first run, /auth, `workshop login` ask
-        # for nothing; /model asks exactly the keyless catalog hosts, never xAI), and /model lists
-        # the engine's live free models — not the pinned seed — once a (fake, loopback) `opencode
-        # serve` is up, dated `fetched just now`.
+        # Zero egress before the user acts (logging proxy: first run, /auth, `workshop login` and
+        # /model on a fresh home ask for nothing; once an API key is configured /model asks exactly
+        # that provider's host, never Kilo, never xAI), and /model lists OpenCode's live free
+        # models — not the pinned seed — once a (fake, loopback) `opencode serve` is up, dated
+        # `fetched just now`.
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test pty_live_catalogs -- --nocapture --include-ignored

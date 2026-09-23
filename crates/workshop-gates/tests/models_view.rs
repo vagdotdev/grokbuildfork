@@ -12,7 +12,11 @@ use pty_common::*;
 fn assert_workshop_rows_no_grok(screen: &str, step: &str) {
     assert!(
         screen.contains("Big Pickle"),
-        "{step}: the OpenCode engine row is listed\n{screen}"
+        "{step}: OpenCode's default model is listed\n{screen}"
+    );
+    assert!(
+        !screen.contains("Kilo"),
+        "{step}: Kilo Gateway is never listed\n{screen}"
     );
     for grok in [
         "Grok 4.6",

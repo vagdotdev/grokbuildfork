@@ -1,6 +1,12 @@
-//! The macOS "nothing works" hang, reproduced on Linux with fault injection and pinned: whatever
-//! breaks in the OpenCode engine path, the user sees one line with the cause, `/model` as the way
-//! out and the engine log path — within seconds, never a silent turn lock.
+//! The macOS "nothing works" hang, reproduced on Linux with fault injection and pinned — under the
+//! owner's bar for a first-time user: whatever breaks behind the free model, the screen shows one
+//! calm `Thinking…` line while Workshop works, then either the answer (through the silent
+//! fallback) or one plain failure line — `Couldn't reach Big Pickle — Enter to retry · /model to
+//! switch` — within seconds. No runtime or fallback words ever. The technical cause goes to
+//! `$WORKSHOP_HOME/engine/state.json` and the log for `workshop doctor`.
+//!
+//! The fallback provider here is a loopback endpoint that refuses every request (HTTP 400), so
+//! the double failure is hermetic and fast.
 //!
 //! Opt-in: set `WORKSHOP_BIN` to the built binary and run with `--include-ignored`.
 
@@ -10,15 +16,15 @@ use std::time::{Duration, Instant};
 
 use pty_common::*;
 
-/// Wait until the scrollback carries the failure line (`OpenCode unavailable (…)` when the
-/// engine never came up — followed by the Kilo fallback — or `OpenCode engine: …` when it was up
-/// but the turn failed); return it and how long it took.
+const FAILURE_LINE: &str = "Couldn't reach Big Pickle";
+
+/// Wait until the scrollback carries the plain failure line; return it and how long it took.
 fn wait_for_failure_line(j: &mut Journey, secs: u64) -> (String, Duration) {
     let start = Instant::now();
     let deadline = Instant::now() + Duration::from_secs(secs);
     loop {
         let screen = j.h.screen_contents();
-        if screen.contains("OpenCode unavailable") || screen.contains("OpenCode engine:") {
+        if screen.contains(FAILURE_LINE) {
             break;
         }
         assert!(
@@ -31,7 +37,7 @@ fn wait_for_failure_line(j: &mut Journey, secs: u64) -> (String, Duration) {
     let screen = j.h.screen_contents();
     let line = screen
         .lines()
-        .skip_while(|l| !(l.contains("OpenCode unavailable") || l.contains("OpenCode engine:")))
+        .skip_while(|l| !l.contains(FAILURE_LINE))
         .take_while(|l| !l.trim().is_empty())
         .map(str::trim)
         .collect::<Vec<_>>()
@@ -39,78 +45,116 @@ fn wait_for_failure_line(j: &mut Journey, secs: u64) -> (String, Duration) {
     (line, start.elapsed())
 }
 
-/// A bring-up failure: the cause, the engine log pointer, and the Kilo fallback as the way out.
-fn assert_fallback_way_out(line: &str) {
+/// The plain line and nothing else: the two ways out, no cause, no plumbing.
+fn assert_plain_failure(j: &Journey, line: &str) {
     assert!(
-        line.contains("OpenCode unavailable"),
-        "a bring-up failure falls back: {line}"
+        line.contains("Enter to retry") && line.contains("/model to switch"),
+        "the failure line names the ways out: {line}"
     );
     assert!(
-        line.contains("opencode-engine.log"),
-        "failure line names the engine log: {line}"
+        !line.contains("log:") && !line.contains(".log"),
+        "no log paths on screen: {line}"
     );
+    let screen = j.h.screen_contents();
+    for wire in [
+        "Bad request",
+        "(400)",
+        "fault injected",
+        "invalid_request_error",
+        "HTTP ",
+    ] {
+        assert!(
+            !screen.contains(wire),
+            "the wire error stays in the log, not on screen ({wire:?}):\n{screen}"
+        );
+    }
+    assert_eq!(
+        screen.matches("Couldn't reach").count(),
+        1,
+        "exactly one failure line:\n{screen}"
+    );
+    // The composer names the user's own model again, not the stand-in that was tried.
     assert!(
-        line.contains("instead"),
-        "the Kilo fallback is announced on the same line: {line}"
+        screen
+            .lines()
+            .any(|l| l.contains('\u{256f}') && l.contains("Big Pickle"))
+            && !screen.contains("Nemotron"),
+        "the footer is back to the user's model after the fallback failed:\n{screen}"
     );
-    assert!(
-        !line.contains("already running"),
-        "no turn-lock message stands in for a real cause: {line}"
-    );
+    assert_no_plumbing(&j.h, "failure line");
 }
 
-#[test]
-#[ignore = "needs WORKSHOP_BIN (built workshop binary); run with --include-ignored"]
-fn serve_that_exits_at_once_is_reported_with_its_stderr_in_seconds() {
-    let Some(bin) = bin_from_env() else { return };
-    let fake = fake_opencode("crash");
-    let mut j = spawn("engine-crash", &bin, &[], Some(fake.path()));
-    connect_big_pickle(&mut j);
-    send_prompt(&mut j, "hello");
-    let (line, took) = wait_for_failure_line(&mut j, 20);
-    snapshot(&j.h, &j.dir, "failure-line");
-    assert!(
-        line.contains("exited during startup") && line.contains("libfake.dylib"),
-        "the process exit and its stderr are the reported cause: {line}"
-    );
-    assert_fallback_way_out(&line);
-    assert!(took < Duration::from_secs(10), "reported in {took:?}");
+/// The cause is recorded for `workshop doctor`, never shown.
+fn assert_cause_recorded(j: &Journey, needles: &[&str]) {
     let state = j.workshop_home().join("engine").join("state.json");
     let state = std::fs::read_to_string(&state).expect("engine state written for doctor");
-    assert!(state.contains("\"last_error\""), "{state}");
+    let log = std::fs::read_to_string(j.workshop_home().join("logs").join("opencode-engine.log"))
+        .expect("engine log exists");
+    for needle in needles {
+        assert!(
+            state.contains(needle) || log.contains(needle),
+            "cause {needle:?} recorded in state.json or the log:\n{state}\n{log}"
+        );
+        assert!(
+            !j.h.screen_contents().contains(needle),
+            "cause {needle:?} stays off the screen:\n{}",
+            j.h.screen_contents()
+        );
+    }
+}
+
+fn spawn_with_refusing_fallback(
+    journey: &str,
+    bin: &std::path::Path,
+    fake: &std::path::Path,
+) -> (Journey, KillOnDrop) {
+    let (api, url) = refusing_api();
+    let j = spawn(
+        journey,
+        bin,
+        &[(crate::pty_common::KILO_BASE_URL_ENV, url.as_str())],
+        Some(fake),
+    );
+    (j, api)
+}
+
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); run with --include-ignored"]
+fn serve_that_exits_at_once_ends_in_one_plain_line_within_seconds() {
+    let Some(bin) = bin_from_env() else { return };
+    let fake = fake_opencode("crash");
+    let (mut j, _api) = spawn_with_refusing_fallback("engine-crash", &bin, fake.path());
+    connect_big_pickle(&mut j);
+    send_prompt(&mut j, "hello");
+    expect_thinking_line(&mut j, FAILURE_LINE, 30);
+    let (line, took) = wait_for_failure_line(&mut j, 30);
+    snapshot(&j.h, &j.dir, "failure-line");
+    assert_plain_failure(&j, &line);
+    assert!(took < Duration::from_secs(20), "reported in {took:?}");
+    assert_cause_recorded(&j, &["exited during startup", "libfake.dylib"]);
     assert!(
-        j.workshop_home()
-            .join("logs")
-            .join("opencode-engine.log")
-            .is_file(),
-        "engine log exists"
+        !j.h.screen_contents().contains("Thinking"),
+        "the waiting line is gone once the turn ends:\n{}",
+        j.h.screen_contents()
     );
 }
 
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); run with --include-ignored"]
-fn serve_that_never_binds_hits_the_30s_ceiling_with_a_visible_status_line() {
+fn serve_that_never_binds_hits_the_30s_ceiling_behind_one_thinking_line() {
     let Some(bin) = bin_from_env() else { return };
     let fake = fake_opencode("nobind");
-    let mut j = spawn("engine-nobind", &bin, &[], Some(fake.path()));
+    let (mut j, _api) = spawn_with_refusing_fallback("engine-nobind", &bin, fake.path());
     connect_big_pickle(&mut j);
     send_prompt(&mut j, "hello");
-    // The status line shows at once, while the server "starts".
-    wait_for(&mut j.h, "Starting the OpenCode engine", 10);
+    // One calm line while the server "starts"; no phase names.
+    wait_for(&mut j.h, "Thinking", 10);
+    assert_no_plumbing(&j.h, "status line");
     snapshot(&j.h, &j.dir, "status-line");
     let (line, _) = wait_for_failure_line(&mut j, 60);
     snapshot(&j.h, &j.dir, "failure-line");
-    assert!(
-        line.contains("did not become ready within 30s"),
-        "the hard startup ceiling is the reported cause: {line}"
-    );
-    assert_fallback_way_out(&line);
-    assert!(
-        !j.h.screen_contents()
-            .contains("Starting the OpenCode engine"),
-        "the status line is removed once the turn ends:\n{}",
-        j.h.screen_contents()
-    );
+    assert_plain_failure(&j, &line);
+    assert_cause_recorded(&j, &["did not become ready within 30s"]);
 }
 
 #[test]
@@ -121,7 +165,7 @@ fn ctrl_c_cancels_while_the_engine_is_still_starting() {
     let mut j = spawn("engine-cancel", &bin, &[], Some(fake.path()));
     connect_big_pickle(&mut j);
     send_prompt(&mut j, "hello");
-    wait_for(&mut j.h, "Starting the OpenCode engine", 10);
+    wait_for(&mut j.h, "Thinking", 10);
     // Ctrl+C is a two-step gesture from the composer: arm, then cancel.
     j.h.inject_keys(b"\x03").unwrap();
     j.h.update(Duration::from_millis(300));
@@ -130,7 +174,7 @@ fn ctrl_c_cancels_while_the_engine_is_still_starting() {
     snapshot(&j.h, &j.dir, "cancelled");
     // The lock is released: a new message starts a new attempt instead of "already running".
     send_prompt(&mut j, "again");
-    wait_for(&mut j.h, "Starting the OpenCode engine", 10);
+    wait_for(&mut j.h, "Thinking", 10);
     assert!(
         !j.h.screen_contents()
             .contains("Still working on your last message")
@@ -139,7 +183,7 @@ fn ctrl_c_cancels_while_the_engine_is_still_starting() {
 
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); run with --include-ignored"]
-fn offline_installer_failure_names_the_curl_error() {
+fn offline_installer_failure_is_recorded_and_the_screen_stays_plain() {
     let Some(bin) = bin_from_env() else { return };
     // No `opencode` anywhere and a `curl` that cannot resolve the host: the vendor installer
     // must fail loudly (pipefail), not "succeed" with nothing installed.
@@ -158,17 +202,14 @@ fn offline_installer_failure_names_the_curl_error() {
         )
         .unwrap();
     }
-    let mut j = spawn("engine-installfail", &bin, &[], Some(dir.path()));
+    let (mut j, _api) = spawn_with_refusing_fallback("engine-installfail", &bin, dir.path());
     connect_big_pickle(&mut j);
     send_prompt(&mut j, "hello");
-    let (line, took) = wait_for_failure_line(&mut j, 30);
+    let (line, took) = wait_for_failure_line(&mut j, 40);
     snapshot(&j.h, &j.dir, "failure-line");
-    assert!(
-        line.contains("install failed") && line.contains("Could not resolve host"),
-        "the installer's own error is the reported cause: {line}"
-    );
-    assert_fallback_way_out(&line);
-    assert!(took < Duration::from_secs(15), "reported in {took:?}");
+    assert_plain_failure(&j, &line);
+    assert!(took < Duration::from_secs(25), "reported in {took:?}");
+    assert_cause_recorded(&j, &["install failed", "Could not resolve host"]);
 }
 
 #[test]
@@ -184,25 +225,16 @@ fn healthy_serve_with_a_silent_model_hits_the_90s_first_event_ceiling() {
         return;
     }
     let fake = fake_opencode("silent");
-    let mut j = spawn("engine-silent", &bin, &[], Some(fake.path()));
+    let (mut j, _api) = spawn_with_refusing_fallback("engine-silent", &bin, fake.path());
     connect_big_pickle(&mut j);
     send_prompt(&mut j, "hello");
-    wait_for(&mut j.h, "Waiting for Big Pickle", 40);
+    wait_for(&mut j.h, "Thinking", 40);
+    assert_no_plumbing(&j.h, "waiting line");
     snapshot(&j.h, &j.dir, "waiting-line");
+    // The model was up and silent for the whole ceiling: it cannot answer, so the fallback is
+    // tried (and refused here) — then the plain line, still without a word about either.
     let (line, _) = wait_for_failure_line(&mut j, 120);
     snapshot(&j.h, &j.dir, "failure-line");
-    assert!(
-        line.contains("no answer from Big Pickle after 90 s"),
-        "the first-event ceiling is the reported cause: {line}"
-    );
-    // The engine is up, so there is nothing to fall back from: `/model` is the way out, and the
-    // failed prompt can be retried with Enter.
-    assert!(
-        line.contains("/model") && line.contains("opencode-engine.log"),
-        "{line}"
-    );
-    assert!(
-        line.contains("Enter retries") && line.contains("/doctor"),
-        "the failure line names the ways out: {line}"
-    );
+    assert_plain_failure(&j, &line);
+    assert_cause_recorded(&j, &["no answer from Big Pickle after 90 s"]);
 }

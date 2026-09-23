@@ -13359,6 +13359,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "tempfile",
+ "tokio",
  "walkdir",
  "workshop-adapters",
  "workshop-auth",

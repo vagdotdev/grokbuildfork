@@ -88,56 +88,56 @@ fn model_picker_filters_as_you_type_and_swallows_stray_keys() {
 
     send_prompt(&mut j, "/model");
     wait_for(&mut j.h, "Tab: Subscriptions", 15);
-    wait_for(&mut j.h, "Kilo", 15);
+    wait_for(&mut j.h, "OpenCode", 15);
     j.h.update(Duration::from_millis(500));
     let screen = j.h.screen_contents();
     snapshot(&j.h, &j.dir, "02-model-overlay");
     assert!(
-        screen.contains("Recommended") && screen.contains("All models"),
-        "the list is grouped:\n{screen}"
+        screen.contains("OpenCode") && screen.contains("Big Pickle"),
+        "OpenCode's models lead the list under a quiet group label:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Kilo") && !screen.contains("engine"),
+        "Kilo Gateway is never listed and nothing names the engine:\n{screen}"
     );
     assert!(
         screen.contains("type to filter"),
         "the search line invites typing:\n{screen}"
     );
     assert!(
-        screen.contains("Ctrl+A show"),
-        "non-chat models are hidden behind show-all:\n{screen}"
-    );
-    assert!(
         screen.contains('\u{276f}'),
         "the overlay leaves the composer visible behind it:\n{screen}"
     );
 
-    // Bug 7: `qwen` used to close the picker on `q` and leave `wen` in the prompt.
-    j.h.inject_keys(b"qwen").unwrap();
+    // Bug 7: typing used to close the picker on the first letter and leave the rest in the prompt.
+    j.h.inject_keys(b"pickle").unwrap();
     j.h.update(Duration::from_millis(600));
     let screen = j.h.screen_contents();
-    snapshot(&j.h, &j.dir, "03-model-filter-qwen");
+    snapshot(&j.h, &j.dir, "03-model-filter-pickle");
     assert!(
         screen.contains("Tab: Subscriptions"),
         "typing filters instead of closing:\n{screen}"
     );
     assert!(
-        screen.contains("qwen"),
+        screen.contains("pickle"),
         "the filter text is shown:\n{screen}"
     );
     // Model rows sit inside the box (they end with its border); the composer footer does not.
     let rows: Vec<&str> = screen
         .lines()
-        .filter(|l| {
-            l.trim_end().ends_with('\u{2502}')
-                && (l.contains("Kilo Gateway") || l.contains("OpenCode "))
-        })
+        .filter(|l| l.trim_end().ends_with('\u{2502}') && l.contains("OpenCode "))
         .collect();
     assert!(
-        !rows.is_empty() && rows.iter().all(|r| r.to_ascii_lowercase().contains("qwen")),
+        !rows.is_empty()
+            && rows
+                .iter()
+                .all(|r| r.to_ascii_lowercase().contains("pickle")),
         "only matching rows remain: {rows:?}"
     );
     assert!(
         !screen
             .lines()
-            .any(|l| l.contains("\u{276f} wen") || l.contains("\u{276f} qwen")),
+            .any(|l| l.contains("\u{276f} ickle") || l.contains("\u{276f} pickle")),
         "nothing leaked into the composer:\n{screen}"
     );
 
@@ -164,18 +164,18 @@ fn model_picker_filters_as_you_type_and_swallows_stray_keys() {
     assert!(
         screen
             .lines()
-            .any(|l| l.trim_start().starts_with("\u{2502} \u{276f}") && !l.contains("wen")),
+            .any(|l| l.trim_start().starts_with("\u{2502} \u{276f}") && !l.contains("ickle")),
         "the composer is empty after the picker closes:\n{screen}"
     );
     assert!(
-        screen.contains("OpenCode \u{b7} Big Pickle"),
-        "the session behind the overlay is still there:\n{screen}"
+        screen.contains("Big Pickle") && !screen.contains("OpenCode \u{b7} Big Pickle"),
+        "the session behind the overlay is still there, labeled with the model only:\n{screen}"
     );
 }
 
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); run with --include-ignored"]
-fn waiting_line_animates_counts_seconds_and_names_the_cancel_key() {
+fn thinking_line_animates_counts_seconds_and_names_the_cancel_key() {
     let Some(bin) = bin_from_env() else { return };
     if std::process::Command::new("python3")
         .arg("--version")
@@ -189,13 +189,14 @@ fn waiting_line_animates_counts_seconds_and_names_the_cancel_key() {
     let mut j = spawn("surface-waiting", &bin, &[], Some(fake.path()));
     connect_big_pickle(&mut j);
     send_prompt(&mut j, "add a test for multiply");
-    wait_for(&mut j.h, "Waiting for Big Pickle", 40);
+    // One neutral line for every phase behind the first answer; never a runtime name.
+    wait_for(&mut j.h, "Thinking", 40);
     wait_for(&mut j.h, "Ctrl+C to cancel", 5);
-    // The mark in front of the line moves.
+    assert_no_plumbing(&j.h, "thinking line");
     let waiting_line = |h: &xai_grok_pager_pty_harness::PtyHarness| {
         h.screen_contents()
             .lines()
-            .find(|l| l.contains("Waiting for Big Pickle") || l.contains("Still connecting"))
+            .find(|l| l.contains("Thinking"))
             .map(|l| l.trim().to_owned())
     };
     let mut marks = std::collections::BTreeSet::new();
@@ -216,9 +217,15 @@ fn waiting_line_animates_counts_seconds_and_names_the_cancel_key() {
         line.contains("s \u{b7} Ctrl+C to cancel") || line.contains("s · Ctrl+C to cancel"),
         "elapsed seconds precede the cancel hint: {line}"
     );
-    // At 10 s the line says the wait is the connection's.
-    wait_for(&mut j.h, "Still connecting to Big Pickle", 15);
-    snapshot(&j.h, &j.dir, "06-still-connecting");
+    // Ten seconds in it is still the same calm line — no phase names, no runtime words.
+    j.h.update(Duration::from_millis(7000));
+    let line = waiting_line(&j.h).expect("waiting line");
+    assert!(
+        line.starts_with(|c: char| !c.is_ascii()) && line.contains("Thinking"),
+        "{line}"
+    );
+    assert_no_plumbing(&j.h, "ten seconds in");
+    snapshot(&j.h, &j.dir, "06-still-thinking");
     // The title follows the topic (the first prompt) while the turn runs.
     let seen = titles(j.h.raw_output());
     assert!(

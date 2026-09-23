@@ -133,15 +133,19 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
     h.set_respond_to_queries(true);
     let dir = evidence_dir();
 
-    // 1. Cold start: the composer, with the OpenCode default active and the two doors as the hint.
-    //    No picker, no explanation paragraph.
-    wait_for(&mut h, "OpenCode \u{b7} Big Pickle", 30);
+    // 1. Cold start: the composer, labelled with the model name only (no provider), the two doors
+    //    as the first-run hint. No picker, no explanation paragraph.
+    wait_for(&mut h, "Big Pickle", 30);
     wait_for(&mut h, "/model to switch", 5);
     wait_for(&mut h, "/auth to connect subscriptions", 5);
     let screen = h.screen_contents();
     assert!(
         !screen.contains("connect a model") && !screen.contains("Connection classes"),
         "first run must not show the picker:\n{screen}"
+    );
+    assert!(
+        !screen.contains("OpenCode \u{b7} Big Pickle") && !screen.contains("engine"),
+        "the composer label is the model name only, no plumbing:\n{screen}"
     );
     assert_no_xai(&h, "cold start");
     snapshot(&h, &dir, "01-first-run-composer");
@@ -159,11 +163,15 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
     // 2. `/model`: the compact Models overlay, active row highlighted, Esc closes.
     slash(&mut h, "/model");
     wait_for(&mut h, "Tab: Subscriptions", 10);
-    wait_for(&mut h, "Kilo", 15);
+    wait_for(&mut h, "OpenCode", 15);
     let screen = h.screen_contents();
     assert!(
         selected_line(&h).is_some_and(|l| l.contains("Big Pickle") && l.contains("active")),
-        "the active engine model is highlighted:\n{screen}"
+        "the active OpenCode model is highlighted:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Kilo") && !screen.contains("engine"),
+        "the Models view never names Kilo Gateway or the engine:\n{screen}"
     );
     assert!(
         !screen.contains("never signs you in") && !screen.contains("Connection classes"),
@@ -177,8 +185,13 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
     snapshot(&h, &dir, "02-model-overlay");
     h.inject_keys(b"\x1b").unwrap();
     wait_gone(&mut h, "Tab: Subscriptions", 5);
-    // Esc lands in the session the command was typed into; its composer names the connection.
-    wait_for(&mut h, "OpenCode \u{b7} Big Pickle", 5);
+    // Esc lands in the session the command was typed into; its composer names the model.
+    wait_for(&mut h, "Big Pickle", 5);
+    assert!(
+        !h.screen_contents().contains("OpenCode \u{b7} Big Pickle"),
+        "model name only:\n{}",
+        h.screen_contents()
+    );
 
     // 3. `/auth`: the Subscriptions overlay — rails Claude / Codex / Cursor with pills, the API-key
     //    providers below, the optional xAI card last.
@@ -239,7 +252,7 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
     wait_for(&mut h, "Tab: Models", 5);
     h.inject_keys(b"\x1b").unwrap();
     wait_gone(&mut h, "Tab: Models", 5);
-    wait_for(&mut h, "OpenCode \u{b7} Big Pickle", 5);
+    wait_for(&mut h, "Big Pickle", 5);
     assert_no_xai(&h, "overlay closed");
     snapshot(&h, &dir, "06-composer-after-overlays");
 

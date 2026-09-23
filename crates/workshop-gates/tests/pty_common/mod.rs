@@ -151,16 +151,95 @@ pub fn fake_opencode(mode: &str) -> tempfile::TempDir {
     dir
 }
 
-/// First run (type and go): the composer is up with the OpenCode engine active; no picker.
+/// First run (type and go): the composer is up with OpenCode's default model, `Big Pickle`, named
+/// in its footer (the model only, no provider); no picker.
 pub fn connect_big_pickle(j: &mut Journey) {
     wait_for(&mut j.h, "\u{276f}", 45);
-    wait_for(&mut j.h, "OpenCode", 30);
+    wait_for(&mut j.h, "Big Pickle", 30);
     j.h.update(Duration::from_millis(1200));
     let screen = j.h.screen_contents();
     assert!(
         !screen.contains("connect a model"),
         "a fresh HOME lands in the composer, not a picker:\n{screen}"
     );
+    assert!(
+        !screen.contains("OpenCode \u{b7} Big Pickle"),
+        "the composer names the model only, not `OpenCode · Big Pickle`:\n{screen}"
+    );
+}
+
+/// Test hook read by the binary: the silent fallback's base URL (see `workshop::KILO_BASE_URL_ENV`).
+pub const KILO_BASE_URL_ENV: &str = "WORKSHOP_KILO_BASE_URL";
+
+/// Words a first-time user must never read on screen: runtime and fallback plumbing.
+pub const PLUMBING_WORDS: [&str; 6] = [
+    "engine",
+    "Kilo",
+    "fallback",
+    "OpenCode unavailable",
+    "Starting the",
+    "Installing the",
+];
+
+/// While the turn waits, the one line is `Thinking…` with no plumbing beside it. Polls until that
+/// line shows or `outcome` (the answer, the failure line) has already landed — a failure faster
+/// than a frame may skip the waiting line altogether.
+pub fn expect_thinking_line(j: &mut Journey, outcome: &str, secs: u64) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    loop {
+        let screen = j.h.screen_contents();
+        if screen.contains("Thinking") {
+            assert_no_plumbing(&j.h, "while thinking");
+            return;
+        }
+        if screen.contains(outcome) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "neither the waiting line nor {outcome:?} after {secs}s:\n{screen}"
+        );
+        j.h.update(Duration::from_millis(50));
+    }
+}
+
+/// Fail when the screen shows any [`PLUMBING_WORDS`] entry.
+pub fn assert_no_plumbing(h: &PtyHarness, step: &str) {
+    let screen = h.screen_contents();
+    for word in PLUMBING_WORDS {
+        assert!(
+            !screen.contains(word),
+            "{step}: {word:?} is plumbing a user must never read:\n{screen}"
+        );
+    }
+}
+
+/// A loopback OpenAI-compatible endpoint that refuses every request (HTTP 400): the silent
+/// fallback's provider for the failure gates. Returns the child (killed on drop) and its base URL
+/// for `WORKSHOP_KILO_BASE_URL`.
+#[allow(clippy::disallowed_methods)] // short-lived loopback fixture, killed by KillOnDrop below
+pub fn refusing_api() -> (KillOnDrop, String) {
+    use std::io::BufRead;
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-refusing-api.py");
+    let mut child = std::process::Command::new("python3")
+        .arg(script)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn fake-refusing-api.py");
+    let mut url = String::new();
+    std::io::BufReader::new(child.stdout.take().expect("stdout"))
+        .read_line(&mut url)
+        .expect("fake api prints its url");
+    (KillOnDrop(child), url.trim().to_owned())
+}
+
+pub struct KillOnDrop(pub std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 /// Type `text` into the composer and press Enter.
