@@ -99,18 +99,21 @@ def stage(rel, src=None, data=None):
 
 # --- the fresh HOME ----------------------------------------------------------------------------
 if OTHER:
-    sh(f"id {USER} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash -G sudo {USER}", check=True)
-    sh(f"sudo usermod -aG sudo {USER} && sudo rm -f /etc/sudoers.d/acc-{USER}", check=True)
+    sh(f"sudo rm -rf '{HOME}'")
+    # root-owned and execute-only: a run can reach its own HOME but cannot list the others
+    sh(f"sudo install -d -m 711 -o root -g root '{HOME.parent}'")
+    # the account's home is the run's HOME, created from /etc/skel like any new desktop account
+    if sh(f"id {USER}").returncode:
+        sh(f"sudo useradd -m -d '{HOME}' -s /bin/bash -G sudo {USER}", check=True)
+    else:
+        sh(f"sudo usermod -d '{HOME}' -aG sudo {USER} && sudo cp -rT /etc/skel '{HOME}' && sudo chown -R {USER}:{USER} '{HOME}'", check=True)
+    sh(f"sudo chmod 755 '{HOME}' && sudo rm -f /etc/sudoers.d/acc-{USER}", check=True)
     steps = (HERE / f"tasks/{TASK}.steps").read_text().splitlines()
     pw = next((l.split(None, 1)[1].strip() for l in steps if l.startswith("@password ")), "workshop")
     subprocess.run(["sudo", "chpasswd"], input=f"{USER}:{pw}\n", text=True, check=True)
     sh(f"sudo rm -rf /var/run/sudo/ts/{USER}")
     if sh(f"sudo -u {USER} sudo -n true").returncode == 0:
         sys.exit(f"sudo for {USER} does not ask for a password; the suite's user must be a normal desktop user")
-    sh(f"sudo rm -rf '{HOME}'")
-    # root-owned and execute-only: a run can reach its own HOME but cannot list the others
-    sh(f"sudo install -d -m 711 -o root -g root '{HOME.parent}'")
-    sh(f"sudo install -d -m 755 -o {USER} -g {USER} '{HOME}'", check=True)
     for d in ("Desktop", "Documents", "Downloads"):
         sh(f"sudo -u {USER} mkdir -p '{HOME / d}'", check=True)
 else:

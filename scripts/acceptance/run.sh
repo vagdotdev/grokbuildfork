@@ -9,7 +9,7 @@
 # pane is also shown in an xfce4-terminal on $DISPLAY and the whole desktop is recorded to
 # OUTDIR/raw-screen.mp4 (render.py cuts the waits afterwards).
 #
-# The task runs as its own account (default `sam`; T11 uses `mac`), set up like a normal desktop user:
+# The task runs as its own account (`acc<hash>`, one per result folder), set up like a normal desktop user:
 # sudo asks for its password, which the monitor types when a password prompt shows, as the user would.
 # HOME is under the root-owned, unlistable /home/acc/. That account
 # cannot read the invoking user's home, where the evidence and the fixtures' answer keys live; after the
@@ -44,7 +44,8 @@ STEPS="$HERE/tasks/$TASK.steps"
 RUN_ID="$(basename "$OUT")"
 # Unique per output folder: runs of the same task in parallel result trees (one per model, say) must
 # never share a tmux server or a HOME.
-RUN_KEY="$RUN_ID-$(printf %s "$OUT" | sha1sum | cut -c1-6)"
+RUN_HASH="$(printf %s "$OUT" | sha1sum | cut -c1-6)"
+RUN_KEY="$RUN_ID-$RUN_HASH"
 SESSION="acc-$RUN_KEY"
 # One tmux server per run: tmux 3.5a has segfaulted with several sessions on one server.
 T=(tmux -L "$SESSION")
@@ -53,7 +54,8 @@ export DISPLAY="${DISPLAY:-:1}"
 XAUTH="${XAUTHORITY:-$HOME/.Xauthority}"
 
 directive() { sed -n "s/^@$1[[:space:]]\+//p" "$STEPS" | head -1; }
-RUN_USER="$(directive user)"; RUN_USER="${RUN_USER:-${ACC_USER:-sam}}"
+# Its own account per run, whose home IS the run's HOME (so `whoami`, ~user and $HOME agree).
+RUN_USER="$(directive user)"; RUN_USER="${RUN_USER:-${ACC_USER:-acc$RUN_HASH}}"
 PASSWORD="$(directive password)"; PASSWORD="${PASSWORD:-workshop}"  # the run user's sudo password (setup.py sets it)
 TURN_TIMEOUT="$(directive timeout)"; TURN_TIMEOUT="${TURN_TIMEOUT:-900}"
 STALL="$(directive stall)"; STALL="${STALL:-120}"
