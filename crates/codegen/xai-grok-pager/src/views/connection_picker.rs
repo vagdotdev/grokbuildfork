@@ -217,6 +217,7 @@ fn row_style(theme: &Theme, selected: bool) -> Style {
 fn badge_style(theme: &Theme, row: &ModelsRow) -> Style {
     match &row.kind {
         RowKind::XaiOptional | RowKind::RailSignIn(_) => Style::default().fg(theme.warning),
+        RowKind::RailNote(..) => Style::default().fg(theme.gray_bright),
         RowKind::ConnectProvider { .. } => Style::default().fg(theme.accent_tool),
         RowKind::Engine(_) => Style::default().fg(theme.accent_success),
         RowKind::RailModel { .. } => Style::default().fg(theme.accent_model),

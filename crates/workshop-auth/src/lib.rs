@@ -248,9 +248,16 @@ pub enum RowKind {
     },
     /// The one row of an installed but signed-out subscription CLI: `Sign in`.
     RailSignIn(Rail),
+    /// The one row of a signed-in subscription CLI whose own model list is not here (yet):
+    /// `Loading models…`, or the rail's failure copy. Not selectable; never a made-up model.
+    RailNote(Rail, String),
     /// The labeled optional xAI card (Subscriptions view, last).
     XaiOptional,
 }
+
+/// What a signed-in rail shows while its CLI's model list has not arrived (the detect layer
+/// sets the rail's `empty_copy` to this, or to its failure copy).
+pub const LOADING_MODELS: &str = "Loading models\u{2026}";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelsRow {
@@ -272,6 +279,7 @@ impl ModelsRow {
                 format!("{}:{}", rail.vendor().id(), model.key())
             }
             RowKind::RailSignIn(rail) => format!("{}:sign-in", rail.vendor().id()),
+            RowKind::RailNote(rail, _) => format!("{}:note", rail.vendor().id()),
             RowKind::XaiOptional => XAI_ROW_ID.into(),
         }
     }
@@ -286,6 +294,7 @@ impl ModelsRow {
             RowKind::Engine(m) => m.display(),
             RowKind::RailModel { model, .. } => model.display().to_owned(),
             RowKind::RailSignIn(_) => "Sign in".into(),
+            RowKind::RailNote(_, copy) => copy.clone(),
         }
     }
     /// How a connect row is acted on: a browser sign-in, or a pasted API key.
@@ -296,7 +305,10 @@ impl ModelsRow {
                 _ => "API key",
             },
             RowKind::XaiOptional | RowKind::RailSignIn(_) => "Sign in",
-            RowKind::Catalog { .. } | RowKind::Engine(_) | RowKind::RailModel { .. } => "",
+            RowKind::Catalog { .. }
+            | RowKind::Engine(_)
+            | RowKind::RailModel { .. }
+            | RowKind::RailNote(..) => "",
         }
     }
     /// Provider column of the row line.
@@ -321,7 +333,7 @@ impl ModelsRow {
             RowKind::Engine(_) => "free",
             RowKind::RailModel { .. } => "subscription",
             RowKind::RailSignIn(_) => "sign in",
-            RowKind::ConnectProvider { .. } => "",
+            RowKind::RailNote(..) | RowKind::ConnectProvider { .. } => "",
             RowKind::XaiOptional => "optional",
         }
     }
@@ -335,6 +347,7 @@ impl ModelsRow {
             RowKind::Engine(m) => is_chat_model_name(&m.name) && is_chat_model_name(&m.model_ref),
             RowKind::RailModel { .. }
             | RowKind::RailSignIn(_)
+            | RowKind::RailNote(..)
             | RowKind::ConnectProvider { .. }
             | RowKind::XaiOptional => true,
         }
@@ -348,6 +361,7 @@ impl ModelsRow {
                 | RowKind::Engine(_)
                 | RowKind::RailModel { .. }
                 | RowKind::RailSignIn(_)
+                | RowKind::RailNote(..)
         )
     }
     pub fn is_xai(&self) -> bool {
@@ -360,7 +374,9 @@ impl ModelsRow {
             RowKind::Catalog { model, .. } => Some(model.provider_id.as_str()),
             RowKind::ConnectProvider { provider_id, .. } => Some(provider_id.as_str()),
             RowKind::Engine(_) => Some(ENGINE_PROVIDER_ID),
-            RowKind::RailModel { rail, .. } | RowKind::RailSignIn(rail) => Some(rail.vendor().id()),
+            RowKind::RailModel { rail, .. }
+            | RowKind::RailSignIn(rail)
+            | RowKind::RailNote(rail, _) => Some(rail.vendor().id()),
             RowKind::XaiOptional => None,
         }
     }
@@ -418,8 +434,10 @@ pub fn models_rows(
             });
         }
     }
-    // Then each installed subscription CLI as its own group: its models when signed in, one
-    // `Sign in` row when not. A CLI that is not installed stays on the Subscriptions view only.
+    // Then each installed subscription CLI as its own group: its own models when signed in (the
+    // list the CLI reports, in its order), one `Loading models…` / failure row while that list is
+    // not here, one `Sign in` row when signed out. A CLI that is not installed stays on the
+    // Subscriptions view only. Never a made-up model.
     for rail in rails.iter().filter(|r| r.installed) {
         let group = rail.rail.display_name().to_owned();
         if rail.is_ready() && !rail.models.is_empty() {
@@ -437,6 +455,19 @@ pub fn models_rows(
                     class: ConnectionClass::AgentAdapter,
                 });
             }
+        } else if rail.is_ready() {
+            rows.push(ModelsRow {
+                kind: RowKind::RailNote(
+                    rail.rail,
+                    rail.empty_copy.unwrap_or(LOADING_MODELS).to_owned(),
+                ),
+                group: group.clone(),
+                badge: format!(
+                    "Signed in · the model list comes from the official {} CLI",
+                    rail.rail.vendor().display_name()
+                ),
+                class: ConnectionClass::AgentAdapter,
+            });
         } else if rail.pill != Pill::Detecting {
             rows.push(ModelsRow {
                 kind: RowKind::RailSignIn(rail.rail),
@@ -1035,6 +1066,8 @@ impl PickerState {
             RowKind::Engine(m) => PickerOutcome::SelectEngine(m),
             RowKind::RailModel { rail, model } => PickerOutcome::SelectRailModel(rail, model),
             RowKind::RailSignIn(rail) => PickerOutcome::RailConnect(rail),
+            // Signed in, list not here: nothing to pick yet.
+            RowKind::RailNote(..) => PickerOutcome::Changed,
         }
     }
 
@@ -1184,6 +1217,10 @@ fn row_detail_lines(row: &ModelsRow, xai_armed: bool, list_note: Option<String>)
                 workshop_detect::login_argv(rail.vendor()).join(" ")
             ));
         }
+        RowKind::RailNote(..) => {
+            lines.push(row.badge.clone());
+            lines.push("Nothing to pick until the list arrives; Ctrl+R asks again.".into());
+        }
         RowKind::XaiOptional => {
             lines.push(XAI_CARD_COPY.into());
             lines.push(
@@ -1212,6 +1249,14 @@ fn rail_detail_lines(rail: &RailState, selected_model: usize) -> Vec<String> {
             "Enter runs the official login in your terminal:  {}",
             workshop_detect::login_argv(rail.rail.vendor()).join(" ")
         ));
+    } else if rail.models.is_empty() {
+        // Signed in, but the CLI's own model list is not here (yet): say that, never a radio
+        // line with nothing in it or a made-up model.
+        lines.push(rail.empty_copy.unwrap_or(LOADING_MODELS).to_owned());
+        lines.push(
+            "Signed in; the list is the CLI's own, so nothing is picked until it arrives.".into(),
+        );
+        return lines;
     } else {
         let radios: Vec<String> = rail
             .models
@@ -1801,17 +1846,102 @@ mod tests {
         ));
     }
 
+    /// A rail as the detect layer reports it; a Ready rail carries the models its CLI listed
+    /// (here: three Claude aliases, as a CLI would report them).
     fn rail(rail: Rail, installed: bool, ready: bool) -> RailState {
         let mut st = RailState::detecting(rail);
         st.installed = installed;
         st.pill = if ready { Pill::Ready } else { Pill::SignIn };
         st.models = if ready {
-            workshop_detect::model::default_models(rail)
+            let p = rail.provider_id();
+            ["Claude Opus", "Claude Sonnet", "Claude Haiku"]
+                .iter()
+                .map(|name| {
+                    workshop_detect::ModelRef::new(
+                        p,
+                        name.rsplit(' ').next().unwrap().to_ascii_lowercase(),
+                    )
+                    .with_display_name(*name)
+                })
+                .collect()
         } else {
             Vec::new()
         };
         st.show_connect = !ready;
         st
+    }
+
+    /// A signed-in CLI whose own model list has not arrived (or failed) is one row carrying the
+    /// rail's copy — `Loading models…` by default — never `Sign in` and never a made-up model;
+    /// Enter does nothing there, and the Subscriptions detail says the same.
+    #[test]
+    fn a_signed_in_rail_without_its_list_shows_loading_not_placeholders() {
+        let mut loading = rail(Rail::Claude, true, true);
+        loading.models.clear();
+        let mut failed = rail(Rail::Codex, true, true);
+        failed.models.clear();
+        failed.empty_copy = Some("Couldn't load models — press Ctrl+R to retry");
+        let rails = [loading, failed, rail(Rail::Cursor, false, false)];
+        let mut p = PickerState::new().with_active(Some(EngineModel::big_pickle_seed().row_id()));
+        let rows = models_rows(
+            &workshop_providers::Catalog::builtin(),
+            |_| false,
+            &[],
+            &rails,
+        );
+        p.apply_snapshot(PickerSnapshot {
+            rows,
+            rails: rails.to_vec(),
+            ..PickerSnapshot::default()
+        });
+        let rendered: Vec<String> = p
+            .models_lines()
+            .iter()
+            .map(|l| match l {
+                ModelsLine::Header(h) => format!("# {h}"),
+                ModelsLine::Row(r) => r.title(),
+            })
+            .collect();
+        assert_eq!(
+            rendered,
+            vec![
+                "# OpenCode",
+                "Big Pickle",
+                "# Claude",
+                "Loading models\u{2026}",
+                "# Codex",
+                "Couldn't load models — press Ctrl+R to retry",
+            ],
+            "{rendered:?}"
+        );
+        assert!(
+            !rendered
+                .iter()
+                .any(|l| l.contains("Sign in") || l.contains("Opus")),
+            "signed in is never `Sign in`, and no placeholder model: {rendered:?}"
+        );
+        p.models_selected = p
+            .visible_models()
+            .iter()
+            .position(|r| r.title().starts_with("Loading"))
+            .unwrap();
+        assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
+        assert!(
+            p.detail_lines()
+                .iter()
+                .any(|l| l.contains("Nothing to pick until the list arrives")),
+            "{:?}",
+            p.detail_lines()
+        );
+        // Subscriptions view: the same copy under the rail, no empty radio line.
+        p.tab = PickerTab::Subscriptions;
+        p.rail_selected = 0;
+        let detail = p.detail_lines();
+        assert_eq!(detail[0], "Loading models\u{2026}");
+        assert!(
+            !detail.iter().any(|l| l.contains("Enter picks the model")),
+            "{detail:?}"
+        );
     }
 
     /// The owner's layout: OpenCode's models first, then each *installed* subscription as its own

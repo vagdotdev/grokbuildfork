@@ -4817,10 +4817,10 @@ index 51c3c5f1..aa5c8e13 100644
      fn run_set_default_model_resolves_case_insensitively() {
 diff --git a/crates/codegen/xai-grok-pager/src/views/connection_picker.rs b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
 new file mode 100644
-index 00000000..394776de
+index 00000000..a491b147
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
-@@ -0,0 +1,424 @@
+@@ -0,0 +1,425 @@
 +//! Workshop connection picker overlay (ratatui view over `workshop_auth::PickerState`).
 +//!
 +//! `/model` opens the **Models** view: one line per usable model (`name  provider  badge`), the
@@ -5040,6 +5040,7 @@ index 00000000..394776de
 +fn badge_style(theme: &Theme, row: &ModelsRow) -> Style {
 +    match &row.kind {
 +        RowKind::XaiOptional | RowKind::RailSignIn(_) => Style::default().fg(theme.warning),
++        RowKind::RailNote(..) => Style::default().fg(theme.gray_bright),
 +        RowKind::ConnectProvider { .. } => Style::default().fg(theme.accent_tool),
 +        RowKind::Engine(_) => Style::default().fg(theme.accent_success),
 +        RowKind::RailModel { .. } => Style::default().fg(theme.accent_model),
