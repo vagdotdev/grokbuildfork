@@ -4131,6 +4131,15 @@ fn handle_workshop_turn_msg(
             }
             true
         }
+        // A model the user picked in /model is kept; only a connection still on the default follows it.
+        M::EngineDefaultResolved { .. }
+            if !matches!(
+                &app.workshop_connection,
+                crate::app::workshop::WorkshopConnection::Engine { model } if model.is_default
+            ) =>
+        {
+            false
+        }
         M::EngineDefaultResolved { model } => {
             // OpenCode's live default replaces the pinned seed the first run activated; a picked
             // effort level stays while the model still offers it.

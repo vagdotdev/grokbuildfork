@@ -1,0 +1,7 @@
+# T7 — organise and rename a messy Downloads folder
+@timeout 600
+launch workshop
+type my Downloads folder is a mess. sort everything into folders by type (images, documents, music, videos, archives, other) and rename the files to clean lowercase names without spaces
+waitturn
+line /exit
+waitshell 30

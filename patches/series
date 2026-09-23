@@ -22,3 +22,4 @@
 0018-workshop-themes-night-day.patch  # branding
 0019-foreign-config-off-by-default.patch  # product
 0020-workshop-system-prompt.patch  # branding
+0021-thinking-hidden-by-default.patch  # product

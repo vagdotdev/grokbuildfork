@@ -3006,7 +3006,7 @@ index 1c507697..3f753808 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..11f40b58 100644
+index eda61b3c..b8633c82 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -3302,7 +3302,7 @@ index eda61b3c..11f40b58 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4061,428 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4061,437 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -3370,6 +3370,15 @@ index eda61b3c..11f40b58 100644
 +            // seconds, the cancel hint) until the first real output replaces it.
 +            app.workshop_turn_progress = Some(text);
 +            app.repaint_workshop_progress()
++        }
++        // A model the user picked in /model is kept; only a connection still on the default follows it.
++        M::EngineDefaultResolved { .. }
++            if !matches!(
++                &app.workshop_connection,
++                crate::app::workshop::WorkshopConnection::Engine { model } if model.is_default
++            ) =>
++        {
++            false
 +        }
 +        M::EngineDefaultResolved { model } => {
 +            // OpenCode's live default replaces the pinned seed the first run activated; a picked
@@ -3908,10 +3917,10 @@ index 60fe34f9..e7eec7b0 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..170a0e89
+index 00000000..75adc9ad
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1673 @@
+@@ -0,0 +1,1912 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -3934,8 +3943,8 @@ index 00000000..170a0e89
 +use workshop_adapters::opencode_engine::{
 +    EngineOptions, InstallOptions, InstallProgress, OpenCodeEngine, PermissionDecision,
 +    PermissionHandler, PermissionReply, PermissionRequest, TurnHandle, TurnRequest,
-+    ask_before_edit_and_bash, clear_quarantine, detect_opencode, format_bytes, install_opencode,
-+    instructions_config,
++    WORKSHOP_AGENT_PROMPT, agent_prompts, ask_before_edit_and_bash, clear_quarantine,
++    detect_opencode, format_bytes, install_opencode, instructions_config,
 +};
 +
 +use crate::app::workshop_engine_state::{self as state, EngineState};
@@ -4909,22 +4918,37 @@ index 00000000..170a0e89
 +
 +/// What the engine's models are told about where they run. Appended by OpenCode to every system
 +/// prompt it builds for Workshop's server (all agents), like a project `AGENTS.md` — but kept
-+/// under `$WORKSHOP_HOME`, so nothing is written into the user's project.
++/// under `$WORKSHOP_HOME`, so nothing is written into the user's project. It follows OpenCode's
++/// environment block, which names the model by its provider-qualified id (`opencode/big-pickle`).
 +pub const ENGINE_INSTRUCTIONS: &str = "\
 +# Workshop
 +
 +You are Workshop's coding assistant. Workshop is the terminal application the user launched; you \
-+are the model working inside it. When asked who or what you are, say you are Workshop's assistant \
-+(name the model you are running as if you know it). Do not introduce yourself as \"opencode\" or \
-+\"OpenCode\": the user chose Workshop, and the engine underneath is a detail they can see with /model.
++are the model working inside it. When asked who or what you are, or who made you, say you are \
++Workshop's coding assistant and call the model you are running as by its short name only: for a \
++model ID of the form provider/name, say just the name. The provider part of the model ID only says \
++where the model is hosted, not who made you or Workshop, so never mention it. Do not describe the \
++software you run on and do not introduce yourself by any other product name.
 +
 +Everything else about how you work — tools, conventions, permissions — is as instructed above.
 +";
 +
-+/// Write the identity file for this launch (idempotent) and return it as the engine's inline
-+/// config. A home that cannot be written leaves the model with OpenCode's own identity rather
-+/// than failing the turn; the cause goes to the engine log.
-+fn engine_instructions(log: &Path) -> Option<serde_json::Value> {
++/// The engine's inline config: Workshop's base prompt for the agents its turns run on, and the
++/// identity file for this launch. A home that cannot be written drops only the file; the cause
++/// goes to the engine log.
++fn engine_config(log: &Path) -> serde_json::Value {
++    let mut config = match write_engine_instructions(log) {
++        Some(path) => instructions_config(&[path]),
++        None => serde_json::json!({}),
++    };
++    if let Some(fields) = config.as_object_mut() {
++        fields.insert("agent".into(), agent_prompts(WORKSHOP_AGENT_PROMPT));
++    }
++    config
++}
++
++/// Write the identity file (idempotent); `None` when the home cannot be written.
++fn write_engine_instructions(log: &Path) -> Option<PathBuf> {
 +    let path = engine_instructions_path();
 +    if let Some(parent) = path.parent()
 +        && let Err(e) = std::fs::create_dir_all(parent)
@@ -4938,7 +4962,7 @@ index 00000000..170a0e89
 +        state::append_log(log, &format!("instructions: cannot write {}: {e}", path.display()));
 +        return None;
 +    }
-+    Some(instructions_config(&[path]))
++    Some(path)
 +}
 +
 +fn engine_progress(tx: &mpsc::UnboundedSender<WorkshopTurnMsg>, text: impl Into<String>) {
@@ -5064,7 +5088,7 @@ index 00000000..170a0e89
 +    opts.permission = Some(ask_before_edit_and_bash());
 +    opts.permission_handler = Some(engine_permission_handler(ui_tx));
 +    // The models answer as Workshop's assistant, not as "opencode".
-+    opts.config = engine_instructions(&log);
++    opts.config = Some(engine_config(&log));
 +    let sink_path = log.clone();
 +    opts.log_sink = Some(Arc::new(move |line: &str| {
 +        state::append_log(&sink_path, line)
@@ -5191,11 +5215,104 @@ index 00000000..170a0e89
 +        })
 +}
 +
++/// What a silent continuation needs to prompt the same engine conversation again.
++struct EngineFollowUp {
++    engine: Arc<OpenCodeEngine>,
++    session: String,
++    model_ref: String,
++}
++
++/// How many times one turn is continued after it ended on an action it announced but never took.
++const MAX_AUTO_CONTINUES: u32 = 2;
++
++/// The follow-up sent (never shown) when a turn ends right after announcing an action.
++const AUTO_CONTINUE_PROMPT: &str = "Continue: your last message said what you would do next but \
++ended before doing it. Do it now, then finish every remaining part of my request.";
++
++/// The follow-up sent (never shown, at most once a turn) when a requested file was shown in the
++/// chat instead of written.
++const AUTO_WRITE_PROMPT: &str = "Continue: you showed the file contents in the chat instead of \
++writing them. Write them to the file(s) with your tools, run or test the result if I asked, then \
++finish every remaining part of my request.";
++
++/// The engine's tools that create or change files.
++const FILE_WRITE_TOOLS: [&str; 5] = ["write", "edit", "multiedit", "patch", "apply_patch"];
++
++/// True when the prompt asks for files to be made ("build … todo.py", "write a script that …").
++fn asks_to_write_files(prompt: &str) -> bool {
++    let prompt = prompt.to_lowercase();
++    let words: Vec<&str> = prompt
++        .split(|c: char| c.is_whitespace() || ",;:()[]`'\"!?".contains(c))
++        .map(|w| w.trim_end_matches('.'))
++        .filter(|w| !w.is_empty())
++        .collect();
++    let makes = words.iter().any(|w| {
++        ["create", "write", "build", "make", "generate", "save", "scaffold"]
++            .iter()
++            .any(|v| w.starts_with(v))
++    });
++    let file_name = |w: &str| {
++        w.rsplit_once('.').is_some_and(|(stem, ext)| {
++            stem.len() >= 2 && (1..=5).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric())
++        })
++    };
++    let names_a_file = words.iter().any(|w| {
++        file_name(w)
++            || ["file", "script", "app", "program", "module", "project"]
++                .contains(&w.trim_end_matches('s'))
++    });
++    makes && names_a_file
++}
++
++/// True when the turn's closing text ends with a fenced code block.
++fn ends_with_code_block(tail: &str) -> bool {
++    tail.trim_end()
++        .strip_suffix("```")
++        .is_some_and(|body| body.contains("```"))
++}
++
++/// True when the turn's closing text (what the model wrote after its last tool call) announces a
++/// step it never took: it ends on ":" ("…the official installer for Ubuntu:"), or its last
++/// sentence is an "I'll …" / "Let me …" that no tool call followed.
++fn announces_unfinished_action(tail: &str) -> bool {
++    let mut text = tail.trim_end();
++    // A command shown in a fence instead of run: judge the words before the fence.
++    if let Some(body) = text.strip_suffix("```")
++        && let Some(before) = body.rfind("```").and_then(|open| body.get(..open))
++    {
++        text = before.trim_end();
++    }
++    if text.ends_with(':') {
++        return true;
++    }
++    if text.ends_with('?') {
++        return false;
++    }
++    let sentence = text
++        .rsplit(['\n', '.', '!', '?'])
++        .map(str::trim)
++        .find(|s| !s.is_empty())
++        .unwrap_or_default()
++        .trim_start_matches(|c: char| !c.is_alphanumeric())
++        .to_lowercase();
++    let sentence = ["now, ", "now ", "next, ", "next ", "then "]
++        .iter()
++        .find_map(|p| sentence.strip_prefix(p))
++        .unwrap_or(&sentence);
++    let announces = ["i'll ", "i will ", "let me ", "i'm going to ", "i am going to "]
++        .iter()
++        .any(|p| sentence.starts_with(p));
++    let hands_back = ["let me know", "if you", "once you", "when you", "wait"]
++        .iter()
++        .any(|p| sentence.contains(p));
++    announces && !hands_back
++}
++
 +async fn build_stream(
 +    spec: &WorkshopTurnSpec,
 +    tx: &mpsc::UnboundedSender<WorkshopTurnMsg>,
 +    permission: PermissionPolicy,
-+) -> Result<TurnStream, TurnStartError> {
++) -> Result<(TurnStream, Option<EngineFollowUp>), TurnStartError> {
 +    match &spec.kind {
 +        WorkshopTurnKind::Engine {
 +            slot,
@@ -5242,7 +5359,12 @@ index 00000000..170a0e89
 +            let turn = engine.prompt(&session, req).await.map_err(|e| {
 +                TurnStartError::EngineUnavailable(format!("the prompt was refused: {e}"))
 +            })?;
-+            Ok(TurnStream::Engine(turn))
++            let follow_up = EngineFollowUp {
++                engine,
++                session,
++                model_ref: model.model_ref,
++            };
++            Ok((TurnStream::Engine(turn), Some(follow_up)))
 +        }
 +        WorkshopTurnKind::Adapter {
 +            adapter_id,
@@ -5277,7 +5399,7 @@ index 00000000..170a0e89
 +                        model.as_deref().unwrap_or(&adapter.id().to_string()),
 +                    ))
 +                })?;
-+            Ok(TurnStream::Adapter(handle))
++            Ok((TurnStream::Adapter(handle), None))
 +        }
 +    }
 +}
@@ -5323,7 +5445,7 @@ index 00000000..170a0e89
 +            return;
 +        }
 +    };
-+    let mut stream = match built {
++    let (mut stream, follow_up) = match built {
 +        Ok(s) => s,
 +        Err(error) => {
 +            let _ = tx.send(match error {
@@ -5351,6 +5473,15 @@ index 00000000..170a0e89
 +    // result; hold it so the UI gets one message per finished call.
 +    let mut tool_details: std::collections::HashMap<String, (Option<String>, serde_json::Value)> =
 +        std::collections::HashMap::new();
++    // What the model wrote since its last tool call, and whether the turn failed: a turn that
++    // ends on an announced action, or that pasted a requested file instead of writing it (once),
++    // is continued (engine, not Plan), at most MAX_AUTO_CONTINUES times in all.
++    let mut tail = String::new();
++    let mut errored = false;
++    let mut continues = 0;
++    let asks_for_files = asks_to_write_files(&spec.text);
++    let mut wrote_a_file = false;
++    let mut continued_to_write = false;
 +    loop {
 +        let silence = async {
 +            match first_event_at {
@@ -5383,10 +5514,13 @@ index 00000000..170a0e89
 +            ev = stream.next_event() => match ev {
 +                Some(AdapterEvent::TextDelta { text }) => {
 +                    first_event_at = None;
++                    tail.push_str(&text);
 +                    let _ = tx.send(WorkshopTurnMsg::Delta(text));
 +                }
 +                Some(AdapterEvent::ToolCall { id, name, input }) => {
 +                    first_event_at = None;
++                    tail.clear();
++                    wrote_a_file |= FILE_WRITE_TOOLS.contains(&name.as_str());
 +                    let _ = tx.send(WorkshopTurnMsg::Tool { id, name, input });
 +                }
 +                Some(AdapterEvent::ToolDetail { id, title, metadata }) => {
@@ -5403,10 +5537,14 @@ index 00000000..170a0e89
 +                        title,
 +                        metadata,
 +                    });
++                    // The model is at work again (thinking, hidden by default, or writing): the
++                    // waiting line says so until its next output.
++                    engine_progress(&tx, THINKING);
 +                }
 +                Some(AdapterEvent::Error { message }) => {
 +                    let nothing_yet = first_event_at.is_some();
 +                    first_event_at = None;
++                    errored = true;
 +                    // An abort we asked for (Ctrl-C, or the silence timeout above) is already
 +                    // reported; the backend's own "run cancelled" would only repeat it.
 +                    if !(aborted_by_us && message == "run cancelled") {
@@ -5433,7 +5571,53 @@ index 00000000..170a0e89
 +                    let _ = tx.send(WorkshopTurnMsg::Usage(usage));
 +                }
 +                Some(AdapterEvent::Done { .. }) => {}
-+                None => break,
++                None => {
++                    let pasted = asks_for_files
++                        && !wrote_a_file
++                        && !continued_to_write
++                        && ends_with_code_block(&tail);
++                    if let Some(f) = &follow_up
++                        && permission == PermissionPolicy::WorkspaceWrite
++                        && !aborted_by_us
++                        && !errored
++                        && continues < MAX_AUTO_CONTINUES
++                        && (pasted || announces_unfinished_action(&tail))
++                    {
++                        continues += 1;
++                        continued_to_write |= pasted;
++                        let (why, prompt) = if pasted {
++                            ("the reply showed a requested file in the chat and wrote no file", AUTO_WRITE_PROMPT)
++                        } else {
++                            ("the turn ended on an announced action with no tool call after it", AUTO_CONTINUE_PROMPT)
++                        };
++                        let chars: Vec<char> = tail.trim().chars().collect();
++                        let ending: String =
++                            chars.iter().skip(chars.len().saturating_sub(120)).collect();
++                        state::append_log(
++                            &engine_log_path(),
++                            &format!(
++                                "auto-continue {continues}/{MAX_AUTO_CONTINUES} on {}: {why}: {ending:?}",
++                                f.session
++                            ),
++                        );
++                        let mut req = TurnRequest::new(prompt);
++                        req.model = Some(f.model_ref.clone());
++                        req.permission = permission;
++                        match f.engine.prompt(&f.session, req).await {
++                            Ok(turn) => {
++                                stream = TurnStream::Engine(turn);
++                                tail.clear();
++                                engine_progress(&tx, THINKING);
++                                continue;
++                            }
++                            Err(e) => state::append_log(
++                                &engine_log_path(),
++                                &format!("auto-continue refused: {e}"),
++                            ),
++                        }
++                    }
++                    break;
++                }
 +            },
 +            _ = wait_cancelled(&mut cancel_rx), if !aborted_by_us => {
 +                cancelled = true;
@@ -5584,6 +5768,70 @@ index 00000000..170a0e89
 +            .map(|s| s.to_string()),
 +    );
 +    argv
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{announces_unfinished_action, asks_to_write_files, ends_with_code_block};
++
++    #[test]
++    fn file_requests_are_recognised() {
++        for prompt in [
++            "build a command line todo app in python: todo.py with add, list and done commands, saving the todos in todos.json. test it when you're done",
++            "create add.py with a function add(a, b)",
++            "write a script that renames my photos",
++            "make a small flask app",
++        ] {
++            assert!(asks_to_write_files(prompt), "{prompt:?}");
++        }
++        for prompt in [
++            "hello, who are you?",
++            "show me an example of a python loop",
++            "create a folder on my desktop called iBooks and download two open-source classic books inside of it, and install Ghostty",
++            "what does e.g. mean",
++        ] {
++            assert!(!asks_to_write_files(prompt), "{prompt:?}");
++        }
++    }
++
++    #[test]
++    fn a_closing_fence_is_a_pasted_block() {
++        assert!(ends_with_code_block(
++            "I'll build it.\n\n**todo.py**\n```python\nprint('x')\n```\n"
++        ));
++        assert!(!ends_with_code_block("Wrote todo.py and ran it: 3 passed."));
++        assert!(!ends_with_code_block("```"));
++    }
++
++    #[test]
++    fn announced_actions_are_unfinished() {
++        for tail in [
++            "Ubuntu 24.04 doesn't have Ghostty in its repos yet, so I'll use the official community `.deb` installer for Ubuntu:\n",
++            "Books downloaded. I'll run:",
++            "Now I'll install it with apt.",
++            "Let me run the tests.",
++            "Next, I'll create the file",
++            "I'll run this:\n```bash\nsudo apt install ghostty\n```",
++        ] {
++            assert!(announces_unfinished_action(tail), "{tail:?}");
++        }
++    }
++
++    #[test]
++    fn finished_answers_and_questions_are_not() {
++        for tail in [
++            "",
++            "Done.",
++            "Installed Ghostty 1.3.1 and downloaded both books.",
++            "Let me know if you want anything else.",
++            "I'll wait for your go-ahead.",
++            "Should I install it with snap or the .deb?",
++            "I'll install it if you confirm.",
++            "Here are the files:\n- a.epub\n- b.epub",
++        ] {
++            assert!(!announces_unfinished_action(tail), "{tail:?}");
++        }
++    }
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/headless.rs b/crates/codegen/xai-grok-pager/src/headless.rs
 index 0fa73e17..9f0a99de 100644
