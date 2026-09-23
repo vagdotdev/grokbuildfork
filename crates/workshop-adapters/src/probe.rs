@@ -30,6 +30,8 @@ pub enum ProbeError {
         #[source]
         source: std::io::Error,
     },
+    #[error("`{program}` was stopped: {reason}")]
+    Stopped { program: String, reason: String },
 }
 
 /// Run `program args...` with the given environment, `/dev/null` stdin, and a
@@ -40,6 +42,19 @@ pub async fn run_probe(
     env: &BTreeMap<OsString, OsString>,
     cwd: Option<&Path>,
     timeout: Duration,
+) -> Result<ProbeOutput, ProbeError> {
+    run_probe_until(program, args, env, cwd, timeout, std::future::pending()).await
+}
+
+/// [`run_probe`] that also ends early when `stop` resolves (a stall watchdog, say): the process
+/// group is killed and the reason `stop` returned is reported as [`ProbeError::Stopped`].
+pub async fn run_probe_until(
+    program: &Path,
+    args: &[&str],
+    env: &BTreeMap<OsString, OsString>,
+    cwd: Option<&Path>,
+    timeout: Duration,
+    stop: impl std::future::Future<Output = String>,
 ) -> Result<ProbeOutput, ProbeError> {
     let name = program.display().to_string();
     let mut cmd = tokio::process::Command::new(program);
@@ -77,7 +92,11 @@ pub async fn run_probe(
         Ok::<_, std::io::Error>((out, err, status))
     };
 
-    match tokio::time::timeout(timeout, collect).await {
+    let result = tokio::select! {
+        r = tokio::time::timeout(timeout, collect) => r.map_err(|_| None),
+        reason = stop => Err(Some(reason)),
+    };
+    match result {
         Ok(Ok((out, err, status))) => Ok(ProbeOutput {
             stdout: String::from_utf8_lossy(&out).into_owned(),
             stderr: String::from_utf8_lossy(&err).into_owned(),
@@ -87,12 +106,18 @@ pub async fn run_probe(
             program: name,
             source,
         }),
-        Err(_) => {
+        Err(stopped) => {
             let _ = group.kill();
             let _ = child.kill().await;
-            Err(ProbeError::Timeout {
-                program: name,
-                timeout,
+            Err(match stopped {
+                Some(reason) => ProbeError::Stopped {
+                    program: name,
+                    reason,
+                },
+                None => ProbeError::Timeout {
+                    program: name,
+                    timeout,
+                },
             })
         }
     }
