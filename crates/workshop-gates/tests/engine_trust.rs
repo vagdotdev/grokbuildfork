@@ -972,6 +972,52 @@ fn image_turn_is_answered_by_a_model_that_sees() {
     quit(&mut j);
 }
 
+/// An 8×8 PNG (the composer refuses images under 8×8).
+const TINY_PNG: [u8; 78] = [
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x08, 0x02, 0x00, 0x00, 0x00, 0x4B, 0x6D, 0x29,
+    0xDC, 0x00, 0x00, 0x00, 0x15, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0x3C, 0x51, 0xA1, 0xC1,
+    0x80, 0x0D, 0x30, 0x31, 0xE0, 0x00, 0x83, 0x53, 0x02, 0x00, 0x1E, 0x27, 0x01, 0x78, 0x25, 0x96,
+    0xCA, 0x35, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+];
+
+/// A prompt that carries a pasted image goes, with the image, to a model that can see it — from
+/// the start; the picked model answers the next turn.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn pasted_image_goes_to_a_model_that_sees() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/pasted-image", &bin, &fx);
+    let png = j.cwd.path().join("cat.png");
+    std::fs::write(&png, TINY_PNG).unwrap();
+    j.h.inject_keys(format!("\x1b[200~{}\x1b[201~", png.display()).as_bytes())
+        .unwrap();
+    wait_for(&mut j.h, "[Image #1]", 15);
+    send_prompt(&mut j, " what is in this picture");
+    wait_for(&mut j.h, "Echo:", 30);
+    wait_for(&mut j.h, FIRST_RUN_LABEL, 15);
+    snapshot(&j.h, &j.dir, "01-answered");
+    let sent = engine_log(&fx.log);
+    let turn = sent
+        .iter()
+        .find(|v| {
+            v.get("text")
+                .and_then(|t| t.as_str())
+                .is_some_and(|t| t.contains("what is in this picture"))
+        })
+        .expect("the prompt reached the engine");
+    assert_eq!(
+        turn["model"]["modelID"], "muse-spark-1.3-contributor-free",
+        "{turn}"
+    );
+    assert_eq!(turn["files"][0]["mime"], "image/png", "{turn}");
+    send_prompt(&mut j, "hello");
+    wait_for(&mut j.h, "Echo: hello", 30);
+    assert_eq!(prompts_with_models(&fx.log).last().unwrap().1, "big-pickle");
+    quit(&mut j);
+}
+
 /// OpenCode's `question` tool opens Grok Build's question view: Enter on an option sends that
 /// answer back to the engine, which continues the turn with it; dismissing it (Ctrl+Y) declines.
 #[test]

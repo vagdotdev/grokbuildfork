@@ -19,8 +19,8 @@ use std::time::{Duration, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot, watch};
 use workshop_adapters::opencode_engine::{
     EngineOptions, InstallOptions, InstallProgress, OpenCodeEngine, PermissionDecision,
-    PermissionHandler, PermissionReply, PermissionRequest, QuestionAnswers, QuestionHandler,
-    QuestionRequest, TurnHandle, TurnRequest,
+    PermissionHandler, PermissionReply, PermissionRequest, PromptFile, QuestionAnswers,
+    QuestionHandler, QuestionRequest, TurnHandle, TurnRequest,
     WORKSHOP_AGENT_PROMPT, agent_prompts, ask_before_edit_and_bash, clear_quarantine,
     detect_opencode, format_bytes, install_opencode, instructions_config,
 };
@@ -809,6 +809,8 @@ pub struct WorkshopTurnSpec {
     pub kind: WorkshopTurnKind,
     pub cwd: PathBuf,
     pub text: String,
+    /// Images pasted or attached with the prompt (engine turns send them as file parts).
+    pub images: Vec<PromptFile>,
     /// The agent's permission mode when the prompt was sent. Engine: Plan → the read-only
     /// `plan` agent, everything else → `build` with the engine asking before edits/commands.
     /// Vendor CLIs: AlwaysApprove → `WorkspaceWrite`, else their read-only default.
@@ -892,6 +894,30 @@ fn engine_permission_handler(tx: mpsc::UnboundedSender<WorkshopTurnMsg>) -> Perm
             Ok(()) => PermissionDecision::Pending(reply_rx),
             Err(_) => PermissionDecision::Reply(PermissionReply::Reject),
         }
+    })
+}
+
+/// A pasted image as the engine takes it: its bytes as a `data:` URL, or the file it was saved to.
+pub fn prompt_file(image: &crate::prompt_images::PastedImage) -> Option<PromptFile> {
+    use base64::Engine as _;
+    let ext = image.mime_type.rsplit('/').next().unwrap_or("png");
+    let url = match &image.encoded_bytes {
+        Some(bytes) => format!(
+            "data:{};base64,{}",
+            image.mime_type,
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        ),
+        None => [&image.session_image_path, &image.staged_temp_path, &image.source_path]
+            .into_iter()
+            .flatten()
+            .find(|p| p.is_file())
+            .and_then(|p| url::Url::from_file_path(p).ok())?
+            .to_string(),
+    };
+    Some(PromptFile {
+        mime: image.mime_type.clone(),
+        url,
+        filename: format!("image-{}.{ext}", image.display_number),
     })
 }
 
@@ -1495,6 +1521,31 @@ async fn build_stream(
                 }
                 model = live;
             }
+            // A prompt that carries images goes to a model that can see them from the start.
+            let sees = |m: &EngineModel| {
+                cached_engine_models()
+                    .iter()
+                    .find(|c| c.model_ref == m.model_ref)
+                    .map_or(m.image_input, |c| c.image_input)
+            };
+            if !spec.images.is_empty()
+                && !sees(&model)
+                && let Some(vision) = vision_model(&cached_engine_models())
+            {
+                state::append_log(
+                    &engine_log_path(),
+                    &format!(
+                        "vision: the prompt carries {} image(s) {} cannot see; {} answers this turn",
+                        spec.images.len(),
+                        model.model_ref,
+                        vision.model_ref
+                    ),
+                );
+                let _ = tx.send(WorkshopTurnMsg::Answering {
+                    model: vision.clone(),
+                });
+                model = vision;
+            }
             engine_progress(tx, waiting_for(&model.name));
             let session = match session {
                 Some(s) if engine.session_exists(s).await.unwrap_or(false) => s.clone(),
@@ -1511,16 +1562,14 @@ async fn build_stream(
             let mut req = TurnRequest::new(spec.text.clone());
             req.model = Some(model.model_ref.clone());
             req.permission = permission;
+            req.files = spec.images.clone();
             let turn = engine.prompt(&session, req).await.map_err(|e| {
                 TurnStartError::Other(engine_failure_line(&format!(
                     "the prompt was refused: {e}"
                 )))
             })?;
             // The live catalog knows what the model can see even when the saved pick predates it.
-            let image_input = cached_engine_models()
-                .iter()
-                .find(|m| m.model_ref == model.model_ref)
-                .map_or(model.image_input, |m| m.image_input);
+            let image_input = sees(&model);
             let follow_up = EngineFollowUp {
                 engine,
                 session,

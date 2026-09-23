@@ -111,6 +111,15 @@ pub fn ask_before_edit_and_bash() -> Value {
     json!({ "edit": "ask", "bash": "ask" })
 }
 
+/// A file attached to a prompt: OpenCode reads a `file://` URL itself (an image arrives as a
+/// picture the model sees), or takes the bytes as a `data:` URL.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PromptFile {
+    pub mime: String,
+    pub url: String,
+    pub filename: String,
+}
+
 #[derive(Clone)]
 pub struct EngineOptions {
     /// Project directory the server runs in — normally an isolated worktree.
@@ -235,6 +244,8 @@ pub enum EngineError {
 #[derive(Clone, Debug)]
 pub struct TurnRequest {
     pub text: String,
+    /// Files attached to the prompt (pasted images), sent as `file` parts after the text.
+    pub files: Vec<PromptFile>,
     /// `opencode/<model>`; `None` lets OpenCode pick its default (free) model.
     pub model: Option<String>,
     pub permission: PermissionPolicy,
@@ -244,6 +255,7 @@ impl TurnRequest {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
+            files: Vec::new(),
             model: None,
             permission: PermissionPolicy::ReadOnly,
         }
@@ -618,9 +630,13 @@ impl OpenCodeEngine {
             });
         }
 
+        let mut parts = vec![json!({ "type": "text", "text": req.text })];
+        parts.extend(req.files.iter().map(
+            |f| json!({ "type": "file", "mime": f.mime, "url": f.url, "filename": f.filename }),
+        ));
         let mut body = json!({
             "agent": agent,
-            "parts": [{ "type": "text", "text": req.text }],
+            "parts": parts,
         });
         if let Some((provider_id, model_id)) = model {
             body["model"] = json!({ "providerID": provider_id, "modelID": model_id });

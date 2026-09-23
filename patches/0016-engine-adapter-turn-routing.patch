@@ -107,7 +107,7 @@ index 59bf6734..4f85ad00 100644
      if agent.permission_queue.is_empty() {
          return;
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-index a4d77733..bbf069b1 100644
+index a4d77733..4fdbe677 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 @@ -82,6 +82,7 @@ pub(super) fn collect_live_doctor_report_for_terminal(
@@ -118,7 +118,7 @@ index a4d77733..bbf069b1 100644
      Some(report)
  }
  
-@@ -614,6 +615,145 @@ pub(super) fn dispatch_send_prompt_inner(
+@@ -614,6 +615,156 @@ pub(super) fn dispatch_send_prompt_inner(
      dispatch_send_prompt_submission(app, text, None, consume_input, literal, is_follow_up)
  }
  
@@ -163,6 +163,16 @@ index a4d77733..bbf069b1 100644
 +    };
 +    let cwd = agent.session.cwd.clone();
 +    let mode = workshop_permission_mode(agent);
++    // Images pasted with the prompt travel with it (the engine sends them as file parts).
++    let images: Vec<_> = match app.agents.get_mut(&id) {
++        Some(agent) => agent
++            .prompt
++            .drain_images()
++            .iter()
++            .filter_map(crate::app::workshop::prompt_file)
++            .collect(),
++        None => Vec::new(),
++    };
 +
 +    let kind = match &app.workshop_connection {
 +        WorkshopConnection::Shell => return vec![],
@@ -183,6 +193,7 @@ index a4d77733..bbf069b1 100644
 +        kind,
 +        cwd,
 +        text: text.clone(),
++        images,
 +        mode,
 +    };
 +
@@ -264,7 +275,7 @@ index a4d77733..bbf069b1 100644
  pub(super) fn dispatch_send_prompt_submission(
      app: &mut AppView,
      text: String,
-@@ -689,6 +829,16 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -689,6 +840,16 @@ pub(super) fn dispatch_send_prompt_submission(
          text
      };
  
@@ -281,7 +292,7 @@ index a4d77733..bbf069b1 100644
      // Capture app-level fields before the mut-borrow on `agent`.
      let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
      let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
-@@ -701,6 +851,7 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -701,6 +862,7 @@ pub(super) fn dispatch_send_prompt_submission(
      let login_method_id_from_app = app.login_method_id.as_ref().map(|id| id.0.to_string());
      let leader_mode = app.leader_mode;
      let screen_mode_is_minimal = app.screen_mode.is_minimal();
@@ -289,7 +300,7 @@ index a4d77733..bbf069b1 100644
      let Some(agent) = app.agents.get_mut(&id) else {
          return prelude;
      };
-@@ -1029,6 +1180,23 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -1029,6 +1191,23 @@ pub(super) fn dispatch_send_prompt_submission(
                  return effects;
              }
              CommandResult::QueueCommand(cmd_text) => {

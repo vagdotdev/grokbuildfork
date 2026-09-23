@@ -442,7 +442,9 @@ class H(BaseHTTPRequestHandler):
             sessions.setdefault(sid, {"messages": []})
             text = "".join(p.get("text", "") for p in body.get("parts", []))
             log({"session": sid, "agent": body.get("agent"), "text": text, "model": body.get("model"),
-                 "system_head": system_prompt(body.get("agent")).split("\n", 1)[0]})
+                 "system_head": system_prompt(body.get("agent")).split("\n", 1)[0],
+                 "files": [{"mime": p.get("mime"), "url": (p.get("url") or "")[:40]}
+                           for p in body.get("parts", []) if p.get("type") == "file"]})
             threading.Thread(target=run_turn, args=(sid, body.get("agent"), text, body.get("model")), daemon=True).start()
             self.send_response(204)
             self.send_header("Content-Length", "0")
