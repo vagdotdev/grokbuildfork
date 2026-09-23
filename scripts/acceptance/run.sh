@@ -158,8 +158,11 @@ if [ ${#AS[@]} -gt 0 ]; then
 else
   install -D -m 755 "$BIN" "$UHOME/.workshop/bin/workshop"
 fi
-# The owner's decision: Workshop starts in always-approve. Seeded until that default ships.
-printf '[ui]\npermission_mode = "always-approve"\n' | "${AS[@]}" tee "$UHOME/.workshop/config.toml" >/dev/null
+# The start mode is Workshop's own default (always-approve since #41); U0 reads it off the first screen.
+# ACC_PERMISSION_MODE=always-approve seeds it instead, for builds older than that default.
+if [ -n "${ACC_PERMISSION_MODE:-}" ]; then
+  printf '[ui]\npermission_mode = "%s"\n' "$ACC_PERMISSION_MODE" | "${AS[@]}" tee "$UHOME/.workshop/config.toml" >/dev/null
+fi
 # ACC_MODEL_REF/ACC_MODEL_NAME: start on that OpenCode model, as if it had been picked in /model.
 if [ -n "${ACC_MODEL_REF:-}" ]; then
   printf '\n[model.workshop-connection]\nmodel = "workshop-connection"\nbase_url = "http://127.0.0.1:1"\nname = "%s"\napi_backend = "chat_completions"\nauth_scheme = "bearer"\napi_key = "workshop-anonymous"\n\n[models]\ndefault = "workshop-connection"\n' \
@@ -180,7 +183,7 @@ python3 - "$OUT/run.json" <<EOF
 import json, sys, time
 json.dump({"task": "$TASK", "run_id": "$RUN_ID", "user": "$RUN_USER", "home": "$UHOME", "bin": "$BIN",
            "path": "$UPATH", "desktop": "$DESKTOP" == "--desktop", "started": time.time(),
-           "turn_timeout": $TURN_TIMEOUT, "stall": $STALL, "model": "${ACC_MODEL_REF:-}"}, open(sys.argv[1], "w"), indent=1)
+           "turn_timeout": $TURN_TIMEOUT, "stall": $STALL, "model": "${ACC_MODEL_REF:-}", "seeded_permission_mode": "${ACC_PERMISSION_MODE:-}"}, open(sys.argv[1], "w"), indent=1)
 EOF
 python3 "$HERE/verify.py" snap "$TASK" "$OUT" before >> "$LOG" 2>&1
 
