@@ -879,7 +879,17 @@ fn a_loading_rail_after_a_load_queues_one_rail_models_refresh() {
     };
     assert!(
         dispatch(loaded(failed), &mut app).is_empty(),
-        "a failed rail waits for Ctrl+R"
+        "a failed rail waits for the user"
+    );
+    // Enter on it ("Couldn't load models — press Enter to retry") asks the CLIs again, and only
+    // them: no hosted-list refresh.
+    let effects = dispatch(
+        Action::ConnectionPicker(workshop_auth::PickerInput::Enter),
+        &mut app,
+    );
+    assert!(
+        matches!(effects.as_slice(), [Effect::WorkshopRefreshRailModels]),
+        "got {effects:?}"
     );
 
     // `/model`: the queued live refresh asks the CLIs itself; no second probe.

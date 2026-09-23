@@ -635,6 +635,9 @@ pub enum Action {
         reason: String,
         text: String,
     },
+    /// Workshop: an Engine/Adapter turn ended; start the next prompt queued during it (its own
+    /// turn, its own bubble), if any.
+    WorkshopNextQueuedPrompt { agent_id: AgentId },
     /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
     /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
     CancelLogin,
@@ -1804,6 +1807,10 @@ pub enum Effect {
         force: bool,
         engine: Option<std::sync::Arc<workshop_adapters::opencode_engine::OpenCodeEngine>>,
     },
+    /// Workshop: the placeholder entry in config.toml changed its display name/window (the live
+    /// default model resolved); ask the shell to re-read its model list so the dashboard and
+    /// session surfaces show the real model name. No auth, no session switch.
+    WorkshopReloadModels,
     /// Workshop: a signed-in rail is still `Loading models…` after a picker load with no live
     /// refresh queued (`/auth`, after a sign-in): ask those CLIs for their models, then reload the
     /// picker. Child processes only; Workshop itself makes no request.
@@ -2709,6 +2716,8 @@ pub enum TaskResult {
     },
     /// Workshop: picker rows/rails loaded.
     WorkshopPickerLoaded(workshop_auth::PickerSnapshot),
+    /// Workshop: the shell re-read its model list after a placeholder rename; nothing to apply.
+    WorkshopModelsReloaded,
     /// Workshop: a connect flow finished (`Ok(secret backend)` or an error message).
     WorkshopConnectDone {
         provider_id: String,

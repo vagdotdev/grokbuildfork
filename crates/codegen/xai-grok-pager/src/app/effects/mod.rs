@@ -2348,6 +2348,21 @@ pub(crate) fn execute(
                     TaskResult::WorkshopPickerLoaded(snap)
                 });
         }
+        Effect::WorkshopReloadModels => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let reload = acp::ExtRequest::new(
+                    "x.ai/internal/reload_models",
+                    serde_json::value::to_raw_value(&serde_json::json!({}))
+                        .expect("serialize reload params")
+                        .into(),
+                );
+                if let Err(e) = acp_send(reload, &tx).await {
+                    tracing::warn!(error = %e, "workshop: model list reload failed");
+                }
+                TaskResult::WorkshopModelsReloaded
+            });
+        }
         Effect::WorkshopRefreshRailModels => {
             tasks
                 .spawn(async move {

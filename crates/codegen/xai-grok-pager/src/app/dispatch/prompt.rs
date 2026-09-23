@@ -633,9 +633,18 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
     use crate::app::workshop::{self, WorkshopConnection, WorkshopTurnKind, WorkshopTurnSpec};
 
     if app.workshop_turn_active {
-        app.show_toast(
-            "Still working on your last message — Ctrl+C cancels it, /model switches model.",
-        );
+        // One turn at a time on the engine: later prompts wait their turn and go out as
+        // separate messages when this one ends (`Done` drains the queue), never concatenated.
+        let queued = {
+            app.workshop_turn_queue.push_back(text.trim().to_owned());
+            app.workshop_turn_queue.len()
+        };
+        if let Some(agent) = app.agents.get_mut(&id) {
+            agent.prompt.set_text("");
+        }
+        app.show_toast(&format!(
+            "Queued ({queued}) — sends when this turn ends. Ctrl+C cancels the current turn."
+        ));
         return vec![];
     }
     let Some(tx) = app.workshop_turn_tx.clone() else {
@@ -646,16 +655,15 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
         return vec![];
     };
     let cwd = agent.session.cwd.clone();
-    let always_approve = agent.session.is_yolo();
+    let mode = workshop_permission_mode(agent);
 
     let kind = match &app.workshop_connection {
         WorkshopConnection::Shell => return vec![],
+        // A launch is a new engine conversation unless it resumed one (`--resume`, `-c`, the
+        // picker); the id then lives in `workshop_engine_session` for the rest of the process.
         WorkshopConnection::Engine { model } => WorkshopTurnKind::Engine {
             slot: app.workshop_engine_slot.clone(),
-            session: app
-                .workshop_engine_session
-                .clone()
-                .or_else(|| workshop::load_resume_id("opencode", &cwd)),
+            session: app.workshop_engine_session.clone(),
             model: model.clone(),
         },
         WorkshopConnection::Adapter { rail, model } => WorkshopTurnKind::Adapter {
@@ -668,7 +676,7 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
         kind,
         cwd,
         text: text.clone(),
-        always_approve,
+        mode,
     };
 
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
@@ -680,6 +688,11 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
     app.workshop_turn_started = Some(std::time::Instant::now());
     app.workshop_turn_errored = false;
     app.workshop_last_prompt = Some(text.clone());
+    app.workshop_turn_thinking_entry = None;
+    app.workshop_turn_tools.clear();
+    app.workshop_turn_decided_calls.clear();
+    app.workshop_turn_record.clear();
+    app.workshop_turn_prompt_text = Some(text.trim().to_owned());
 
     if let Some(agent) = app.agents.get_mut(&id) {
         agent.record_prompt_in_history(text.trim());
@@ -695,10 +708,51 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
         if agent.display_name.is_none() && agent.generated_session_title.is_none() {
             agent.generated_session_title = Some(workshop::session_topic(&text));
         }
+        // Sending brings the new turn into view like the ACP path does: pin the prompt at the
+        // top when "Snap prompt to top on send" is on, else follow the bottom — never leave the
+        // view parked wherever the user last scrolled.
+        let prompt_idx = agent.scrollback.len().saturating_sub(1);
+        let flip = crate::appearance::cache::load_page_flip_on_send();
+        agent.scrollback.follow_new_turn(Some(prompt_idx), flip);
+        if !flip {
+            agent.scrollback.follow_new_turn(None, false);
+        }
     }
 
     tokio::spawn(workshop::run_workshop_turn(spec, tx, cancel_rx));
     vec![]
+}
+
+/// The agent's permission mode as it applies to an Engine/Adapter turn: Plan (pending or active)
+/// wins, then always-approve, then Auto, else Normal (ask).
+pub(crate) fn workshop_permission_mode(
+    agent: &crate::app::agent_view::AgentView,
+) -> crate::app::workshop::WorkshopPermissionMode {
+    use crate::app::workshop::WorkshopPermissionMode as Mode;
+    if agent.plan_mode_pending.unwrap_or(agent.plan_mode_active) {
+        Mode::Plan
+    } else if agent.session.is_yolo() {
+        Mode::AlwaysApprove
+    } else if agent.session.is_auto() {
+        Mode::Auto
+    } else {
+        Mode::Normal
+    }
+}
+
+/// Start the next queued prompt once the running Engine/Adapter turn has ended (`Done`). Each
+/// queued prompt is its own turn with its own bubble; nothing is joined.
+pub(crate) fn dispatch_workshop_next_queued(app: &mut AppView, id: AgentId) -> Vec<Effect> {
+    if app.workshop_turn_active {
+        return vec![];
+    }
+    let Some(text) = app.workshop_turn_queue.pop_front() else {
+        return vec![];
+    };
+    if text.is_empty() {
+        return dispatch_workshop_next_queued(app, id);
+    }
+    dispatch_workshop_turn(app, id, text)
 }
 
 pub(super) fn dispatch_send_prompt_submission(

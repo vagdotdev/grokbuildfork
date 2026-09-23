@@ -22,6 +22,15 @@ pub enum AdapterEvent {
         name: String,
         input: serde_json::Value,
     },
+    /// Vendor detail for a finished tool call, emitted right before its `ToolResult` when the
+    /// backend reports more than plain output: the tool's own title (`hello.txt`, the command)
+    /// and its metadata (`opencode serve`: `exit`, `output`, `filediff`, `diff`, …). Hosts that
+    /// only need the text can ignore it.
+    ToolDetail {
+        id: String,
+        title: Option<String>,
+        metadata: serde_json::Value,
+    },
     /// The outcome of a tool call.
     ToolResult {
         id: String,

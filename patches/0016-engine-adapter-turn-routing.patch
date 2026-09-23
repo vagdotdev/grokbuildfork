@@ -1,14 +1,31 @@
+diff --git a/crates/codegen/xai-grok-pager/src/app/acp_handler/mod.rs b/crates/codegen/xai-grok-pager/src/app/acp_handler/mod.rs
+index a06a65ab..982e38c1 100644
+--- a/crates/codegen/xai-grok-pager/src/app/acp_handler/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/app/acp_handler/mod.rs
+@@ -54,6 +54,8 @@ use permissions::{
+     apply_recap_block, handle_permission_request, should_drop_duplicate_auto_recap,
+     should_drop_late_auto_recap,
+ };
++// Workshop: the OpenCode engine's permission asks reuse the same approval prompt.
++pub(crate) use permissions::enqueue_permission_for_workshop;
+ 
+ pub(crate) use routing::task_view_by_session_id;
+ use routing::{
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
-index f968c838..1945d7b7 100644
+index f968c838..693af166 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
-@@ -740,6 +740,15 @@ pub struct AgentView {
+@@ -740,6 +740,19 @@ pub struct AgentView {
      pub(crate) session_binding_epoch: u32,
      pub scrollback: ScrollbackState,
      pub prompt: PromptWidget,
 +    /// Workshop: composer label for an Engine/Adapter connection (`Big Pickle · OpenCode`,
 +    /// `Claude · {model}`); `None` for Shell (Direct/Local), which shows the shell model name.
 +    pub(crate) workshop_model_label: Option<String>,
++    /// Workshop: the context meter's numbers for an Engine/Adapter connection — `(used, limit)`:
++    /// the engine's last reported usage and the live model's context window. `None` for Shell
++    /// (the shell's own numbers show). Either side unknown → the meter is hidden, never guessed.
++    pub(crate) workshop_context: Option<(Option<u64>, Option<u64>)>,
 +    /// Workshop: a streaming Engine/Adapter turn is in flight for this agent. Mirrors the app-level
 +    /// flag so the per-agent input layer treats Ctrl+C as a cancellable activity (there is no ACP
 +    /// turn to detect). Cleared when the turn ends.
@@ -39,20 +56,21 @@ index 13962908..3cccf270 100644
                      // Skip while editing a queued row (edit-mode Enter is handled earlier for non-empty; empty must stay a no-op)
                      // That Enter must only insert the newline, not fire a queued follow-up
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
-index ae3b381c..68aa7a2f 100644
+index ae3b381c..4e7fc471 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
-@@ -135,6 +135,9 @@ impl AgentView {
+@@ -135,6 +135,10 @@ impl AgentView {
              session_binding_epoch: 0,
              scrollback,
              prompt,
 +            workshop_model_label: None,
++            workshop_context: None,
 +            workshop_turn_active: false,
 +            workshop_retry_prompt: None,
              tip_typing_dismissed: false,
              todo: TodoPane::new(),
              tasks: TasksPane::new(),
-@@ -874,6 +877,7 @@ impl AgentView {
+@@ -874,6 +878,7 @@ impl AgentView {
          self.session.state.is_turn_running()
              || self.session.state.is_compact_running()
              || (self.wake_turn_active() && !self.wake_turn_cancelling())
@@ -60,8 +78,36 @@ index ae3b381c..68aa7a2f 100644
      }
      /// Whether a local or wake cancel is still in flight.
      pub(crate) fn any_cancel_pending(&self) -> bool {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs
+index b04f0f9c..86049684 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs
+@@ -47,6 +47,10 @@ pub(crate) use notes::FEEDBACK_TRACE_UPLOAD_TIMEOUT_MS;
+ pub(crate) use notes::{recap_unavailable_toast, scrollback_has_user_messages};
+ pub(crate) use permissions::resolve_permission_queue_transition;
+ pub(crate) use prompt::dispatch_initial_prompt;
++// Workshop: the engine's permission asks are answered from the agent's live mode, and the
++// approval prompt is withdrawn when the engine turn ends.
++pub(crate) use permissions::drain_permission_queue as drain_workshop_permission_queue;
++pub(crate) use prompt::workshop_permission_mode;
+ pub(in crate::app) use prompt::{
+     present_export_copy_tip, show_small_screen_tip, show_ssh_wrap_tip,
+ };
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/permissions.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/permissions.rs
+index 59bf6734..4f85ad00 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/permissions.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/permissions.rs
+@@ -259,7 +259,7 @@ pub(super) fn dispatch_permission_cancel(app: &mut AppView) -> Vec<Effect> {
+ /// Drain all queued permission requests, sending `Cancelled` to each.
+ /// Called on turn-end and turn-cancel; after draining, restores the stashed prompt/pane.
+ /// Distinct from `dispatch_permission_cancel` (front only).
+-pub(super) fn drain_permission_queue(agent: &mut AgentView) {
++pub(crate) fn drain_permission_queue(agent: &mut AgentView) {
+     agent.last_permission_click = None;
+     if agent.permission_queue.is_empty() {
+         return;
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-index a4d77733..463a3d8e 100644
+index a4d77733..df4d9bd8 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 @@ -82,6 +82,7 @@ pub(super) fn collect_live_doctor_report_for_terminal(
@@ -72,7 +118,7 @@ index a4d77733..463a3d8e 100644
      Some(report)
  }
  
-@@ -614,6 +615,92 @@ pub(super) fn dispatch_send_prompt_inner(
+@@ -614,6 +615,146 @@ pub(super) fn dispatch_send_prompt_inner(
      dispatch_send_prompt_submission(app, text, None, consume_input, literal, is_follow_up)
  }
  
@@ -94,9 +140,18 @@ index a4d77733..463a3d8e 100644
 +    use crate::app::workshop::{self, WorkshopConnection, WorkshopTurnKind, WorkshopTurnSpec};
 +
 +    if app.workshop_turn_active {
-+        app.show_toast(
-+            "Still working on your last message — Ctrl+C cancels it, /model switches model.",
-+        );
++        // One turn at a time on the engine: later prompts wait their turn and go out as
++        // separate messages when this one ends (`Done` drains the queue), never concatenated.
++        let queued = {
++            app.workshop_turn_queue.push_back(text.trim().to_owned());
++            app.workshop_turn_queue.len()
++        };
++        if let Some(agent) = app.agents.get_mut(&id) {
++            agent.prompt.set_text("");
++        }
++        app.show_toast(&format!(
++            "Queued ({queued}) — sends when this turn ends. Ctrl+C cancels the current turn."
++        ));
 +        return vec![];
 +    }
 +    let Some(tx) = app.workshop_turn_tx.clone() else {
@@ -107,16 +162,15 @@ index a4d77733..463a3d8e 100644
 +        return vec![];
 +    };
 +    let cwd = agent.session.cwd.clone();
-+    let always_approve = agent.session.is_yolo();
++    let mode = workshop_permission_mode(agent);
 +
 +    let kind = match &app.workshop_connection {
 +        WorkshopConnection::Shell => return vec![],
++        // A launch is a new engine conversation unless it resumed one (`--resume`, `-c`, the
++        // picker); the id then lives in `workshop_engine_session` for the rest of the process.
 +        WorkshopConnection::Engine { model } => WorkshopTurnKind::Engine {
 +            slot: app.workshop_engine_slot.clone(),
-+            session: app
-+                .workshop_engine_session
-+                .clone()
-+                .or_else(|| workshop::load_resume_id("opencode", &cwd)),
++            session: app.workshop_engine_session.clone(),
 +            model: model.clone(),
 +        },
 +        WorkshopConnection::Adapter { rail, model } => WorkshopTurnKind::Adapter {
@@ -129,7 +183,7 @@ index a4d77733..463a3d8e 100644
 +        kind,
 +        cwd,
 +        text: text.clone(),
-+        always_approve,
++        mode,
 +    };
 +
 +    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
@@ -141,6 +195,11 @@ index a4d77733..463a3d8e 100644
 +    app.workshop_turn_started = Some(std::time::Instant::now());
 +    app.workshop_turn_errored = false;
 +    app.workshop_last_prompt = Some(text.clone());
++    app.workshop_turn_thinking_entry = None;
++    app.workshop_turn_tools.clear();
++    app.workshop_turn_decided_calls.clear();
++    app.workshop_turn_record.clear();
++    app.workshop_turn_prompt_text = Some(text.trim().to_owned());
 +
 +    if let Some(agent) = app.agents.get_mut(&id) {
 +        agent.record_prompt_in_history(text.trim());
@@ -156,16 +215,57 @@ index a4d77733..463a3d8e 100644
 +        if agent.display_name.is_none() && agent.generated_session_title.is_none() {
 +            agent.generated_session_title = Some(workshop::session_topic(&text));
 +        }
++        // Sending brings the new turn into view like the ACP path does: pin the prompt at the
++        // top when "Snap prompt to top on send" is on, else follow the bottom — never leave the
++        // view parked wherever the user last scrolled.
++        let prompt_idx = agent.scrollback.len().saturating_sub(1);
++        let flip = crate::appearance::cache::load_page_flip_on_send();
++        agent.scrollback.follow_new_turn(Some(prompt_idx), flip);
++        if !flip {
++            agent.scrollback.follow_new_turn(None, false);
++        }
 +    }
 +
 +    tokio::spawn(workshop::run_workshop_turn(spec, tx, cancel_rx));
 +    vec![]
 +}
 +
++/// The agent's permission mode as it applies to an Engine/Adapter turn: Plan (pending or active)
++/// wins, then always-approve, then Auto, else Normal (ask).
++pub(crate) fn workshop_permission_mode(
++    agent: &crate::app::agent_view::AgentView,
++) -> crate::app::workshop::WorkshopPermissionMode {
++    use crate::app::workshop::WorkshopPermissionMode as Mode;
++    if agent.plan_mode_pending.unwrap_or(agent.plan_mode_active) {
++        Mode::Plan
++    } else if agent.session.is_yolo() {
++        Mode::AlwaysApprove
++    } else if agent.session.is_auto() {
++        Mode::Auto
++    } else {
++        Mode::Normal
++    }
++}
++
++/// Start the next queued prompt once the running Engine/Adapter turn has ended (`Done`). Each
++/// queued prompt is its own turn with its own bubble; nothing is joined.
++pub(crate) fn dispatch_workshop_next_queued(app: &mut AppView, id: AgentId) -> Vec<Effect> {
++    if app.workshop_turn_active {
++        return vec![];
++    }
++    let Some(text) = app.workshop_turn_queue.pop_front() else {
++        return vec![];
++    };
++    if text.is_empty() {
++        return dispatch_workshop_next_queued(app, id);
++    }
++    dispatch_workshop_turn(app, id, text)
++}
++
  pub(super) fn dispatch_send_prompt_submission(
      app: &mut AppView,
      text: String,
-@@ -689,6 +776,20 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -689,6 +830,20 @@ pub(super) fn dispatch_send_prompt_submission(
          text
      };
  
@@ -186,7 +286,7 @@ index a4d77733..463a3d8e 100644
      // Capture app-level fields before the mut-borrow on `agent`.
      let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
      let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
-@@ -701,6 +802,7 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -701,6 +856,7 @@ pub(super) fn dispatch_send_prompt_submission(
      let login_method_id_from_app = app.login_method_id.as_ref().map(|id| id.0.to_string());
      let leader_mode = app.leader_mode;
      let screen_mode_is_minimal = app.screen_mode.is_minimal();
@@ -194,7 +294,7 @@ index a4d77733..463a3d8e 100644
      let Some(agent) = app.agents.get_mut(&id) else {
          return prelude;
      };
-@@ -1029,6 +1131,23 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -1029,6 +1185,23 @@ pub(super) fn dispatch_send_prompt_submission(
                  return effects;
              }
              CommandResult::QueueCommand(cmd_text) => {
@@ -218,7 +318,7 @@ index a4d77733..463a3d8e 100644
                  agent.session.enqueue_command(cmd_text);
              }
              CommandResult::InjectSkill {
-@@ -1413,7 +1532,23 @@ pub(super) fn handle_prompt_response(
+@@ -1413,7 +1586,23 @@ pub(super) fn handle_prompt_response(
      // The leader's `running_prompt_id` broadcast can arrive before this `PromptResponse`
      // Take any stashed adoption now; it is applied after `finish_turn` clears `current_prompt_id` below
      let pending_adoption = app.pending_running_adoptions.remove(&agent_id);
@@ -242,7 +342,7 @@ index a4d77733..463a3d8e 100644
          // Discard PromptResponses that don't belong to the currently active prompt
          // They belong to a turn the user rewound, or to a queued prompt that never became the running turn
          // Without the `Err` fallback, a queued prompt's RPC error has no id to gate on and is misattributed to the running turn
-@@ -1642,6 +1777,17 @@ pub(super) fn handle_prompt_response(
+@@ -1642,6 +1831,17 @@ pub(super) fn handle_prompt_response(
          // Insert the session event message (skip TurnCompleted for bash-mode, which has no agent turn)
          let event = match (&result, was_cancelling) {
              (Ok(_), false) if agent.bash_turn => None,
@@ -260,7 +360,7 @@ index a4d77733..463a3d8e 100644
              (Err(_), _) if dedicated_ux_shown => None,
              // `err` is already banner-formatted by `format_acp_error` at the producer, the single formatting owner
              // Don't re-format here
-@@ -1682,9 +1828,13 @@ pub(super) fn handle_prompt_response(
+@@ -1682,9 +1882,13 @@ pub(super) fn handle_prompt_response(
                  };
                  Some((NotificationEventKind::TurnComplete, body))
              }
@@ -277,11 +377,48 @@ index a4d77733..463a3d8e 100644
              _ => None,
          };
  
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/foreign.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/foreign.rs
+index daaf550f..60bcca32 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/foreign.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/session/foreign.rs
+@@ -167,6 +167,20 @@ pub(in crate::app::dispatch) fn handle_session_list_loaded(
+     }
+     let chat_mode = app.chat_mode && !dashboard_request;
+     let is_browse = query.is_none();
++    // Workshop: engine conversations (OpenCode sessions Workshop recorded) sit in the same
++    // list as the shell's own sessions for this directory, newest first, so a browse finds the
++    // session the user just left.
++    if !dashboard_request {
++        let mut engine = crate::app::workshop_sessions::picker_entries(&app.cwd);
++        if let Some(q) = query.as_deref().map(str::to_lowercase).filter(|q| !q.is_empty()) {
++            engine.retain(|e| e.summary.to_lowercase().contains(&q));
++        }
++        if !engine.is_empty() {
++            engine.retain(|e| !sessions.iter().any(|s| s.id == e.id));
++            sessions.extend(engine);
++            sessions.sort_by_key(|e| std::cmp::Reverse(e.last_active_at.unwrap_or(e.updated_at)));
++        }
++    }
+     let notice;
+     {
+         let Some(mut target) =
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
-index a80f3faf..24d251d9 100644
+index a80f3faf..83a40287 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
-@@ -674,7 +674,7 @@ pub(in crate::app::dispatch) fn dispatch_trust_folder(app: &mut AppView) -> Vec<
+@@ -421,6 +421,11 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
+     );
+     app.agents.insert(agent_id, agent);
+     configure_agent_composer(app, agent_id);
++    // Workshop: a launch or picker resume of an engine conversation lands in this new agent —
++    // never in the hidden home husk behind the welcome screen.
++    if !stay_on_welcome {
++        crate::app::workshop_sessions::apply_pending_resume(app, agent_id);
++    }
+     {
+         let agent = app.agents.get_mut(&agent_id).unwrap();
+         agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
+@@ -674,7 +679,7 @@ pub(in crate::app::dispatch) fn dispatch_trust_folder(app: &mut AppView) -> Vec<
          TrustGateOutcome::Finish => finish_trust(app),
          TrustGateOutcome::FinishSessionLocal => {
              app.show_toast(
@@ -290,20 +427,82 @@ index a80f3faf..24d251d9 100644
              );
              finish_trust(app)
          }
-@@ -785,9 +785,13 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
+@@ -785,9 +790,15 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
      let announcements = app.active_announcements.clone();
      let restricted = app.tier_restricted_commands.clone();
      let plugins_visible = !app.appearance.disable_plugins;
 +    // Workshop: a new/revealed agent shows the active connection's composer label (`Big Pickle ·
 +    // OpenCode`, `Claude · {model}`); `None` for Direct/Local (Shell) → the shell model name shows.
 +    let workshop_label = app.workshop_label();
++    let workshop_context = crate::app::workshop::context_meter(app);
      let Some(agent) = app.agents.get_mut(&agent_id) else {
          return;
      };
 +    agent.workshop_model_label = workshop_label;
++    agent.workshop_context = workshop_context;
      agent.prompt.set_compact(compact);
      agent.prompt.adopt_slash_mru(slash_mru);
      agent.prompt.adopt_command_tags(command_tags);
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/load.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/load.rs
+index 23ab562f..b000bda9 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/load.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/session/load.rs
+@@ -39,6 +39,33 @@ pub(in crate::app::dispatch) fn dispatch_load_session(
+     session_cwd: Option<std::path::PathBuf>,
+     chat_kind: bool,
+ ) -> Vec<Effect> {
++    // Workshop: an engine conversation is not a shell session — replay Workshop's record into a
++    // fresh agent and continue the same OpenCode session from there.
++    if let Some(record) = crate::app::workshop_sessions::load(&session_id) {
++        crate::unified_log::info(
++            "workshop.engine_resume",
++            None,
++            Some(serde_json::json!({
++                "session": record.id,
++                "turns": record.turns.len(),
++                "startup_allowed": app.session_startup_allowed(),
++            })),
++        );
++        invalidate_picker_fetch_on_dismiss(app);
++        if let Some(existing) = app.agents.iter().find_map(|(id, a)| {
++            (app.workshop_engine_session.as_deref() == Some(record.id.as_str())
++                && a.session.session_id.is_some())
++            .then_some(*id)
++        }) {
++            switch_to_agent(app, existing, SwitchCause::Load);
++            return vec![];
++        }
++        // The welcome screen's unused home husk is not needed once a real conversation opens.
++        let mut effects = abandon_unused_empty_for_load(app, &session_id);
++        app.workshop_engine_resume = Some(record);
++        effects.extend(super::lifecycle::dispatch_new_session_inner(app, None));
++        return effects;
++    }
+     if !app.session_startup_allowed() {
+         #[cfg(feature = "local-workspace")]
+         {
+@@ -410,6 +437,10 @@ pub(in crate::app::dispatch) fn dispatch_pick_session(
+     if chat_kind {
+         return dispatch_load_session(app, session_id, None, true);
+     }
++    // Workshop: an engine conversation row (recorded under the home, not a shell session dir).
++    if crate::app::workshop_sessions::load(&session_id).is_some() {
++        return dispatch_load_session(app, session_id, None, false);
++    }
+     let local_cwd = app.cwd.to_string_lossy().to_string();
+     if xai_grok_shell::session::resolve_local_session(&session_id, &local_cwd).is_some() {
+         return dispatch_load_session(app, session_id, None, false);
+@@ -1029,6 +1060,10 @@ pub(in crate::app::dispatch) fn dispatch_pick_content_session(
+     if chat_kind {
+         return dispatch_load_session(app, session_id, None, true);
+     }
++    // Workshop: an engine conversation row (recorded under the home, not a shell session dir).
++    if crate::app::workshop_sessions::load(&session_id).is_some() {
++        return dispatch_load_session(app, session_id, None, false);
++    }
+     let local_cwd = app.cwd.to_string_lossy().to_string();
+     if xai_grok_shell::session::resolve_local_session(&session_id, &local_cwd).is_some() {
+         return dispatch_load_session(app, session_id, None, false);
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs
 index f2985d30..b9ce17d2 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs
@@ -489,6 +688,1812 @@ index 00000000..69653ffb
 +        assert!(text.lines().all(|l| l.starts_with('[')));
 +    }
 +}
+diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_permissions.rs b/crates/codegen/xai-grok-pager/src/app/workshop_permissions.rs
+new file mode 100644
+index 00000000..3276f098
+--- /dev/null
++++ b/crates/codegen/xai-grok-pager/src/app/workshop_permissions.rs
+@@ -0,0 +1,900 @@
++//! Workshop overlay: the engine's permission asks in the pager's own approval prompt.
++//!
++//! `opencode serve` runs with an `ask` policy for edits and commands (see
++//! `workshop_adapters::opencode_engine::ask_before_edit_and_bash`). Each ask reaches the UI thread
++//! as `WorkshopTurnMsg::PermissionAsk`; in Normal and Plan mode it is turned into the same
++//! ACP-shaped request the shell sends for its own tools and queued on the agent, so the user sees
++//! the familiar prompt (title, the command or the diff, Yes / Yes-always / No, followup text) and
++//! the answer flows back to the server as `once` / `always` / `reject`.
++
++use agent_client_protocol as acp;
++use tokio::sync::oneshot;
++use workshop_adapters::opencode_engine::{PermissionReply, PermissionRequest};
++
++use crate::app::agent_view::AgentView;
++use crate::app::workshop::WorkshopTurnMsg;
++
++const ALLOW_ONCE: &str = "allow-once";
++const ALLOW_ALWAYS: &str = "allow-always";
++const REJECT_ONCE: &str = "reject-once";
++/// Most diff lines shown inside the prompt; the row's expanded body has the whole diff later.
++const MAX_DIFF_LINES: usize = 24;
++
++/// Map the user's pick in the approval prompt to the engine's reply vocabulary. Anything that is
++/// not an explicit allow — a reject, a cancel (Esc/Ctrl-C), a dropped prompt — is `reject`.
++pub fn reply_for_response(
++    response: Option<&acp::RequestPermissionResponse>,
++) -> (PermissionReply, Option<String>) {
++    let Some(response) = response else {
++        return (PermissionReply::Reject, None);
++    };
++    let followup = response
++        .meta
++        .as_ref()
++        .and_then(|m| m.get("followup_message"))
++        .and_then(|v| v.as_str())
++        .map(str::trim)
++        .filter(|s| !s.is_empty())
++        .map(str::to_owned);
++    match &response.outcome {
++        acp::RequestPermissionOutcome::Selected(sel) => {
++            let id = sel.option_id.0.as_ref();
++            if id == ALLOW_ONCE
++                || id == xai_grok_workspace::permission::ENABLE_ALWAYS_APPROVE_OPTION_ID
++            {
++                (PermissionReply::Once, None)
++            } else if id == ALLOW_ALWAYS {
++                (PermissionReply::Always, None)
++            } else {
++                (PermissionReply::Reject, followup)
++            }
++        }
++        _ => (PermissionReply::Reject, None),
++    }
++}
++
++/// `/home/me/Desktop/*` → `~/Desktop/*`: paths under the user's home read shorter in a prompt.
++fn shorten_home(path: &str) -> String {
++    match std::env::var("HOME").ok().filter(|h| !h.is_empty()) {
++        Some(h) if path == h => "~".to_owned(),
++        Some(h) if path.starts_with(&format!("{h}/")) => format!("~{}", &path[h.len()..]),
++        _ => path.to_owned(),
++    }
++}
++
++/// The directories an `external_directory` ask names, shortened with `~` for the user's home.
++pub fn external_directories(req: &PermissionRequest) -> Vec<String> {
++    let mut dirs: Vec<String> = req
++        .metadata
++        .get("directories")
++        .and_then(|d| d.as_array())
++        .map(|d| {
++            d.iter()
++                .filter_map(|v| v.as_str())
++                .map(str::to_owned)
++                .collect()
++        })
++        .unwrap_or_default();
++    if dirs.is_empty() {
++        dirs = req
++            .patterns
++            .iter()
++            .map(|p| p.trim_end_matches("/*").trim_end_matches('*').to_owned())
++            .filter(|p| !p.is_empty())
++            .collect();
++    }
++    dirs.iter().map(|d| shorten_home(d)).collect()
++}
++
++/// The ACP request the pager's permission view renders for an engine ask, in plain words: an
++/// Execute call ("Run this command?", the command in full underneath) for `bash` and for an
++/// out-of-folder command ("Run this command? It works outside this folder: ~/Desktop"), an Edit
++/// call with the file for `edit`, a generic call otherwise. The question is the title; the
++/// command goes in the body, where the view wraps it — a long command never cuts the question.
++pub fn acp_request(req: &PermissionRequest, session_id: &str) -> acp::RequestPermissionRequest {
++    let mut fields = acp::ToolCallUpdateFields::default();
++    let mut options = Vec::new();
++    let always_label = |what: &str| {
++        if req.always.is_empty() || req.always.iter().any(|p| p == "*") {
++            format!("Yes, and don't ask again for {what} this session")
++        } else {
++            let patterns: Vec<String> = req.always.iter().map(|p| shorten_home(p)).collect();
++            format!(
++                "Yes, and don't ask again for `{}` this session",
++                patterns.join("`, `")
++            )
++        }
++    };
++    let execute = |fields: &mut acp::ToolCallUpdateFields, command: &str, question: &str| {
++        fields.kind = Some(acp::ToolKind::Execute);
++        fields.title = Some(format!("Execute `{command}`"));
++        // `description` is what the view shows as the question; `command` is wrapped below it.
++        fields.raw_input = Some(serde_json::json!({
++            "command": command,
++            "description": question,
++        }));
++    };
++    match req.kind.as_str() {
++        "bash" => {
++            let command = req.command().unwrap_or(req.title.as_str()).to_owned();
++            execute(&mut fields, &command, "Run this command?");
++            options.push(acp::PermissionOption::new(
++                ALLOW_ONCE,
++                "Yes, run it",
++                acp::PermissionOptionKind::AllowOnce,
++            ));
++            options.push(acp::PermissionOption::new(
++                ALLOW_ALWAYS,
++                always_label("commands like this"),
++                acp::PermissionOptionKind::AllowAlways,
++            ));
++        }
++        "external_directory" if req.command().is_some() => {
++            let command = req.command().unwrap_or_default().to_owned();
++            let dirs = external_directories(req);
++            let where_ = if dirs.is_empty() {
++                "outside this folder".to_owned()
++            } else {
++                format!("outside this folder: {}", dirs.join(", "))
++            };
++            execute(
++                &mut fields,
++                &command,
++                &format!("Run this command? It works {where_}"),
++            );
++            options.push(acp::PermissionOption::new(
++                ALLOW_ONCE,
++                "Yes, run it",
++                acp::PermissionOptionKind::AllowOnce,
++            ));
++            options.push(acp::PermissionOption::new(
++                ALLOW_ALWAYS,
++                always_label("that folder"),
++                acp::PermissionOptionKind::AllowAlways,
++            ));
++        }
++        "edit" | "external_directory" => {
++            let path = req.file_path().unwrap_or(req.title.as_str()).to_owned();
++            fields.kind = Some(acp::ToolKind::Edit);
++            fields.title = Some(format!("Edit {path}"));
++            fields.raw_input = Some(serde_json::json!({ "file_path": path }));
++            options.push(acp::PermissionOption::new(
++                ALLOW_ONCE,
++                "Yes",
++                acp::PermissionOptionKind::AllowOnce,
++            ));
++            options.push(acp::PermissionOption::new(
++                ALLOW_ALWAYS,
++                if req.kind == "edit" {
++                    "Yes, allow all edits during this session".to_owned()
++                } else {
++                    always_label("that folder")
++                },
++                acp::PermissionOptionKind::AllowAlways,
++            ));
++        }
++        other => {
++            fields.title = Some(if req.title.is_empty() {
++                format!("Allow {other}?")
++            } else {
++                format!("Allow {other}? {}", req.title)
++            });
++            options.push(acp::PermissionOption::new(
++                ALLOW_ONCE,
++                "Yes",
++                acp::PermissionOptionKind::AllowOnce,
++            ));
++            if !req.always.is_empty() {
++                options.push(acp::PermissionOption::new(
++                    ALLOW_ALWAYS,
++                    always_label("this"),
++                    acp::PermissionOptionKind::AllowAlways,
++                ));
++            }
++        }
++    }
++    options.push(acp::PermissionOption::new(
++        REJECT_ONCE,
++        "No, and tell Workshop what to do differently",
++        acp::PermissionOptionKind::RejectOnce,
++    ));
++    let tool_call = acp::ToolCallUpdate::new(
++        acp::ToolCallId::new(req.call_id.clone().unwrap_or_else(|| req.id.clone())),
++        fields,
++    );
++    acp::RequestPermissionRequest::new(
++        acp::SessionId::new(session_id.to_owned()),
++        tool_call,
++        options,
++    )
++}
++
++/// Whether a shell command only reads: every simple command in the pipeline/list is a known
++/// read-only program with read-only arguments, nothing is redirected to a file, and nothing can
++/// smuggle another command in (`$(…)`, backticks, `sh -c`, `xargs`, `sudo`). Such commands run
++/// without a prompt in Normal mode, the way Claude Code and OpenCode treat them; anything not
++/// recognised prompts. Conservative by construction: unknown programs and flags prompt.
++pub fn is_read_only_command(command: &str) -> bool {
++    let command = command.trim();
++    if command.is_empty() || command.contains("$(") || command.contains('`') {
++        return false;
++    }
++    let segments = split_simple_commands(command);
++    !segments.is_empty() && segments.iter().all(|s| simple_command_is_read_only(s))
++}
++
++/// Split a shell command line on `&&`, `||`, `;`, `|`, `&` (background) and newlines, outside
++/// quotes. `>&`, `2>&1` and `&>` are redirections, not separators.
++fn split_simple_commands(command: &str) -> Vec<String> {
++    let chars: Vec<char> = command.chars().collect();
++    let mut out = Vec::new();
++    let mut cur = String::new();
++    let (mut single, mut double, mut escape) = (false, false, false);
++    let mut i = 0;
++    while let Some(&c) = chars.get(i) {
++        if escape {
++            cur.push(c);
++            escape = false;
++        } else if c == '\\' && !single {
++            cur.push(c);
++            escape = true;
++        } else if c == '\'' && !double {
++            single = !single;
++            cur.push(c);
++        } else if c == '"' && !single {
++            double = !double;
++            cur.push(c);
++        } else if single || double {
++            cur.push(c);
++        } else if c == '\n' || c == ';' || c == '|' {
++            if c == '|' && chars.get(i + 1) == Some(&'|') {
++                i += 1;
++            }
++            out.push(std::mem::take(&mut cur));
++        } else if c == '&' {
++            let prev = i
++                .checked_sub(1)
++                .and_then(|p| chars.get(p))
++                .copied()
++                .unwrap_or(' ');
++            let next = chars.get(i + 1).copied().unwrap_or(' ');
++            if prev == '>' || prev == '<' || next == '>' || next.is_ascii_digit() {
++                cur.push(c); // `>&1`, `2>&1`, `&>file`
++            } else {
++                if next == '&' {
++                    i += 1;
++                }
++                out.push(std::mem::take(&mut cur));
++            }
++        } else {
++            cur.push(c);
++        }
++        i += 1;
++    }
++    out.push(cur);
++    out.into_iter()
++        .map(|s| s.trim().to_owned())
++        .filter(|s| !s.is_empty())
++        .collect()
++}
++
++/// Whitespace tokenizer that keeps quoted strings together (quotes removed).
++fn tokens(segment: &str) -> Vec<String> {
++    let mut out = Vec::new();
++    let mut cur = String::new();
++    let mut in_token = false;
++    let (mut single, mut double, mut escape) = (false, false, false);
++    for c in segment.chars() {
++        if escape {
++            cur.push(c);
++            escape = false;
++            in_token = true;
++        } else if c == '\\' && !single {
++            escape = true;
++            in_token = true;
++        } else if c == '\'' && !double {
++            single = !single;
++            in_token = true;
++        } else if c == '"' && !single {
++            double = !double;
++            in_token = true;
++        } else if c.is_whitespace() && !single && !double {
++            if in_token {
++                out.push(std::mem::take(&mut cur));
++                in_token = false;
++            }
++        } else {
++            cur.push(c);
++            in_token = true;
++        }
++    }
++    if in_token {
++        out.push(cur);
++    }
++    out
++}
++
++/// Programs whose every invocation only reads (file system, process table, hardware).
++const READ_ONLY_PROGRAMS: &[&str] = &[
++    "ls",
++    "dir",
++    "cat",
++    "head",
++    "tail",
++    "file",
++    "pwd",
++    "which",
++    "whereis",
++    "whoami",
++    "id",
++    "uname",
++    "hostname",
++    "arch",
++    "nproc",
++    "uptime",
++    "free",
++    "df",
++    "du",
++    "stat",
++    "wc",
++    "echo",
++    "printf",
++    "date",
++    "cal",
++    "true",
++    "false",
++    "test",
++    "[",
++    "[[",
++    "type",
++    "basename",
++    "dirname",
++    "realpath",
++    "readlink",
++    "tr",
++    "sort",
++    "uniq",
++    "cut",
++    "column",
++    "nl",
++    "tac",
++    "rev",
++    "fold",
++    "fmt",
++    "expand",
++    "comm",
++    "diff",
++    "cmp",
++    "md5sum",
++    "sha1sum",
++    "sha256sum",
++    "b2sum",
++    "cksum",
++    "strings",
++    "hexdump",
++    "xxd",
++    "od",
++    "tree",
++    "locate",
++    "lsblk",
++    "lscpu",
++    "lsusb",
++    "lspci",
++    "ps",
++    "pgrep",
++    "cd",
++    "pushd",
++    "popd",
++    "dirs",
++    "jq",
++    "grep",
++    "egrep",
++    "fgrep",
++    "rg",
++    "ag",
++    "ack",
++    "fd",
++    "fdfind",
++    "lsb_release",
++    "getconf",
++    "ldd",
++    "nm",
++    "objdump",
++    "readelf",
++    "sw_vers",
++    "sysctl",
++    "getent",
++    "stat",
++    "mimetype",
++    "xdg-mime",
++    "tput",
++    "seq",
++    "yes",
++    "expr",
++    "bc",
++];
++
++/// Version queries any program answers without doing anything else.
++const VERSION_FLAGS: &[&str] = &["--version", "-version", "-V", "version", "--help", "-h"];
++
++fn simple_command_is_read_only(segment: &str) -> bool {
++    let mut toks = tokens(segment);
++    // Subshell / group punctuation.
++    toks.retain(|t| !matches!(t.as_str(), "(" | ")" | "{" | "}" | "!"));
++    for t in &mut toks {
++        while t.starts_with('(') {
++            t.remove(0);
++        }
++        while t.ends_with(')') && t.len() > 1 {
++            t.pop();
++        }
++    }
++    toks.retain(|t| !t.is_empty());
++    // Leading VAR=value assignments do not run anything.
++    while toks.first().is_some_and(|t| is_assignment(t)) {
++        toks.remove(0);
++    }
++    // Redirections: only to /dev/null or another descriptor. A `<` reads.
++    let mut args: Vec<String> = Vec::new();
++    let mut i = 0;
++    while let Some(t) = toks.get(i) {
++        let (op, target) = redirection(t);
++        if let Some(op) = op {
++            let target = match target {
++                Some(t) => t.to_owned(),
++                None => {
++                    i += 1;
++                    match toks.get(i) {
++                        Some(next) => next.clone(),
++                        None => return false,
++                    }
++                }
++            };
++            if op == '>' && !(target == "/dev/null" || target.starts_with('&')) {
++                return false;
++            }
++        } else if t.contains('>') {
++            // Anything else that looks like it writes somewhere (`foo>bar`, a quoted `>`).
++            return false;
++        } else {
++            args.push(t.clone());
++        }
++        i += 1;
++    }
++    let Some(program) = args.first() else {
++        return false;
++    };
++    let program = program.rsplit('/').next().unwrap_or(program).to_owned();
++    let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
++    if let [only] = rest.as_slice()
++        && VERSION_FLAGS.contains(only)
++        && !program.is_empty()
++    {
++        return true;
++    }
++    match program.as_str() {
++        p if READ_ONLY_PROGRAMS.contains(&p) => true,
++        "find" => !rest.iter().any(|a| {
++            matches!(
++                *a,
++                "-delete"
++                    | "-exec"
++                    | "-execdir"
++                    | "-ok"
++                    | "-okdir"
++                    | "-fprint"
++                    | "-fprint0"
++                    | "-fprintf"
++                    | "-fls"
++            )
++        }),
++        "sed" => !rest
++            .iter()
++            .any(|a| *a == "-i" || a.starts_with("-i") || a.starts_with("--in-place")),
++        "git" => git_is_read_only(&rest),
++        "dpkg" => rest
++            .first()
++            .is_some_and(|a| matches!(*a, "-l" | "-s" | "-L" | "-S" | "--list" | "--status")),
++        "rpm" => rest.first().is_some_and(|a| a.starts_with("-q")),
++        "brew" => rest
++            .first()
++            .is_some_and(|a| matches!(*a, "list" | "info" | "--prefix")),
++        "pip" | "pip3" => rest
++            .first()
++            .is_some_and(|a| matches!(*a, "list" | "show" | "freeze")),
++        "npm" => rest
++            .first()
++            .is_some_and(|a| matches!(*a, "ls" | "list" | "view" | "outdated")),
++        "cargo" => rest
++            .first()
++            .is_some_and(|a| matches!(*a, "metadata" | "tree" | "--list")),
++        "docker" => rest
++            .first()
++            .is_some_and(|a| matches!(*a, "ps" | "images" | "version")),
++        "systemctl" => rest
++            .first()
++            .is_some_and(|a| matches!(*a, "status" | "is-active" | "list-units")),
++        _ => false,
++    }
++}
++
++fn is_assignment(token: &str) -> bool {
++    let Some((name, _)) = token.split_once('=') else {
++        return false;
++    };
++    !name.is_empty()
++        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
++        && !name.chars().next().is_some_and(|c| c.is_ascii_digit())
++}
++
++/// `(op, inline target)` for a redirection token: `2>/dev/null` → (`>`, "/dev/null"),
++/// `2>` → (`>`, None), `<file` → (`<`, "file"). Not a redirection → (None, None).
++fn redirection(token: &str) -> (Option<char>, Option<&str>) {
++    let stripped = token.trim_start_matches(|c: char| c.is_ascii_digit());
++    if let Some(rest) = stripped.strip_prefix(">>") {
++        return (Some('>'), (!rest.is_empty()).then_some(rest));
++    }
++    if let Some(rest) = stripped.strip_prefix('>') {
++        return (Some('>'), (!rest.is_empty()).then_some(rest));
++    }
++    if let Some(rest) = stripped.strip_prefix("&>") {
++        return (Some('>'), (!rest.is_empty()).then_some(rest));
++    }
++    if let Some(rest) = stripped.strip_prefix('<') {
++        return (Some('<'), (!rest.is_empty()).then_some(rest));
++    }
++    (None, None)
++}
++
++fn git_is_read_only(rest: &[&str]) -> bool {
++    let mut args = rest.iter().copied().peekable();
++    // Global options before the subcommand.
++    while let Some(a) = args.peek().copied() {
++        if a == "--no-pager" || a.starts_with("--git-dir") || a.starts_with("--work-tree") {
++            args.next();
++        } else if a == "-C" || a == "-c" {
++            args.next();
++            args.next();
++        } else {
++            break;
++        }
++    }
++    let Some(sub) = args.next() else {
++        return false;
++    };
++    let tail: Vec<&str> = args.collect();
++    match sub {
++        "status" | "log" | "diff" | "show" | "blame" | "rev-parse" | "describe" | "ls-files"
++        | "ls-tree" | "cat-file" | "shortlog" | "rev-list" | "name-rev" | "count-objects"
++        | "grep" | "help" | "version" | "--version" => true,
++        "branch" => tail.iter().all(|a| {
++            matches!(
++                *a,
++                "-a" | "-r"
++                    | "-v"
++                    | "-vv"
++                    | "--list"
++                    | "--all"
++                    | "--remotes"
++                    | "--verbose"
++                    | "--show-current"
++            )
++        }),
++        "remote" => tail
++            .first()
++            .is_none_or(|a| matches!(*a, "-v" | "show" | "get-url")),
++        "stash" => tail.first().is_some_and(|a| matches!(*a, "list" | "show")),
++        "tag" => tail.is_empty() || tail.iter().all(|a| matches!(*a, "-l" | "--list" | "-n")),
++        "config" => tail
++            .first()
++            .is_some_and(|a| matches!(*a, "--get" | "--list" | "-l" | "--get-all")),
++        "worktree" => tail.first() == Some(&"list"),
++        "reflog" => tail.first().is_none_or(|a| *a == "show"),
++        _ => false,
++    }
++}
++
++/// The changed lines of an `edit` ask's diff, for the prompt body (capped).
++pub fn diff_preview_lines(req: &PermissionRequest) -> Vec<String> {
++    let Some(diff) = req.diff() else {
++        return Vec::new();
++    };
++    let mut lines: Vec<String> = diff
++        .lines()
++        .skip_while(|l| !l.starts_with("@@"))
++        .filter(|l| !l.starts_with('\\'))
++        .map(str::to_owned)
++        .collect();
++    if lines.len() > MAX_DIFF_LINES {
++        let hidden = lines.len() - MAX_DIFF_LINES;
++        lines.truncate(MAX_DIFF_LINES);
++        lines.push(format!("… (+{hidden} more lines)"));
++    }
++    lines
++}
++
++/// Show the engine's ask in the agent's approval prompt and wire the pick back to `reply`. A
++/// "No" with typed text also queues that text as the next turn (`WorkshopTurnMsg::FollowUp`).
++pub fn enqueue_engine_permission(
++    agent: &mut AgentView,
++    req: PermissionRequest,
++    reply: oneshot::Sender<PermissionReply>,
++    ui_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkshopTurnMsg>>,
++) {
++    let session_id = agent
++        .session
++        .session_id
++        .as_ref()
++        .map(|s| s.0.to_string())
++        .unwrap_or_else(|| req.session_id.clone());
++    let request = acp_request(&req, &session_id);
++    let (response_tx, response_rx) = oneshot::channel();
++    let args = xai_acp_lib::AcpArgs {
++        request,
++        response_tx,
++    };
++    crate::app::acp_handler::enqueue_permission_for_workshop(args, agent);
++    let preview = diff_preview_lines(&req);
++    if !preview.is_empty()
++        && let Some(front) = agent.permission_queue.back_mut()
++    {
++        front.description = preview;
++    }
++    let call_id = req.call_id.clone();
++    tokio::spawn(async move {
++        let response = response_rx.await.ok().and_then(Result::ok);
++        let (decision, followup) = reply_for_response(response.as_ref());
++        // The UI learns the outcome before the engine does, so the same tool call's next ask
++        // (an out-of-folder command asks `external_directory`, then `bash`) is answered without a
++        // second prompt.
++        if let (Some(call_id), Some(tx)) = (call_id, ui_tx.as_ref()) {
++            let _ = tx.send(WorkshopTurnMsg::PermissionDecided { call_id, decision });
++        }
++        let _ = reply.send(decision);
++        if let (Some(text), Some(tx)) = (followup, ui_tx) {
++            let _ = tx.send(WorkshopTurnMsg::FollowUp(text));
++        }
++    });
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++
++    fn ask(kind: &str, metadata: serde_json::Value, always: &[&str]) -> PermissionRequest {
++        PermissionRequest {
++            id: "per_1".into(),
++            session_id: "ses_1".into(),
++            kind: kind.into(),
++            title: "rm -rf tmp".into(),
++            patterns: vec!["rm -rf tmp".into()],
++            call_id: Some("call_1".into()),
++            metadata,
++            always: always.iter().map(|s| s.to_string()).collect(),
++        }
++    }
++
++    #[test]
++    fn bash_ask_renders_as_an_execute_prompt_with_the_command() {
++        let req = ask("bash", json!({"command": "rm -rf tmp"}), &["rm *"]);
++        let acp_req = acp_request(&req, "sid");
++        assert_eq!(acp_req.tool_call.fields.kind, Some(acp::ToolKind::Execute));
++        assert_eq!(
++            acp_req.tool_call.fields.title.as_deref(),
++            Some("Execute `rm -rf tmp`")
++        );
++        // `description` is the question the view shows; the command is wrapped underneath.
++        assert_eq!(
++            acp_req.tool_call.fields.raw_input,
++            Some(json!({"command": "rm -rf tmp", "description": "Run this command?"}))
++        );
++        let names: Vec<&str> = acp_req.options.iter().map(|o| o.name.as_str()).collect();
++        assert_eq!(
++            names,
++            vec![
++                "Yes, run it",
++                "Yes, and don't ask again for `rm *` this session",
++                "No, and tell Workshop what to do differently",
++            ]
++        );
++        let kinds: Vec<acp::PermissionOptionKind> =
++            acp_req.options.iter().map(|o| o.kind).collect();
++        assert_eq!(
++            kinds,
++            vec![
++                acp::PermissionOptionKind::AllowOnce,
++                acp::PermissionOptionKind::AllowAlways,
++                acp::PermissionOptionKind::RejectOnce,
++            ]
++        );
++    }
++
++    #[test]
++    fn edit_ask_shows_the_file_and_previews_the_diff() {
++        let req = ask(
++            "edit",
++            json!({"filepath": "/w/hello.txt", "diff": "Index: x\n--- a\n+++ b\n@@ -0,0 +1,1 @@\n+hi\n\\ No newline at end of file\n"}),
++            &["*"],
++        );
++        let acp_req = acp_request(&req, "sid");
++        assert_eq!(acp_req.tool_call.fields.kind, Some(acp::ToolKind::Edit));
++        assert_eq!(
++            acp_req.tool_call.fields.title.as_deref(),
++            Some("Edit /w/hello.txt")
++        );
++        assert_eq!(
++            acp_req.tool_call.fields.raw_input,
++            Some(json!({"file_path": "/w/hello.txt"}))
++        );
++        assert_eq!(
++            diff_preview_lines(&req),
++            vec!["@@ -0,0 +1,1 @@".to_owned(), "+hi".to_owned()]
++        );
++        assert!(
++            acp_req
++                .options
++                .iter()
++                .any(|o| o.name == "Yes, allow all edits during this session")
++        );
++    }
++
++    /// The 1.18.31 `external_directory` ask for a bash command (captured live): one question in
++    /// plain words naming the folder, the command in the body, never in the title.
++    #[test]
++    fn out_of_folder_command_asks_in_plain_words_with_the_folder_named() {
++        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/u".into());
++        let long = format!(
++            "mkdir -p {home}/Desktop/iBooks && curl -fsSL -o {home}/Desktop/iBooks/alice.epub https://www.gutenberg.org/ebooks/11.epub.noimages && curl -fsSL -o {home}/Desktop/iBooks/frankenstein.epub https://www.gutenberg.org/ebooks/84.epub.noimages"
++        );
++        let mut req = ask(
++            "external_directory",
++            json!({"command": long, "directories": [format!("{home}/Desktop")], "patterns": [format!("{home}/Desktop/*")]}),
++            &[&format!("{home}/Desktop/*")],
++        );
++        req.patterns = vec![format!("{home}/Desktop/*")];
++        assert_eq!(external_directories(&req), vec!["~/Desktop".to_owned()]);
++        let acp_req = acp_request(&req, "sid");
++        assert_eq!(acp_req.tool_call.fields.kind, Some(acp::ToolKind::Execute));
++        let raw = acp_req.tool_call.fields.raw_input.clone().unwrap();
++        assert_eq!(
++            raw["description"],
++            json!("Run this command? It works outside this folder: ~/Desktop")
++        );
++        assert_eq!(
++            raw["command"],
++            json!(long),
++            "the whole command, never truncated"
++        );
++        let names: Vec<&str> = acp_req.options.iter().map(|o| o.name.as_str()).collect();
++        assert_eq!(
++            names,
++            vec![
++                "Yes, run it",
++                "Yes, and don't ask again for `~/Desktop/*` this session",
++                "No, and tell Workshop what to do differently",
++            ]
++        );
++    }
++
++    #[test]
++    fn read_only_commands_are_recognised_and_writes_are_not() {
++        for cmd in [
++            "ls ~/",
++            "ls -la ~/Desktop 2>/dev/null || echo \"no desktop dir\"",
++            "ls ~/ && echo \"---\" && ls ~/Desktop 2>/dev/null || echo \"no desktop dir\"",
++            "which apt apt-get dnf pacman 2>/dev/null; echo \"---\"; cat /etc/os-release | head -3",
++            "uname -a",
++            "cat /etc/os-release",
++            "head -20 src/main.rs",
++            "file ~/Desktop/iBooks/*.epub",
++            "pwd",
++            "find . -name '*.rs' | wc -l",
++            "find . -type f -name \"*.log\"",
++            "grep -rn TODO src/",
++            "rg -n 'fn main' .",
++            "git status",
++            "git log --oneline -5",
++            "git diff HEAD~1 -- src/",
++            "git branch -a",
++            "git remote -v",
++            "git -C /tmp/x status",
++            "sed -n 1,5p Cargo.toml",
++            "python3 --version",
++            "cargo --version && rustc --version",
++            "cd ~/Desktop && ls",
++            "echo hi > /dev/null",
++            "ps aux 2>&1 | head",
++            "FOO=1 ls",
++            "[[ -d tmp ]] && echo yes",
++            "dpkg -l | grep ghostty",
++            "(cd /tmp && ls)",
++            "stat hello.txt; wc -l hello.txt",
++        ] {
++            assert!(is_read_only_command(cmd), "read-only: {cmd}");
++        }
++        for cmd in [
++            "rm -rf tmp",
++            "mkdir -p ~/Desktop/iBooks",
++            "mkdir -p ~/Desktop/iBooks && curl -fsSL -o ~/Desktop/iBooks/a.epub https://x/a.epub",
++            "curl -fsSL https://ghostty.org/install.sh | sudo sh",
++            "sudo apt install ghostty",
++            "apt-get install -y foo",
++            "pip install requests",
++            "brew install ghostty",
++            "echo hi > hello.txt",
++            "echo hi >> notes.txt",
++            "cat a > b",
++            "ls > listing.txt",
++            "find . -name '*.log' -delete",
++            "find . -name '*.log' -exec rm {} \\;",
++            "sed -i 's/a/b/' file.txt",
++            "git push origin main",
++            "git checkout -b x",
++            "git branch -D x",
++            "git commit -am x",
++            "git stash",
++            "python3 -c 'print(1)'",
++            "python3 script.py",
++            "bash -c 'ls'",
++            "sh install.sh",
++            "xargs rm < list",
++            "ls $(cat dirs)",
++            "ls `cat dirs`",
++            "tee out.txt",
++            "chmod +x run.sh",
++            "cp a b",
++            "mv a b",
++            "touch x",
++            "npm install",
++            "cargo build",
++            "make",
++            "",
++            "   ",
++        ] {
++            assert!(!is_read_only_command(cmd), "not read-only: {cmd}");
++        }
++    }
++
++    #[test]
++    fn picks_map_to_engine_replies() {
++        let selected = |id: &str| {
++            acp::RequestPermissionResponse::new(acp::RequestPermissionOutcome::Selected(
++                acp::SelectedPermissionOutcome::new(acp::PermissionOptionId::new(id)),
++            ))
++        };
++        assert_eq!(
++            reply_for_response(Some(&selected(ALLOW_ONCE))).0,
++            PermissionReply::Once
++        );
++        assert_eq!(
++            reply_for_response(Some(&selected(
++                xai_grok_workspace::permission::ENABLE_ALWAYS_APPROVE_OPTION_ID
++            )))
++            .0,
++            PermissionReply::Once
++        );
++        assert_eq!(
++            reply_for_response(Some(&selected(ALLOW_ALWAYS))).0,
++            PermissionReply::Always
++        );
++        let mut rejected = selected(REJECT_ONCE);
++        let mut meta = acp::Meta::new();
++        meta.insert("followup_message".into(), json!(" use trash instead "));
++        rejected.meta = Some(meta);
++        assert_eq!(
++            reply_for_response(Some(&rejected)),
++            (
++                PermissionReply::Reject,
++                Some("use trash instead".to_owned())
++            )
++        );
++        let cancelled =
++            acp::RequestPermissionResponse::new(acp::RequestPermissionOutcome::Cancelled);
++        assert_eq!(
++            reply_for_response(Some(&cancelled)).0,
++            PermissionReply::Reject
++        );
++        assert_eq!(reply_for_response(None).0, PermissionReply::Reject);
++    }
++}
+diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs b/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs
+new file mode 100644
+index 00000000..b953733b
+--- /dev/null
++++ b/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs
+@@ -0,0 +1,528 @@
++//! Workshop overlay: engine conversations on disk, so they can be resumed.
++//!
++//! An Engine (OpenCode) turn never enters the shell's session store — the shell session behind
++//! the agent view stays an empty husk — so Workshop keeps its own record per engine session under
++//! `$WORKSHOP_HOME/engine/sessions/<id>.json`: the prompts, the model's answers and reasoning,
++//! and every tool call with its result. The resume picker lists these, `workshop --resume <id>`
++//! / `workshop -c` replay one into a fresh agent and continue the same OpenCode session, and
++//! the quit hint names the id that actually resumes the conversation.
++//!
++//! Only sessions with at least one turn exist here: nothing is written at launch, so an idle
++//! start leaves no session behind.
++
++use std::path::{Path, PathBuf};
++
++use serde::{Deserialize, Serialize};
++use serde_json::Value;
++
++use crate::app::agent_view::AgentView;
++use crate::app::app_view::{AppView, SessionPickerEntry};
++use crate::scrollback::block::RenderBlock;
++
++/// One engine conversation.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct EngineSession {
++    /// The OpenCode session id (`ses_…`), also the resume handle.
++    pub id: String,
++    pub cwd: String,
++    pub model_ref: String,
++    pub model_name: String,
++    pub created_unix: u64,
++    pub updated_unix: u64,
++    /// The engine's last reported context usage, so a resumed session meters from where it was.
++    #[serde(default)]
++    pub context_used: Option<u64>,
++    #[serde(default)]
++    pub turns: Vec<Turn>,
++}
++
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct Turn {
++    pub prompt: String,
++    pub at_unix: u64,
++    #[serde(default)]
++    pub items: Vec<Item>,
++}
++
++/// What the model produced during a turn, in order.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "kind", rename_all = "snake_case")]
++pub enum Item {
++    Thinking {
++        text: String,
++    },
++    Text {
++        text: String,
++    },
++    Tool {
++        name: String,
++        input: Value,
++        ok: bool,
++        output: String,
++        #[serde(default)]
++        title: Option<String>,
++        #[serde(default)]
++        metadata: Value,
++    },
++}
++
++impl EngineSession {
++    /// Picker/quit title: the first prompt, one line, capped.
++    pub fn title(&self) -> String {
++        let first = self
++            .turns
++            .first()
++            .map(|t| t.prompt.as_str())
++            .unwrap_or_default();
++        let line: String = first.split_whitespace().collect::<Vec<_>>().join(" ");
++        let mut out: String = line.chars().take(72).collect();
++        if line.chars().count() > 72 {
++            out.push('…');
++        }
++        out
++    }
++
++    pub fn message_count(&self) -> usize {
++        self.turns
++            .iter()
++            .map(|t| {
++                1 + t
++                    .items
++                    .iter()
++                    .filter(|i| matches!(i, Item::Text { .. }))
++                    .count()
++            })
++            .sum()
++    }
++}
++
++fn now_unix() -> u64 {
++    crate::app::workshop_engine_state::now_unix()
++}
++
++/// Append answer text to the turn's record, continuing the current answer paragraph.
++pub fn record_text(items: &mut Vec<Item>, delta: &str) {
++    match items.last_mut() {
++        Some(Item::Text { text }) => text.push_str(delta),
++        _ => items.push(Item::Text {
++            text: delta.to_owned(),
++        }),
++    }
++}
++
++/// Append reasoning to the turn's record, continuing the current thinking paragraph.
++pub fn record_thinking(items: &mut Vec<Item>, delta: &str) {
++    match items.last_mut() {
++        Some(Item::Thinking { text }) => text.push_str(delta),
++        _ => items.push(Item::Thinking {
++            text: delta.to_owned(),
++        }),
++    }
++}
++
++/// `$WORKSHOP_HOME/engine/sessions`.
++pub fn sessions_dir() -> PathBuf {
++    crate::app::workshop::workshop_home()
++        .join("engine")
++        .join("sessions")
++}
++
++fn session_path(root: &Path, id: &str) -> PathBuf {
++    root.join(format!("{id}.json"))
++}
++
++/// OpenCode session ids are `ses_` + base62; anything else is never looked up here.
++fn plausible_id(id: &str) -> bool {
++    id.starts_with("ses_")
++        && id.len() < 80
++        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
++}
++
++pub fn load(id: &str) -> Option<EngineSession> {
++    load_in(&sessions_dir(), id)
++}
++
++fn load_in(root: &Path, id: &str) -> Option<EngineSession> {
++    if !plausible_id(id) {
++        return None;
++    }
++    let raw = std::fs::read_to_string(session_path(root, id)).ok()?;
++    serde_json::from_str(&raw).ok()
++}
++
++pub fn save(session: &EngineSession) {
++    save_in(&sessions_dir(), session);
++}
++
++fn save_in(root: &Path, session: &EngineSession) {
++    let path = session_path(root, &session.id);
++    if let Some(parent) = path.parent()
++        && let Err(e) = std::fs::create_dir_all(parent)
++    {
++        tracing::warn!(error = %e, path = %parent.display(), "engine sessions dir");
++        return;
++    }
++    match serde_json::to_vec_pretty(session) {
++        Ok(json) => {
++            if let Err(e) = workshop_providers::atomic_write_private(&path, &json) {
++                tracing::warn!(error = %e, path = %path.display(), "engine session write");
++            }
++        }
++        Err(e) => tracing::warn!(error = %e, "engine session serialize"),
++    }
++}
++
++/// Every recorded engine session for `cwd`, newest first. Sessions without a turn never exist.
++pub fn list_for_cwd(cwd: &Path) -> Vec<EngineSession> {
++    list_for_cwd_in(&sessions_dir(), cwd)
++}
++
++fn list_for_cwd_in(root: &Path, cwd: &Path) -> Vec<EngineSession> {
++    let cwd = cwd.to_string_lossy();
++    let Ok(dir) = std::fs::read_dir(root) else {
++        return Vec::new();
++    };
++    let mut out: Vec<EngineSession> = dir
++        .filter_map(|e| e.ok())
++        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
++        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
++        .filter_map(|raw| serde_json::from_str::<EngineSession>(&raw).ok())
++        .filter(|s| s.cwd == cwd && !s.turns.is_empty())
++        .collect();
++    out.sort_by(|a, b| b.updated_unix.cmp(&a.updated_unix).then(b.id.cmp(&a.id)));
++    out
++}
++
++pub fn most_recent_for_cwd(cwd: &Path) -> Option<EngineSession> {
++    list_for_cwd(cwd).into_iter().next()
++}
++
++/// Append one finished turn to the session's record (created on its first turn).
++pub fn record_turn(
++    id: &str,
++    cwd: &Path,
++    model_ref: &str,
++    model_name: &str,
++    prompt: &str,
++    items: Vec<Item>,
++    context_used: Option<u64>,
++) {
++    record_turn_in(
++        &sessions_dir(),
++        id,
++        cwd,
++        model_ref,
++        model_name,
++        prompt,
++        items,
++        context_used,
++    );
++}
++
++#[allow(clippy::too_many_arguments)]
++fn record_turn_in(
++    root: &Path,
++    id: &str,
++    cwd: &Path,
++    model_ref: &str,
++    model_name: &str,
++    prompt: &str,
++    items: Vec<Item>,
++    context_used: Option<u64>,
++) {
++    if !plausible_id(id) {
++        return;
++    }
++    let now = now_unix();
++    let mut session = load_in(root, id).unwrap_or_else(|| EngineSession {
++        id: id.to_owned(),
++        cwd: cwd.to_string_lossy().into_owned(),
++        model_ref: model_ref.to_owned(),
++        model_name: model_name.to_owned(),
++        created_unix: now,
++        updated_unix: now,
++        context_used: None,
++        turns: Vec::new(),
++    });
++    session.model_ref = model_ref.to_owned();
++    session.model_name = model_name.to_owned();
++    session.updated_unix = now;
++    if context_used.is_some() {
++        session.context_used = context_used;
++    }
++    session.turns.push(Turn {
++        prompt: prompt.to_owned(),
++        at_unix: now,
++        items,
++    });
++    save_in(root, &session);
++}
++
++/// Resume-picker rows for the engine sessions of `cwd` (`local` source, like the shell's own).
++pub fn picker_entries(cwd: &Path) -> Vec<SessionPickerEntry> {
++    picker_entries_in(&sessions_dir(), cwd)
++}
++
++fn picker_entries_in(root: &Path, cwd: &Path) -> Vec<SessionPickerEntry> {
++    list_for_cwd_in(root, cwd)
++        .into_iter()
++        .map(|s| {
++            let at = |secs: u64| {
++                chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0)
++                    .unwrap_or_else(chrono::Utc::now)
++            };
++            SessionPickerEntry {
++                id: s.id.clone(),
++                summary: s.title(),
++                updated_at: at(s.updated_unix),
++                created_at: at(s.created_unix),
++                cwd: s.cwd.clone(),
++                hostname: None,
++                source: "local".into(),
++                model_id: Some(s.model_name.clone()),
++                num_messages: s.message_count(),
++                last_active_at: Some(at(s.updated_unix)),
++                branch: None,
++                repo_name: crate::views::session_picker::repo_name_from_cwd(&s.cwd),
++                worktree_label: None,
++                last_turn_summary: s.turns.last().and_then(|t| {
++                    t.items.iter().rev().find_map(|i| match i {
++                        Item::Text { text } => Some(first_line(text)),
++                        _ => None,
++                    })
++                }),
++                last_recap: None,
++                session_kind: None,
++                card_detail: None,
++            }
++        })
++        .collect()
++}
++
++fn first_line(text: &str) -> String {
++    let line: String = text
++        .lines()
++        .map(str::trim)
++        .find(|l| !l.is_empty())
++        .unwrap_or_default()
++        .chars()
++        .take(120)
++        .collect();
++    line
++}
++
++/// The engine session `workshop --resume <id>` / `workshop -c` should open, if any: an explicit
++/// id that is one of ours, or — for `-c` under an active Engine connection — the most recent
++/// engine conversation in this directory. `None` leaves the flags to the shell's own resume.
++pub fn startup_resume(
++    resume_id: Option<&str>,
++    most_recent: bool,
++    cwd: &Path,
++) -> Option<EngineSession> {
++    if let Some(id) = resume_id {
++        return load(id).filter(|s| !s.turns.is_empty());
++    }
++    if most_recent && crate::app::workshop::load_active_connection().is_engine() {
++        return most_recent_for_cwd(cwd);
++    }
++    None
++}
++
++/// Replay a recorded conversation into `agent`'s transcript: prompts, reasoning (collapsed),
++/// tool rows with their bodies, answers.
++pub fn replay(agent: &mut AgentView, session: &EngineSession) {
++    for turn in &session.turns {
++        let at = chrono::DateTime::<chrono::Utc>::from_timestamp(turn.at_unix as i64, 0)
++            .map(|t| t.with_timezone(&chrono::Local));
++        let stamp = |agent: &mut AgentView, id: crate::scrollback::EntryId| {
++            if let Some(at) = at
++                && let Some(entry) = agent.scrollback.get_by_id_mut(id)
++            {
++                entry.created_at = Some(at);
++            }
++        };
++        agent.record_prompt_in_history(turn.prompt.trim());
++        let id = agent
++            .scrollback
++            .push_block(RenderBlock::user_prompt(turn.prompt.as_str()));
++        stamp(agent, id);
++        for item in &turn.items {
++            match item {
++                Item::Thinking { text } => {
++                    let id = agent
++                        .scrollback
++                        .push_block(RenderBlock::thinking(text.as_str()));
++                    agent.scrollback.finish_running(id);
++                    stamp(agent, id);
++                }
++                Item::Text { text } => {
++                    let id = agent
++                        .scrollback
++                        .push_block(RenderBlock::agent_message(text.as_str()));
++                    stamp(agent, id);
++                }
++                Item::Tool {
++                    name,
++                    input,
++                    ok,
++                    output,
++                    title,
++                    metadata,
++                } => {
++                    let id = agent
++                        .scrollback
++                        .push_block(crate::app::workshop_tools::running_row(name, input));
++                    let block = crate::app::workshop_tools::finished_row(
++                        name,
++                        input,
++                        *ok,
++                        output,
++                        title.as_deref(),
++                        metadata,
++                    );
++                    agent.scrollback.replace_tool_block(id, block, None);
++                    agent.scrollback.finish_running(id);
++                    stamp(agent, id);
++                }
++            }
++        }
++    }
++    agent.scrollback.push_block(RenderBlock::system(format!(
++        "Resumed {} · {} — the conversation continues where it left off.",
++        session.title(),
++        session.model_name
++    )));
++    // Land at the end of the conversation, following new output like a fresh session.
++    agent.scrollback.enable_follow_mode();
++}
++
++/// Bind a just-created agent to the engine conversation a launch or the picker asked to resume:
++/// replay the transcript, continue the same OpenCode session, restore the context meter.
++pub fn apply_pending_resume(app: &mut AppView, agent_id: crate::app::agent::AgentId) {
++    let Some(session) = app.workshop_engine_resume.take() else {
++        return;
++    };
++    let engine_model = match &app.workshop_connection {
++        crate::app::workshop::WorkshopConnection::Engine { model } => Some(model.model_ref.clone()),
++        _ => None,
++    };
++    // A resumed conversation continues on the model it used; the picker can still switch it.
++    if engine_model.is_some_and(|m| m != session.model_ref) {
++        let cached = crate::app::workshop::cached_engine_models();
++        if let Some(model) = cached
++            .into_iter()
++            .find(|m| m.model_ref == session.model_ref)
++        {
++            let conn = crate::app::workshop::WorkshopConnection::Engine { model };
++            crate::app::workshop::save_active_connection(&conn);
++            app.workshop_connection = conn;
++        }
++    }
++    app.workshop_engine_session = Some(session.id.clone());
++    app.workshop_context_used = session.context_used;
++    crate::app::workshop::sync_agent_views(app);
++    if let Some(agent) = app.agents.get_mut(&agent_id) {
++        replay(agent, &session);
++    }
++}
++
++/// The id the quit hint should name: for an Engine connection the engine conversation, or `None`
++/// (no hint) when nothing was said — the shell session behind an engine agent is always an empty
++/// husk, never worth resuming. Other connections keep the shell's own session id.
++pub fn exit_resume_id(app: &AppView, shell_session_id: &str) -> Option<String> {
++    if app.workshop_connection.is_engine() {
++        let id = app.workshop_engine_session.as_deref()?;
++        return load(id).filter(|s| !s.turns.is_empty()).map(|s| s.id);
++    }
++    Some(shell_session_id.to_owned())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++
++    fn sample(id: &str, cwd: &str, updated: u64) -> EngineSession {
++        EngineSession {
++            id: id.into(),
++            cwd: cwd.into(),
++            model_ref: "opencode/big-pickle".into(),
++            model_name: "Big Pickle".into(),
++            created_unix: updated - 10,
++            updated_unix: updated,
++            context_used: Some(8627),
++            turns: vec![Turn {
++                prompt: "Create a file named hello.txt\ncontaining hi".into(),
++                at_unix: updated,
++                items: vec![
++                    Item::Thinking {
++                        text: "Keep it short.".into(),
++                    },
++                    Item::Tool {
++                        name: "write".into(),
++                        input: json!({"filePath": "/w/hello.txt", "content": "hi"}),
++                        ok: true,
++                        output: "Wrote file successfully.".into(),
++                        title: Some("hello.txt".into()),
++                        metadata: json!({"exists": false}),
++                    },
++                    Item::Text {
++                        text: "Created hello.txt.".into(),
++                    },
++                ],
++            }],
++        }
++    }
++
++    #[test]
++    fn round_trips_and_lists_newest_first_per_cwd() {
++        let tmp = tempfile::tempdir().unwrap();
++        let root = tmp.path().join("engine").join("sessions");
++        let a = sample("ses_aaaa", "/w", 100);
++        let b = sample("ses_bbbb", "/w", 200);
++        let other = sample("ses_cccc", "/elsewhere", 300);
++        for s in [&a, &b, &other] {
++            save_in(&root, s);
++        }
++        assert_eq!(load_in(&root, "ses_aaaa"), Some(a.clone()));
++        assert_eq!(load_in(&root, "not-an-id"), None);
++        let listed: Vec<String> = list_for_cwd_in(&root, Path::new("/w"))
++            .into_iter()
++            .map(|s| s.id)
++            .collect();
++        assert_eq!(listed, vec!["ses_bbbb", "ses_aaaa"]);
++        assert_eq!(a.title(), "Create a file named hello.txt containing hi");
++        assert_eq!(a.message_count(), 2);
++        let rows = picker_entries_in(&root, Path::new("/w"));
++        assert_eq!(rows.len(), 2);
++        assert_eq!(rows[0].id, "ses_bbbb");
++        assert_eq!(rows[0].source, "local");
++        assert_eq!(rows[0].model_id.as_deref(), Some("Big Pickle"));
++        assert_eq!(
++            rows[0].last_turn_summary.as_deref(),
++            Some("Created hello.txt.")
++        );
++        // Appending a turn keeps the record and bumps the usage; a session without a turn is
++        // never created (no file for an idle launch).
++        record_turn_in(
++            &root,
++            "ses_aaaa",
++            Path::new("/w"),
++            "opencode/big-pickle",
++            "Big Pickle",
++            "and now?",
++            vec![Item::Text {
++                text: "Done.".into(),
++            }],
++            Some(9000),
++        );
++        let a2 = load_in(&root, "ses_aaaa").unwrap();
++        assert_eq!(a2.turns.len(), 2);
++        assert_eq!(a2.context_used, Some(9000));
++        assert!(!root.join("ses_none.json").exists());
++        assert!(
++            !plausible_id("0199-shell-uuid"),
++            "shell ids never hit the store"
++        );
++    }
++}
+diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs b/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs
+new file mode 100644
+index 00000000..aeee3b77
+--- /dev/null
++++ b/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs
+@@ -0,0 +1,360 @@
++//! Workshop overlay: the engine's tool calls as the pager's own tool rows, with the work inside
++//! them once the result lands — the diff an edit applied, the output and exit code of a command,
++//! the text a read returned — so a row can be opened (`Enter`, fold keys) like any ACP tool row.
++//!
++//! Shapes come from `opencode serve` 1.18.31 (verified live): `bash` finishes with
++//! `metadata.exit` and its combined output; `edit` with `metadata.diff` (a unified diff, also as
++//! `metadata.filediff.patch`); `write` with the new content only in its input.
++
++use serde_json::Value;
++use xai_grok_pager_diff::{DiffHunk, diff_hunks_from_strings};
++
++use crate::scrollback::block::RenderBlock;
++use crate::scrollback::blocks::{
++    EditToolCallBlock, ExecuteToolCallBlock, ListDirToolCallBlock, OtherToolCallBlock,
++    ReadToolCallBlock, ToolCallBlock,
++};
++
++/// Longest command output kept in a row (the tail); the model saw the whole thing anyway.
++const OUTPUT_TAIL_BYTES: usize = 16 * 1024;
++
++fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
++    v.get(key).and_then(Value::as_str)
++}
++
++/// The row's one-line summary: the path, command, pattern or URL of the call.
++pub fn summary(input: &Value) -> String {
++    crate::app::workshop::summarize_tool_input(input)
++}
++
++/// The row shown while the call runs: the pager's own verb rows (`◆ Run`, `◆ Edit`,
++/// `◆ Creating`, `◈ Read`, …) so engine turns read like shell turns.
++pub fn running_row(name: &str, input: &Value) -> RenderBlock {
++    let summary = summary(input);
++    match name {
++        "list" => RenderBlock::list_dir(summary),
++        _ => RenderBlock::tool_call(name, summary, true),
++    }
++}
++
++/// The row once the call finished, with its body: what the user opens to audit the work.
++pub fn finished_row(
++    name: &str,
++    input: &Value,
++    ok: bool,
++    output: &str,
++    title: Option<&str>,
++    metadata: &Value,
++) -> RenderBlock {
++    let summary = summary(input);
++    let error = (!ok).then(|| {
++        let first = output.lines().next().unwrap_or("Tool call failed").trim();
++        if first.is_empty() {
++            "Tool call failed".to_owned()
++        } else {
++            first.to_owned()
++        }
++    });
++    match name {
++        "bash" => {
++            let command = str_of(input, "command")
++                .or(title)
++                .unwrap_or(summary.as_str())
++                .to_owned();
++            let mut block = ExecuteToolCallBlock::new(command);
++            if let Some(desc) = str_of(input, "description").filter(|d| !d.trim().is_empty()) {
++                block = block.with_description(desc);
++            }
++            let body = str_of(metadata, "output").unwrap_or(output);
++            let body = tail(body);
++            if !body.trim().is_empty() && body.trim() != "(no output)" {
++                block = block.with_output(body);
++            }
++            let exit = metadata.get("exit").and_then(Value::as_i64);
++            match (exit, error) {
++                (_, Some(e)) => block = block.with_error(e),
++                (Some(code), None) if code != 0 => block = block.with_error(format!("exit {code}")),
++                _ => {}
++            }
++            RenderBlock::ToolCall(ToolCallBlock::Execute(block))
++        }
++        "edit" | "write" | "patch" => {
++            let path = str_of(input, "filePath")
++                .or_else(|| str_of(metadata, "filepath"))
++                .or(title)
++                .unwrap_or(summary.as_str())
++                .to_owned();
++            let unified = str_of(metadata, "diff")
++                .or_else(|| metadata.get("filediff").and_then(|f| str_of(f, "patch")))
++                .filter(|d| !d.trim().is_empty());
++            let hunks = match unified {
++                Some(diff) => hunks_from_unified_diff(diff),
++                None if name == "write" => {
++                    let content = str_of(input, "content").unwrap_or_default();
++                    diff_hunks_from_strings("", content, 1)
++                }
++                None => match (str_of(input, "oldString"), str_of(input, "newString")) {
++                    (Some(old), Some(new)) => diff_hunks_from_strings(old, new, 1),
++                    _ => Vec::new(),
++                },
++            };
++            let mut block = EditToolCallBlock::new(path, hunks);
++            if name == "write" && metadata.get("exists").and_then(Value::as_bool) != Some(true) {
++                block = block.with_prefix("Creating ");
++            }
++            if let Some(e) = error {
++                block = block.with_error(e);
++            }
++            RenderBlock::ToolCall(ToolCallBlock::Edit(block))
++        }
++        "read" => {
++            let mut block = ReadToolCallBlock::new(summary);
++            if let Some(e) = error {
++                block = block.with_error(e);
++            }
++            RenderBlock::ToolCall(ToolCallBlock::Read(block))
++        }
++        "list" => {
++            let mut block = ListDirToolCallBlock::new(summary).with_output(tail(output));
++            if let Some(e) = error {
++                block = block.with_error(e);
++            }
++            RenderBlock::ToolCall(ToolCallBlock::ListDir(block))
++        }
++        "glob" | "grep" | "webfetch" | "websearch" => {
++            // Keep the pager's own verb row for these; the result text is the body.
++            let mut block = match RenderBlock::tool_call(name, summary.clone(), true) {
++                RenderBlock::ToolCall(tc) => tc,
++                other => return other,
++            };
++            if !ok {
++                tc_set_error(&mut block, error.as_deref());
++            }
++            RenderBlock::ToolCall(block)
++        }
++        _ => {
++            let mut block = OtherToolCallBlock::new(name, summary).with_output(tail(output));
++            if let Some(e) = error {
++                block = block.with_error(e);
++            }
++            RenderBlock::ToolCall(ToolCallBlock::Other(block))
++        }
++    }
++}
++
++fn tc_set_error(tc: &mut ToolCallBlock, error: Option<&str>) {
++    let error = error.map(str::to_owned);
++    match tc {
++        ToolCallBlock::Search(b) => b.set_error(error),
++        ToolCallBlock::WebFetch(b) => b.set_error(error),
++        ToolCallBlock::WebSearch(b) => b.set_error(error),
++        ToolCallBlock::Other(b) => b.set_error(error),
++        _ => {}
++    }
++}
++
++/// The last [`OUTPUT_TAIL_BYTES`] of `text`, cut at a line boundary.
++fn tail(text: &str) -> String {
++    if text.len() <= OUTPUT_TAIL_BYTES {
++        return text.to_owned();
++    }
++    let mut start = text.len() - OUTPUT_TAIL_BYTES;
++    while !text.is_char_boundary(start) {
++        start += 1;
++    }
++    let cut = text.get(start..).unwrap_or_default();
++    match cut.find('\n') {
++        Some(nl) => format!("…\n{}", cut.get(nl + 1..).unwrap_or_default()),
++        None => format!("…{cut}"),
++    }
++}
++
++/// Parse a unified diff (as `opencode serve` reports it for `edit`: an `Index:` header, `---`/`+++`
++/// lines, `@@ -a,b +c,d @@` hunks, `\ No newline at end of file` markers) into the pager's hunks,
++/// with old/new line numbers taken from each hunk header.
++pub fn hunks_from_unified_diff(diff: &str) -> Vec<DiffHunk> {
++    struct Raw {
++        old_start: usize,
++        old: String,
++        new: String,
++    }
++    let mut raws: Vec<Raw> = Vec::new();
++    for line in diff.split_inclusive('\n') {
++        let bare = line.strip_suffix('\n').unwrap_or(line);
++        if let Some(header) = bare.strip_prefix("@@ ") {
++            let old_start = header
++                .split_whitespace()
++                .next()
++                .and_then(|range| range.strip_prefix('-'))
++                .and_then(|range| range.split(',').next())
++                .and_then(|n| n.parse::<usize>().ok())
++                .unwrap_or(1)
++                .max(1);
++            raws.push(Raw {
++                old_start,
++                old: String::new(),
++                new: String::new(),
++            });
++            continue;
++        }
++        let Some(raw) = raws.last_mut() else {
++            continue; // file headers before the first hunk
++        };
++        if bare.starts_with('\\') {
++            // "\ No newline at end of file": the previous line had no trailing newline.
++            for side in [&mut raw.old, &mut raw.new] {
++                if side.ends_with('\n') {
++                    side.pop();
++                }
++            }
++            continue;
++        }
++        let Some(first) = bare.chars().next() else {
++            continue;
++        };
++        let text = &line[1..];
++        match first {
++            '-' => raw.old.push_str(text),
++            '+' => raw.new.push_str(text),
++            ' ' => {
++                raw.old.push_str(text);
++                raw.new.push_str(text);
++            }
++            _ => {}
++        }
++    }
++    raws.into_iter()
++        .flat_map(|raw| diff_hunks_from_strings(&raw.old, &raw.new, raw.old_start))
++        .collect()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++    use similar::ChangeTag;
++
++    const EDIT_DIFF: &str = "Index: /w/hello.txt\n===================================================================\n--- /w/hello.txt\n+++ /w/hello.txt\n@@ -1,1 +1,1 @@\n-hi\n\\ No newline at end of file\n+hello\n\\ No newline at end of file\n";
++
++    #[test]
++    fn unified_diff_becomes_one_hunk_with_real_line_numbers() {
++        let hunks = hunks_from_unified_diff(EDIT_DIFF);
++        assert_eq!(hunks.len(), 1);
++        let tags: Vec<(ChangeTag, &str, usize, usize)> = hunks[0]
++            .iter()
++            .map(|l| (l.tag, l.text.as_str(), l.lo, l.ln))
++            .collect();
++        assert_eq!(
++            tags,
++            vec![
++                (ChangeTag::Delete, "hi", 1, 1),
++                (ChangeTag::Insert, "hello", 2, 1)
++            ]
++        );
++        let later = hunks_from_unified_diff("@@ -40,3 +40,4 @@\n a\n+b\n c\n d\n");
++        assert_eq!(later[0][0].lo, 40, "hunk header start is honoured");
++        assert!(
++            later[0]
++                .iter()
++                .any(|l| l.tag == ChangeTag::Insert && l.text == "b\n")
++        );
++        assert!(hunks_from_unified_diff("").is_empty());
++    }
++
++    #[test]
++    fn edit_row_carries_the_diff_and_bash_row_the_output_and_exit() {
++        let edit = finished_row(
++            "edit",
++            &json!({"filePath": "/w/hello.txt", "oldString": "hi", "newString": "hello"}),
++            true,
++            "Edit applied successfully.",
++            Some("hello.txt"),
++            &json!({"diff": EDIT_DIFF, "filediff": {"patch": EDIT_DIFF, "additions": 1, "deletions": 1}}),
++        );
++        let RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) = edit else {
++            panic!("edit row");
++        };
++        assert_eq!(edit.path, "/w/hello.txt");
++        assert_eq!(edit.hunks.len(), 1);
++        assert!(edit.is_success());
++
++        let created = finished_row(
++            "write",
++            &json!({"filePath": "/w/new.txt", "content": "one\ntwo\n"}),
++            true,
++            "Wrote file successfully.",
++            Some("new.txt"),
++            &json!({"exists": false, "filepath": "/w/new.txt"}),
++        );
++        let RenderBlock::ToolCall(ToolCallBlock::Edit(created)) = created else {
++            panic!("write row");
++        };
++        assert_eq!(created.hunks.len(), 1);
++        assert_eq!(
++            created.hunks[0]
++                .iter()
++                .filter(|l| l.tag == ChangeTag::Insert)
++                .count(),
++            2,
++            "a new file is all insertions"
++        );
++
++        let run = finished_row(
++            "bash",
++            &json!({"command": "ls /nope"}),
++            true,
++            "ls: cannot access '/nope'\n",
++            Some("ls /nope"),
++            &json!({"output": "ls: cannot access '/nope'\n", "exit": 2}),
++        );
++        let RenderBlock::ToolCall(ToolCallBlock::Execute(run)) = run else {
++            panic!("run row");
++        };
++        assert_eq!(run.command, "ls /nope");
++        assert_eq!(run.output.as_deref(), Some("ls: cannot access '/nope'\n"));
++        assert_eq!(run.error.as_deref(), Some("exit 2"));
++        assert!(!run.is_success());
++
++        let quiet = finished_row(
++            "bash",
++            &json!({"command": "rm -rf tmp"}),
++            true,
++            "(no output)",
++            Some("rm -rf tmp"),
++            &json!({"output": "(no output)", "exit": 0}),
++        );
++        let RenderBlock::ToolCall(ToolCallBlock::Execute(quiet)) = quiet else {
++            panic!("run row");
++        };
++        assert!(quiet.output.is_none() && quiet.is_success());
++    }
++
++    #[test]
++    fn running_rows_use_the_pager_verbs() {
++        assert!(matches!(
++            running_row("bash", &json!({"command": "ls"})),
++            RenderBlock::ToolCall(ToolCallBlock::Execute(_))
++        ));
++        assert!(matches!(
++            running_row("write", &json!({"filePath": "a"})),
++            RenderBlock::ToolCall(ToolCallBlock::Edit(_))
++        ));
++        assert!(matches!(
++            running_row("read", &json!({"filePath": "a"})),
++            RenderBlock::ToolCall(ToolCallBlock::Read(_))
++        ));
++        assert!(matches!(
++            running_row("list", &json!({"path": "/w"})),
++            RenderBlock::ToolCall(ToolCallBlock::ListDir(_))
++        ));
++    }
++
++    #[test]
++    fn long_output_keeps_the_tail() {
++        let long: String = (0..5000).map(|i| format!("line {i}\n")).collect();
++        let t = tail(&long);
++        assert!(t.starts_with("…\nline "));
++        assert!(t.ends_with("line 4999\n"));
++        assert!(t.len() <= OUTPUT_TAIL_BYTES + 8);
++    }
++}
 diff --git a/crates/codegen/xai-grok-pager/src/scrollback/block.rs b/crates/codegen/xai-grok-pager/src/scrollback/block.rs
 index 3e6fa78f..db56c27f 100644
 --- a/crates/codegen/xai-grok-pager/src/scrollback/block.rs
@@ -558,3 +2563,47 @@ index 376b8482..382f17cf 100644
      }
  
      fn has_vpad_for(&self, _appearance: &AppearanceConfig) -> bool {
+diff --git a/crates/codegen/xai-grok-pager/src/views/usage_modal.rs b/crates/codegen/xai-grok-pager/src/views/usage_modal.rs
+index b7846cb9..e29aa255 100644
+--- a/crates/codegen/xai-grok-pager/src/views/usage_modal.rs
++++ b/crates/codegen/xai-grok-pager/src/views/usage_modal.rs
+@@ -87,6 +87,9 @@ pub struct UsageInfoModalState {
+     pub ctx: UsageInfoContext,
+     pub context: Option<ContextInfoBlock>,
+     pub context_error: Option<String>,
++    /// Workshop: the "Context usage" tab for an Engine/Adapter connection — the live model's
++    /// numbers (or that they are not known yet), replacing the shell placeholder's snapshot.
++    pub context_override: Option<Vec<String>>,
+     /// Structured `/session-info` rows, built upstream from typed session data (never by re-parsing a formatted string).
+     pub session_fields: Option<Vec<SessionInfoField>>,
+     pub session_error: Option<String>,
+@@ -144,6 +147,7 @@ impl UsageInfoModalState {
+             ctx,
+             context: None,
+             context_error: None,
++            context_override: None,
+             session_error: None,
+             session_usage_text: None,
+             billing_loading: false,
+@@ -735,6 +739,21 @@ fn muted_line(theme: &Theme, s: impl Into<String>) -> Line<'static> {
+ }
+ 
+ fn context_tab_lines(state: &UsageInfoModalState, theme: &Theme, width: u16) -> Vec<Line<'static>> {
++    if let Some(lines) = &state.context_override {
++        return lines
++            .iter()
++            .enumerate()
++            .map(|(i, l)| {
++                if i == 0 {
++                    Line::styled(l.clone(), header_style(theme))
++                } else if l.starts_with('·') {
++                    muted_line(theme, l.clone())
++                } else {
++                    plain(theme, l.clone())
++                }
++            })
++            .collect();
++    }
+     if let Some(error) = &state.context_error {
+         return vec![muted_line(
+             theme,

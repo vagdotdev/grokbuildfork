@@ -303,7 +303,7 @@ fn set_workshop_connection(app: &mut AppView, conn: crate::app::workshop::Worksh
 pub(super) fn dispatch_workshop_first_run(app: &mut AppView) -> Vec<Effect> {
     app.workshop_first_launch = true;
     set_workshop_connection(app, crate::app::workshop::first_run_connection());
-    match crate::app::workshop::activate_placeholder_session() {
+    match crate::app::workshop::activate_placeholder_session(&app.workshop_connection) {
         Ok(key) => start_workshop_activation(app, key),
         Err(e) => {
             app.auth_state = AuthState::Pending {
@@ -382,6 +382,10 @@ pub(super) fn dispatch_connection_picker(
             picker.loading = true;
             picker.set_status("Refreshing…");
             dispatch_refresh_catalogs(app, true)
+        }
+        PickerOutcome::RetryRailModels => {
+            picker.set_status("Asking the CLI for its models again…");
+            vec![Effect::WorkshopRefreshRailModels]
         }
         PickerOutcome::Close => {
             // Before any connection is configured the welcome screen stays on the (auth-pending)
@@ -487,7 +491,7 @@ pub(super) fn dispatch_connection_picker(
 /// intercepts prompts before they reach the placeholder. The composer label is stamped from
 /// `workshop_connection` at session creation (`configure_agent_composer`) and here.
 fn finish_workshop_adapter_selection(app: &mut AppView) -> Vec<Effect> {
-    match crate::app::workshop::activate_placeholder_session() {
+    match crate::app::workshop::activate_placeholder_session(&app.workshop_connection) {
         Ok(key) => start_workshop_activation(app, key),
         Err(e) => {
             if let Some(picker) = app.connection_picker.as_mut() {
@@ -504,10 +508,7 @@ fn finish_workshop_adapter_selection(app: &mut AppView) -> Vec<Effect> {
 fn start_workshop_activation(app: &mut AppView, model_id: String) -> Vec<Effect> {
     // Stamp the composer label: `None` for Direct/Local (Shell) → the shell model name shows; the
     // model's name for Engine/Adapter; the answering model's name while the fallback carries it.
-    let label = app.workshop_label();
-    for agent in app.agents.values_mut() {
-        agent.workshop_model_label = label.clone();
-    }
+    crate::app::workshop::sync_agent_views(app);
     abort_prior_auth(app);
     let request_seq = app.next_auth_request_seq;
     app.next_auth_request_seq += 1;

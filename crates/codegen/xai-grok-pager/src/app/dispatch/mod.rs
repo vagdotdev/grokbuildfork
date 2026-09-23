@@ -47,6 +47,10 @@ pub(crate) use notes::FEEDBACK_TRACE_UPLOAD_TIMEOUT_MS;
 pub(crate) use notes::{recap_unavailable_toast, scrollback_has_user_messages};
 pub(crate) use permissions::resolve_permission_queue_transition;
 pub(crate) use prompt::dispatch_initial_prompt;
+// Workshop: the engine's permission asks are answered from the agent's live mode, and the
+// approval prompt is withdrawn when the engine turn ends.
+pub(crate) use permissions::drain_permission_queue as drain_workshop_permission_queue;
+pub(crate) use prompt::workshop_permission_mode;
 pub(in crate::app) use prompt::{
     present_export_copy_tip, show_small_screen_tip, show_ssh_wrap_tip,
 };

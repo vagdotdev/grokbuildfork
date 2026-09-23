@@ -598,6 +598,9 @@ pub enum PickerOutcome {
     SelectRailModel(Rail, workshop_detect::ModelRef),
     /// Re-run the loaders.
     Refresh,
+    /// Enter on a signed-in rail whose CLI could not list its models: ask the CLIs again (child
+    /// processes only; the hosted lists are left alone).
+    RetryRailModels,
 }
 
 /// An open key-entry prompt (value lives only here until saved; never rendered in full).
@@ -1038,6 +1041,11 @@ impl PickerState {
                         Some(m) => PickerOutcome::SelectRailModel(rail.rail, m.clone()),
                         None => PickerOutcome::Changed,
                     }
+                } else if matches!(
+                    rail.subscription,
+                    workshop_detect::RailModels::Failed { .. }
+                ) {
+                    PickerOutcome::RetryRailModels
                 } else if rail.show_connect {
                     PickerOutcome::RailConnect(rail.rail)
                 } else {
@@ -1268,15 +1276,7 @@ fn rail_detail_lines(rail: &RailState, selected_model: usize) -> Vec<String> {
             "Enter runs the official login in your terminal:  {}",
             workshop_detect::login_argv(rail.rail.vendor()).join(" ")
         ));
-    } else if rail.models.is_empty() {
-        // Signed in, but the CLI's own model list is not here (yet): say that, never a radio
-        // line with nothing in it or a made-up model.
-        lines.push(rail.empty_copy.unwrap_or(LOADING_MODELS).to_owned());
-        lines.push(
-            "Signed in; the list is the CLI's own, so nothing is picked until it arrives.".into(),
-        );
-        return lines;
-    } else {
+    } else if !rail.models.is_empty() {
         let radios: Vec<String> = rail
             .models
             .iter()
@@ -1294,6 +1294,10 @@ fn rail_detail_lines(rail: &RailState, selected_model: usize) -> Vec<String> {
             "Enter picks the model; turns run through the official CLI in an isolated worktree."
                 .into(),
         );
+    } else if rail.empty_copy.is_none() {
+        // Signed in, but the CLI's own model list is not here (yet): say that, never a radio
+        // line with nothing in it or a made-up model.
+        lines.push(LOADING_MODELS.to_owned());
     }
     if let Some(copy) = rail.empty_copy {
         lines.push(copy.to_owned());
@@ -1481,6 +1485,40 @@ mod tests {
         );
         assert_eq!(p.subscriptions_len(), 3 + p.auth_rows.len());
         assert_eq!(p.rail_selected, 0, "never preselects the xAI card");
+    }
+
+    /// A signed-in rail whose CLI could not list its models says "press Enter to retry", and Enter
+    /// there asks the CLIs again; a rail still loading offers nothing to pick and neither connects
+    /// nor retries.
+    #[test]
+    fn enter_on_a_rail_that_failed_to_list_models_retries() {
+        use workshop_detect::{RailModels, copy};
+        let ready = |subscription: RailModels, empty_copy| RailState {
+            pill: Pill::Ready,
+            installed: true,
+            empty_copy: Some(empty_copy),
+            subscription,
+            ..RailState::detecting(Rail::Claude)
+        };
+        let failed = RailModels::Failed {
+            reason: "the CLI did not answer in time".into(),
+        };
+        let mut p = PickerState::new().with_tab(PickerTab::Subscriptions);
+        p.apply_snapshot(PickerSnapshot {
+            rails: vec![ready(failed, copy::MODELS_FAILED)],
+            ..PickerSnapshot::default()
+        });
+        assert!(copy::MODELS_FAILED.ends_with("press Enter to retry"));
+        let detail = p.detail_lines().join("\n");
+        assert!(detail.contains(copy::MODELS_FAILED), "{detail}");
+        assert!(!detail.contains("Enter picks the model"), "{detail}");
+        assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::RetryRailModels);
+
+        p.apply_snapshot(PickerSnapshot {
+            rails: vec![ready(RailModels::Loading, copy::LOADING_MODELS)],
+            ..PickerSnapshot::default()
+        });
+        assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
     }
 
     /// Kilo Gateway is the silent fallback, never a row: not on `/model`, not on `/auth`, and no

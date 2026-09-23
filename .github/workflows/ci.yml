@@ -230,6 +230,17 @@ jobs:
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test pty_surface_polish -- --nocapture --include-ignored --test-threads=2
+      - name: PTY gates — engine trust (safety modes, visible tool work, meter, queue, reasoning, identity, resume)
+        # A scripted `opencode serve` (fixtures/fake-engine-serve.py) with the 1.18.31 event shapes:
+        # Plan sends the read-only agent and writes nothing; Normal shows the approval prompt for
+        # `rm -rf tmp` (reject keeps it, `Yes, proceed` posts `once`); Always-approve runs it with no
+        # prompt; Edit/Run rows open to their diff/output; the meter is hidden until the engine
+        # reports usage, then `8.6K / 200K`; queued prompts are separate turns; reasoning is a
+        # collapsed block; "what are you?" answers as Workshop; `--resume`/`-c`/the pickers replay
+        # the engine conversation and an idle launch prints no resume hint.
+        env:
+          WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
+        run: cargo test -p workshop-gates --test engine_trust -- --nocapture --include-ignored --test-threads=2
       - name: PTY smoke — live model lists (hermetic)
         # Zero egress before the user acts (logging proxy: first run, /auth, `workshop login` and
         # /model on a fresh home ask for nothing; once an API key is configured /model asks exactly

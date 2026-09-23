@@ -1,5 +1,5 @@
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
-index d9583697..4b35cf24 100644
+index d9583697..51771518 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
 @@ -741,7 +741,9 @@ impl AgentView {
@@ -13,7 +13,36 @@ index d9583697..4b35cf24 100644
              placeholder_override: if let Some(ph) = self
                  .prompt_input_mode
                  .placeholder_override(self.multiline_mode)
-@@ -2252,18 +2254,26 @@ impl AgentView {
+@@ -1314,13 +1316,21 @@ impl AgentView {
+                 Line::from(Span::styled(label, mode_style)),
+             );
+         }
+-        let ctx_used = self.context_state.as_ref().map(|c| c.used);
+-        let model_window = self.session.models.get_context_window();
+-        let ctx_total = self
+-            .context_state
+-            .as_ref()
+-            .and_then(|c| (c.total > 0).then_some(c.total))
+-            .or(model_window);
++        // Workshop: an Engine/Adapter connection meters the live model (its own usage and
++        // context window), never the shell placeholder model's numbers; unknown stays hidden.
++        let (ctx_used, ctx_total) = match self.workshop_context {
++            Some((used, limit)) => (used, limit),
++            None => {
++                let model_window = self.session.models.get_context_window();
++                (
++                    self.context_state.as_ref().map(|c| c.used),
++                    self.context_state
++                        .as_ref()
++                        .and_then(|c| (c.total > 0).then_some(c.total))
++                        .or(model_window),
++                )
++            }
++        };
+         if let Some(ctx_line) = context_bar::context_bar_line_for_session(
+             ctx_used,
+             ctx_total,
+@@ -2252,18 +2262,26 @@ impl AgentView {
                  dot,
                  Style::default().fg(dot_color).bg(bg),
              );
@@ -46,7 +75,7 @@ index d9583697..4b35cf24 100644
              let stop_fg = if self.hit_voice_stop_button.hovered {
                  theme.accent_error
              } else {
-@@ -2338,9 +2348,13 @@ impl AgentView {
+@@ -2338,9 +2356,13 @@ impl AgentView {
          let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
          let usage_warning = usage_warning_text.as_deref();
          let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);

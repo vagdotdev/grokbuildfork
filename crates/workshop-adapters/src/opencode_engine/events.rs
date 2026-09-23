@@ -12,7 +12,10 @@
 //!   the full text once `time.end` is set; `step-finish` carries `tokens`/`cost`.
 //! * `message.updated { info }` — assistant `info.error` (e.g.
 //!   `MessageAbortedError`) and `info.finish`.
-//! * `permission.updated` / `permission.asked` — the agent wants approval.
+//! * `permission.updated` / `permission.asked` — the agent wants approval. 1.18.31 emits
+//!   `permission.asked { id, sessionID, permission, patterns, metadata, always, tool: { callID } }`
+//!   (verified live); the tagged types still describe the older
+//!   `permission.updated { id, type, title, pattern, callID }`. Both are accepted.
 //! * `session.error { error }` — turn-level failure (also emitted on abort).
 //! * `session.status { status: { type } }` / `session.idle` — `idle` after
 //!   `busy` ends the turn.
@@ -33,9 +36,47 @@ pub struct PermissionRequest {
     pub session_id: String,
     /// OpenCode permission kind, e.g. `edit`, `bash`, `external_directory`.
     pub kind: String,
+    /// What is being asked for, in the user's terms: the command for `bash`, the file for
+    /// `edit`, else the patterns. Servers that send a `title` keep it.
     pub title: String,
     pub patterns: Vec<String>,
     pub call_id: Option<String>,
+    /// The ask's own detail: `{ command }` for `bash`, `{ filepath, diff }` for `edit` (the
+    /// unified diff the agent wants to apply). Empty object when the server sends none.
+    #[serde(default)]
+    pub metadata: Value,
+    /// The patterns an `always` reply would approve for the rest of the session (`rm *`).
+    #[serde(default)]
+    pub always: Vec<String>,
+}
+
+impl PermissionRequest {
+    /// The shell command behind a `bash` ask, when the server included it.
+    pub fn command(&self) -> Option<&str> {
+        json::str(&self.metadata, "command")
+    }
+
+    /// The file behind an `edit` ask, when the server included it.
+    pub fn file_path(&self) -> Option<&str> {
+        json::str(&self.metadata, "filepath").or_else(|| json::str(&self.metadata, "filePath"))
+    }
+
+    /// The unified diff an `edit` ask wants to apply, when the server included it.
+    pub fn diff(&self) -> Option<&str> {
+        json::str(&self.metadata, "diff").filter(|d| !d.trim().is_empty())
+    }
+}
+
+fn string_list(v: Option<&Value>) -> Vec<String> {
+    match v {
+        Some(Value::String(s)) => vec![s.clone()],
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn session_of(event: &Value) -> Option<&str> {
@@ -62,6 +103,10 @@ fn error_name(err: &Value) -> Option<&str> {
 pub struct ServeTurn {
     session_id: String,
     streamed_parts: HashSet<String>,
+    /// Parts announced as `reasoning` (`message.part.updated` precedes their deltas): a delta on
+    /// one of these is the model thinking, not its answer — the delta's own `field` is `text`
+    /// for both kinds on 1.18.31, so the part type is what tells them apart.
+    reasoning_parts: HashSet<String>,
     announced_calls: HashSet<String>,
     saw_busy: bool,
     last_text: Option<String>,
@@ -76,6 +121,7 @@ impl ServeTurn {
         Self {
             session_id: session_id.into(),
             streamed_parts: HashSet::new(),
+            reasoning_parts: HashSet::new(),
             announced_calls: HashSet::new(),
             saw_busy: false,
             last_text: None,
@@ -109,14 +155,18 @@ impl ServeTurn {
         let mut out = Vec::new();
         match json::str(event, "type") {
             Some("message.part.delta") => {
-                if let Some(part_id) = json::str(props, "partID") {
+                let part_id = json::str(props, "partID").unwrap_or_default();
+                if !part_id.is_empty() {
                     self.streamed_parts.insert(part_id.to_string());
                 }
                 let delta = json::str(props, "delta").unwrap_or_default().to_string();
                 if !delta.is_empty() {
-                    match json::str(props, "field") {
-                        Some("reasoning") => out.push(AdapterEvent::Thinking { text: delta }),
-                        _ => out.push(AdapterEvent::TextDelta { text: delta }),
+                    let reasoning = json::str(props, "field") == Some("reasoning")
+                        || self.reasoning_parts.contains(part_id);
+                    if reasoning {
+                        out.push(AdapterEvent::Thinking { text: delta });
+                    } else {
+                        out.push(AdapterEvent::TextDelta { text: delta });
                     }
                 }
             }
@@ -127,6 +177,9 @@ impl ServeTurn {
                     .get("time")
                     .and_then(|t| t.get("end"))
                     .is_some_and(|e| !e.is_null());
+                if json::str(part, "type") == Some("reasoning") && !part_id.is_empty() {
+                    self.reasoning_parts.insert(part_id.to_string());
+                }
                 match json::str(part, "type") {
                     Some("text") if finished => {
                         let text = json::str(part, "text").unwrap_or_default().to_string();
@@ -161,10 +214,24 @@ impl ServeTurn {
                                 });
                             }
                         };
+                        let detail = |out: &mut Vec<AdapterEvent>| {
+                            let metadata = state.get("metadata").cloned().unwrap_or(Value::Null);
+                            let title = json::str(state, "title")
+                                .filter(|t| !t.is_empty())
+                                .map(str::to_string);
+                            if title.is_some() || !metadata.is_null() {
+                                out.push(AdapterEvent::ToolDetail {
+                                    id: call_id.clone(),
+                                    title,
+                                    metadata,
+                                });
+                            }
+                        };
                         match status {
                             "running" => announce(self, &mut out),
                             "completed" => {
                                 announce(self, &mut out);
+                                detail(&mut out);
                                 out.push(AdapterEvent::ToolResult {
                                     id: call_id,
                                     output: json::str(state, "output")
@@ -175,6 +242,7 @@ impl ServeTurn {
                             }
                             "error" => {
                                 announce(self, &mut out);
+                                detail(&mut out);
                                 out.push(AdapterEvent::ToolResult {
                                     id: call_id,
                                     output: json::str(state, "error")
@@ -230,22 +298,35 @@ impl ServeTurn {
                 }
             }
             Some("permission.updated") | Some("permission.asked") => {
-                let patterns = match props.get("pattern") {
-                    Some(Value::String(s)) => vec![s.clone()],
-                    Some(Value::Array(items)) => items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect(),
-                    _ => Vec::new(),
-                };
+                // 1.18.31: `permission` + `patterns` + `metadata` + `always` + `tool.callID`;
+                // older servers: `type` + `pattern` + `title` + `callID`.
+                let patterns = string_list(props.get("patterns").or_else(|| props.get("pattern")));
+                let metadata = props
+                    .get("metadata")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Object(Default::default()));
+                let kind = json::str(props, "permission")
+                    .or_else(|| json::str(props, "type"))
+                    .unwrap_or_default()
+                    .to_string();
+                let title = json::str(props, "title")
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| json::str(&metadata, "command").map(str::to_string))
+                    .or_else(|| json::str(&metadata, "filepath").map(str::to_string))
+                    .unwrap_or_else(|| patterns.join(", "));
+                let call_id = json::str(props, "callID")
+                    .or_else(|| props.get("tool").and_then(|t| json::str(t, "callID")))
+                    .map(str::to_string);
                 self.pending_permissions.push(PermissionRequest {
                     id: json::str(props, "id").unwrap_or_default().to_string(),
                     session_id: self.session_id.clone(),
-                    kind: json::str(props, "type").unwrap_or_default().to_string(),
-                    title: json::str(props, "title").unwrap_or_default().to_string(),
+                    kind,
+                    title,
                     patterns,
-                    call_id: json::str(props, "callID").map(str::to_string),
+                    call_id,
+                    metadata,
+                    always: string_list(props.get("always")),
                 });
             }
             _ => {}
@@ -369,6 +450,11 @@ mod tests {
                     name: "write".into(),
                     input: json!({"filePath": "/w/hello.txt", "content": "hi"})
                 },
+                AdapterEvent::ToolDetail {
+                    id: "c1".into(),
+                    title: Some("hello.txt".into()),
+                    metadata: json!({}),
+                },
                 AdapterEvent::ToolResult {
                     id: "c1".into(),
                     output: "Wrote file successfully.".into(),
@@ -439,6 +525,8 @@ mod tests {
         assert_eq!(perms.len(), 1);
         assert_eq!(perms[0].kind, "bash");
         assert_eq!(perms[0].patterns, vec!["rm -rf *"]);
+        assert_eq!(perms[0].title, "rm -rf build");
+        assert_eq!(perms[0].call_id.as_deref(), Some("c9"));
         assert!(turn.take_permissions().is_empty());
         let out = turn.on_event(&ev("session.error", json!({"sessionID": SID, "error": {"name": "ProviderAuthError", "data": {"message": "Invalid API key"}}})));
         assert_eq!(
@@ -451,6 +539,128 @@ mod tests {
         assert_eq!(
             turn.terminal(),
             Some(&Terminal::Failed("Invalid API key".into()))
+        );
+    }
+
+    /// The 1.18.31 ask shape, verbatim from a live keyless turn (`permission.asked` with
+    /// `permission`/`patterns`/`metadata`/`always`/`tool.callID`, no `title`).
+    #[test]
+    fn permission_asked_1_18_31_shape_is_normalized() {
+        let mut turn = ServeTurn::new(SID);
+        turn.on_event(&ev(
+            "session.status",
+            json!({"sessionID": SID, "status": {"type": "busy"}}),
+        ));
+        turn.on_event(&ev("permission.asked", json!({
+            "id": "per_0cc87824a0012w8t1Xbv4ROYWy", "sessionID": SID, "permission": "bash",
+            "patterns": ["rm -rf tmp"], "metadata": {"command": "rm -rf tmp"}, "always": ["rm *"],
+            "tool": {"messageID": "msg_1", "callID": "call_167b87f253a64db1b318af12"}
+        })));
+        turn.on_event(&ev("permission.asked", json!({
+            "id": "per_edit", "sessionID": SID, "permission": "edit", "patterns": ["hello.txt"],
+            "metadata": {"filepath": "/w/hello.txt", "diff": "--- a\n+++ b\n@@ -0,0 +1,1 @@\n+hi\n"},
+            "always": ["*"], "tool": {"messageID": "msg_1", "callID": "call_w"}
+        })));
+        let perms = turn.take_permissions();
+        assert_eq!(perms.len(), 2);
+        assert_eq!(perms[0].kind, "bash");
+        assert_eq!(perms[0].title, "rm -rf tmp");
+        assert_eq!(perms[0].command(), Some("rm -rf tmp"));
+        assert_eq!(perms[0].always, vec!["rm *"]);
+        assert_eq!(
+            perms[0].call_id.as_deref(),
+            Some("call_167b87f253a64db1b318af12")
+        );
+        assert_eq!(perms[1].kind, "edit");
+        assert_eq!(perms[1].title, "/w/hello.txt");
+        assert_eq!(perms[1].file_path(), Some("/w/hello.txt"));
+        assert!(perms[1].diff().is_some_and(|d| d.contains("+hi")));
+        // A foreign session's ask is ignored.
+        turn.on_event(&ev(
+            "permission.asked",
+            json!({"id": "x", "sessionID": "other", "permission": "bash", "patterns": []}),
+        ));
+        assert!(turn.take_permissions().is_empty());
+    }
+
+    /// Live ordering on 1.18.31: the reasoning part is announced (`message.part.updated`, type
+    /// `reasoning`, no end) before its deltas, and those deltas say `field: "text"` exactly like
+    /// answer deltas do. They must come out as `Thinking`, never as answer text.
+    #[test]
+    fn reasoning_deltas_are_thinking_not_answer_text() {
+        let mut turn = ServeTurn::new(SID);
+        turn.on_event(&ev(
+            "session.status",
+            json!({"sessionID": SID, "status": {"type": "busy"}}),
+        ));
+        turn.on_event(&ev(
+            "message.part.updated",
+            json!({"part": {"id": "pr", "sessionID": SID, "type": "reasoning", "text": "", "time": {"start": 1}}}),
+        ));
+        let thought = turn.on_event(&ev(
+            "message.part.delta",
+            json!({"sessionID": SID, "messageID": "m", "partID": "pr", "field": "text", "delta": "The user is just greeting me. Keep it short."}),
+        ));
+        assert_eq!(
+            thought,
+            vec![AdapterEvent::Thinking {
+                text: "The user is just greeting me. Keep it short.".into()
+            }]
+        );
+        // The finished reasoning part was streamed, so it is not repeated.
+        let done = turn.on_event(&ev(
+            "message.part.updated",
+            json!({"part": {"id": "pr", "sessionID": SID, "type": "reasoning", "text": "The user is just greeting me. Keep it short.", "time": {"start": 1, "end": 2}}}),
+        ));
+        assert!(done.is_empty(), "{done:?}");
+        turn.on_event(&ev(
+            "message.part.updated",
+            json!({"part": {"id": "pt", "sessionID": SID, "type": "text", "text": "", "time": {"start": 3}}}),
+        ));
+        let answer = turn.on_event(&ev(
+            "message.part.delta",
+            json!({"sessionID": SID, "messageID": "m", "partID": "pt", "field": "text", "delta": "I'm Workshop's assistant."}),
+        ));
+        assert_eq!(
+            answer,
+            vec![AdapterEvent::TextDelta {
+                text: "I'm Workshop's assistant.".into()
+            }]
+        );
+    }
+
+    /// A finished `bash` part carries its exit code and combined output in `metadata`; the
+    /// detail event precedes the result so a host can render `exit 1` next to the output.
+    #[test]
+    fn tool_detail_carries_bash_exit_and_output() {
+        let mut turn = ServeTurn::new(SID);
+        turn.on_event(&ev(
+            "session.status",
+            json!({"sessionID": SID, "status": {"type": "busy"}}),
+        ));
+        let out = turn.on_event(&ev(
+            "message.part.updated",
+            json!({"part": {"id": "p1", "sessionID": SID, "type": "tool", "tool": "bash", "callID": "c1", "state": {"status": "completed", "input": {"command": "ls /nope"}, "output": "ls: cannot access '/nope'", "metadata": {"output": "ls: cannot access '/nope'", "exit": 2, "truncated": false}, "title": "ls /nope", "time": {"start": 1, "end": 2}}}}),
+        ));
+        assert_eq!(
+            out,
+            vec![
+                AdapterEvent::ToolCall {
+                    id: "c1".into(),
+                    name: "bash".into(),
+                    input: json!({"command": "ls /nope"})
+                },
+                AdapterEvent::ToolDetail {
+                    id: "c1".into(),
+                    title: Some("ls /nope".into()),
+                    metadata: json!({"output": "ls: cannot access '/nope'", "exit": 2, "truncated": false}),
+                },
+                AdapterEvent::ToolResult {
+                    id: "c1".into(),
+                    output: "ls: cannot access '/nope'".into(),
+                    is_error: false
+                },
+            ]
         );
     }
 }
