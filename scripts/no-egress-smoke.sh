@@ -53,12 +53,15 @@ COMMON=(env "HOME=$HOME_DIR" "WORKSHOP_HOME=$HOME_DIR/.workshop" TERM=xterm-256c
 
 # proxy_hosts NAME [EXPECTED_HOSTS...]: the non-loopback hosts scenario NAME asked the proxy for
 # must be exactly EXPECTED_HOSTS (none by default). Loopback is always allowed (the neutral
-# 127.0.0.1:1 sentinel of patch 0003 is the only loopback peer a hermetic run ever names).
+# 127.0.0.1:1 sentinel of patch 0003 is the only loopback peer a hermetic run ever names), and so
+# is Workshop's own update channel: a release build reads stable.json from the release-channel
+# branch at launch (debug builds never check for updates).
 proxy_hosts() {
   local name="$1"; shift
   python3 - "$OUT/$name/proxy.log" "$name" "$@" <<'PY'
 import re,sys
 log,name,expected=sys.argv[1],sys.argv[2],set(sys.argv[3:])
+update_channel={"raw.githubusercontent.com"}
 seen=set(); lines=[]
 for line in open(log):
     parts=line.split()
@@ -66,7 +69,7 @@ for line in open(log):
     host=re.sub(r':\d+$','',parts[2].split(' (')[0]).strip('[]')
     if host in ("127.0.0.1","localhost","::1"): continue
     seen.add(host); lines.append(line.strip())
-if seen!=expected:
+if seen-update_channel!=expected-update_channel:
     print("VIOLATION: %s asked the proxy for %s, expected %s:" % (name, sorted(seen), sorted(expected))); print("\n".join(lines)); sys.exit(1)
 print("%s egress check: ok (%s)" % (name, "loopback only" if not expected else "only " + ", ".join(sorted(expected))))
 PY
@@ -191,7 +194,7 @@ for line in open(log):
     parts=line.split()
     if len(parts)<3 or parts[1]=="ERROR": continue
     host=re.sub(r':\d+$','',parts[2].split(' (')[0]).strip('[]')
-    if host in ("127.0.0.1","localhost","::1","opencode.ai"): continue
+    if host in ("127.0.0.1","localhost","::1","opencode.ai","raw.githubusercontent.com"): continue
     h,m,s=(int(x) for x in parts[0].split(':'))
     at=day+h*3600+m*60+s
     if at<started-1: at+=86400   # the run crossed midnight

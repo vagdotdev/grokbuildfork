@@ -712,6 +712,8 @@ pub struct WelcomeRenderParams<'a> {
     pub pending_hint: Option<crate::views::shortcuts_bar::PendingHint>,
     pub startup_warnings: &'a [StartupWarning],
     pub pending_update_version: Option<&'a str>,
+    /// Workshop: this launch is the first of a version the silent updater installed.
+    pub workshop_updated_to: Option<&'a str>,
     /// Recent foreign session offered on ctrl+u, suppressed by a pending update.
     pub foreign_resume_hint: Option<&'a xai_grok_foreign_sessions::RecentForeignSession>,
     pub is_api_key_auth: bool,
@@ -1756,7 +1758,7 @@ fn render_welcome_done(
         let action_line = if w.action.is_some() { 1 } else { 0 };
         msg_lines + action_line + 1 // +1 for buffer spacing
     });
-    let has_update_tip = p.pending_update_version.is_some();
+    let has_update_tip = p.pending_update_version.is_some() || p.workshop_updated_to.is_some();
     let has_resume_tip = !has_update_tip && p.foreign_resume_hint.is_some();
     // Tip slot precedence: pending update, then privacy banner (wraps, so its height depends on width), then resume hint, then random tip
     // The update outranks the upsell so a ready update is never invisible; the banner takes the slot back once it's applied
@@ -2152,7 +2154,11 @@ fn render_welcome_done(
         (None, None)
     } else {
         // Privacy banner owns the tip slot when visible (above the prompt), except a pending-update notification, which outranks it
-        if p.privacy_banner && p.pending_update_version.is_none() && layout.tip.height > 0 {
+        if p.privacy_banner
+            && p.pending_update_version.is_none()
+            && p.workshop_updated_to.is_none()
+            && layout.tip.height > 0
+        {
             let [_, tip_centered, _] = Layout::horizontal([
                 Constraint::Min(0),
                 Constraint::Length(content_area.width),
@@ -2206,11 +2212,36 @@ fn render_welcome_done(
             Paragraph::new(line)
                 .style(Style::default().bg(theme.bg_base))
                 .render(tip_inset, buf);
+        } else if let Some(ver) = p.workshop_updated_to
+            && layout.tip.height > 0
+        {
+            // Workshop: the first launch after a silent update, in the same slot as upstream's line.
+            let [_, tip_centered, _] = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(content_area.width),
+                Constraint::Min(0),
+            ])
+            .flex(Flex::Center)
+            .areas(layout.tip);
+            let inset = prompt::prompt_inset(p.compact);
+            let tip_inset = Rect {
+                x: tip_centered.x + inset,
+                y: tip_centered.y,
+                width: tip_centered.width.saturating_sub(inset * 2),
+                height: tip_centered.height,
+            };
+            Paragraph::new(Line::from(Span::styled(
+                crate::app::workshop_update::updated_line(ver),
+                Style::default().fg(theme.accent_user),
+            )))
+            .style(Style::default().bg(theme.bg_base))
+            .render(tip_inset, buf);
         }
 
         // Recent foreign session: offer a one-click resume in the tip area (only when no update is pending; the update shares ctrl+u and wins)
         if !p.privacy_banner
             && p.pending_update_version.is_none()
+            && p.workshop_updated_to.is_none()
             && let Some(hint) = p.foreign_resume_hint
             && layout.tip.height > 0
         {
@@ -2273,6 +2304,7 @@ fn render_welcome_done(
             &usage_info,
             if p.privacy_banner
                 || p.pending_update_version.is_some()
+                || p.workshop_updated_to.is_some()
                 || p.foreign_resume_hint.is_some()
             {
                 // Banner/update/resume tip already rendered above with custom styling.
@@ -2910,6 +2942,7 @@ mod tests {
             pending_hint: None,
             startup_warnings: &[],
             pending_update_version: None,
+            workshop_updated_to: None,
             foreign_resume_hint: None,
             is_api_key_auth: false,
             session_picker_content_results: None,

@@ -18,6 +18,7 @@ pub mod workshop;
 pub mod workshop_engine_state;
 pub mod workshop_permissions;
 pub mod workshop_sessions;
+pub mod workshop_update;
 pub mod workshop_tools;
 pub mod bundle;
 pub(crate) mod cancel_latency;

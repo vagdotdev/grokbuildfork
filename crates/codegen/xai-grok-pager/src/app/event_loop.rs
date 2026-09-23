@@ -1349,6 +1349,13 @@ pub(crate) async fn run(
     // Workshop: Engine/Adapter connections are not shell models; restore the one this home last
     // activated so a restart lands on the same runtime (`OpenCode · Big Pickle`, `Claude · …`).
     app.workshop_connection = crate::app::workshop::load_active_connection();
+    // Workshop: the first launch of a version the silent updater installed says so once.
+    if !xai_grok_version::IS_DEV_BUILD {
+        app.workshop_updated_to = crate::app::workshop_update::note_launch(
+            &xai_dirs::grok_home(),
+            xai_grok_version::VERSION,
+        );
+    }
     // Workshop: `--resume ses_…` / `-c` on an engine conversation (resolved by `app::run`, which
     // kept the shell on a new session) is replayed into the first agent shown.
     app.workshop_engine_resume = workshop_engine_resume;
