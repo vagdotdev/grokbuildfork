@@ -114,17 +114,18 @@ waitshell() { # the shell prompt is back as the last non-empty line
 }
 TURN_BASE=0
 waitturn() {
-  local limit="${1:-$TURN_TIMEOUT}" start=$SECONDS prev="" cur still=0 stalled=0 n
+  local limit="${1:-$TURN_TIMEOUT}" start=$SECONDS prev="" cur still=0 stalled=0 n active=$SECONDS
   while [ $((SECONDS - start)) -lt "$limit" ]; do
     cur="$(norm)"
     if [ "$cur" = "$prev" ]; then still=$((still + 1)); else still=0; prev="$cur"; fi
     n="$(turns_total)"
+    if busy || tool_running; then active=$SECONDS; fi
     if [ "$n" -gt "$TURN_BASE" ] && [ $still -ge 6 ] && ! busy; then
       ev turn_end "record $n after $((SECONDS - start))s"; TURN_BASE="$n"; return 0
     fi
-    # No engine record (a non-engine connection answered): 120 s still, nothing busy on screen and no
-    # tool process running ends the turn.
-    if [ $still -ge 240 ] && ! busy && [ "$n" -le "$TURN_BASE" ] && ! tool_running; then
+    # No engine record (a non-engine connection answered): 120 s still, and for the last 30 s nothing
+    # busy on screen and no tool process running, ends the turn.
+    if [ $still -ge 240 ] && [ $((SECONDS - active)) -ge 30 ] && [ "$n" -le "$TURN_BASE" ]; then
       ev turn_end "idle 120s without a record after $((SECONDS - start))s"; return 0
     fi
     if [ $still -ge $((STALL * 2)) ] && [ $stalled -eq 0 ]; then ev stall "screen unchanged ${STALL}s"; stalled=1; fi
