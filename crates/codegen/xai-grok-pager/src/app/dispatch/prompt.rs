@@ -689,6 +689,7 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
     app.workshop_last_prompt = Some(text.clone());
     app.workshop_turn_thinking_entry = None;
     app.workshop_turn_tools.clear();
+    app.workshop_turn_decided_calls.clear();
     app.workshop_turn_record.clear();
     app.workshop_turn_prompt_text = Some(text.trim().to_owned());
 

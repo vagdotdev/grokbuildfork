@@ -6,7 +6,12 @@
 //! * `plan_does_not_write` — Plan mode sends the read-only `plan` agent; "create hello.txt" leaves
 //!   no file behind.
 //! * `normal_prompts_on_bash` — Normal mode: "rm -rf tmp" shows Workshop's approval prompt with the
-//!   command; `Yes, proceed` posts `once` and the directory goes; `No` posts `reject` and it stays.
+//!   command; `Yes, run it` posts `once` and the directory goes; `No` posts `reject` and it stays.
+//! * `read_only_commands_run_without_asking` — Normal mode runs `ls -1` with no prompt (the
+//!   engine's ask is answered `once`); `rm -rf tmp` still asks.
+//! * `out_of_folder_command_asks_once_in_plain_words` — a command touching `~/Desktop` asks the
+//!   engine twice (`external_directory`, `bash`) but the user sees one prompt naming the folder,
+//!   with the whole command underneath; the second ask follows the first answer.
 //! * `always_approve_runs_without_a_prompt` — Always-approve: the same command runs at once
 //!   (`once` posted, no prompt drawn).
 //! * `edit_row_expands_to_diff` — a finished `◆ Edit` row carries the engine's diff and `Enter`
@@ -252,9 +257,9 @@ fn normal_prompts_on_bash() {
 
     // 1. Reject: the prompt shows the command; "No" posts reject; tmp stays.
     send_prompt(&mut j, "rm -rf tmp");
-    wait_for(&mut j.h, "Allow Execute?", 60);
+    wait_for(&mut j.h, "Run this command?", 60);
     wait_for(&mut j.h, "rm -rf tmp", 5);
-    wait_for(&mut j.h, "Yes, proceed", 5);
+    wait_for(&mut j.h, "Yes, run it", 5);
     j.h.update(Duration::from_millis(400));
     snapshot(&j.h, &j.dir, "01-approval-prompt");
     assert!(
@@ -275,9 +280,9 @@ fn normal_prompts_on_bash() {
     );
     assert_eq!(permission_replies(&fx.log), vec!["reject"]);
 
-    // 2. Approve: "Yes, proceed" posts once; the directory goes.
+    // 2. Approve: "Yes, run it" posts once; the directory goes.
     send_prompt(&mut j, "please rm -rf tmp now");
-    wait_for(&mut j.h, "Allow Execute?", 60);
+    wait_for(&mut j.h, "Run this command?", 60);
     j.h.update(Duration::from_millis(300));
     j.h.inject_keys(b"1").unwrap();
     wait_for(&mut j.h, "Removed tmp.", 30);
@@ -289,6 +294,134 @@ fn normal_prompts_on_bash() {
     );
     assert_eq!(permission_replies(&fx.log), vec!["reject", "once"]);
     assert_eq!(agents_sent(&fx.log), vec!["build", "build"]);
+    quit(&mut j);
+}
+
+/// Wait for `needle` while asserting `forbidden` never shows up on the way.
+fn wait_for_without(j: &mut Journey, needle: &str, forbidden: &[&str], secs: u64) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    loop {
+        let screen = j.h.screen_contents();
+        for f in forbidden {
+            assert!(
+                !screen.contains(f),
+                "{f:?} must not appear while waiting for {needle:?}:\n{screen}"
+            );
+        }
+        if screen.contains(needle) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {needle:?}:\n{screen}"
+        );
+        j.h.update(Duration::from_millis(150));
+    }
+}
+
+/// Normal mode: a read-only command (`ls -1`) runs without a prompt; the engine still asked and
+/// Workshop answered `once` for it, and the row shows what ran.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn read_only_commands_run_without_asking() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/read-only-runs-without-asking", &bin, &fx);
+    std::fs::write(j.cwd.path().join("notes.txt"), "n").unwrap();
+    set_mode(&mut j, "normal");
+    send_prompt(&mut j, "list files");
+    wait_for_without(
+        &mut j,
+        "Here is the listing.",
+        &["Run this command?", "Allow"],
+        60,
+    );
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "01-ls-ran-without-prompt");
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains("Run ls -1"),
+        "the row shows what ran:\n{screen}"
+    );
+    assert_eq!(
+        permission_replies(&fx.log),
+        vec!["once"],
+        "the engine's ask for the read-only command was answered without a prompt"
+    );
+    // A command that writes still asks.
+    send_prompt(&mut j, "please rm -rf tmp now");
+    wait_for(&mut j.h, "Run this command?", 60);
+    wait_for(&mut j.h, "rm -rf tmp", 5);
+    snapshot(&j.h, &j.dir, "02-rm-still-asks");
+    j.h.inject_keys(b"3").unwrap();
+    wait_for(&mut j.h, "tmp was left alone", 30);
+    quit(&mut j);
+}
+
+/// An out-of-folder command asks the engine twice (`external_directory`, then `bash`); the user
+/// sees ONE prompt, in plain words, naming the folder, with the whole command underneath.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn out_of_folder_command_asks_once_in_plain_words() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/out-of-folder-asks-once", &bin, &fx);
+    set_mode(&mut j, "normal");
+    send_prompt(&mut j, "make a folder on my desktop with two books");
+    wait_for(
+        &mut j.h,
+        "Run this command? It works outside this folder: ~/Desktop",
+        60,
+    );
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "01-one-prompt-plain-words");
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("external_directory"),
+        "no raw permission name:\n{screen}"
+    );
+    assert!(
+        screen.contains("mkdir -p") && screen.contains("frankenstein.epub"),
+        "the whole command is shown (wrapped), not cut off:\n{screen}"
+    );
+    assert!(
+        screen.contains("Yes, run it") && screen.contains("don't ask again for `"),
+        "the options:\n{screen}"
+    );
+    j.h.inject_keys(b"1").unwrap();
+    // The engine's second ask (`bash`, same tool call) is answered from the first pick: no
+    // second prompt is ever drawn.
+    j.h.update(Duration::from_millis(200));
+    wait_for_without(
+        &mut j,
+        "Created the iBooks folder",
+        &["Run this command?"],
+        60,
+    );
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "02-ran-after-one-answer");
+    assert_eq!(
+        permission_replies(&fx.log),
+        vec!["once", "once"],
+        "both asks answered, one by the user and one from that answer"
+    );
+    let asked: Vec<(String, String)> = engine_log(&fx.log)
+        .iter()
+        .filter_map(|v| {
+            Some((
+                v.get("permission")?.as_str()?.to_owned(),
+                v.get("callID")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(asked[0].0, "external_directory");
+    assert_eq!(asked[1].0, "bash");
+    assert_eq!(asked[0].1, asked[1].1, "same tool call");
+    assert!(
+        j.home.path().join("Desktop/iBooks").exists(),
+        "the approved command ran"
+    );
     quit(&mut j);
 }
 
@@ -309,7 +442,7 @@ fn always_approve_runs_without_a_prompt() {
     assert_eq!(permission_replies(&fx.log), vec!["once"]);
     let screen = j.h.screen_contents();
     assert!(
-        !screen.contains("Allow Execute?"),
+        !screen.contains("Run this command?"),
         "always-approve draws no prompt:\n{screen}"
     );
     quit(&mut j);
@@ -578,7 +711,7 @@ fn live_engine_trust_journey() {
         &mut j,
         "Run exactly this shell command and nothing else: rm -rf tmp",
     );
-    wait_for(&mut j.h, "Allow Execute?", 180);
+    wait_for(&mut j.h, "Run this command?", 180);
     j.h.update(Duration::from_millis(500));
     snapshot(&j.h, &j.dir, "02-normal-mode-prompt");
     assert!(
@@ -596,7 +729,7 @@ fn live_engine_trust_journey() {
         !j.cwd.path().join("tmp").exists(),
         "the approved command ran"
     );
-    wait_gone(&mut j, "Allow Execute?", 60);
+    wait_gone(&mut j, "Run this command?", 60);
     j.h.update(Duration::from_millis(3000));
     snapshot(&j.h, &j.dir, "03-normal-mode-approved");
 
@@ -611,7 +744,7 @@ fn live_engine_trust_journey() {
     while j.cwd.path().join("tmp2").exists() && std::time::Instant::now() < deadline {
         j.h.update(Duration::from_millis(500));
         assert!(
-            !j.h.screen_contents().contains("Allow Execute?"),
+            !j.h.screen_contents().contains("Run this command?"),
             "always-approve draws no prompt"
         );
     }

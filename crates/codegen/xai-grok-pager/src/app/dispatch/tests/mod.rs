@@ -195,6 +195,7 @@ fn test_app() -> AppView {
         workshop_turn_tools: std::collections::HashMap::new(),
         workshop_turn_tool_inputs: std::collections::HashMap::new(),
         workshop_turn_queue: std::collections::VecDeque::new(),
+        workshop_turn_decided_calls: std::collections::HashMap::new(),
         workshop_context_used: None,
         workshop_engine_resume: None,
         workshop_turn_record: Vec::new(),

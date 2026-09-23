@@ -632,6 +632,13 @@ pub enum WorkshopTurnMsg {
         request: PermissionRequest,
         reply: oneshot::Sender<PermissionReply>,
     },
+    /// The user answered a prompt for tool call `call_id`; the same call's next ask (the engine
+    /// asks `external_directory` and then `bash` for one out-of-folder command) gets the same
+    /// answer without a second prompt.
+    PermissionDecided {
+        call_id: String,
+        decision: PermissionReply,
+    },
     /// Token accounting the backend reported for a finished step (the engine's `step-finish`);
     /// the last one of a turn is the model's current context usage.
     Usage(Usage),
