@@ -156,7 +156,7 @@ elif TASK == "T4":
     r = sh(f"cd '{dst}' && python3 -m unittest discover -s tests -t . 2>&1 | tail -3")
     fixture["broken_tail"] = r.stdout
     if OTHER:
-        sh(f"sudo cp -a '{dst}' '{HOME}/projects/' 2>/dev/null || (sudo mkdir -p '{HOME}/projects' && sudo cp -a '{dst}' '{HOME}/projects/')", check=True)
+        sh(f"sudo mkdir -p '{HOME}/projects' && sudo cp -a '{dst}' '{HOME}/projects/'", check=True)
         sh(f"sudo chown -R {USER}:{USER} '{HOME}/projects'", check=True)
     else:
         shutil.copytree(dst, HOME / "projects/more-itertools", symlinks=True)

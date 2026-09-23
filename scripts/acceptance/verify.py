@@ -762,7 +762,7 @@ def verify():
         truth = json.loads((OUT / "fixture.json").read_text())["photos"]
         final = turn_text(ts[-1]) if ts else ""
         low = final.lower()
-        spots = {name: [m.start() for m in re.finditer(r"snow ?leopard" if sp == "snow leopard" else rf"(?<!snow ){sp}", low)]
+        spots = {name: [m.start() for m in re.finditer(r"snow[\s_-]?leopard" if sp == "snow leopard" else rf"(?<!snow[\s_-]){sp}", low)]
                  for name, sp in truth.items()}
         read = sorted({Path(str(i.get("input", {}).get("filePath") or i.get("input", {}).get("path") or "")).name
                        for t in ts for i in t.get("items", []) if i.get("kind") == "tool" and i.get("name") == "read"})
