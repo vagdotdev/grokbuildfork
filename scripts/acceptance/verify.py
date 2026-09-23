@@ -659,15 +659,21 @@ def verify():
             vals = [float(x) for i, x in enumerate(r) if (not tcols or i in tcols) and re.fullmatch(r"-?\d+(\.\d+)?", x.strip())]
             vals = [v for v in vals if -40 <= v <= 50]
             lat, lon = coords[city]
-            st, _, body = http_get(f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m"
-                                   "&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1", 15)
+            for _ in range(3):  # the reference, not the run: retry a network hiccup
+                st, _, body = http_get(f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m"
+                                       "&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1", 15)
+                if st == 200:
+                    break
+                time.sleep(5)
             live = []
             if st == 200:
                 j = json.loads(body)
                 live = [j["current"]["temperature_2m"], j["daily"]["temperature_2m_max"][0], j["daily"]["temperature_2m_min"][0]]
             near[city] = {"csv_values": vals, "open_meteo_now_max_min": live,
                           "ok": any(abs(v - w) <= 8 for v in vals for w in live) if live else None}
-        c.add("T6.3", len(near) == 3 and all(v["ok"] for v in near.values()), "the temperatures are real (within 8 °C of Open-Meteo)", json.dumps(near))
+        oks = [v["ok"] for v in near.values()]
+        c.add("T6.3", None if len(near) == 3 and None in oks and False not in oks else (len(near) == 3 and all(oks)),
+              "the temperatures are real (within 8 °C of Open-Meteo)", json.dumps(near))
         rerun = {}
         if scripts and csvs:
             s = scripts[0]
