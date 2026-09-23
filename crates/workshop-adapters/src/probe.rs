@@ -56,8 +56,8 @@ pub async fn run_probe(
     // Own process group, enrolled so session teardown can reap it. `group`
     // must outlive the child.
     let (mut child, group) =
-        xai_tty_utils::global_process_scope()
-            .spawn(cmd)
+        crate::spawn::spawn_enrolled(cmd)
+            .await
             .map_err(|source| ProbeError::Spawn {
                 program: name.clone(),
                 source,

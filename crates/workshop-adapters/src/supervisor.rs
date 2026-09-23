@@ -216,8 +216,8 @@ pub async fn spawn(
     // The child leads its own process group and is enrolled in the global
     // scope so session teardown reaps it; `group` is owned by the driver.
     let (mut child, group) =
-        xai_tty_utils::global_process_scope()
-            .spawn(cmd)
+        crate::spawn::spawn_enrolled(cmd)
+            .await
             .map_err(|source| SpawnError::Spawn {
                 program: cli.path.display().to_string(),
                 source,
