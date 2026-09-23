@@ -21,8 +21,9 @@
 //! * `reasoning_hidden_by_default` — no reasoning text anywhere by default (inline, glued, as a
 //!   block, after a tool call); `reasoning_shown_when_turned_on_in_settings` — `/settings` → "Show
 //!   thinking blocks" brings it back as its own block, never glued to the answer.
-//! * `engine_answers_as_workshop` — "what are you?" answers as Workshop's assistant, never as
-//!   "opencode" (the server received Workshop's instructions file).
+//! * `engine_answers_as_workshop` — "what are you?" / "who made you?" answer as Workshop's
+//!   assistant, never as "opencode", in Normal and Plan mode (the `build` and `plan` agents open
+//!   their system prompt with Workshop's identity; the instructions file follows).
 //!
 //! Evidence (text + HTML screenshots) lands in `WORKSHOP_PTY_EVIDENCE_DIR/engine-trust/*`.
 
@@ -580,22 +581,82 @@ fn reasoning_shown_when_turned_on_in_settings() {
     quit(&mut j);
 }
 
-/// "what are you?" answers as Workshop's assistant: the server got Workshop's instructions file.
+/// The answer lines containing `needle` (the composer label names the engine, the answers must not).
+fn answer_lines<'a>(screen: &'a str, needle: &str) -> Vec<&'a str> {
+    screen
+        .lines()
+        .filter(|l| l.contains(needle) && !l.contains('\u{276f}'))
+        .collect()
+}
+
+fn assert_answers_as_workshop(j: &mut Journey, question: &str) {
+    const ANSWER: &str = "Workshop's coding assistant";
+    let answered = |screen: &str| {
+        let mut lines = screen.lines();
+        lines.any(|l| l.contains(&format!("\u{276f} {question}")))
+            && lines.any(|l| l.contains(ANSWER))
+    };
+    send_prompt(j, question);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while !answered(&j.h.screen_contents()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{question:?} got no answer as Workshop's assistant:\n{}",
+            j.h.screen_contents()
+        );
+        j.h.update(Duration::from_millis(200));
+    }
+    j.h.update(Duration::from_millis(400));
+    let screen = j.h.screen_contents();
+    let lines = answer_lines(&screen, ANSWER);
+    assert!(!lines.is_empty(), "{screen}");
+    for line in lines {
+        let line = line.to_lowercase();
+        for other in ["opencode", "anomaly", "grok"] {
+            assert!(
+                !line.contains(other),
+                "{question:?} must not name {other}:\n{screen}"
+            );
+        }
+    }
+}
+
+/// "what are you?" and "who made you?" answer as Workshop's assistant, never as "opencode", in
+/// Normal and Plan mode: the agent each turn runs on (`build`, `plan`) opens its system prompt
+/// with Workshop's identity instead of the model family's, and the instructions file follows.
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
 fn engine_answers_as_workshop() {
     let Some(bin) = bin_from_env() else { return };
     let fx = fixture();
     let mut j = launch("engine-trust/engine-answers-as-workshop", &bin, &fx);
-    send_prompt(&mut j, "what are you?");
-    wait_for(&mut j.h, "Workshop's assistant", 60);
-    j.h.update(Duration::from_millis(400));
-    snapshot(&j.h, &j.dir, "01-identity");
-    let screen = j.h.screen_contents();
+    assert_answers_as_workshop(&mut j, "what are you?");
+    snapshot(&j.h, &j.dir, "01-what-are-you");
+    assert_answers_as_workshop(&mut j, "who made you?");
+    snapshot(&j.h, &j.dir, "02-who-made-you");
+    set_mode(&mut j, "plan");
+    assert_answers_as_workshop(&mut j, "what are you? (plan)");
+    snapshot(&j.h, &j.dir, "03-plan-what-are-you");
+
+    let heads: Vec<(String, String)> = engine_log(&fx.log)
+        .iter()
+        .filter_map(|v| {
+            Some((
+                v.get("agent")?.as_str()?.to_owned(),
+                v.get("system_head")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect();
     assert!(
-        !screen.contains("I'm opencode"),
-        "the engine's model must not introduce itself as opencode:\n{screen}"
+        heads.iter().any(|(a, _)| a == "build") && heads.iter().any(|(a, _)| a == "plan"),
+        "{heads:?}"
     );
+    for (agent, head) in &heads {
+        assert!(
+            head.starts_with("You are Workshop's coding assistant"),
+            "{agent}: {head}"
+        );
+    }
     let instructions = j.workshop_home().join("engine").join("instructions.md");
     let text = std::fs::read_to_string(&instructions).expect("instructions file under the home");
     assert!(text.contains("Workshop's coding assistant"), "{text}");

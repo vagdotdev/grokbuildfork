@@ -12,8 +12,11 @@ from the real server:
     metadata.exit; `once`/`always` really removes ./tmp so the effect is visible on disk.
   * "edit hello.txt"                  -> a completed `edit` part with metadata.diff/filediff.
   * "list files" / "ls"               -> a completed `bash` part (`ls -1`) with real output + exit 0.
-  * "what are you"                    -> answers as Workshop's assistant when the server was given
-    an instructions file naming Workshop (OPENCODE_CONFIG_CONTENT), else as "opencode".
+  * "what are you" / "who made you"   -> answers from the identity the system prompt opens with, as
+    the real models do: OpenCode 1.18.31 opens it with the agent's `prompt` from the inline config
+    (OPENCODE_CONFIG_CONTENT) when one is set, else with the model family's prompt ("You are
+    opencode, …", feedback at github.com/anomalyco/opencode), and appends `instructions` after it.
+    Any agent, Plan included.
   * "think"                           -> a reasoning part streamed before the answer part (and
     another one after the tool call of "list files").
   * "slow"                            -> waits 3 s before answering (to queue prompts behind it).
@@ -69,18 +72,36 @@ def broadcast(ev):
         q.put(ev)
 
 
-def instructions_name_workshop():
-    raw = os.environ.get("OPENCODE_CONFIG_CONTENT")
-    if not raw:
-        return False
+FAMILY_PROMPT = ("You are opencode, an interactive CLI tool that helps users with software engineering tasks.\n"
+                 "- To give feedback, users should report the issue at https://github.com/anomalyco/opencode/issues")
+
+
+def inline_config():
     try:
-        for path in json.loads(raw).get("instructions", []):
+        return json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT") or "{}")
+    except ValueError:
+        return {}
+
+
+def system_prompt(agent):
+    cfg = inline_config()
+    base = ((cfg.get("agent") or {}).get(agent or "build") or {}).get("prompt") or FAMILY_PROMPT
+    parts = [base, "You are powered by the model named big-pickle. The exact model ID is opencode/big-pickle"]
+    for path in cfg.get("instructions", []):
+        try:
             with open(path) as f:
-                if "Workshop" in f.read():
-                    return True
-    except Exception:
-        return False
-    return False
+                parts.append(f.read())
+        except OSError:
+            pass
+    return "\n".join(parts)
+
+
+def identity_answer(agent, text_l):
+    if system_prompt(agent).startswith("You are Workshop's"):
+        return "I'm Workshop's coding assistant, running as big-pickle."
+    if "who made you" in text_l:
+        return "I was made by the OpenCode team (github.com/anomalyco/opencode)."
+    return "I'm opencode, an AI coding assistant that runs in your terminal."
 
 
 def part(sid, mid, ptype, extra):
@@ -164,12 +185,10 @@ def run_turn(sid, agent, text):
         items.append(("reasoning", thought))
         stream_text(sid, mid, thought, ptype="reasoning")
     answer = None
-    if agent == "plan":
+    if "what are you" in text_l or "who made you" in text_l:
+        answer = identity_answer(agent, text_l)
+    elif agent == "plan":
         answer = "Plan: I would create the file, but plan mode is read-only. Ready when you exit plan mode."
-    elif "what are you" in text_l:
-        answer = ("I'm Workshop's assistant, a coding agent running in your terminal."
-                  if instructions_name_workshop() else
-                  "I'm opencode, an AI coding assistant that runs in your terminal.")
     elif "create hello.txt" in text_l:
         path = os.path.join(CWD, "hello.txt")
         call_id = next_id("call")
@@ -303,7 +322,8 @@ class H(BaseHTTPRequestHandler):
             sid = path.split("/")[2]
             sessions.setdefault(sid, {"messages": []})
             text = "".join(p.get("text", "") for p in body.get("parts", []))
-            log({"session": sid, "agent": body.get("agent"), "text": text, "model": body.get("model")})
+            log({"session": sid, "agent": body.get("agent"), "text": text, "model": body.get("model"),
+                 "system_head": system_prompt(body.get("agent")).split("\n", 1)[0]})
             threading.Thread(target=run_turn, args=(sid, body.get("agent"), text), daemon=True).start()
             self.send_response(204)
             self.send_header("Content-Length", "0")

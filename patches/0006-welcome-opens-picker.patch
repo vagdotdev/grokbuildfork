@@ -3544,10 +3544,10 @@ index 60fe34f9..d5845f2c 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..0b87042c
+index 00000000..891ac8e7
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1473 @@
+@@ -0,0 +1,1485 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -3570,8 +3570,8 @@ index 00000000..0b87042c
 +use workshop_adapters::opencode_engine::{
 +    EngineOptions, InstallOptions, InstallProgress, OpenCodeEngine, PermissionDecision,
 +    PermissionHandler, PermissionReply, PermissionRequest, TurnHandle, TurnRequest,
-+    ask_before_edit_and_bash, clear_quarantine, detect_opencode, format_bytes, install_opencode,
-+    instructions_config,
++    WORKSHOP_AGENT_PROMPT, agent_prompts, ask_before_edit_and_bash, clear_quarantine,
++    detect_opencode, format_bytes, install_opencode, instructions_config,
 +};
 +
 +use crate::app::workshop_engine_state::{self as state, EngineState};
@@ -4454,22 +4454,34 @@ index 00000000..0b87042c
 +
 +/// What the engine's models are told about where they run. Appended by OpenCode to every system
 +/// prompt it builds for Workshop's server (all agents), like a project `AGENTS.md` — but kept
-+/// under `$WORKSHOP_HOME`, so nothing is written into the user's project.
++/// under `$WORKSHOP_HOME`, so nothing is written into the user's project. It follows OpenCode's
++/// environment block, which names the model by its provider-qualified id (`opencode/big-pickle`).
 +pub const ENGINE_INSTRUCTIONS: &str = "\
 +# Workshop
 +
 +You are Workshop's coding assistant. Workshop is the terminal application the user launched; you \
-+are the model working inside it. When asked who or what you are, say you are Workshop's assistant \
-+(name the model you are running as if you know it). Do not introduce yourself as \"opencode\" or \
-+\"OpenCode\": the user chose Workshop, and the engine underneath is a detail they can see with /model.
++are the model working inside it. When asked who or what you are, or who made you, say you are \
++Workshop's coding assistant and name the model you are running as by its name alone (for example \
++big-pickle, never with the provider prefix of its model id). Do not describe the software you run \
++on and do not introduce yourself by any other product name.
 +
 +Everything else about how you work — tools, conventions, permissions — is as instructed above.
 +";
 +
-+/// Write the identity file for this launch (idempotent) and return it as the engine's inline
-+/// config. A home that cannot be written leaves the model with OpenCode's own identity rather
-+/// than failing the turn; the cause goes to the engine log.
-+fn engine_instructions(log: &Path) -> Option<serde_json::Value> {
++/// The engine's inline config: Workshop's base prompt for the agents its turns run on, and the
++/// identity file for this launch. A home that cannot be written drops only the file; the cause
++/// goes to the engine log.
++fn engine_config(log: &Path) -> serde_json::Value {
++    let mut config = match write_engine_instructions(log) {
++        Some(path) => instructions_config(&[path]),
++        None => serde_json::json!({}),
++    };
++    config["agent"] = agent_prompts(WORKSHOP_AGENT_PROMPT);
++    config
++}
++
++/// Write the identity file (idempotent); `None` when the home cannot be written.
++fn write_engine_instructions(log: &Path) -> Option<PathBuf> {
 +    let path = engine_instructions_path();
 +    if let Some(parent) = path.parent()
 +        && let Err(e) = std::fs::create_dir_all(parent)
@@ -4483,7 +4495,7 @@ index 00000000..0b87042c
 +        state::append_log(log, &format!("instructions: cannot write {}: {e}", path.display()));
 +        return None;
 +    }
-+    Some(instructions_config(&[path]))
++    Some(path)
 +}
 +
 +fn engine_progress(tx: &mpsc::UnboundedSender<WorkshopTurnMsg>, text: impl Into<String>) {
@@ -4614,7 +4626,7 @@ index 00000000..0b87042c
 +    opts.permission = Some(ask_before_edit_and_bash());
 +    opts.permission_handler = Some(engine_permission_handler(ui_tx));
 +    // The models answer as Workshop's assistant, not as "opencode".
-+    opts.config = engine_instructions(&log);
++    opts.config = Some(engine_config(&log));
 +    let sink_path = log.clone();
 +    opts.log_sink = Some(Arc::new(move |line: &str| state::append_log(&sink_path, line)));
 +    // `opencode serve` is up in a couple of seconds on any laptop; a server that has not bound
