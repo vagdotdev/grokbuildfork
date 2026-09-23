@@ -192,6 +192,8 @@ fn test_app() -> AppView {
         workshop_turn_agent: None,
         workshop_turn_prompt_entry: None,
         workshop_resend: None,
+        workshop_fallback: None,
+        workshop_first_launch: false,
         workshop_engine_slot: crate::app::workshop::new_engine_slot(),
         workshop_engine_warm_started: false,
         workshop_turn_progress_entry: None,

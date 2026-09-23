@@ -51,17 +51,18 @@ pub enum WorkshopConnection {
 }
 
 impl WorkshopConnection {
-    /// Composer label: `OpenCode · {model}` for the engine, `Claude · {model}` for rails.
+    /// Composer label: the model's name only (`Big Pickle`, `Claude Sonnet`), never a provider or
+    /// runtime name — a first-time user chose a model, not plumbing.
     pub fn composer_label(&self) -> Option<String> {
         match self {
             Self::Shell => None,
-            Self::Engine { model } => Some(format!(
-                "{} · {}",
-                workshop_auth::ENGINE_DISPLAY_NAME,
-                model.name
-            )),
-            Self::Adapter { rail, model } => Some(workshop_detect::composer_label(*rail, model)),
+            Self::Engine { model } => Some(model.name.clone()),
+            Self::Adapter { model, .. } => Some(model.display().to_owned()),
         }
+    }
+    /// The model name for the failure line (`Couldn't reach {model}`); `Shell` has none.
+    pub fn model_name(&self) -> Option<String> {
+        self.composer_label()
     }
     pub fn is_shell(&self) -> bool {
         matches!(self, Self::Shell)
@@ -131,15 +132,28 @@ pub fn first_run_connection() -> WorkshopConnection {
     }
 }
 
-/// The keyless Direct API row Workshop falls back to when the OpenCode engine cannot start
-/// (offline, installer failed): the Kilo community pool.
+/// Test hook: point the silent fallback at a loopback OpenAI-compatible server instead of the
+/// Kilo Gateway (the PTY gate proves the fallback without network).
+pub const KILO_BASE_URL_ENV: &str = "WORKSHOP_KILO_BASE_URL";
+
+/// The keyless Direct API model Workshop silently falls back to when the OpenCode model cannot
+/// start or answer: the first *concrete* model of the Kilo community pool's default chain (not
+/// the auto-router, so the composer can name the model that actually answered). Never listed on
+/// `/model`; the user only ever sees the model name.
 pub fn kilo_fallback_model() -> Option<workshop_providers::CatalogModel> {
-    Catalog::builtin()
-        .get(&format!(
-            "kilo:{}",
-            workshop_providers::KILO_DEFAULT_CHAIN[0]
-        ))
-        .cloned()
+    let catalog = Catalog::builtin();
+    let mut model = workshop_providers::KILO_DEFAULT_CHAIN
+        .iter()
+        .filter_map(|id| catalog.get(&format!("kilo:{id}")))
+        .find(|m| workshop_auth::is_chat_model_name(&m.model_id) && !m.model_id.contains("auto"))
+        .cloned()?;
+    if let Some(base) = std::env::var(KILO_BASE_URL_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    {
+        model.base_url = base.trim().trim_end_matches('/').to_owned();
+    }
+    Some(model)
 }
 
 /// The credential broker over the OS keyring with the owner-only file fallback under the home.
@@ -270,7 +284,14 @@ pub async fn refresh_picker_snapshot(
         RefreshOptions::default()
     };
     let cache_dir = catalog_cache_dir();
-    let hosted = live_catalogs::refresh(&cache_dir, opts);
+    let manifests = listed_refresh_providers(&default_broker());
+    let hosted = async {
+        if manifests.is_empty() {
+            live_catalogs::load_cached(&cache_dir)
+        } else {
+            live_catalogs::refresh_with(&cache_dir, &manifests, opts).await
+        }
+    };
     let engine_result = async {
         match engine {
             Some(engine) => refresh_engine_catalog(&engine).await.err(),
@@ -290,13 +311,29 @@ pub async fn refresh_picker_snapshot(
     snap
 }
 
+/// The hosted providers whose model list is worth fetching: never a hidden one, and an API-key
+/// provider only once its key is configured (an unconnected provider has no row to show).
+fn listed_refresh_providers(
+    broker: &CredentialBroker,
+) -> Vec<workshop_providers::ProviderManifest> {
+    live_catalogs::REFRESH_PROVIDERS
+        .iter()
+        .filter(|id| !workshop_auth::is_hidden_provider(id))
+        .filter(|id| {
+            workshop_providers::manifest(id)
+                .is_some_and(|m| !m.requires_credential() || broker.is_connected(id))
+        })
+        .filter_map(|id| workshop_providers::manifest(id))
+        .collect()
+}
+
 async fn build_picker_snapshot(
     hosted: Option<HostedCatalogs>,
     engine_error: Option<String>,
     rail_models: workshop_detect::Refresh,
 ) -> PickerSnapshot {
     let local = workshop_providers::probe_all_local_servers(Duration::from_millis(600)).await;
-    let rails = tokio::task::spawn_blocking(move || {
+    let rails: Vec<workshop_detect::RailState> = tokio::task::spawn_blocking(move || {
         let cache = workshop_detect::ModelsCache::new(catalog_cache_dir());
         workshop_detect::picker_rails(
             &workshop_detect::DetectConfig::default(),
@@ -330,7 +367,7 @@ async fn build_picker_snapshot(
     let broker = default_broker();
     let secret_backend = broker.secret_backend();
     let engine = cached_engine_models();
-    let rows = models_rows(&catalog, |id| broker.is_connected(id), &engine);
+    let rows = models_rows(&catalog, |id| broker.is_connected(id), &engine, &rails);
     let default_selection = Some(select_default(&local, true));
     let mut catalog_status = vec![engine_catalog_status(&engine, engine_error)];
     catalog_status.extend(hosted_status);
@@ -431,7 +468,8 @@ pub async fn openrouter_sign_in() -> Result<&'static str, String> {
     if webbrowser::open(&url).is_err() {
         tracing::warn!("could not open a browser for OpenRouter sign-in; url: {url}");
     }
-    let client = workshop_providers::oauth::openrouter::exchange_client().map_err(|e| e.to_string())?;
+    let client =
+        workshop_providers::oauth::openrouter::exchange_client().map_err(|e| e.to_string())?;
     let key = signin
         .complete_loopback(&client, Duration::from_secs(300))
         .await
@@ -472,8 +510,9 @@ impl TurnStream {
 /// loop's Workshop `select!` arm (kept UI-agnostic so `workshop-adapters` never depends on the pager).
 #[derive(Debug)]
 pub enum WorkshopTurnMsg {
-    /// One line of bring-up status ("Installing the OpenCode engine…"); replaces the previous
-    /// progress line, and the first real event clears it. Never silent while the user waits.
+    /// One line of waiting status (`Thinking…`, or the first-time download progress); replaces the
+    /// previous progress line, and the first real event clears it. Never silent while the user
+    /// waits, and never a word about what runs underneath.
     Progress(String),
     /// The OpenCode engine started (lazily, on the first turn); cache it and the session so later
     /// turns reuse the same `opencode serve` and conversation. Engine turns only.
@@ -482,21 +521,35 @@ pub enum WorkshopTurnMsg {
         session: String,
     },
     /// The first-keystroke warm-up finished: the engine is up before the first message.
-    EngineWarm { engine: Arc<OpenCodeEngine> },
+    EngineWarm {
+        engine: Arc<OpenCodeEngine>,
+    },
     /// The engine's live catalog names a different default than the pinned seed the first run
     /// activated: the connection follows OpenCode's default (composer label, persisted file).
-    EngineDefaultResolved { model: EngineModel },
+    EngineDefaultResolved {
+        model: EngineModel,
+    },
     Delta(String),
-    Tool { name: String, summary: String },
-    ToolResult { ok: bool },
+    Tool {
+        name: String,
+        summary: String,
+    },
+    ToolResult {
+        ok: bool,
+    },
     /// A permission ask the backend escalated; `decision` is what Workshop answered (asks are
     /// answered from the pager's permission mode — a synchronous vendor hook, so it is surfaced,
     /// not blocking-interactive).
-    Permission { summary: String, decision: &'static str },
+    Permission {
+        summary: String,
+        decision: &'static str,
+    },
+    /// The plain failure line (`Couldn't reach <model> — …`); the cause is already in the log.
     Error(String),
-    /// The OpenCode engine could not be started for this turn (offline, installer failed, no
-    /// verified `opencode`). `text` is the prompt that never ran; the UI falls back to the Kilo
-    /// keyless pool and resends it. Followed by `Done`.
+    /// OpenCode's model could not start or answer this turn (offline, installer failed, no
+    /// verified `opencode`, the prompt refused, nothing back before the first-event ceiling).
+    /// `text` is the prompt that never ran; the UI silently resends it through the keyless pool.
+    /// Followed by `Done`.
     EngineUnavailable {
         reason: String,
         text: String,
@@ -510,8 +563,10 @@ pub enum WorkshopTurnMsg {
 
 /// Why a turn could not start.
 enum TurnStartError {
-    /// `opencode` could not be detected, installed, or started.
+    /// `opencode` could not be detected, installed or started, or would not take the prompt: the
+    /// silent fallback answers instead.
     EngineUnavailable(String),
+    /// A vendor CLI turn could not start: the plain failure line.
     Other(String),
 }
 
@@ -548,9 +603,9 @@ const RECENT_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 pub const FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 /// Hard ceiling on `opencode serve` binding its port and passing its health check.
 pub const ENGINE_START_TIMEOUT: Duration = Duration::from_secs(30);
-/// A model that has not sent anything back after this long is said to still be connecting: the
-/// waiting line changes so the user knows the wait is the network's, not a hang.
-pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// The one thing the user sees while nothing has come back yet — whatever is happening behind it
+/// (installing, starting, connecting, waiting for the model). No plumbing words, ever.
+pub const THINKING: &str = "Thinking\u{2026}";
 /// The waiting line shows its elapsed seconds only once the wait is long enough to feel like one.
 pub const ELAPSED_AFTER: Duration = Duration::from_secs(3);
 /// Frames of the animated mark in front of the waiting line.
@@ -575,12 +630,19 @@ pub fn waiting_line(text: &str, elapsed: Duration, frame: usize) -> String {
     line
 }
 
-/// The install phase with byte progress, once the vendor script has started writing.
+/// The first-run download, once the vendor script has started writing: still `Thinking…`, with
+/// the honest byte count so a minute-long first message never looks hung.
 pub fn install_progress_line(bytes: u64) -> String {
     format!(
-        "Installing the OpenCode engine (first time only)\u{2026} {} downloaded",
+        "{THINKING} \u{b7} first-time setup, {} downloaded",
         format_bytes(bytes)
     )
+}
+
+/// The one failure line a user sees when a model could not be reached or did not answer (after
+/// the silent fallback, if any, failed too): plain, no runtime names, and the two ways out.
+pub fn failure_line(model: &str) -> String {
+    format!("Couldn't reach {model} \u{2014} Enter to retry \u{b7} /model to switch")
 }
 
 /// Which backend a submitted prompt should run on.
@@ -636,15 +698,13 @@ pub fn has_resumable_sessions(cwd: &Path) -> bool {
     use xai_grok_shell::session::persistence::{
         RecentSessionSelection, local_summaries_for_cwd_sync,
     };
-    let with_messages = local_summaries_for_cwd_sync(
-        &cwd.to_string_lossy(),
-        RecentSessionSelection::Interactive,
-    )
-    .map(|list| {
-        list.iter()
-            .any(|s| s.num_messages > 0 || s.num_chat_messages > 0)
-    })
-    .unwrap_or(false);
+    let with_messages =
+        local_summaries_for_cwd_sync(&cwd.to_string_lossy(), RecentSessionSelection::Interactive)
+            .map(|list| {
+                list.iter()
+                    .any(|s| s.num_messages > 0 || s.num_chat_messages > 0)
+            })
+            .unwrap_or(false);
     with_messages
         || load_resume_id("opencode", cwd).is_some()
         || workshop_detect::Rail::ALL
@@ -708,28 +768,12 @@ pub fn session_topic(prompt: &str) -> String {
     topic
 }
 
-/// The ways out appended to every failure line: retry the same prompt, switch model, diagnose.
-pub const ERROR_WAYS_OUT: &str = "Enter retries · /model switches model · /doctor checks the setup";
-
-/// The one line a user sees when the engine path fails after the engine is up: the cause, the
-/// ways out, and where the details went. (A failure *before* the engine is up goes through the
-/// Kilo fallback instead — see `TurnStartError::EngineUnavailable`.)
-pub fn engine_failure_line(cause: &str) -> String {
-    format!(
-        "OpenCode engine: {cause} — {ERROR_WAYS_OUT}; log: {}",
-        engine_log_path().display()
-    )
-}
-
-/// A backend error as the user sees it: the message (one line) with the ways out, unless the
-/// message already carries them (engine failure lines do).
-pub fn actionable_error_line(message: &str) -> String {
-    let message = message.trim();
-    if message.contains(ERROR_WAYS_OUT) {
-        message.to_owned()
-    } else {
-        format!("{message} — {ERROR_WAYS_OUT}")
-    }
+/// Record a turn failure's technical cause where `workshop doctor` and the log can show it; the
+/// user sees [`failure_line`] only.
+pub fn log_failure_cause(cause: &str) {
+    let cause = cause.split_whitespace().collect::<Vec<_>>().join(" ");
+    tracing::warn!("workshop turn failed: {cause}");
+    state::append_log(&engine_log_path(), &format!("turn failed: {cause}"));
 }
 
 /// `$WORKSHOP_HOME/logs/opencode-engine.log`, the `opencode serve` stdout/stderr capture.
@@ -798,7 +842,7 @@ async fn start_engine(
         {
             // Our own install no longer runs (a quarantine flag from an older Workshop, a
             // half-written binary): clear the flag and re-check, else reinstall over it.
-            engine_phase(slot, &tx, "Repairing the OpenCode engine install…");
+            engine_phase(slot, &tx, THINKING);
             state::append_log(
                 &log,
                 &format!("repair: `{}` failed verification: {reason}", path.display()),
@@ -827,15 +871,14 @@ async fn start_engine(
             return Err(engine_fail(
                 &mut st,
                 &home,
-                format!("`{}` is not a usable OpenCode binary ({reason})", path.display()),
+                format!(
+                    "`{}` is not a usable OpenCode binary ({reason})",
+                    path.display()
+                ),
             ));
         }
         Detection::NotInstalled => {
-            engine_phase(
-                slot,
-                &tx,
-                "Installing the OpenCode engine (first time only, about a minute)…",
-            );
+            engine_phase(slot, &tx, THINKING);
             run_installer(&mut st, &log);
             match install_opencode(&install).await {
                 Ok(cli) => cli,
@@ -850,16 +893,14 @@ async fn start_engine(
     st.version = Some(cli.version.clone());
     st.last_phase = Some("start".into());
     st.save(&home);
-    engine_phase(
-        slot,
-        &tx,
-        &format!("Starting the OpenCode engine ({})…", cli.version),
-    );
+    engine_phase(slot, &tx, THINKING);
 
     let mut opts = EngineOptions::new(workspace);
     opts.permission_handler = Some(engine_permission_handler(tx, slot.always_approve.clone()));
     let sink_path = log.clone();
-    opts.log_sink = Some(Arc::new(move |line: &str| state::append_log(&sink_path, line)));
+    opts.log_sink = Some(Arc::new(move |line: &str| {
+        state::append_log(&sink_path, line)
+    }));
     // `opencode serve` is up in a couple of seconds on any laptop; a server that has not bound
     // its port after this long is broken, and the user should hear so instead of waiting.
     opts.startup_timeout = ENGINE_START_TIMEOUT;
@@ -893,7 +934,7 @@ async fn acquire_engine(
             engine_progress(
                 tx,
                 if current.is_empty() {
-                    "Starting the OpenCode engine…".to_owned()
+                    THINKING.to_owned()
                 } else {
                     current
                 },
@@ -1011,13 +1052,13 @@ async fn build_stream(
                 }
                 model = live;
             }
-            engine_progress(tx, format!("Waiting for {}…", model.name));
+            engine_progress(tx, THINKING);
+            // A model that is up but will not take the prompt cannot answer either: the silent
+            // fallback answers instead (the cause is logged by the fallback dispatch).
             let session = match session {
                 Some(s) if engine.session_exists(s).await.unwrap_or(false) => s.clone(),
                 _ => engine.create_session(Some("Workshop")).await.map_err(|e| {
-                    TurnStartError::Other(engine_failure_line(&format!(
-                        "could not open a session: {e}"
-                    )))
+                    TurnStartError::EngineUnavailable(format!("could not open a session: {e}"))
                 })?,
             };
             let _ = tx.send(WorkshopTurnMsg::EngineReady {
@@ -1028,9 +1069,7 @@ async fn build_stream(
             req.model = Some(model.model_ref.clone());
             req.permission = permission;
             let turn = engine.prompt(&session, req).await.map_err(|e| {
-                TurnStartError::Other(engine_failure_line(&format!(
-                    "the prompt was refused: {e}"
-                )))
+                TurnStartError::EngineUnavailable(format!("the prompt was refused: {e}"))
             })?;
             Ok(TurnStream::Engine(turn))
         }
@@ -1043,15 +1082,15 @@ async fn build_stream(
             let cli = match detect(&*adapter, &DetectOptions::default()).await {
                 Detection::Installed(cli) => cli,
                 Detection::Unverified { reason, .. } => {
-                    return Err(TurnStartError::Other(format!(
-                        "{} could not be verified: {reason}",
-                        adapter.id()
+                    log_failure_cause(&format!("{} could not be verified: {reason}", adapter.id()));
+                    return Err(TurnStartError::Other(failure_line(
+                        model.as_deref().unwrap_or(&adapter.id().to_string()),
                     )));
                 }
                 Detection::NotInstalled => {
-                    return Err(TurnStartError::Other(format!(
-                        "{} is not installed",
-                        adapter.id()
+                    log_failure_cause(&format!("{} is not installed", adapter.id()));
+                    return Err(TurnStartError::Other(failure_line(
+                        model.as_deref().unwrap_or(&adapter.id().to_string()),
                     )));
                 }
             };
@@ -1061,7 +1100,12 @@ async fn build_stream(
             req.permission = permission;
             let handle = spawn(&*adapter, &cli, req, &SupervisorOptions::default())
                 .await
-                .map_err(|e| TurnStartError::Other(e.to_string()))?;
+                .map_err(|e| {
+                    log_failure_cause(&e.to_string());
+                    TurnStartError::Other(failure_line(
+                        model.as_deref().unwrap_or(&adapter.id().to_string()),
+                    ))
+                })?;
             Ok(TurnStream::Adapter(handle))
         }
     }
@@ -1117,14 +1161,11 @@ pub async fn run_workshop_turn(
         WorkshopTurnKind::Engine { model, .. } => model.name.clone(),
         WorkshopTurnKind::Adapter { adapter_id, .. } => adapter_id.to_string(),
     };
+    let is_engine = matches!(spec.kind, WorkshopTurnKind::Engine { .. });
     let mut cancelled = false;
     let mut aborted_by_us = false;
     let mut first_event_at: Option<tokio::time::Instant> =
         Some(tokio::time::Instant::now() + FIRST_EVENT_TIMEOUT);
-    // Ten seconds without a first byte is long enough to tell the user the wait is the
-    // connection's; the hard ceiling above still ends the turn with the cause.
-    let mut still_connecting_at: Option<tokio::time::Instant> =
-        Some(tokio::time::Instant::now() + CONNECT_TIMEOUT);
     loop {
         let silence = async {
             match first_event_at {
@@ -1132,36 +1173,35 @@ pub async fn run_workshop_turn(
                 None => std::future::pending::<()>().await,
             }
         };
-        let still_connecting = async {
-            match still_connecting_at {
-                Some(at) => tokio::time::sleep_until(at).await,
-                None => std::future::pending::<()>().await,
-            }
-        };
         tokio::select! {
-            _ = still_connecting => {
-                still_connecting_at = None;
-                engine_progress(&tx, format!("Still connecting to {model_name}\u{2026} nothing back yet"));
-            }
             _ = silence => {
-                // The engine accepted the prompt but nothing came back: stop waiting, say why.
+                // The model accepted the prompt but nothing came back: stop waiting. OpenCode's
+                // model cannot answer, so the silent fallback answers instead; a vendor CLI gets
+                // the plain failure line.
                 stream.cancel();
-                let _ = tx.send(WorkshopTurnMsg::Error(engine_failure_line(&format!(
-                    "no answer from {model_name} after {} s",
-                    FIRST_EVENT_TIMEOUT.as_secs()
-                ))));
                 first_event_at = None;
                 aborted_by_us = true;
+                let cause = format!(
+                    "no answer from {model_name} after {} s",
+                    FIRST_EVENT_TIMEOUT.as_secs()
+                );
+                if is_engine {
+                    let _ = tx.send(WorkshopTurnMsg::EngineUnavailable {
+                        reason: cause,
+                        text: spec.text.clone(),
+                    });
+                    break;
+                }
+                log_failure_cause(&cause);
+                let _ = tx.send(WorkshopTurnMsg::Error(failure_line(&model_name)));
             }
             ev = stream.next_event() => match ev {
                 Some(AdapterEvent::TextDelta { text }) => {
                     first_event_at = None;
-                    still_connecting_at = None;
                     let _ = tx.send(WorkshopTurnMsg::Delta(text));
                 }
                 Some(AdapterEvent::ToolCall { name, input, .. }) => {
                     first_event_at = None;
-                    still_connecting_at = None;
                     let _ = tx.send(WorkshopTurnMsg::Tool {
                         name,
                         summary: summarize_tool_input(&input),
@@ -1171,17 +1211,28 @@ pub async fn run_workshop_turn(
                     let _ = tx.send(WorkshopTurnMsg::ToolResult { ok: !is_error });
                 }
                 Some(AdapterEvent::Error { message }) => {
+                    let nothing_yet = first_event_at.is_some();
                     first_event_at = None;
-                    still_connecting_at = None;
                     // An abort we asked for (Ctrl-C, or the silence timeout above) is already
                     // reported; the backend's own "run cancelled" would only repeat it.
                     if !(aborted_by_us && message == "run cancelled") {
-                        let _ = tx.send(WorkshopTurnMsg::Error(message));
+                        // OpenCode's model failing before a word came back cannot answer: the
+                        // silent fallback answers instead. After output started, or on a vendor
+                        // CLI, the plain failure line.
+                        if is_engine && nothing_yet {
+                            stream.cancel();
+                            let _ = tx.send(WorkshopTurnMsg::EngineUnavailable {
+                                reason: message,
+                                text: spec.text.clone(),
+                            });
+                            break;
+                        }
+                        log_failure_cause(&message);
+                        let _ = tx.send(WorkshopTurnMsg::Error(failure_line(&model_name)));
                     }
                 }
                 Some(AdapterEvent::Thinking { .. }) => {
                     first_event_at = None;
-                    still_connecting_at = None;
                 }
                 Some(AdapterEvent::Usage(_)) | Some(AdapterEvent::Done { .. }) => {}
                 None => break,
@@ -1232,7 +1283,14 @@ pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
         .binary
         .as_ref()
         .map(|b| b.path.to_string_lossy().to_string())
-        .unwrap_or_else(|| vendor.binary_names().first().copied().unwrap_or("").to_owned());
+        .unwrap_or_else(|| {
+            vendor
+                .binary_names()
+                .first()
+                .copied()
+                .unwrap_or("")
+                .to_owned()
+        });
     let mut argv = vec![bin];
     argv.extend(
         workshop_detect::login_argv(vendor)

@@ -1113,15 +1113,16 @@ index 96ddc4b0..4deabb04 100644
          (
              TerminalContext {
 diff --git a/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs b/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
-index 5cc76928..a89d37f4 100644
+index 5cc76928..a6c3a8a1 100644
 --- a/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
 +++ b/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
-@@ -5,11 +5,11 @@ use crate::diagnostics::{
+@@ -5,11 +5,12 @@ use crate::diagnostics::{
  };
  use crate::host::{DisplayServer, HostOs};
  
 -const LIVE_TUI_PROBE_CTA: &str = "Some checks only run in Grok. Start Grok and run /doctor.";
-+const LIVE_TUI_PROBE_CTA: &str = "Some checks only run in Workshop. Start Workshop and run /doctor.";
++const LIVE_TUI_PROBE_CTA: &str =
++    "Some checks only run in Workshop. Start Workshop and run /doctor.";
  
  pub(super) fn format(report: &DiagnosticReport) -> String {
      let facts = &report.facts;
@@ -1130,7 +1131,7 @@ index 5cc76928..a89d37f4 100644
  
      fact(&mut out, "terminal", &facts.terminal.to_string());
      match &facts.xtversion {
-@@ -126,8 +126,10 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
+@@ -126,8 +127,10 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
      };
      fact(&mut out, "status", status);
  
@@ -1142,7 +1143,7 @@ index 5cc76928..a89d37f4 100644
          match voice {
              VoiceFacts::Device { name, detail } => {
                  fact(&mut out, "microphone", &format!("{name} ({detail})"));
-@@ -137,6 +139,70 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
+@@ -137,6 +140,79 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
              }
          }
      }
@@ -1163,7 +1164,10 @@ index 5cc76928..a89d37f4 100644
 +                "engine",
 +                &format!(
 +                    "not installed ({})",
-+                    engine.engine_error.as_deref().unwrap_or("voice-engine missing")
++                    engine
++                        .engine_error
++                        .as_deref()
++                        .unwrap_or("voice-engine missing")
 +                ),
 +            ),
 +        }
@@ -1182,26 +1186,32 @@ index 5cc76928..a89d37f4 100644
 +    }
 +
 +    if let Some(engine) = &facts.engine {
-+        out.push_str("\nOpenCode engine\n");
++        out.push_str("\nOpenCode (free models)\n");
 +        fact(&mut out, "connection", &engine.connection);
 +        match (&engine.binary, &engine.version) {
 +            (Some(path), Some(version)) => fact(&mut out, "binary", &format!("{path} ({version})")),
-+            (Some(path), None) => {
-+                fact(&mut out, "binary", &format!("{path} ({})", engine.binary_status))
-+            }
++            (Some(path), None) => fact(
++                &mut out,
++                "binary",
++                &format!("{path} ({})", engine.binary_status),
++            ),
 +            (None, _) => fact(&mut out, "binary", &engine.binary_status),
 +        }
 +        if let Some(flag) = &engine.quarantined {
 +            fact(
 +                &mut out,
 +                "quarantine",
-+                &format!("{flag} — macOS Gatekeeper blocks this binary; Workshop clears it on the next start"),
++                &format!(
++                    "{flag} — macOS Gatekeeper blocks this binary; Workshop clears it on the next start"
++                ),
 +            );
 +        }
 +        match (&engine.last_phase, engine.last_start_unix) {
-+            (Some(phase), Some(at)) => {
-+                fact(&mut out, "last start", &format!("reached `{phase}` ({})", unix_to_utc(at)))
-+            }
++            (Some(phase), Some(at)) => fact(
++                &mut out,
++                "last start",
++                &format!("reached `{phase}` ({})", unix_to_utc(at)),
++            ),
 +            (Some(phase), None) => fact(&mut out, "last start", &format!("reached `{phase}`")),
 +            _ => fact(&mut out, "last start", "never"),
 +        }
@@ -1213,7 +1223,7 @@ index 5cc76928..a89d37f4 100644
  
      if !report.findings.is_empty() {
          out.push_str("\nFindings\n");
-@@ -244,6 +310,13 @@ fn format_newline(newline: &NewlineFact) -> String {
+@@ -244,6 +320,13 @@ fn format_newline(newline: &NewlineFact) -> String {
      format!("Alt+Enter ({detail})")
  }
  

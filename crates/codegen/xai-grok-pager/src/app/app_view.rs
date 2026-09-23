@@ -1037,11 +1037,12 @@ pub struct AppView {
     /// Set once the first typed character has started the engine warm-up for this process.
     pub workshop_engine_warm_started: bool,
     pub workshop_engine_session: Option<String>,
-    /// The bring-up status line ("Installing the OpenCode engine…") of the current turn; replaced
-    /// by each newer status and removed once the turn produces output or ends.
+    /// The waiting line (`Thinking…`) of the current turn; replaced by each newer status and
+    /// removed once the turn produces output or ends.
     pub workshop_turn_progress_entry: Option<crate::scrollback::EntryId>,
-    /// The phase text behind `workshop_turn_progress_entry` ("Waiting for Big Pickle…"); the
-    /// entry is repainted every few ticks with the spinner frame and the elapsed seconds.
+    /// The phase text behind `workshop_turn_progress_entry` (`Thinking…`, or the first-time
+    /// download progress); the entry is repainted every few ticks with the spinner frame and the
+    /// elapsed seconds.
     pub workshop_turn_progress: Option<String>,
     /// When the current Workshop turn was submitted (the waiting line's elapsed clock).
     pub workshop_turn_started: Option<Instant>,
@@ -1054,7 +1055,8 @@ pub struct AppView {
     pub workshop_turn_active: bool,
     /// Sender the event loop installs once so submit handlers can stream a turn's events back into
     /// the loop's Workshop `select!` arm. `None` outside the interactive loop (headless, tests).
-    pub workshop_turn_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::app::workshop::WorkshopTurnMsg>>,
+    pub workshop_turn_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<crate::app::workshop::WorkshopTurnMsg>>,
     /// Cancel signal for the in-flight turn (Esc / Ctrl-C → abort/kill).
     pub workshop_turn_cancel: Option<tokio::sync::watch::Sender<bool>>,
     /// The streaming assistant block for the current turn, appended to as deltas arrive.
@@ -1064,8 +1066,16 @@ pub struct AppView {
     /// The user bubble of the current Engine/Adapter turn (dropped when the turn is resent on the
     /// Kilo fallback).
     pub workshop_turn_prompt_entry: Option<crate::scrollback::EntryId>,
-    /// A prompt to resend on the shell path once the Kilo fallback activation completes.
-    pub workshop_resend: Option<(crate::app::agent::AgentId, String, String)>,
+    /// Workshop: the prompt whose OpenCode turn could not start, held until the silent fallback
+    /// model has been activated (`AuthComplete`), then resent through the shell — no notice.
+    pub workshop_resend: Option<(crate::app::agent::AgentId, String)>,
+    /// Workshop: the silent fallback is carrying this session's turns (the OpenCode model could not
+    /// start or answer); holds the answering model's plain name for the composer. Cleared when the
+    /// user picks a connection or the fallback fails too.
+    pub workshop_fallback: Option<String>,
+    /// Workshop: this launch created the home (nothing was ever connected before), so the composer
+    /// carries the `/model to switch · /auth to connect subscriptions` hint.
+    pub workshop_first_launch: bool,
     /// Delivery state from the last clipboard copy during auth.
     pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     /// Generation of the current auth copy feedback and its clear timer.
@@ -1621,6 +1631,8 @@ impl AppView {
             workshop_turn_agent: None,
             workshop_turn_prompt_entry: None,
             workshop_resend: None,
+            workshop_fallback: None,
+            workshop_first_launch: false,
             auth_clipboard_delivery: None,
             auth_clipboard_feedback_generation: 0,
             team_id: None,
@@ -2534,7 +2546,11 @@ impl AppView {
                         2
                     } else {
                         2 + if self.has_claude_import { 1 } else { 0 }
-                            + if self.welcome_show_resume_action { 1 } else { 0 }
+                            + if self.welcome_show_resume_action {
+                                1
+                            } else {
+                                0
+                            }
                             + if self.welcome_show_changelog_action {
                                 1
                             } else {
@@ -4644,20 +4660,28 @@ impl AppView {
                             } else {
                                 self.tip.as_deref()
                             };
-                            // Workshop: an Engine/Adapter connection names its runtime
-                            // (`OpenCode · Big Pickle`), never the placeholder shell model, and the
-                            // home composer carries the two doors as its only hint.
-                            let workshop_label = self.workshop_connection.composer_label();
+                            // Workshop: an Engine/Adapter connection names its model
+                            // (`Big Pickle`), never the placeholder shell model; on the very first
+                            // launch the home composer carries the two doors as its only hint.
+                            // (field-level borrows: the render closure already holds parts of `self`)
+                            let workshop_label = self
+                                .workshop_fallback
+                                .clone()
+                                .or_else(|| self.workshop_connection.composer_label());
                             let model_name = match workshop_label {
                                 Some(label) => {
-                                    for text in
-                                        ["/model to switch", "/auth to connect subscriptions"]
-                                    {
-                                        flags_vec.push(crate::views::prompt_widget::PromptFlag {
-                                            text,
-                                            color: Some(theme.gray_bright),
-                                            bold: false,
-                                        });
+                                    if self.workshop_first_launch {
+                                        for text in
+                                            ["/model to switch", "/auth to connect subscriptions"]
+                                        {
+                                            flags_vec.push(
+                                                crate::views::prompt_widget::PromptFlag {
+                                                    text,
+                                                    color: Some(theme.gray_bright),
+                                                    bold: false,
+                                                },
+                                            );
+                                        }
                                     }
                                     label
                                 }
@@ -4686,9 +4710,8 @@ impl AppView {
                                 .filter(|a| {
                                     workshop_brand::hero_shows_announcement(a.severity.as_deref())
                                 });
-                            let has_resumable_sessions = *self
-                                .welcome_has_resumable_sessions
-                                .get_or_init(|| {
+                            let has_resumable_sessions =
+                                *self.welcome_has_resumable_sessions.get_or_init(|| {
                                     crate::app::workshop::has_resumable_sessions(&self.cwd)
                                 });
                             let welcome_params = crate::views::welcome::WelcomeRenderParams {
@@ -5057,7 +5080,8 @@ impl AppView {
                                 {
                                     link_spans.clear();
                                 }
-                                let cursor = if has_cloud || self.tutorial.is_some() || picker_open {
+                                let cursor = if has_cloud || self.tutorial.is_some() || picker_open
+                                {
                                     None
                                 } else {
                                     cursor_pos
@@ -6009,6 +6033,20 @@ impl AppView {
             ActiveView::Welcome => TickDemand::Slow,
         }
     }
+    /// Workshop: what the composer calls the active model — the silent fallback's model while it
+    /// carries the session, else the connection's model name. Never a provider or runtime name.
+    pub fn workshop_label(&self) -> Option<String> {
+        self.workshop_fallback
+            .clone()
+            .or_else(|| self.workshop_connection.composer_label())
+    }
+    /// Workshop: the name the failure line uses for the model the user actually chose.
+    pub fn workshop_model_name(&self) -> String {
+        self.workshop_connection
+            .model_name()
+            .or_else(|| self.models.current_model_name())
+            .unwrap_or_else(|| "the model".to_owned())
+    }
     /// Workshop: advance the waiting line of an Engine/Adapter turn (spinner frame, elapsed
     /// seconds) while it has produced nothing yet. Every third tick: ~10 frames a second at 30 fps.
     fn tick_workshop_progress(&mut self) -> bool {
@@ -6054,7 +6092,8 @@ impl AppView {
         if let Some(id) = self.workshop_turn_progress_entry.take() {
             agent.scrollback.remove_entry(id);
         }
-        self.workshop_turn_progress_entry = Some(agent.scrollback.push_block(RenderBlock::system(line)));
+        self.workshop_turn_progress_entry =
+            Some(agent.scrollback.push_block(RenderBlock::system(line)));
         true
     }
     /// Update the terminal tab title and OSC 9;4 progress bar.
@@ -6079,7 +6118,8 @@ impl AppView {
                 let has_perms = !agent.permission_queue.is_empty();
                 let elapsed = if parked { None } else { agent.turn_elapsed() };
                 // Workshop: an Engine/Adapter turn is busy too (the title spinner shows it).
-                let is_busy = (agent.session.state.is_busy() || agent.workshop_turn_active) && !parked;
+                let is_busy =
+                    (agent.session.state.is_busy() || agent.workshop_turn_active) && !parked;
                 (name, model, activity, has_perms, elapsed, is_busy)
             } else {
                 (None, None, None, false, None, false)

@@ -4106,11 +4106,11 @@ fn handle_workshop_turn_msg(
             // OpenCode's live default replaces the pinned seed the first run activated.
             let conn = crate::app::workshop::WorkshopConnection::Engine { model };
             crate::app::workshop::save_active_connection(&conn);
-            let label = conn.composer_label();
+            app.workshop_connection = conn;
+            let label = app.workshop_label();
             for agent in app.agents.values_mut() {
                 agent.workshop_model_label = label.clone();
             }
-            app.workshop_connection = conn;
             true
         }
         M::EngineReady { engine, session } => {
@@ -4159,15 +4159,15 @@ fn handle_workshop_turn_msg(
         M::ToolResult { .. } => false,
         M::Permission { summary, decision } => {
             if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent
-                    .scrollback
-                    .push_block(RenderBlock::system(format!("Permission: {summary} — {decision}")));
+                agent.scrollback.push_block(RenderBlock::system(format!(
+                    "Permission: {summary} — {decision}"
+                )));
             }
             true
         }
-        M::Error(message) => {
-            // Red, and actionable: Enter on the empty composer resends the prompt that failed.
-            let line = crate::app::workshop::actionable_error_line(&message);
+        M::Error(line) => {
+            // Red, plain, and actionable: Enter on the empty composer resends the prompt that
+            // failed (the technical cause is in the log, never on screen).
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 agent.scrollback.push_block(RenderBlock::system_error(line));
                 agent.workshop_retry_prompt = app.workshop_last_prompt.clone();
@@ -4246,7 +4246,9 @@ fn maybe_warm_engine_on_first_message_keystroke(app: &mut AppView) {
     if text.is_empty() || text.starts_with('/') {
         return;
     }
-    let Some(tx) = app.workshop_turn_tx.clone() else { return };
+    let Some(tx) = app.workshop_turn_tx.clone() else {
+        return;
+    };
     app.workshop_engine_warm_started = true;
     let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     tokio::spawn(crate::app::workshop::warm_engine(

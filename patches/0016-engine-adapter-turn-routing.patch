@@ -61,7 +61,7 @@ index ae3b381c..68aa7a2f 100644
      /// Whether a local or wake cancel is still in flight.
      pub(crate) fn any_cancel_pending(&self) -> bool {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-index a4d77733..0f8729f7 100644
+index a4d77733..7d70f71b 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 @@ -82,6 +82,7 @@ pub(super) fn collect_live_doctor_report_for_terminal(
@@ -72,7 +72,7 @@ index a4d77733..0f8729f7 100644
      Some(report)
  }
  
-@@ -614,6 +615,89 @@ pub(super) fn dispatch_send_prompt_inner(
+@@ -614,6 +615,91 @@ pub(super) fn dispatch_send_prompt_inner(
      dispatch_send_prompt_submission(app, text, None, consume_input, literal, is_follow_up)
  }
  
@@ -94,7 +94,9 @@ index a4d77733..0f8729f7 100644
 +    use crate::app::workshop::{self, WorkshopConnection, WorkshopTurnKind, WorkshopTurnSpec};
 +
 +    if app.workshop_turn_active {
-+        app.show_toast("Still working on your last message — Ctrl+C cancels it, /model switches model.");
++        app.show_toast(
++            "Still working on your last message — Ctrl+C cancels it, /model switches model.",
++        );
 +        return vec![];
 +    }
 +    let Some(tx) = app.workshop_turn_tx.clone() else {
@@ -162,7 +164,7 @@ index a4d77733..0f8729f7 100644
  pub(super) fn dispatch_send_prompt_submission(
      app: &mut AppView,
      text: String,
-@@ -689,6 +773,16 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -689,6 +775,20 @@ pub(super) fn dispatch_send_prompt_submission(
          text
      };
  
@@ -170,7 +172,11 @@ index a4d77733..0f8729f7 100644
 +    // does not use the shell's ACP session — route the turn through workshop-adapters and stream it
 +    // into the scrollback. Pure slash commands already returned above; only real prompt text
 +    // reaches here. Direct/Local (`Shell`) connections fall through to the ACP path unchanged.
-+    if routes_off_acp_path(&app.workshop_connection, literal, &text) {
++    // While the silent fallback carries the session, prompts stay on the shell (ACP) path: the
++    // fallback model is the shell's active model.
++    if routes_off_acp_path(&app.workshop_connection, literal, &text)
++        && app.workshop_fallback.is_none()
++    {
 +        let mut effects = prelude;
 +        effects.extend(dispatch_workshop_turn(app, id, text));
 +        return effects;
@@ -179,7 +185,7 @@ index a4d77733..0f8729f7 100644
      // Capture app-level fields before the mut-borrow on `agent`.
      let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
      let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
-@@ -701,6 +795,7 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -701,6 +801,7 @@ pub(super) fn dispatch_send_prompt_submission(
      let login_method_id_from_app = app.login_method_id.as_ref().map(|id| id.0.to_string());
      let leader_mode = app.leader_mode;
      let screen_mode_is_minimal = app.screen_mode.is_minimal();
@@ -187,7 +193,7 @@ index a4d77733..0f8729f7 100644
      let Some(agent) = app.agents.get_mut(&id) else {
          return prelude;
      };
-@@ -1029,6 +1124,23 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -1029,6 +1130,23 @@ pub(super) fn dispatch_send_prompt_submission(
                  return effects;
              }
              CommandResult::QueueCommand(cmd_text) => {
@@ -211,8 +217,67 @@ index a4d77733..0f8729f7 100644
                  agent.session.enqueue_command(cmd_text);
              }
              CommandResult::InjectSkill {
+@@ -1413,7 +1531,23 @@ pub(super) fn handle_prompt_response(
+     // The leader's `running_prompt_id` broadcast can arrive before this `PromptResponse`
+     // Take any stashed adoption now; it is applied after `finish_turn` clears `current_prompt_id` below
+     let pending_adoption = app.pending_running_adoptions.remove(&agent_id);
++    // Workshop: while the silent fallback carries the session, a failed turn is reported as the
++    // one plain line (the technical cause goes to the log) and ends the fallback, so Enter retries
++    // from the top: the user's own model first, the fallback behind it.
++    let fallback_failure = if result.is_err() && app.workshop_fallback.take().is_some() {
++        Some((
++            crate::app::workshop::failure_line(&app.workshop_model_name()),
++            app.workshop_last_prompt.clone(),
++        ))
++    } else {
++        None
++    };
++    // With the fallback over, the composer names the user's own model again.
++    let restored_label = fallback_failure.as_ref().map(|_| app.workshop_label());
+     if let Some(agent) = app.agents.get_mut(&agent_id) {
++        if let Some(label) = restored_label {
++            agent.workshop_model_label = label;
++        }
+         // Discard PromptResponses that don't belong to the currently active prompt
+         // They belong to a turn the user rewound, or to a queued prompt that never became the running turn
+         // Without the `Err` fallback, a queued prompt's RPC error has no id to gate on and is misattributed to the running turn
+@@ -1642,6 +1776,17 @@ pub(super) fn handle_prompt_response(
+         // Insert the session event message (skip TurnCompleted for bash-mode, which has no agent turn)
+         let event = match (&result, was_cancelling) {
+             (Ok(_), false) if agent.bash_turn => None,
++            (Err(err), _) if fallback_failure.is_some() => {
++                crate::app::workshop::log_failure_cause(err);
++                // The wire error banner the retry handler already pushed for this turn (`Bad
++                // request (400): …`) is the cause, and the cause belongs in the log.
++                super::auth::strip_trailing_auth_error_blocks(agent);
++                if let Some((line, retry)) = fallback_failure.clone() {
++                    agent.scrollback.push_block(RenderBlock::system_error(line));
++                    agent.workshop_retry_prompt = retry;
++                }
++                None
++            }
+             (Err(_), _) if dedicated_ux_shown => None,
+             // `err` is already banner-formatted by `format_acp_error` at the producer, the single formatting owner
+             // Don't re-format here
+@@ -1682,9 +1827,13 @@ pub(super) fn handle_prompt_response(
+                 };
+                 Some((NotificationEventKind::TurnComplete, body))
+             }
+-            (Err(err), _) if !dedicated_ux_shown => {
+-                Some((NotificationEventKind::AgentError, format!("Error: {err}")))
+-            }
++            (Err(err), _) if !dedicated_ux_shown => Some((
++                NotificationEventKind::AgentError,
++                match &fallback_failure {
++                    Some((line, _)) => line.clone(),
++                    None => format!("Error: {err}"),
++                },
++            )),
+             _ => None,
+         };
+ 
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
-index a80f3faf..6b08a5e1 100644
+index a80f3faf..24d251d9 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
 @@ -674,7 +674,7 @@ pub(in crate::app::dispatch) fn dispatch_trust_folder(app: &mut AppView) -> Vec<
@@ -230,7 +295,7 @@ index a80f3faf..6b08a5e1 100644
      let plugins_visible = !app.appearance.disable_plugins;
 +    // Workshop: a new/revealed agent shows the active connection's composer label (`Big Pickle ·
 +    // OpenCode`, `Claude · {model}`); `None` for Direct/Local (Shell) → the shell model name shows.
-+    let workshop_label = app.workshop_connection.composer_label();
++    let workshop_label = app.workshop_label();
      let Some(agent) = app.agents.get_mut(&agent_id) else {
          return;
      };

@@ -288,10 +288,12 @@ pub(super) fn dispatch_refresh_catalogs(app: &mut AppView, force: bool) -> Vec<E
     }]
 }
 
-/// Make `conn` the active connection and remember it for the next launch.
+/// Make `conn` the active connection and remember it for the next launch. A silent fallback that
+/// was carrying the session ends here: the user chose.
 fn set_workshop_connection(app: &mut AppView, conn: crate::app::workshop::WorkshopConnection) {
     crate::app::workshop::save_active_connection(&conn);
     app.workshop_connection = conn;
+    app.workshop_fallback = None;
 }
 
 /// First run (nothing connected yet): land in the composer with the OpenCode engine's default free
@@ -299,6 +301,7 @@ fn set_workshop_connection(app: &mut AppView, conn: crate::app::workshop::Worksh
 /// then). The placeholder shell model + anonymous session are established in-process exactly as
 /// selecting the row in `/model` would; `/model` and `/auth` remain the only doors afterwards.
 pub(super) fn dispatch_workshop_first_run(app: &mut AppView) -> Vec<Effect> {
+    app.workshop_first_launch = true;
     set_workshop_connection(app, crate::app::workshop::first_run_connection());
     match crate::app::workshop::activate_placeholder_session() {
         Ok(key) => start_workshop_activation(app, key),
@@ -311,45 +314,45 @@ pub(super) fn dispatch_workshop_first_run(app: &mut AppView) -> Vec<Effect> {
     }
 }
 
-/// The OpenCode engine could not start for a turn (offline, installer failed): say so in one
-/// line, switch to the Kilo keyless pool, and resend the prompt once the switch has completed
-/// (`handle_auth_complete` drains `workshop_resend`).
+/// The OpenCode model could not start for a turn (offline, installer failed, `opencode serve`
+/// down): fall back *silently* to the keyless community pool — activate its model as the shell's,
+/// resend the prompt once the switch has completed (`handle_auth_complete` drains
+/// `workshop_resend`), and let the composer name the model that answers. The cause goes to the
+/// log; the user sees a failure line only if this fallback cannot even be set up.
 pub(super) fn dispatch_workshop_engine_unavailable(
     app: &mut AppView,
     agent_id: AgentId,
     reason: String,
     text: String,
 ) -> Vec<Effect> {
-    let Some(kilo) = crate::app::workshop::kilo_fallback_model() else {
-        return vec![];
+    crate::app::workshop::log_failure_cause(&reason);
+    let failed = |app: &mut AppView, cause: String| {
+        crate::app::workshop::log_failure_cause(&format!("fallback unavailable: {cause}"));
+        let line = crate::app::workshop::failure_line(&app.workshop_model_name());
+        if let Some(agent) = app.agents.get_mut(&agent_id) {
+            agent.scrollback.push_block(RenderBlock::system_error(line));
+            agent.workshop_retry_prompt = Some(text.clone());
+        }
+        Vec::new()
     };
-    let reason = reason.lines().next().unwrap_or_default().trim().to_owned();
+    let Some(kilo) = crate::app::workshop::kilo_fallback_model() else {
+        return failed(app, "no fallback model in the catalog".into());
+    };
     let plan = match crate::app::workshop::activate_catalog_model(&kilo) {
         Ok(plan) => plan,
-        Err(e) => {
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent.scrollback.push_block(RenderBlock::system(format!(
-                    "OpenCode unavailable ({reason}); the Kilo fallback failed too: {e}. /model to pick another model."
-                )));
-            }
-            return vec![];
-        }
+        Err(e) => return failed(app, e),
     };
     if let Some(agent) = app.agents.get_mut(&agent_id) {
-        // The engine attempt's bubble is re-rendered by the resend; drop it so the prompt shows once.
+        // The first attempt's bubble is re-rendered by the resend; drop it so the prompt shows once.
         if let Some(entry) = app.workshop_turn_prompt_entry.take() {
             agent.scrollback.remove_entry(entry);
         }
     }
     crate::app::workshop::export_env(&plan.env);
-    set_workshop_connection(app, crate::app::workshop::WorkshopConnection::Shell);
-    // The notice is rendered right under the resent prompt (after the page flip the resend
-    // causes), so the cause is on screen with the message it applies to.
-    let notice = format!(
-        "OpenCode unavailable ({reason}) — using {} (Kilo · free shared pool) instead.",
-        plan.display_name
-    );
-    app.workshop_resend = Some((agent_id, text, notice));
+    // The connection stays what the user has (the next launch tries it again); only this
+    // process routes through the fallback, and the composer names the model that answers.
+    app.workshop_fallback = Some(workshop_auth::plain_model_name(&plan.display_name));
+    app.workshop_resend = Some((agent_id, text));
     app.auth_return_view = Some(ActiveView::Agent(agent_id));
     start_workshop_activation(app, plan.key)
 }
@@ -409,9 +412,8 @@ pub(super) fn dispatch_connection_picker(
         }
         PickerOutcome::ConnectProvider(provider_id) => {
             if provider_id == "openrouter" {
-                picker.set_status(
-                    "Opening OpenRouter sign-in in your browser (loopback callback)…",
-                );
+                picker
+                    .set_status("Opening OpenRouter sign-in in your browser (loopback callback)…");
                 vec![Effect::WorkshopOpenRouterSignIn]
             } else {
                 let label = crate::app::workshop::key_prompt_label(&provider_id);
@@ -484,9 +486,9 @@ fn finish_workshop_adapter_selection(app: &mut AppView) -> Vec<Effect> {
 /// non-interactive `xai.api_key` method (the anonymous sentinel or a real key counts), and switch
 /// the active session. Completion arrives as `AuthComplete` / `AuthFailed` for `request_seq`.
 fn start_workshop_activation(app: &mut AppView, model_id: String) -> Vec<Effect> {
-    // Stamp the composer label from the active connection: `None` for Direct/Local (Shell) → the
-    // shell model name shows; `OpenCode · Big Pickle` / `Claude · {model}` for Engine/Adapter.
-    let label = app.workshop_connection.composer_label();
+    // Stamp the composer label: `None` for Direct/Local (Shell) → the shell model name shows; the
+    // model's name for Engine/Adapter; the answering model's name while the fallback carries it.
+    let label = app.workshop_label();
     for agent in app.agents.values_mut() {
         agent.workshop_model_label = label.clone();
     }
@@ -628,10 +630,7 @@ pub(super) fn handle_auth_complete(
         // the picker and hand the user back to the home prompt. The composer label is stamped at
         // session creation from `workshop_connection` (see `configure_agent_composer`).
         if app.connection_picker.take().is_some() {
-            let label = app
-                .workshop_connection
-                .composer_label()
-                .unwrap_or_else(|| "model".to_owned());
+            let label = app.workshop_label().unwrap_or_else(|| "model".to_owned());
             app.show_toast(&format!("Connected: {label}"));
         }
 
@@ -648,16 +647,16 @@ pub(super) fn handle_auth_complete(
             // Auth is global, so handle every agent (the login may have been started from the dashboard, not the agent that 401'd)
             let mut retry_effects = Vec::new();
             let mut page_flips = Vec::new();
-            // Workshop: the prompt whose OpenCode turn could not start goes out again on the Kilo
-            // fallback that has just been activated (`dispatch_workshop_engine_unavailable`).
-            if let Some((id, text, notice)) = app.workshop_resend.take()
+            // Workshop: the prompt whose OpenCode turn could not start goes out again on the
+            // fallback model that has just been activated — silently; the composer already
+            // names the model that will answer (`dispatch_workshop_engine_unavailable`).
+            if let Some((id, text)) = app.workshop_resend.take()
                 && let Some(agent) = app.agents.get_mut(&id)
             {
                 agent
                     .session
                     .enqueue_entry(text, crate::app::agent::QueueEntryKind::Prompt);
                 let drain = maybe_drain_queue(agent, &mut app.pending_image_notices);
-                agent.scrollback.push_block(RenderBlock::system(notice));
                 retry_effects.extend(drain.effects);
                 page_flips.push((agent.session.id, drain.page_flip_entry));
             }

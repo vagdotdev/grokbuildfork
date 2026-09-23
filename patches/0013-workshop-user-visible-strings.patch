@@ -824,10 +824,10 @@ index 8ffcc224..613c4739 100644
  ## Reopen this tutorial
  
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
-index ab27a76d..cadfba82 100644
+index ab27a76d..15f378e2 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
-@@ -1,99 +1,90 @@
+@@ -1,99 +1,96 @@
  # Getting Started
  
 -Grok Build is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
@@ -924,13 +924,17 @@ index ab27a76d..cadfba82 100644
  ```
  
 -On first launch, Grok opens your browser to authenticate with grok.com. After you sign in, Grok stores your credentials in `~/.grok/auth.json`, where they persist across sessions. Grok refreshes your credentials automatically and prompts you to sign in again when they can no longer be renewed.
-+You land in the composer. The footer names the active connection, **OpenCode · Big Pickle**: the
-+OpenCode engine's free default model, no sign-in, no key. Type a sentence and press `Enter`.
++You land in the composer. The footer names the active model, **Big Pickle**: OpenCode's free
++default, no sign-in, no key. Type a sentence and press `Enter`.
  
 -If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
-+The first message installs the OpenCode engine (the official `opencode` CLI, about a minute, with
-+progress shown) and starts it; every later message answers within seconds. Nothing is downloaded
-+until you send that first message.
++While the first answer is on its way you see one line, `Thinking…`, with the elapsed seconds and
++`Ctrl+C to cancel`. The first message also sets up OpenCode's `opencode` CLI on your machine (about
++a minute, the download progress is shown on that same line); every later message answers within
++seconds. Nothing is downloaded until you send that first message. If the free model cannot be
++reached, Workshop quietly answers through another free model and the footer names the model that
++answered; only if that fails too do you see `Couldn't reach Big Pickle — Enter to retry · /model to
++switch`.
  
 -```bash
 -export XAI_API_KEY="xai-..."
@@ -938,9 +942,11 @@ index ab27a76d..cadfba82 100644
 -```
 +Two commands are all you need to know on day one:
 +
-+- **`/model`** lists the models you can use right now: the engine's free models, the Kilo free
-+  pool, any API-key provider you connected, and local servers (Ollama, LM Studio, llama.cpp / vLLM).
-+  Type to filter; `Ctrl+A` shows the non-chat models (classifiers, routers) hidden by default.
++- **`/model`** lists the models you can use right now: OpenCode's free models, then each coding
++  subscription whose CLI is installed (Claude, Codex, Cursor) with its models — or a `Sign in` row
++  when the CLI is not signed in yet — then any API-key provider you connected, and local servers
++  (Ollama, LM Studio, llama.cpp / vLLM). Type to filter; `Ctrl+A` shows the non-chat models
++  (classifiers, routers) hidden by default.
 +- **`/auth`** connects more: the Claude / Codex / Cursor subscription CLIs (installed and signed in
 +  with their own official login), API keys for OpenRouter, Google AI Studio, NVIDIA, OpenAI and
 +  Anthropic (kept in your OS keyring), and — last, optional and labeled — an xAI account.
@@ -976,7 +982,7 @@ index ab27a76d..cadfba82 100644
  
  ### File References
  
-@@ -105,7 +96,8 @@ Use `@` in your prompt to attach files:
+@@ -105,7 +102,8 @@ Use `@` in your prompt to attach files:
  @src/                     # Browse a directory
  ```
  
@@ -986,7 +992,7 @@ index ab27a76d..cadfba82 100644
  
  ```
  @!.github                 # Search hidden files
-@@ -114,10 +106,11 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore`
+@@ -114,10 +112,11 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore`
  
  ### Permissions
  
@@ -1000,7 +1006,7 @@ index ab27a76d..cadfba82 100644
  - Type `/always-approve` in the prompt to toggle the mode
  
  ---
-@@ -126,27 +119,31 @@ By default, Grok asks for permission before executing shell commands or editing
+@@ -126,27 +125,31 @@ By default, Grok asks for permission before executing shell commands or editing
  
  ### Sessions
  
@@ -1038,7 +1044,7 @@ index ab27a76d..cadfba82 100644
  
  | Tool | Description |
  |------|-------------|
-@@ -159,14 +156,17 @@ Grok has built-in tools for:
+@@ -159,14 +162,17 @@ Grok has built-in tools for:
  | `spawn_subagent` | Spawn parallel subagent sessions |
  | `memory_search` | Search cross-session memory |
  
@@ -1059,7 +1065,7 @@ index ab27a76d..cadfba82 100644
  /compact                          # Compress conversation history
  /always-approve                   # Toggle always-approve mode
  /new                              # Start a new session
-@@ -180,54 +180,50 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
+@@ -180,54 +186,50 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
  
  ```bash
  # Launch the interactive TUI and submit an initial prompt as the first turn
@@ -1129,7 +1135,7 @@ index ab27a76d..cadfba82 100644
  ```
  
  Output formats:
-@@ -241,22 +237,24 @@ Output formats:
+@@ -241,22 +243,24 @@ Output formats:
  Example CI/CD usage:
  
  ```bash
@@ -1158,7 +1164,7 @@ index ab27a76d..cadfba82 100644
  
  ---
  
-@@ -264,7 +262,7 @@ Deeper files take precedence. Grok also reads `CLAUDE.md` files for compatibilit
+@@ -264,7 +268,7 @@ Deeper files take precedence. Grok also reads `CLAUDE.md` files for compatibilit
  
  | Document | What You Will Learn |
  |----------|-------------------|
@@ -1168,15 +1174,15 @@ index ab27a76d..cadfba82 100644
  | [Slash Commands](04-slash-commands.md) | All available `/` commands |
  | [Configuration](05-configuration.md) | config.toml, pager.toml, environment variables |
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md b/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
-index 5e321a67..ba1fa6b9 100644
+index 5e321a67..e7d2ea23 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
-@@ -1,368 +1,90 @@
+@@ -1,368 +1,93 @@
  # Authentication
  
 -Grok supports several authentication methods, including interactive browser login, enterprise single sign-on (SSO), and headless CI/CD runners.
-+Workshop needs no account and no key to start: a fresh install runs on the OpenCode engine's free
-+default model. Everything else is opt-in and lives behind two commands, `/model` and `/auth`.
++Workshop needs no account and no key to start: a fresh install runs on OpenCode's free default
++model. Everything else is opt-in and lives behind two commands, `/model` and `/auth`.
 +Nothing on this page happens until you choose it.
  
  ---
@@ -1187,8 +1193,7 @@ index 5e321a67..ba1fa6b9 100644
 -On first launch, Grok opens your browser to authenticate with grok.com:
 +| Connection | How | Where the secret lives |
 +|---|---|---|
-+| **OpenCode free models** (default) | Nothing to do. `/model` lists the engine's live free list; the official `opencode` CLI runs on your machine and talks to opencode.ai itself. | No secret. |
-+| **Kilo free pool** and other keyless catalogs | Pick a `free` row in `/model`. | No secret. |
++| **OpenCode free models** (default) | Nothing to do. `/model` lists OpenCode's live free list; the official `opencode` CLI runs on your machine and talks to opencode.ai itself. | No secret. |
 +| **Claude Code / Codex / Cursor subscriptions** | `/auth`, pick the rail, `Enter` runs that vendor's own login command in your terminal (`claude auth login`, `codex login`, `cursor-agent login`). Turns then run through the official CLI. | In the vendor CLI's own store. Workshop never reads or copies it. |
 +| **API keys** — OpenRouter, Google AI Studio, NVIDIA, OpenAI, Anthropic, OpenCode Zen | `/auth`, pick `Provider — API key` and paste the key (or `Provider — Sign in` for OpenRouter's browser sign-in). | Your OS keyring (macOS Keychain, Secret Service, Windows Credential Manager); if none is available, an owner-only file under `~/.workshop/secrets/`. Never in `config.toml`. |
 +| **Local servers** — Ollama, LM Studio, llama.cpp, vLLM | Start the server; `/model` lists its models once it answers on loopback. | No secret. |
@@ -1224,8 +1229,8 @@ index 5e321a67..ba1fa6b9 100644
 -| `--device-auth` (alias `--device-code`) | Sign in with the device-code flow for headless or remote environments. |
 -
 -To sign out, run `grok logout`. It takes no flags and clears your cached credentials.
-+The composer footer always names the active connection (`OpenCode · Big Pickle`, `Claude · <model>`,
-+or the model name for an API-key provider).
++The composer footer always names the active model (`Big Pickle`, `Claude Sonnet`, or the model of
++an API-key provider) — the model only, never a provider or runtime name.
  
  ---
  
@@ -1233,11 +1238,14 @@ index 5e321a67..ba1fa6b9 100644
 +## `/model`
  
 -For CI/CD, automation, or environments without browser access, use an API key from [console.x.ai](https://console.x.ai):
-+One list of the models you can use right now, grouped **Recommended** then **All models**. Type
-+to filter (Esc clears the filter, then closes), `Enter` selects, `Tab` switches to `/auth`,
-+`Ctrl+R` refreshes the live lists, `Ctrl+A` shows the non-chat rows (classifiers, routers) that
-+are hidden by default. Every row says where its list came from and how old it is (`fetched 2 min
-+ago`, or `cached list from <date>` when the fetch failed).
++One list of the models you can use right now, in groups: **OpenCode**'s free models first, then
++each coding subscription whose CLI is installed — **Claude**, **Codex**, **Cursor** — with its
++models when the CLI is signed in or one `Sign in` row when it is not (a CLI that is not installed
++is not listed here; it stays on `/auth`), then every API-key provider that has a key configured,
++and detected local servers. Type to filter (Esc clears the filter, then closes), `Enter` selects,
++`Tab` switches to `/auth`, `Ctrl+R` refreshes the live lists, `Ctrl+A` shows the non-chat rows
++(classifiers, routers) that are hidden by default. Every row says where its list came from and
++how old it is (`fetched 2 min ago`, or `cached list from <date>` when the fetch failed).
  
 -```bash
 -export XAI_API_KEY="xai-..."
@@ -1392,7 +1400,7 @@ index 5e321a67..ba1fa6b9 100644
 +workshop login --xai      # optional xAI account sign-in only (opens auth.x.ai); never the default
 +workshop logout           # clear the cached xAI sign-in, if you ever used it
 +workshop models           # list the models the active connection offers
-+workshop doctor           # terminal, clipboard, voice and engine checks with concrete fixes
++workshop doctor           # terminal, clipboard, voice and free-model checks with concrete fixes
  ```
  
 -### Token Refresh
@@ -1545,8 +1553,8 @@ index 5e321a67..ba1fa6b9 100644
 -or `user.email` — see [ZDR and this stream](24-monitoring-usage.md#zdr-and-this-stream).
 -
 -See [Monitoring Usage](24-monitoring-usage.md#related-settings) and [Configuration](05-configuration.md#telemetry).
-+- Nothing is fetched on launch. The first message installs and starts the OpenCode engine; `/model`
-+  fetches the keyless catalogs (Kilo, OpenRouter, NVIDIA) when you open it.
++- Nothing is fetched on launch. The first message sets up and starts OpenCode's `opencode` CLI;
++  `/model` refreshes the model lists of the providers you connected when you open it.
 +- Free pools are shared services: prompts sent through them may be logged by the operator. The
 +  row's detail line says so.
 +- Telemetry is off and no analytics token is baked in. Auto-update is off unless you opt in with
@@ -1593,7 +1601,8 @@ index 5e321a67..ba1fa6b9 100644
 -- **External auth provider not found** -- Check that the `auth_provider_command` path is correct and the binary is executable.
 +| Symptom | What to do |
 +|---|---|
-+| `OpenCode unavailable (…) — using Auto Free (Kilo) instead` | The engine could not be installed or started (offline, blocked installer). The line names the cause and `~/.workshop/logs/opencode-engine.log`; Workshop already switched you to the keyless Kilo pool. `workshop doctor` repeats the check. |
++| The footer suddenly names another model | OpenCode's model could not be started or did not answer, so Workshop answered through another free model and says which one. Your choice is unchanged: the next launch tries OpenCode again; `/model` switches any time. `workshop doctor` shows what went wrong. |
++| `Couldn't reach Big Pickle — Enter to retry · /model to switch` | Neither the model nor the free stand-in could be reached (offline, blocked installer). `Enter` on the empty composer retries; `workshop doctor` has the details. |
 +| A rail stays on `Sign in` after logging in | The vendor CLI must be on `PATH` (or in its usual install folder) and its own `login` must have finished. Reopen `/auth`; `Ctrl+R` re-probes. |
 +| `Could not save key` | No OS keyring was reachable and the fallback directory `~/.workshop/secrets/` is not writable. Fix the permissions or set `WORKSHOP_HOME` to a writable location. |
 +| A pasted key is refused by the provider | Keys are sent as `Authorization: Bearer` (or the provider's header) exactly as pasted; check for a trailing space or an expired key on the provider's key page. |
@@ -1848,7 +1857,7 @@ index 28a67a1c..d53b5a56 100644
  ```
  /commit fix typo in README
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/05-configuration.md b/crates/codegen/xai-grok-pager/docs/user-guide/05-configuration.md
-index 6d2f3363..9acf269c 100644
+index 6d2f3363..31eb2d47 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/05-configuration.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/05-configuration.md
 @@ -1,6 +1,6 @@
@@ -2084,7 +2093,7 @@ index 6d2f3363..9acf269c 100644
  managed remote setting enables it. Notes recorded by earlier versions are
  carried over automatically. See [13-memory.md](13-memory.md).
  
-@@ -360,14 +350,14 @@ dimensions = 1024                     # vector dimensions
+@@ -360,30 +350,30 @@ dimensions = 1024                     # vector dimensions
  ```toml
  [subagents]
  enabled = true
@@ -2101,7 +2110,13 @@ index 6d2f3363..9acf269c 100644
  ```
  
  To pin the model a subagent uses, set its entry under `[subagents.models]`.
-@@ -380,10 +370,10 @@ Background workflows — the `workflow` tool, named `.grok/workflows/*.rhai` scr
+ 
+ ### Goal mode and background workflows
+ 
+-`/goal` has two drivers, chosen by the background-workflows setting. With workflows enabled, the host-owned workflow engine evaluates rounds and drives completion verification; with them disabled, `/goal` falls back to the legacy model-facing `update_goal` tool. Whether `/goal` is available at all is a separate switch (the goal feature setting).
++`/goal` has two drivers, chosen by the background-workflows setting. With workflows enabled, the host-owned workflow runner evaluates rounds and drives completion verification; with them disabled, `/goal` falls back to the legacy model-facing `update_goal` tool. Whether `/goal` is available at all is a separate switch (the goal feature setting).
+ 
+ Background workflows — the `workflow` tool, named `.grok/workflows/*.rhai` scripts, `/deep-research`, and `/workflow` launches — are **on by default**. Disable with config, env, or remote settings.
  
  ```toml
  [workflows]
@@ -3841,7 +3856,7 @@ index c8782649..964c7393 100644
 -- **See errors?** Capture logs by launching with `RUST_LOG=debug GROK_LOG_FILE=/tmp/grok.log grok`, then check `/tmp/grok.log`.
 +- **See errors?** Capture logs by launching with `RUST_LOG=debug WORKSHOP_LOG_FILE=/tmp/workshop.log workshop`, then check `/tmp/workshop.log`.
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md b/crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md
-index 4e3bf802..e9efe681 100644
+index 4e3bf802..00daa90e 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md
 @@ -1,17 +1,17 @@
@@ -3855,7 +3870,7 @@ index 4e3bf802..e9efe681 100644
  ## Default Models
  
 -By default, Grok uses models hosted by SpaceXAI, and new sessions start with `grok-4.5`. Default models require no configuration. Authenticate with `grok login` or an API key, then start a session.
-+By default, Workshop runs on the OpenCode engine's free default model; `/model` lists every model you can use (the free pools, connected API-key providers, local servers) and needs no configuration. The `[model.*]` entries below add your own endpoints.
++By default, Workshop runs on OpenCode's free default model; `/model` lists every model you can use (the free pools, connected API-key providers, local servers) and needs no configuration. The `[model.*]` entries below add your own endpoints.
  
  List all available models:
  

@@ -180,6 +180,8 @@ pub(crate) fn test_app() -> AppView {
         workshop_turn_agent: None,
         workshop_turn_prompt_entry: None,
         workshop_resend: None,
+        workshop_fallback: None,
+        workshop_first_launch: false,
         workshop_engine_slot: crate::app::workshop::new_engine_slot(),
         workshop_engine_warm_started: false,
         workshop_turn_progress_entry: None,
@@ -2299,9 +2301,15 @@ fn voice_not_in_tier_restricted_commands() {
 fn is_voice_tier_restricted_only_for_the_xai_provider() {
     let mut app = test_app();
     app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
-    assert!(!app.is_voice_tier_restricted(), "local provider: no tier gate");
+    assert!(
+        !app.is_voice_tier_restricted(),
+        "local provider: no tier gate"
+    );
     app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
-    assert!(app.is_voice_tier_restricted(), "xAI provider on a free tier is gated");
+    assert!(
+        app.is_voice_tier_restricted(),
+        "xAI provider on a free tier is gated"
+    );
     let mut app = test_app();
     app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
     let meta = xai_grok_login::AuthMeta {

@@ -46,18 +46,24 @@ cd your-project
 workshop
 ```
 
-You land in the composer. The footer names the active connection, **OpenCode · Big Pickle**: the
-OpenCode engine's free default model, no sign-in, no key. Type a sentence and press `Enter`.
+You land in the composer. The footer names the active model, **Big Pickle**: OpenCode's free
+default, no sign-in, no key. Type a sentence and press `Enter`.
 
-The first message installs the OpenCode engine (the official `opencode` CLI, about a minute, with
-progress shown) and starts it; every later message answers within seconds. Nothing is downloaded
-until you send that first message.
+While the first answer is on its way you see one line, `Thinking…`, with the elapsed seconds and
+`Ctrl+C to cancel`. The first message also sets up OpenCode's `opencode` CLI on your machine (about
+a minute, the download progress is shown on that same line); every later message answers within
+seconds. Nothing is downloaded until you send that first message. If the free model cannot be
+reached, Workshop quietly answers through another free model and the footer names the model that
+answered; only if that fails too do you see `Couldn't reach Big Pickle — Enter to retry · /model to
+switch`.
 
 Two commands are all you need to know on day one:
 
-- **`/model`** lists the models you can use right now: the engine's free models, the Kilo free
-  pool, any API-key provider you connected, and local servers (Ollama, LM Studio, llama.cpp / vLLM).
-  Type to filter; `Ctrl+A` shows the non-chat models (classifiers, routers) hidden by default.
+- **`/model`** lists the models you can use right now: OpenCode's free models, then each coding
+  subscription whose CLI is installed (Claude, Codex, Cursor) with its models — or a `Sign in` row
+  when the CLI is not signed in yet — then any API-key provider you connected, and local servers
+  (Ollama, LM Studio, llama.cpp / vLLM). Type to filter; `Ctrl+A` shows the non-chat models
+  (classifiers, routers) hidden by default.
 - **`/auth`** connects more: the Claude / Codex / Cursor subscription CLIs (installed and signed in
   with their own official login), API keys for OpenRouter, Google AI Studio, NVIDIA, OpenAI and
   Anthropic (kept in your OS keyring), and — last, optional and labeled — an xAI account.
