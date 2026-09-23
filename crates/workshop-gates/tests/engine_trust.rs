@@ -972,6 +972,47 @@ fn image_turn_is_answered_by_a_model_that_sees() {
     quit(&mut j);
 }
 
+/// OpenCode's `question` tool opens Grok Build's question view: Enter on an option sends that
+/// answer back to the engine, which continues the turn with it; dismissing it (Ctrl+Y) declines.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn engine_question_uses_the_question_view() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/engine-question", &bin, &fx);
+    let replies = |log: &Path| -> Vec<serde_json::Value> {
+        engine_log(log)
+            .into_iter()
+            .filter(|v| v.get("question").is_some())
+            .map(|v| v["answers"].clone())
+            .collect()
+    };
+    send_prompt(&mut j, "ask me which install method");
+    wait_for(&mut j.h, "Which install method?", 30);
+    j.h.update(Duration::from_millis(600));
+    snapshot(&j.h, &j.dir, "01-question-view");
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains("PPA") && screen.contains(".deb"),
+        "{screen}"
+    );
+    j.h.inject_keys(b"\r").unwrap();
+    wait_for(&mut j.h, "You chose: PPA.", 30);
+    snapshot(&j.h, &j.dir, "02-answered");
+    assert_eq!(replies(&fx.log), [serde_json::json!([["PPA"]])]);
+
+    send_prompt(&mut j, "ask me again");
+    wait_for(&mut j.h, "Which install method?", 30);
+    j.h.update(Duration::from_millis(600));
+    j.h.inject_keys(b"\x19").unwrap();
+    wait_for(&mut j.h, "No answer.", 30);
+    assert_eq!(
+        replies(&fx.log),
+        [serde_json::json!([["PPA"]]), serde_json::Value::Null]
+    );
+    quit(&mut j);
+}
+
 /// `/settings` → "Show thinking blocks" brings the thinking back, as its own block that is never
 /// glued to the answer.
 #[test]

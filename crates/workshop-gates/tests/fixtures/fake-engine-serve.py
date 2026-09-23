@@ -32,6 +32,8 @@ from the real server:
   * "create stubborn.py"              -> pastes the file every time, continued or not.
   * "show me a loop"                  -> answers with a fenced example (no file was asked for).
   * "show the tree"                   -> a finished answer that ends on a colon and a fenced tree.
+  * "ask me"                          -> the `question` tool: question.asked ("Which install method?",
+    PPA / .deb), then waits for POST /question/{id}/reply or /reject and answers with the choice.
   * "sort my photos"                  -> a `read` of img01.jpg ("Image read successfully"). A model
     that cannot see images then waits for the abort (up to 5 s, else says it can't see them); one
     that can (muse-spark-*, mimo-*), or the "Continue my request …" prompt sent to one, answers
@@ -69,6 +71,8 @@ sessions = {}  # id -> {"messages": [...]}
 permission_replies = {}  # permission id -> reply string
 permission_events = {}  # permission id -> threading.Event
 aborts = {}  # session id -> threading.Event, set by POST /session/{id}/abort
+question_events = {}  # question id -> threading.Event, set by POST /question/{id}/reply|reject
+question_answers = {}  # question id -> the answers posted (None when rejected)
 counter = [0]
 
 
@@ -231,6 +235,23 @@ def run_turn(sid, agent, text, model=None):
             stream_text(sid, mid, "Looking at the photos.\n\n")
             time.sleep(2)
             answer = "Sorted 1 photo: a lion."
+    elif "ask me" in text_l:
+        qid, call_id = next_id("que"), next_id("call")
+        question_events[qid] = threading.Event()
+        questions = [{"question": "Which install method?", "header": "Install",
+                      "options": [{"label": "PPA", "description": "apt repository"},
+                                  {"label": ".deb", "description": "one package file"}]}]
+        emit_part(part(sid, mid, "tool", {"tool": "question", "callID": call_id,
+                                          "state": {"status": "running", "input": {"questions": questions},
+                                                    "time": {"start": now_ms()}}}))
+        broadcast({"type": "question.asked", "properties": {"id": qid, "sessionID": sid, "questions": questions,
+                                                            "tool": {"messageID": mid, "callID": call_id}}})
+        question_events[qid].wait(60)
+        answers = question_answers.get(qid)
+        emit_part(tool_part(sid, mid, "question", call_id, {"questions": questions},
+                            "User has answered your questions." if answers else "The user dismissed this question",
+                            "Asked 1 question", {"answers": answers or []}, status="completed" if answers else "error"))
+        answer = ("You chose: %s." % answers[0][0]) if answers else "No answer."
     elif "keep announcing" in text_l:
         answer = "Let me run it:"
     elif "create todo.py" in text_l and continued:
@@ -432,6 +453,14 @@ class H(BaseHTTPRequestHandler):
             permission_replies[pid] = body.get("response", "reject")
             log({"permission": pid, "response": permission_replies[pid]})
             ev = permission_events.get(pid)
+            if ev:
+                ev.set()
+            return self._json(200, True)
+        if path.startswith("/question/") and (path.endswith("/reply") or path.endswith("/reject")):
+            qid = path.split("/")[2]
+            question_answers[qid] = body.get("answers") if path.endswith("/reply") else None
+            log({"question": qid, "answers": question_answers[qid]})
+            ev = question_events.get(qid)
             if ev:
                 ev.set()
             return self._json(200, True)

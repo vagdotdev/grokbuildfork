@@ -2838,7 +2838,7 @@ index 1c507697..5f4a9b72 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..e002321a 100644
+index eda61b3c..d1f90418 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -3134,7 +3134,7 @@ index eda61b3c..e002321a 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4061,411 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4061,452 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -3167,6 +3167,7 @@ index eda61b3c..e002321a 100644
 +        M::Thinking(_) => crate::appearance::cache::load_show_thinking_blocks(),
 +        M::Tool { .. }
 +        | M::PermissionAsk { .. }
++        | M::QuestionAsk { .. }
 +        | M::Error(_)
 +        | M::EngineUnavailable { .. }
 +        | M::Done { .. } => true,
@@ -3211,6 +3212,46 @@ index eda61b3c..e002321a 100644
 +            // seconds, the cancel hint) until the first real output replaces it.
 +            app.workshop_turn_progress = Some(text);
 +            app.repaint_workshop_progress()
++        }
++        M::QuestionAsk { request, reply } => {
++            // OpenCode's `question` tool opens Grok Build's own question view; the answers (or the
++            // user's Esc, a decline) go back to the engine, which continues the turn with them.
++            use crate::views::question_view::QuestionViewState;
++            use xai_grok_tools::implementations::grok_build::ask_user_question::{
++                AskUserQuestionExtResponse, AskUserQuestionMode,
++            };
++            let Some(agent) = app.agents.get_mut(&agent_id) else {
++                let _ = reply.send(None);
++                return (false, vec![]);
++            };
++            let stashed = match agent.question_view.take() {
++                Some(mut open) => {
++                    open.send_ext_response(AskUserQuestionExtResponse::Cancelled);
++                    open.stashed_prompt
++                }
++                None => agent.prompt.stash(),
++            };
++            let (answer_tx, answer_rx) = tokio::sync::oneshot::channel();
++            agent.question_view = Some(QuestionViewState::with_response_tx(
++                request.call_id.clone().unwrap_or_else(|| request.id.clone()),
++                crate::app::workshop::engine_questions(&request),
++                stashed,
++                Some(answer_tx),
++                AskUserQuestionMode::Default,
++            ));
++            agent.prompt.set_text("");
++            tokio::spawn(async move {
++                let answers = match answer_rx.await {
++                    Ok(Ok(response)) => serde_json::from_str::<AskUserQuestionExtResponse>(
++                        response.0.get(),
++                    )
++                    .ok()
++                    .and_then(|r| crate::app::workshop::engine_question_answers(&request, &r)),
++                    _ => None,
++                };
++                let _ = reply.send(answers);
++            });
++            true
 +        }
 +        M::Answering { model } => {
 +            // The composer names the model answering; the connection (the user's pick) is unchanged.
@@ -3709,10 +3750,10 @@ index 60fe34f9..d5845f2c 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..24c5ede0
+index 00000000..34853685
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1867 @@
+@@ -0,0 +1,2022 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -3734,7 +3775,8 @@ index 00000000..24c5ede0
 +use tokio::sync::{mpsc, oneshot, watch};
 +use workshop_adapters::opencode_engine::{
 +    EngineOptions, InstallOptions, InstallProgress, OpenCodeEngine, PermissionDecision,
-+    PermissionHandler, PermissionReply, PermissionRequest, TurnHandle, TurnRequest,
++    PermissionHandler, PermissionReply, PermissionRequest, QuestionAnswers, QuestionHandler,
++    QuestionRequest, TurnHandle, TurnRequest,
 +    WORKSHOP_AGENT_PROMPT, agent_prompts, ask_before_edit_and_bash, clear_quarantine,
 +    detect_opencode, format_bytes, install_opencode, instructions_config,
 +};
@@ -4377,6 +4419,12 @@ index 00000000..24c5ede0
 +        request: PermissionRequest,
 +        reply: oneshot::Sender<PermissionReply>,
 +    },
++    /// The agent asks the user something (OpenCode's `question` tool): the UI thread opens Grok
++    /// Build's question view and sends the answers (or `None`, declined) on `reply`.
++    QuestionAsk {
++        request: QuestionRequest,
++        reply: oneshot::Sender<QuestionAnswers>,
++    },
 +    /// The user answered a prompt for tool call `call_id`; the same call's next ask (the engine
 +    /// asks `external_directory` and then `bash` for one out-of-folder command) gets the same
 +    /// answer without a second prompt.
@@ -4600,6 +4648,83 @@ index 00000000..24c5ede0
 +            Ok(()) => PermissionDecision::Pending(reply_rx),
 +            Err(_) => PermissionDecision::Reply(PermissionReply::Reject),
 +        }
++    })
++}
++
++/// The engine's questions as Grok Build's question view shows them (the `header` is OpenCode's
++/// short tab label; the view titles each question by its text).
++pub fn engine_questions(
++    request: &QuestionRequest,
++) -> Vec<xai_grok_tools::implementations::grok_build::ask_user_question::Question> {
++    use xai_grok_tools::implementations::grok_build::ask_user_question::{Question, QuestionOption};
++    request
++        .questions
++        .iter()
++        .map(|q| Question {
++            question: q.question.clone(),
++            options: q
++                .options
++                .iter()
++                .map(|o| QuestionOption {
++                    label: o.label.clone(),
++                    description: o.description.clone(),
++                    preview: None,
++                    id: None,
++                })
++                .collect(),
++            multi_select: Some(q.multiple),
++            id: None,
++        })
++        .collect()
++}
++
++/// The engine's answers from the question view: per question, in order, the chosen labels, with
++/// "Other" replaced by what the user typed. Anything but an accepted answer declines.
++pub fn engine_question_answers(
++    request: &QuestionRequest,
++    response: &xai_grok_tools::implementations::grok_build::ask_user_question::AskUserQuestionExtResponse,
++) -> QuestionAnswers {
++    use xai_grok_tools::implementations::grok_build::ask_user_question::AskUserQuestionExtResponse;
++    let AskUserQuestionExtResponse::Accepted {
++        answers,
++        annotations,
++    } = response
++    else {
++        return None;
++    };
++    Some(
++        request
++            .questions
++            .iter()
++            .map(|q| {
++                let typed = annotations
++                    .as_ref()
++                    .and_then(|a| a.get(&q.question))
++                    .and_then(|a| a.notes.clone())
++                    .filter(|n| !n.trim().is_empty());
++                answers
++                    .get(&q.question)
++                    .cloned()
++                    .unwrap_or_default()
++                    .into_iter()
++                    .map(|label| match (&typed, label.as_str()) {
++                        (Some(text), "Other") => text.clone(),
++                        _ => label,
++                    })
++                    .collect()
++            })
++            .collect(),
++    )
++}
++
++fn engine_question_handler(tx: mpsc::UnboundedSender<WorkshopTurnMsg>) -> QuestionHandler {
++    Arc::new(move |req| {
++        let (reply_tx, reply_rx) = oneshot::channel();
++        let _ = tx.send(WorkshopTurnMsg::QuestionAsk {
++            request: req.clone(),
++            reply: reply_tx,
++        });
++        reply_rx
 +    })
 +}
 +
@@ -4834,7 +4959,8 @@ index 00000000..24c5ede0
 +    // The engine asks before edits and commands; what happens next is the agent's permission
 +    // mode (Plan/Normal prompt, Auto/Always-approve allow), decided on the UI thread per ask.
 +    opts.permission = Some(ask_before_edit_and_bash());
-+    opts.permission_handler = Some(engine_permission_handler(ui_tx));
++    opts.permission_handler = Some(engine_permission_handler(ui_tx.clone()));
++    opts.question_handler = Some(engine_question_handler(ui_tx));
 +    // The models answer as Workshop's assistant, not as "opencode".
 +    opts.config = Some(engine_config(&log));
 +    let sink_path = log.clone();
@@ -5517,7 +5643,77 @@ index 00000000..24c5ede0
 +
 +#[cfg(test)]
 +mod tests {
-+    use super::{announces_unfinished_action, asks_to_write_files, ends_with_code_block};
++    use super::{
++        announces_unfinished_action, asks_to_write_files, ends_with_code_block,
++        engine_question_answers, engine_questions,
++    };
++    use workshop_adapters::opencode_engine::{QuestionChoice, QuestionPrompt, QuestionRequest};
++    use xai_grok_tools::implementations::grok_build::ask_user_question::{
++        AskUserQuestionExtResponse, QuestionAnnotation,
++    };
++
++    fn install_question() -> QuestionRequest {
++        let choice = |label: &str| QuestionChoice {
++            label: label.into(),
++            description: String::new(),
++        };
++        QuestionRequest {
++            id: "que_1".into(),
++            session_id: "ses_1".into(),
++            questions: vec![
++                QuestionPrompt {
++                    question: "How should Ghostty be installed?".into(),
++                    header: "Install".into(),
++                    options: vec![choice("PPA (Recommended)"), choice(".deb")],
++                    multiple: false,
++                },
++                QuestionPrompt {
++                    question: "Where should it go?".into(),
++                    header: "Where".into(),
++                    options: vec![choice("/usr/bin")],
++                    multiple: false,
++                },
++            ],
++            call_id: Some("call_9".into()),
++        }
++    }
++
++    #[test]
++    fn engine_questions_open_in_the_question_view_and_answers_go_back_in_order() {
++        let req = install_question();
++        let shown = engine_questions(&req);
++        assert_eq!(shown.len(), 2);
++        assert_eq!(shown[0].options[0].label, "PPA (Recommended)");
++        let mut answers = indexmap::IndexMap::new();
++        answers.insert("Where should it go?".to_owned(), vec!["Other".to_owned()]);
++        answers.insert(
++            "How should Ghostty be installed?".to_owned(),
++            vec!["PPA (Recommended)".to_owned()],
++        );
++        let mut notes = std::collections::HashMap::new();
++        notes.insert(
++            "Where should it go?".to_owned(),
++            QuestionAnnotation {
++                preview: None,
++                notes: Some("~/.local/bin".into()),
++            },
++        );
++        let accepted = AskUserQuestionExtResponse::Accepted {
++            answers,
++            annotations: Some(notes),
++        };
++        assert_eq!(
++            engine_question_answers(&req, &accepted),
++            Some(vec![
++                vec!["PPA (Recommended)".to_owned()],
++                vec!["~/.local/bin".to_owned()]
++            ])
++        );
++        assert_eq!(
++            engine_question_answers(&req, &AskUserQuestionExtResponse::Cancelled),
++            None
++        );
++    }
 +
 +    #[test]
 +    fn file_requests_are_recognised() {

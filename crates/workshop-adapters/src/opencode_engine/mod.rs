@@ -43,7 +43,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 
 pub use catalog::{FreeCatalog, FreeModel, parse_free_catalog};
-pub use events::{PermissionRequest, ServeTurn};
+pub use events::{PermissionRequest, QuestionChoice, QuestionPrompt, QuestionRequest, ServeTurn};
 pub use http::{HttpError, ServerClient};
 pub use install::{
     InstallError, InstallOptions, InstallProgress, InstallTarget, OFFICIAL_INSTALLER_URL,
@@ -94,6 +94,15 @@ pub enum PermissionDecision {
 /// rejected (fail closed) and the agent continues with that answer.
 pub type PermissionHandler = Arc<dyn Fn(&PermissionRequest) -> PermissionDecision + Send + Sync>;
 
+/// The user's answer to a [`QuestionRequest`]: one list of chosen labels (or typed text) per
+/// question, in order; `None` declines (the engine is told the question was rejected).
+pub type QuestionAnswers = Option<Vec<Vec<String>>>;
+
+/// UI hook that puts the agent's questions to the user. Without one, every question is rejected
+/// and the agent continues without an answer. A dropped sender counts as a rejection.
+pub type QuestionHandler =
+    Arc<dyn Fn(&QuestionRequest) -> oneshot::Receiver<QuestionAnswers> + Send + Sync>;
+
 /// The permission policy Workshop hands `opencode serve` (`OPENCODE_PERMISSION`), so the agent
 /// *asks* before it edits files or runs commands and the host decides per ask through its
 /// [`PermissionHandler`]. `edit` also governs `write`/`patch`; the `plan` agent denies edits on
@@ -114,6 +123,8 @@ pub struct EngineOptions {
     /// After `abort`, how long to wait for the server to report idle.
     pub cancel_grace: Duration,
     pub permission_handler: Option<PermissionHandler>,
+    /// Answers the agent's `question` tool (see [`QuestionHandler`]).
+    pub question_handler: Option<QuestionHandler>,
     /// OpenCode permission config for the server (`OPENCODE_PERMISSION`), e.g.
     /// [`ask_before_edit_and_bash`]. `None` leaves OpenCode's defaults (allow), in which case
     /// the handler is only consulted for asks OpenCode raises on its own.
@@ -138,6 +149,7 @@ impl EngineOptions {
             idle_timeout: Some(Duration::from_secs(600)),
             cancel_grace: Duration::from_secs(10),
             permission_handler: None,
+            question_handler: None,
             permission: None,
             config: None,
             allow_untested_versions: true,
@@ -251,6 +263,7 @@ pub struct OpenCodeEngine {
     workspace: PathBuf,
     process: Option<ServerProcess>,
     permission_handler: Option<PermissionHandler>,
+    question_handler: Option<QuestionHandler>,
     idle_timeout: Option<Duration>,
     cancel_grace: Duration,
 }
@@ -436,6 +449,7 @@ impl OpenCodeEngine {
             workspace: opts.workspace,
             process: Some(process),
             permission_handler: opts.permission_handler,
+            question_handler: opts.question_handler,
             idle_timeout: opts.idle_timeout,
             cancel_grace: opts.cancel_grace,
         })
@@ -462,6 +476,7 @@ impl OpenCodeEngine {
             workspace: opts.workspace,
             process: None,
             permission_handler: opts.permission_handler,
+            question_handler: opts.question_handler,
             idle_timeout: opts.idle_timeout,
             cancel_grace: opts.cancel_grace,
         })
@@ -634,6 +649,7 @@ impl OpenCodeEngine {
             events_tx,
             cancel_rx,
             permission_handler: self.permission_handler.clone(),
+            question_handler: self.question_handler.clone(),
             idle_timeout: self.idle_timeout,
             cancel_grace: self.cancel_grace,
         };
@@ -811,6 +827,7 @@ struct TurnDriver {
     events_tx: mpsc::Sender<AdapterEvent>,
     cancel_rx: watch::Receiver<bool>,
     permission_handler: Option<PermissionHandler>,
+    question_handler: Option<QuestionHandler>,
     idle_timeout: Option<Duration>,
     cancel_grace: Duration,
 }
@@ -818,6 +835,10 @@ struct TurnDriver {
 impl TurnDriver {
     fn abort_path(&self) -> String {
         format!("/session/{}/abort{}", self.session_id, self.dir_query)
+    }
+
+    fn question_path(&self, question_id: &str, verb: &str) -> String {
+        format!("/question/{question_id}/{verb}{}", self.dir_query)
     }
 
     fn permission_path(&self, permission_id: &str) -> String {
@@ -838,6 +859,9 @@ impl TurnDriver {
         // while a prompt is up and the model's other output keeps streaming.
         let mut pending: JoinSet<(String, PermissionReply)> = JoinSet::new();
         let mut pending_ids: HashMap<tokio::task::Id, String> = HashMap::new();
+        // Questions the user is answering, the same way: `(question id, answers)`.
+        let mut questions: JoinSet<(String, QuestionAnswers)> = JoinSet::new();
+        let mut question_ids: HashMap<tokio::task::Id, String> = HashMap::new();
         let outcome = loop {
             let grace = match abort_deadline {
                 Some(deadline) => deadline.saturating_duration_since(tokio::time::Instant::now()),
@@ -855,8 +879,25 @@ impl TurnDriver {
                         for id in pending_ids.drain().map(|(_, id)| id) {
                             self.post_reply(&id, PermissionReply::Reject).await;
                         }
+                        questions.abort_all();
+                        for id in question_ids.drain().map(|(_, id)| id) {
+                            self.post_answers(&id, None).await;
+                        }
                         if let Err(e) = self.client.call(Method::POST, &self.abort_path(), None).await {
                             tracing::warn!(error = %e, "abort request failed");
+                        }
+                    }
+                }
+                Some(answered) = questions.join_next_with_id(), if !questions.is_empty() => {
+                    match answered {
+                        Ok((task_id, (question_id, answers))) => {
+                            question_ids.remove(&task_id);
+                            self.post_answers(&question_id, answers).await;
+                        }
+                        Err(e) => {
+                            if let Some(question_id) = question_ids.remove(&e.id()) {
+                                self.post_answers(&question_id, None).await;
+                            }
                         }
                     }
                 }
@@ -898,6 +939,19 @@ impl TurnDriver {
                                 }
                             }
                         }
+                        for question in self.turn.take_questions() {
+                            match &self.question_handler {
+                                Some(handler) => {
+                                    let rx = handler(&question);
+                                    let question_id = question.id.clone();
+                                    let handle = questions.spawn(async move {
+                                        (question_id, rx.await.unwrap_or(None))
+                                    });
+                                    question_ids.insert(handle.id(), question.id);
+                                }
+                                None => self.post_answers(&question.id, None).await,
+                            }
+                        }
                         if let Some(terminal) = self.turn.terminal().cloned() {
                             break match terminal {
                                 _ if cancel_requested || self.turn.aborted() => {
@@ -915,7 +969,7 @@ impl TurnDriver {
                     break RunOutcome::Cancelled;
                 }
                 // A turn waiting on the user's answer is not idle: the silence is ours.
-                _ = tokio::time::sleep(idle), if self.idle_timeout.is_some() && !cancel_requested && pending.is_empty() => {
+                _ = tokio::time::sleep(idle), if self.idle_timeout.is_some() && !cancel_requested && pending.is_empty() && questions.is_empty() => {
                     let reason = format!("no output for {idle:?}");
                     let _ = self.client.call(Method::POST, &self.abort_path(), None).await;
                     self.emit(AdapterEvent::Error { message: reason.clone() }).await;
@@ -924,6 +978,7 @@ impl TurnDriver {
             }
         };
         pending.abort_all();
+        questions.abort_all();
         self.sse_task.abort();
         outcome
     }
@@ -936,6 +991,33 @@ impl TurnDriver {
         match &self.permission_handler {
             Some(handler) => handler(perm),
             None => PermissionDecision::Reply(PermissionReply::Reject),
+        }
+    }
+
+    /// Answer a `question` (1.18.31 `POST /question/{id}/reply { answers }`), or reject it.
+    async fn post_answers(&self, question_id: &str, answers: QuestionAnswers) {
+        tracing::info!(
+            question_id,
+            answered = answers.is_some(),
+            "answering opencode question"
+        );
+        let result = match answers {
+            Some(answers) => {
+                self.client
+                    .post_json(
+                        &self.question_path(question_id, "reply"),
+                        &json!({ "answers": answers }),
+                    )
+                    .await
+            }
+            None => {
+                self.client
+                    .post_json(&self.question_path(question_id, "reject"), &json!({}))
+                    .await
+            }
+        };
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "question reply failed");
         }
     }
 
