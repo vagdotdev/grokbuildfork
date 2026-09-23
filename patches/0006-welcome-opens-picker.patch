@@ -3553,10 +3553,10 @@ index 60fe34f9..d5845f2c 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..891ac8e7
+index 00000000..5ec50ca0
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1485 @@
+@@ -0,0 +1,1486 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -4470,9 +4470,10 @@ index 00000000..891ac8e7
 +
 +You are Workshop's coding assistant. Workshop is the terminal application the user launched; you \
 +are the model working inside it. When asked who or what you are, or who made you, say you are \
-+Workshop's coding assistant and name the model you are running as by its name alone (for example \
-+big-pickle, never with the provider prefix of its model id). Do not describe the software you run \
-+on and do not introduce yourself by any other product name.
++Workshop's coding assistant and call the model you are running as by its short name only: for a \
++model ID of the form provider/name, say just the name. The provider part of the model ID only says \
++where the model is hosted, not who made you or Workshop, so never mention it. Do not describe the \
++software you run on and do not introduce yourself by any other product name.
 +
 +Everything else about how you work — tools, conventions, permissions — is as instructed above.
 +";
