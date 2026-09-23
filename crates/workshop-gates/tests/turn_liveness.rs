@@ -67,7 +67,7 @@ fn a_running_command_keeps_a_live_line_and_the_title_clears_after_the_answer() {
     let mut j = spawn("turn-liveness", &bin, &offline, Some(&fake_bin));
     connect_big_pickle(&mut j);
     send_prompt(&mut j, "install the thing");
-    wait_for(&mut j.h, "Yes, proceed", 60);
+    wait_for(&mut j.h, "Yes, run it", 60);
     snapshot(&j.h, &j.dir, "01-prompt");
     j.h.inject_keys(b"1").unwrap();
 
