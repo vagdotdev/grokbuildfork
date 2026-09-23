@@ -19,7 +19,8 @@ use std::time::{Duration, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot, watch};
 use workshop_adapters::opencode_engine::{
     EngineOptions, InstallOptions, InstallProgress, OpenCodeEngine, PermissionDecision,
-    PermissionHandler, PermissionReply, PermissionRequest, TurnHandle, TurnRequest,
+    PermissionHandler, PermissionReply, PermissionRequest, PromptFile, QuestionAnswers,
+    QuestionHandler, QuestionRequest, TurnHandle, TurnRequest,
     WORKSHOP_AGENT_PROMPT, agent_prompts, ask_before_edit_and_bash, clear_quarantine,
     detect_opencode, format_bytes, install_opencode, instructions_config,
 };
@@ -336,6 +337,7 @@ pub async fn refresh_engine_catalog(engine: &OpenCodeEngine) -> Result<Vec<Engin
             context_limit: m.context_limit,
             variants: m.variants.clone(),
             effort: None,
+            image_input: m.image_input,
         })
         .collect();
     if models.is_empty() {
@@ -673,6 +675,9 @@ pub enum WorkshopTurnMsg {
         engine: Arc<OpenCodeEngine>,
         session: String,
     },
+    /// The rest of this turn is answered by `model` (it can see the images the turn opened): the
+    /// composer names it until the turn ends; the next turn goes back to the picked model.
+    Answering { model: EngineModel },
     /// The launch warm-up finished: the engine is up before the first message.
     EngineWarm { engine: Arc<OpenCodeEngine> },
     /// The engine's live catalog names a different default than the pinned seed the first run
@@ -707,6 +712,12 @@ pub enum WorkshopTurnMsg {
     PermissionAsk {
         request: PermissionRequest,
         reply: oneshot::Sender<PermissionReply>,
+    },
+    /// The agent asks the user something (OpenCode's `question` tool): the UI thread opens Grok
+    /// Build's question view and sends the answers (or `None`, declined) on `reply`.
+    QuestionAsk {
+        request: QuestionRequest,
+        reply: oneshot::Sender<QuestionAnswers>,
     },
     /// The user answered a prompt for tool call `call_id`; the same call's next ask (the engine
     /// asks `external_directory` and then `bash` for one out-of-folder command) gets the same
@@ -837,6 +848,8 @@ pub struct WorkshopTurnSpec {
     pub kind: WorkshopTurnKind,
     pub cwd: PathBuf,
     pub text: String,
+    /// Images pasted or attached with the prompt (engine turns send them as file parts).
+    pub images: Vec<PromptFile>,
     /// The agent's permission mode when the prompt was sent. Engine: Plan → the read-only
     /// `plan` agent, everything else → `build` with the engine asking before edits/commands.
     /// Vendor CLIs: AlwaysApprove → `WorkspaceWrite`, else their read-only default.
@@ -1002,6 +1015,107 @@ fn engine_permission_handler(tx: mpsc::UnboundedSender<WorkshopTurnMsg>) -> Perm
             Ok(()) => PermissionDecision::Pending(reply_rx),
             Err(_) => PermissionDecision::Reply(PermissionReply::Reject),
         }
+    })
+}
+
+/// A pasted image as the engine takes it: its bytes as a `data:` URL, or the file it was saved to.
+pub fn prompt_file(image: &crate::prompt_images::PastedImage) -> Option<PromptFile> {
+    use base64::Engine as _;
+    let ext = image.mime_type.rsplit('/').next().unwrap_or("png");
+    let url = match &image.encoded_bytes {
+        Some(bytes) => format!(
+            "data:{};base64,{}",
+            image.mime_type,
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        ),
+        None => [&image.session_image_path, &image.staged_temp_path, &image.source_path]
+            .into_iter()
+            .flatten()
+            .find(|p| p.is_file())
+            .and_then(|p| url::Url::from_file_path(p).ok())?
+            .to_string(),
+    };
+    Some(PromptFile {
+        mime: image.mime_type.clone(),
+        url,
+        filename: format!("image-{}.{ext}", image.display_number),
+    })
+}
+
+/// The engine's questions as Grok Build's question view shows them (the `header` is OpenCode's
+/// short tab label; the view titles each question by its text).
+pub fn engine_questions(
+    request: &QuestionRequest,
+) -> Vec<xai_grok_tools::implementations::grok_build::ask_user_question::Question> {
+    use xai_grok_tools::implementations::grok_build::ask_user_question::{Question, QuestionOption};
+    request
+        .questions
+        .iter()
+        .map(|q| Question {
+            question: q.question.clone(),
+            options: q
+                .options
+                .iter()
+                .map(|o| QuestionOption {
+                    label: o.label.clone(),
+                    description: o.description.clone(),
+                    preview: None,
+                    id: None,
+                })
+                .collect(),
+            multi_select: Some(q.multiple),
+            id: None,
+        })
+        .collect()
+}
+
+/// The engine's answers from the question view: per question, in order, the chosen labels, with
+/// "Other" replaced by what the user typed. Anything but an accepted answer declines.
+pub fn engine_question_answers(
+    request: &QuestionRequest,
+    response: &xai_grok_tools::implementations::grok_build::ask_user_question::AskUserQuestionExtResponse,
+) -> QuestionAnswers {
+    use xai_grok_tools::implementations::grok_build::ask_user_question::AskUserQuestionExtResponse;
+    let AskUserQuestionExtResponse::Accepted {
+        answers,
+        annotations,
+    } = response
+    else {
+        return None;
+    };
+    Some(
+        request
+            .questions
+            .iter()
+            .map(|q| {
+                let typed = annotations
+                    .as_ref()
+                    .and_then(|a| a.get(&q.question))
+                    .and_then(|a| a.notes.clone())
+                    .filter(|n| !n.trim().is_empty());
+                answers
+                    .get(&q.question)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|label| match (&typed, label.as_str()) {
+                        (Some(text), "Other") => text.clone(),
+                        _ => label,
+                    })
+                    .collect()
+            })
+            .collect(),
+    )
+}
+
+fn engine_question_handler(tx: mpsc::UnboundedSender<WorkshopTurnMsg>) -> QuestionHandler {
+    Arc::new(move |req| {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let _ = tx.send(WorkshopTurnMsg::QuestionAsk {
+            request: req.clone(),
+            reply: reply_tx,
+        });
+        reply_rx
     })
 }
 
@@ -1210,7 +1324,8 @@ async fn start_engine(
     // The engine asks before edits and commands; what happens next is the agent's permission
     // mode (Plan/Normal prompt, Auto/Always-approve allow), decided on the UI thread per ask.
     opts.permission = Some(ask_before_edit_and_bash());
-    opts.permission_handler = Some(engine_permission_handler(ui_tx));
+    opts.permission_handler = Some(engine_permission_handler(ui_tx.clone()));
+    opts.question_handler = Some(engine_question_handler(ui_tx));
     // The models answer as Workshop's assistant, not as "opencode".
     opts.config = Some(engine_config(&log));
     let sink_path = log.clone();
@@ -1345,6 +1460,67 @@ struct EngineFollowUp {
     engine: Arc<OpenCodeEngine>,
     session: String,
     model_ref: String,
+    /// The model answering can see images.
+    image_input: bool,
+}
+
+/// The free models that can see images, in the order a turn that needs to see one is handed to
+/// them: Muse Spark 1.3 sorted the owner's Panthera photos best and fastest, 1.2 is its backup,
+/// MiMo last (a fresh engine often does not list it yet).
+const VISION_MODELS: [&str; 3] = [
+    "opencode/muse-spark-1.3-contributor-free",
+    "opencode/muse-spark-1.2-contributor-free",
+    "opencode/mimo-v2.6-flash-free",
+];
+
+/// The first of [`VISION_MODELS`] the running engine lists with image input.
+fn vision_model(live: &[EngineModel]) -> Option<EngineModel> {
+    VISION_MODELS.iter().find_map(|model_ref| {
+        live.iter()
+            .find(|m| m.model_ref == *model_ref && m.image_input)
+            .cloned()
+    })
+}
+
+/// The follow-up sent (never shown) when a turn moves to a model that can see what it opened.
+const VISION_CONTINUE_PROMPT: &str =
+    "Continue my request. You can now see the image files you opened.";
+
+/// The follow-up sent (never shown) when a model that cannot see images downloaded some: a model
+/// that can checks them before the turn ends.
+const VISION_CHECK_PROMPT: &str = "Continue my request: open each image you downloaded with your \
+read tool, check that it is a real photo of what I asked for and that no two are the same picture \
+(an edited, cropped or resized version of one photo counts as the same), replace any that fail, \
+then finish.";
+
+/// A tool call that fetches image files (a `curl`/`wget`/script download of .jpg/.png/…).
+fn downloads_images(tool: &str, input: &serde_json::Value) -> bool {
+    let Some(command) = input.get("command").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let command = command.to_ascii_lowercase();
+    tool == "bash"
+        && [".jpg", ".jpeg", ".png", ".webp", ".gif"]
+            .iter()
+            .any(|ext| command.contains(ext))
+        && ["curl", "wget", "urllib", "requests", "download"]
+            .iter()
+            .any(|fetch| command.contains(fetch))
+}
+
+/// A `read` of an image file: the engine attaches the picture to the tool result.
+fn reads_an_image(tool: &str, input: &serde_json::Value) -> bool {
+    const IMAGE_EXTENSIONS: [&str; 9] = [
+        "jpg", "jpeg", "png", "webp", "gif", "heic", "bmp", "tif", "tiff",
+    ];
+    tool == "read"
+        && input
+            .get("filePath")
+            .or_else(|| input.get("path"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|p| Path::new(p).extension())
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
 /// How many times one turn is continued after it ended on an action it announced but never took.
@@ -1401,13 +1577,17 @@ fn ends_with_code_block(tail: &str) -> bool {
 /// sentence is an "I'll …" / "Let me …" that no tool call followed.
 fn announces_unfinished_action(tail: &str) -> bool {
     let mut text = tail.trim_end();
-    // A command shown in a fence instead of run: judge the words before the fence.
+    // A command shown in a fence instead of run: judge the words before the fence. A colon before
+    // a fence usually introduces a finished result ("…Desktop/Panthera:" and the folder tree, "run
+    // this yourself:" and the command), so there only an "I'll …" sentence counts.
+    let mut fenced = false;
     if let Some(body) = text.strip_suffix("```")
         && let Some(before) = body.rfind("```").and_then(|open| body.get(..open))
     {
         text = before.trim_end();
+        fenced = true;
     }
-    if text.ends_with(':') {
+    if text.ends_with(':') && !fenced {
         return true;
     }
     if text.ends_with('?') {
@@ -1463,6 +1643,31 @@ async fn build_stream(
                 }
                 model = live;
             }
+            // A prompt that carries images goes to a model that can see them from the start.
+            let sees = |m: &EngineModel| {
+                cached_engine_models()
+                    .iter()
+                    .find(|c| c.model_ref == m.model_ref)
+                    .map_or(m.image_input, |c| c.image_input)
+            };
+            if !spec.images.is_empty()
+                && !sees(&model)
+                && let Some(vision) = vision_model(&cached_engine_models())
+            {
+                state::append_log(
+                    &engine_log_path(),
+                    &format!(
+                        "vision: the prompt carries {} image(s) {} cannot see; {} answers this turn",
+                        spec.images.len(),
+                        model.model_ref,
+                        vision.model_ref
+                    ),
+                );
+                let _ = tx.send(WorkshopTurnMsg::Answering {
+                    model: vision.clone(),
+                });
+                model = vision;
+            }
             engine_progress(tx, THINKING);
             // A model that is up but will not take the prompt cannot answer either: the silent
             // fallback answers instead (the cause is logged by the fallback dispatch).
@@ -1481,13 +1686,17 @@ async fn build_stream(
             // The picked effort level reaches OpenCode as the prompt's `variant`.
             req.variant = model.effort.clone();
             req.permission = permission;
+            req.files = spec.images.clone();
             let turn = engine.prompt(&session, req).await.map_err(|e| {
                 TurnStartError::EngineUnavailable(format!("the prompt was refused: {e}"))
             })?;
+            // The live catalog knows what the model can see even when the saved pick predates it.
+            let image_input = sees(&model);
             let follow_up = EngineFollowUp {
                 engine,
                 session,
                 model_ref: model.model_ref,
+                image_input,
             };
             Ok((TurnStream::Engine(turn), Some(follow_up)))
         }
@@ -1570,7 +1779,7 @@ pub async fn run_workshop_turn(
             return;
         }
     };
-    let (mut stream, follow_up) = match built {
+    let (mut stream, mut follow_up) = match built {
         Ok(s) => s,
         Err(error) => {
             let _ = tx.send(match error {
@@ -1585,7 +1794,7 @@ pub async fn run_workshop_turn(
         }
     };
 
-    let model_name = match &spec.kind {
+    let mut model_name = match &spec.kind {
         WorkshopTurnKind::Engine { model, .. } => model.name.clone(),
         WorkshopTurnKind::Adapter { adapter_id, .. } => adapter_id.to_string(),
     };
@@ -1607,6 +1816,15 @@ pub async fn run_workshop_turn(
     let asks_for_files = asks_to_write_files(&spec.text);
     let mut wrote_a_file = false;
     let mut continued_to_write = false;
+    // A model that cannot see images and opens one hands the rest of the turn to one that can
+    // (once a turn): the turn is stopped right after that read and continued on the same engine
+    // conversation, whose history carries the picture.
+    let mut image_reads: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut vision_switch: Option<EngineModel> = None;
+    let mut switched = false;
+    // A model that cannot see and downloads images hands them, before the turn ends, to one that
+    // can to check them (once a turn).
+    let mut downloaded_images = false;
     loop {
         let silence = async {
             match first_event_at {
@@ -1646,12 +1864,17 @@ pub async fn run_workshop_turn(
                     first_event_at = None;
                     tail.clear();
                     wrote_a_file |= FILE_WRITE_TOOLS.contains(&name.as_str());
+                    if reads_an_image(&name, &input) {
+                        image_reads.insert(id.clone());
+                    }
+                    downloaded_images |= downloads_images(&name, &input);
                     let _ = tx.send(WorkshopTurnMsg::Tool { id, name, input });
                 }
                 Some(AdapterEvent::ToolDetail { id, title, metadata }) => {
                     tool_details.insert(id, (title, metadata));
                 }
                 Some(AdapterEvent::ToolResult { id, output, is_error }) => {
+                    let opened_an_image = image_reads.remove(&id) && !is_error;
                     let (title, metadata) = tool_details
                         .remove(&id)
                         .unwrap_or((None, serde_json::Value::Null));
@@ -1665,10 +1888,32 @@ pub async fn run_workshop_turn(
                     // The model is at work again (thinking, hidden by default, or writing): the
                     // waiting line says so until its next output.
                     engine_progress(&tx, THINKING);
+                    if opened_an_image
+                        && !switched
+                        && vision_switch.is_none()
+                        && !aborted_by_us
+                        && let Some(f) = &follow_up
+                        && !f.image_input
+                        && let Some(vision) = vision_model(&cached_engine_models())
+                    {
+                        state::append_log(
+                            &engine_log_path(),
+                            &format!(
+                                "vision: {} cannot see the image it opened on {}; {} answers the rest of the turn",
+                                f.model_ref, f.session, vision.model_ref
+                            ),
+                        );
+                        vision_switch = Some(vision);
+                        stream.cancel();
+                    }
                 }
                 Some(AdapterEvent::Error { message }) => {
                     let nothing_yet = first_event_at.is_some();
                     first_event_at = None;
+                    // The stop that hands the turn to a vision model is not a failure.
+                    if vision_switch.is_some() {
+                        continue;
+                    }
                     errored = true;
                     // An abort we asked for (Ctrl-C, or the silence timeout above) is already
                     // reported; the backend's own "run cancelled" would only repeat it.
@@ -1697,6 +1942,61 @@ pub async fn run_workshop_turn(
                 }
                 Some(AdapterEvent::Done { .. }) => {}
                 None => {
+                    // Images a model that cannot see downloaded are checked by one that can.
+                    let mut checking = false;
+                    if vision_switch.is_none()
+                        && downloaded_images
+                        && !switched
+                        && !aborted_by_us
+                        && !errored
+                        && permission == PermissionPolicy::WorkspaceWrite
+                        && let Some(f) = &follow_up
+                        && !f.image_input
+                        && let Some(vision) = vision_model(&cached_engine_models())
+                    {
+                        state::append_log(
+                            &engine_log_path(),
+                            &format!(
+                                "vision: {} downloaded images it cannot see on {}; {} checks them",
+                                f.model_ref, f.session, vision.model_ref
+                            ),
+                        );
+                        vision_switch = Some(vision);
+                        checking = true;
+                    }
+                    if let Some(vision) = vision_switch.take()
+                        && !aborted_by_us
+                        && let Some(f) = follow_up.as_mut()
+                    {
+                        let prompt = if checking {
+                            VISION_CHECK_PROMPT
+                        } else {
+                            VISION_CONTINUE_PROMPT
+                        };
+                        let mut req = TurnRequest::new(prompt);
+                        req.model = Some(vision.model_ref.clone());
+                        req.permission = permission;
+                        match f.engine.prompt(&f.session, req).await {
+                            Ok(turn) => {
+                                stream = TurnStream::Engine(turn);
+                                f.model_ref = vision.model_ref.clone();
+                                f.image_input = true;
+                                switched = true;
+                                tail.clear();
+                                model_name = vision.name.clone();
+                                let _ = tx.send(WorkshopTurnMsg::Answering { model: vision });
+                                engine_progress(&tx, THINKING);
+                                continue;
+                            }
+                            Err(e) => {
+                                log_failure_cause(&format!(
+                                    "vision: {} could not take over the images: {e}",
+                                    vision.model_ref
+                                ));
+                                let _ = tx.send(WorkshopTurnMsg::Error(failure_line(&vision.name)));
+                            }
+                        }
+                    }
                     let pasted = asks_for_files
                         && !wrote_a_file
                         && !continued_to_write
@@ -1897,7 +2197,87 @@ pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{announces_unfinished_action, asks_to_write_files, ends_with_code_block};
+    use super::{
+        announces_unfinished_action, asks_to_write_files, downloads_images, ends_with_code_block,
+        engine_question_answers, engine_questions,
+    };
+
+    #[test]
+    fn image_downloads_are_recognised() {
+        let bash = |command: &str| downloads_images("bash", &serde_json::json!({ "command": command }));
+        assert!(bash("mkdir -p ~/Desktop/panthera && curl -fsSL -o lion_1.jpg https://upload.wikimedia.org/x.jpg"));
+        assert!(bash("python3 -c \"import urllib.request; urllib.request.urlretrieve(u, 'tiger.png')\""));
+        assert!(!bash("ls ~/Desktop/*.jpg"));
+        assert!(!bash("curl -fsSL https://example.org/api.json"));
+        assert!(!downloads_images("read", &serde_json::json!({ "filePath": "a.jpg" })));
+    }
+    use workshop_adapters::opencode_engine::{QuestionChoice, QuestionPrompt, QuestionRequest};
+    use xai_grok_tools::implementations::grok_build::ask_user_question::{
+        AskUserQuestionExtResponse, QuestionAnnotation,
+    };
+
+    fn install_question() -> QuestionRequest {
+        let choice = |label: &str| QuestionChoice {
+            label: label.into(),
+            description: String::new(),
+        };
+        QuestionRequest {
+            id: "que_1".into(),
+            session_id: "ses_1".into(),
+            questions: vec![
+                QuestionPrompt {
+                    question: "How should Ghostty be installed?".into(),
+                    header: "Install".into(),
+                    options: vec![choice("PPA (Recommended)"), choice(".deb")],
+                    multiple: false,
+                },
+                QuestionPrompt {
+                    question: "Where should it go?".into(),
+                    header: "Where".into(),
+                    options: vec![choice("/usr/bin")],
+                    multiple: false,
+                },
+            ],
+            call_id: Some("call_9".into()),
+        }
+    }
+
+    #[test]
+    fn engine_questions_open_in_the_question_view_and_answers_go_back_in_order() {
+        let req = install_question();
+        let shown = engine_questions(&req);
+        assert_eq!(shown.len(), 2);
+        assert_eq!(shown[0].options[0].label, "PPA (Recommended)");
+        let mut answers = indexmap::IndexMap::new();
+        answers.insert("Where should it go?".to_owned(), vec!["Other".to_owned()]);
+        answers.insert(
+            "How should Ghostty be installed?".to_owned(),
+            vec!["PPA (Recommended)".to_owned()],
+        );
+        let mut notes = std::collections::HashMap::new();
+        notes.insert(
+            "Where should it go?".to_owned(),
+            QuestionAnnotation {
+                preview: None,
+                notes: Some("~/.local/bin".into()),
+            },
+        );
+        let accepted = AskUserQuestionExtResponse::Accepted {
+            answers,
+            annotations: Some(notes),
+        };
+        assert_eq!(
+            engine_question_answers(&req, &accepted),
+            Some(vec![
+                vec!["PPA (Recommended)".to_owned()],
+                vec!["~/.local/bin".to_owned()]
+            ])
+        );
+        assert_eq!(
+            engine_question_answers(&req, &AskUserQuestionExtResponse::Cancelled),
+            None
+        );
+    }
 
     #[test]
     fn file_requests_are_recognised() {
@@ -1953,6 +2333,8 @@ mod tests {
             "Should I install it with snap or the .deb?",
             "I'll install it if you confirm.",
             "Here are the files:\n- a.epub\n- b.epub",
+            "Sorted all 15 photos into ~/Desktop/Panthera:\n```\nPanthera/\n  lion/\n```",
+            "Please run this yourself in a terminal:\n```\nsudo apt install htop\n```",
         ] {
             assert!(!announces_unfinished_action(tail), "{tail:?}");
         }

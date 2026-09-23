@@ -31,6 +31,9 @@ pub struct FreeModel {
     /// with a prompt as OpenCode's `variant` field.
     #[serde(default)]
     pub variants: Vec<String>,
+    /// The model can see images.
+    #[serde(default)]
+    pub image_input: bool,
 }
 
 /// Effort names in ascending order; anything OpenCode names differently sorts after, alphabetically.
@@ -97,6 +100,25 @@ fn capability(model: &Value, modern: &str, legacy: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Image input: 1.18.31 reports `capabilities.input.image`; models.dev entries carry
+/// `modalities.input` (a list) or `attachment`.
+fn reads_images(model: &Value) -> bool {
+    model
+        .get("capabilities")
+        .and_then(|c| c.get("input"))
+        .and_then(|i| i.get("image"))
+        .and_then(Value::as_bool)
+        .or_else(|| {
+            model
+                .get("modalities")
+                .and_then(|m| m.get("input"))
+                .and_then(Value::as_array)
+                .map(|input| input.iter().any(|v| v.as_str() == Some("image")))
+        })
+        .or_else(|| model.get("attachment").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
 /// Build the free catalog from a `/config/providers` response.
 pub fn parse_free_catalog(providers: &Value, opencode_version: &str) -> FreeCatalog {
     let default_id = providers
@@ -148,6 +170,7 @@ pub fn parse_free_catalog(providers: &Value, opencode_version: &str) -> FreeCata
                     .map(str::to_string),
                 is_default: default_id.as_deref() == Some(id.as_str()),
                 variants: variant_names(&m),
+                image_input: reads_images(&m),
                 id,
             }
         })
@@ -252,5 +275,30 @@ mod tests {
             .unwrap();
         assert_eq!(ling.variants, ["low", "medium", "high"]);
         assert!(cat.default_or_first().unwrap().variants.is_empty());
+    }
+
+    /// Captured from a live 1.18.31 `opencode serve`: Big Pickle is text-only, the Muse and MiMo
+    /// models read images.
+    #[test]
+    fn image_input_comes_from_the_live_catalog() {
+        let providers: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/opencode_serve_providers.json"
+        ))
+        .unwrap();
+        let cat = parse_free_catalog(&providers, "1.18.31");
+        let sees = |id: &str| cat.models.iter().find(|m| m.id == id).unwrap().image_input;
+        assert!(!sees("big-pickle"));
+        for id in [
+            "muse-spark-1.3-contributor-free",
+            "muse-spark-1.2-contributor-free",
+            "mimo-v2.6-flash-free",
+        ] {
+            assert!(sees(id), "{id}");
+        }
+        assert!(reads_images(
+            &json!({"modalities": {"input": ["text", "image"]}})
+        ));
+        assert!(reads_images(&json!({"attachment": true})));
+        assert!(!reads_images(&json!({})));
     }
 }

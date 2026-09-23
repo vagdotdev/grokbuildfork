@@ -4171,6 +4171,54 @@ fn handle_workshop_turn_msg(
             }
             true
         }
+        M::QuestionAsk { request, reply } => {
+            // OpenCode's `question` tool opens Grok Build's own question view; the answers (or the
+            // user's Esc, a decline) go back to the engine, which continues the turn with them.
+            use crate::views::question_view::QuestionViewState;
+            use xai_grok_tools::implementations::grok_build::ask_user_question::{
+                AskUserQuestionExtResponse, AskUserQuestionMode,
+            };
+            let Some(agent) = app.agents.get_mut(&agent_id) else {
+                let _ = reply.send(None);
+                return (false, vec![]);
+            };
+            let stashed = match agent.question_view.take() {
+                Some(mut open) => {
+                    open.send_ext_response(AskUserQuestionExtResponse::Cancelled);
+                    open.stashed_prompt
+                }
+                None => agent.prompt.stash(),
+            };
+            let (answer_tx, answer_rx) = tokio::sync::oneshot::channel();
+            agent.question_view = Some(QuestionViewState::with_response_tx(
+                request.call_id.clone().unwrap_or_else(|| request.id.clone()),
+                crate::app::workshop::engine_questions(&request),
+                stashed,
+                Some(answer_tx),
+                AskUserQuestionMode::Default,
+            ));
+            agent.prompt.set_text("");
+            tokio::spawn(async move {
+                let answers = match answer_rx.await {
+                    Ok(Ok(response)) => serde_json::from_str::<AskUserQuestionExtResponse>(
+                        response.0.get(),
+                    )
+                    .ok()
+                    .and_then(|r| crate::app::workshop::engine_question_answers(&request, &r)),
+                    _ => None,
+                };
+                let _ = reply.send(answers);
+            });
+            true
+        }
+        M::Answering { model } => {
+            // The composer names the model answering; the connection (the user's pick) is unchanged.
+            let label = crate::app::workshop::WorkshopConnection::Engine { model }.composer_label();
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent.workshop_model_label = label;
+            }
+            true
+        }
         // A model the user picked in /model is kept; only a connection still on the default follows it.
         M::EngineDefaultResolved { .. }
             if !matches!(
@@ -4467,6 +4515,9 @@ fn handle_workshop_turn_msg(
             app.workshop_turn_agent = None;
             app.workshop_turn_prompt_entry = None;
             app.workshop_turn_running.clear();
+            // A model that answered only this turn (it could see its images) hands the composer
+            // back to the picked model.
+            crate::app::workshop::sync_agent_views(app);
             // The first reply of a first run is when voice starts getting ready in the background
             // (no-op once started, off, or already in place).
             let mut effects = crate::app::workshop::maybe_start_voice_prefetch(

@@ -162,6 +162,9 @@ pub struct EngineModel {
     /// Lives on the model so the active connection, the picker row and the prompt agree on it.
     #[serde(default)]
     pub effort: Option<String>,
+    /// The model can see images (the engine catalog's `capabilities.input.image`).
+    #[serde(default)]
+    pub image_input: bool,
 }
 
 impl EngineModel {
@@ -176,6 +179,7 @@ impl EngineModel {
             context_limit: Some(200_000),
             variants: Vec::new(),
             effort: None,
+            image_input: false,
         }
     }
 
@@ -1837,6 +1841,7 @@ mod tests {
             context_limit: None,
             variants: Vec::new(),
             effort: None,
+            image_input: false,
         }
     }
 
