@@ -883,7 +883,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             hidden_in_minimal: false,
         },
-        // SHELL-owned: `[ui].show_thinking_blocks` with a process-wide cache. Default ON.
+        // SHELL-owned: `[ui].show_thinking_blocks` with a process-wide cache. Default OFF.
         SettingMeta {
             key: "show_thinking_blocks",
             category: SettingCategory::Appearance,
@@ -899,7 +899,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "hide",
             ],
             kind: SettingKind::Bool {
-                default: ui_default.show_thinking_blocks.unwrap_or(true),
+                default: ui_default.show_thinking_blocks.unwrap_or(false),
             },
             restart_required: false,
             hidden_in_minimal: false,

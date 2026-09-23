@@ -953,11 +953,11 @@ mod tests {
                          shared resolver const in xai-grok-tools"
                     );
                 }
-                // show_thinking_blocks: Option<bool>; None reads as true (client default)
+                // show_thinking_blocks: Option<bool>; None reads as false (client default)
                 ("show_thinking_blocks", SettingKind::Bool { default }) => {
                     assert_eq!(
                         *default,
-                        ui.show_thinking_blocks.unwrap_or(true),
+                        ui.show_thinking_blocks.unwrap_or(false),
                         "show_thinking_blocks default drifts from UiConfig::default()"
                     );
                 }
