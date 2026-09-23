@@ -97,6 +97,29 @@ pub struct DiagnosticFacts {
     pub voice: Option<VoiceFacts>,
     /// Workshop overlay: the local speech-to-text engine and its model (`None` when voice is off).
     pub voice_engine: Option<VoiceEngineFacts>,
+    /// Workshop overlay: the OpenCode engine (`opencode serve`) behind the free models.
+    pub engine: Option<OpenCodeEngineFacts>,
+}
+
+/// Workshop overlay: `/doctor` facts for the OpenCode engine — enough to explain a first message
+/// that never answered on a machine we cannot see: binary, version, quarantine flag, the phase and
+/// error of the last start, and where the server log went.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenCodeEngineFacts {
+    /// The active connection as the composer shows it (`Big Pickle · OpenCode`, or `shell`).
+    pub connection: String,
+    /// Resolved `opencode` binary, or `None` when none is installed.
+    pub binary: Option<String>,
+    pub version: Option<String>,
+    /// `ok`, `not installed`, or `not runnable: …`.
+    pub binary_status: String,
+    /// macOS `com.apple.quarantine` value when the binary carries it (Gatekeeper would block it).
+    pub quarantined: Option<String>,
+    pub last_phase: Option<String>,
+    /// Unix seconds of the last start attempt, rendered by the caller.
+    pub last_start_unix: Option<u64>,
+    pub last_error: Option<String>,
+    pub log_path: String,
 }
 
 /// Workshop overlay: `/doctor` facts for the local voice engine. Paths and statuses only.

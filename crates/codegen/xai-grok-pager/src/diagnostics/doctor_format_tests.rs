@@ -240,7 +240,7 @@ fn limited_color_output_is_stable() {
             "  multiplexer  None detected\n",
             "  ssh          no\n",
             "  color        256\n",
-            "  themes       3/6: groknight, grokday, terminal\n",
+            "  themes       3/6: night, day, terminal\n",
             "\n",
             "Clipboard\n",
             "  native       local (pbcopy)\n",
@@ -294,7 +294,7 @@ fn unwrapped_ssh_recommendation_with_no_issues_output_is_stable() {
             "\n",
             "  i terminal.ssh-wrap  Use local SSH wrapping for more reliable clipboard copy and terminal recovery\n",
             "      Automatic setup: `workshop doctor fix ssh-wrap`\n",
-            "      One-off: `grok wrap ssh <host>`\n",
+            "      One-off: `workshop wrap ssh <host>`\n",
             "      Note: Run this on your local computer instead of plain `ssh`. It forwards copies to your local clipboard and restores terminal modes if the connection drops.\n",
         )
     );
@@ -655,6 +655,7 @@ fn keyboard_fact_formats_from_explicit_target_evidence() {
             },
             voice: None,
             voice_engine: None,
+            engine: None,
         },
         findings: Vec::new(),
         probe_notes: Vec::new(),

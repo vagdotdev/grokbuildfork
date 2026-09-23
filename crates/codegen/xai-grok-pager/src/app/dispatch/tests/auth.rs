@@ -735,12 +735,7 @@ fn engine_unavailable_falls_back_to_kilo_and_resends_the_prompt() {
         app.workshop_connection.is_shell(),
         "Kilo is a Direct API (shell) connection"
     );
-    let notice = last_system_text(&app, id);
-    assert!(
-        notice.starts_with("OpenCode unavailable (installer failed: offline)")
-            && notice.contains("Kilo"),
-        "one-line notice: {notice:?}"
-    );
+    // The notice is held back until the resend has painted the prompt, so it lands under it.
     assert!(
         test_agent(&app, id).scrollback.index_of_id(entry).is_none(),
         "the engine attempt's bubble is dropped; the resend paints it once"
@@ -754,8 +749,18 @@ fn engine_unavailable_falls_back_to_kilo_and_resends_the_prompt() {
         "switches the open session to the Kilo model, got {effects:?}"
     );
     assert_eq!(
-        app.workshop_resend.as_ref().map(|(_, t)| t.as_str()),
+        app.workshop_resend.as_ref().map(|(_, t, _)| t.as_str()),
         Some("hello")
+    );
+    let notice = app
+        .workshop_resend
+        .as_ref()
+        .map(|(_, _, n)| n.clone())
+        .unwrap_or_default();
+    assert!(
+        notice.starts_with("OpenCode unavailable (installer failed: offline)")
+            && notice.contains("Kilo"),
+        "one-line notice: {notice:?}"
     );
     let AuthState::Authenticating { request_seq, .. } = app.auth_state else {
         panic!("activation in flight, got {:?}", app.auth_state);
@@ -769,6 +774,11 @@ fn engine_unavailable_falls_back_to_kilo_and_resends_the_prompt() {
         &mut app,
     );
     assert!(app.workshop_resend.is_none(), "the resend was consumed");
+    assert!(
+        last_system_text(&app, id).starts_with("OpenCode unavailable"),
+        "the notice is rendered with the resent prompt: {:?}",
+        last_system_text(&app, id)
+    );
     assert_eq!(app.active_view, ActiveView::Agent(id));
     let agent = test_agent(&app, id);
     assert!(

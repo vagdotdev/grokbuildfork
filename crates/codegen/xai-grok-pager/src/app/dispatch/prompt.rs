@@ -82,6 +82,7 @@ pub(super) fn collect_live_doctor_report_for_terminal(
     if crate::app::voice_mode_enabled() {
         crate::diagnostics::apply_voice_probe(&mut report, true);
     }
+    crate::diagnostics::apply_engine_probe(&mut report);
     Some(report)
 }
 
@@ -632,7 +633,7 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
     use crate::app::workshop::{self, WorkshopConnection, WorkshopTurnKind, WorkshopTurnSpec};
 
     if app.workshop_turn_active {
-        app.show_toast("A model turn is already running (Esc to cancel).");
+        app.show_toast("Still working on your last message — Ctrl+C cancels it, /model switches model.");
         return vec![];
     }
     let Some(tx) = app.workshop_turn_tx.clone() else {
@@ -648,7 +649,7 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
     let kind = match &app.workshop_connection {
         WorkshopConnection::Shell => return vec![],
         WorkshopConnection::Engine { model } => WorkshopTurnKind::Engine {
-            engine: app.workshop_engine.clone(),
+            slot: app.workshop_engine_slot.clone(),
             session: app
                 .workshop_engine_session
                 .clone()
@@ -785,6 +786,7 @@ pub(super) fn dispatch_send_prompt_submission(
     let login_method_id_from_app = app.login_method_id.as_ref().map(|id| id.0.to_string());
     let leader_mode = app.leader_mode;
     let screen_mode_is_minimal = app.screen_mode.is_minimal();
+    let workshop_connection_is_shell = app.workshop_connection.is_shell();
     let Some(agent) = app.agents.get_mut(&id) else {
         return prelude;
     };
@@ -1113,6 +1115,23 @@ pub(super) fn dispatch_send_prompt_submission(
                 return effects;
             }
             CommandResult::QueueCommand(cmd_text) => {
+                // Workshop: shell-side commands (`/compact`, `/dream`, `/flush`, …) run on
+                // Workshop's own agent loop, which an Engine/Adapter connection bypasses; queuing
+                // them would hit the placeholder model and fail with a loopback connection error.
+                if !workshop_connection_is_shell {
+                    let name = cmd_text.split_whitespace().next().unwrap_or("This command");
+                    push_and_page_flip(
+                        &mut agent.scrollback,
+                        RenderBlock::system(format!(
+                            "{name} runs on Workshop's own agent loop, not on this connection — \
+                             pick a Direct API or Local model with /model to use it."
+                        )),
+                    );
+                    if consume_input {
+                        agent.prompt.set_text("");
+                    }
+                    return effects;
+                }
                 agent.session.enqueue_command(cmd_text);
             }
             CommandResult::InjectSkill {

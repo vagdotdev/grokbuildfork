@@ -958,7 +958,7 @@ pub struct AppView {
     /// One-shot gate for the small-screen `/compact-mode` tip: set after the first evaluation at a stable agent-view draw (regardless of outcome).
     /// Later resizes thus can never re-trigger the tip within this run.
     pub small_screen_tip_evaluated: bool,
-    /// One-shot gate for the SSH `grok wrap` tip: set after the first evaluation at a stable agent-view draw.
+    /// One-shot gate for the SSH `workshop wrap` tip: set after the first evaluation at a stable agent-view draw.
     /// The environment gates are process-constant, so one evaluation decides the run.
     pub ssh_wrap_tip_evaluated: bool,
     /// State for the clipboard-image tip, polled opportunistically and only while the terminal is focused.
@@ -1024,7 +1024,16 @@ pub struct AppView {
     /// Engine-connection turn and reused across turns. `None` until then. Adapter (CLI) turns keep
     /// no long-lived handle — each turn spawns the vendor CLI fresh with a persisted resume id.
     pub workshop_engine: Option<std::sync::Arc<workshop_adapters::opencode_engine::OpenCodeEngine>>,
+    /// Workshop: the process-wide engine slot the startup warm-up and every turn share, so the
+    /// first message reuses the server the warm-up started (or waits for it) instead of starting
+    /// a second one.
+    pub workshop_engine_slot: crate::app::workshop::EngineSlot,
+    /// Set once the first typed character has started the engine warm-up for this process.
+    pub workshop_engine_warm_started: bool,
     pub workshop_engine_session: Option<String>,
+    /// The bring-up status line ("Installing the OpenCode engine…") of the current turn; replaced
+    /// by each newer status and removed once the turn produces output or ends.
+    pub workshop_turn_progress_entry: Option<crate::scrollback::EntryId>,
     /// True while an Engine/Adapter turn streams; a second submit is rejected and Esc/Ctrl-C cancels.
     pub workshop_turn_active: bool,
     /// Sender the event loop installs once so submit handlers can stream a turn's events back into
@@ -1040,7 +1049,7 @@ pub struct AppView {
     /// Kilo fallback).
     pub workshop_turn_prompt_entry: Option<crate::scrollback::EntryId>,
     /// A prompt to resend on the shell path once the Kilo fallback activation completes.
-    pub workshop_resend: Option<(crate::app::agent::AgentId, String)>,
+    pub workshop_resend: Option<(crate::app::agent::AgentId, String, String)>,
     /// Delivery state from the last clipboard copy during auth.
     pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     /// Generation of the current auth copy feedback and its clear timer.
@@ -1579,7 +1588,10 @@ impl AppView {
             connection_picker: None,
             workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
             workshop_engine: None,
+            workshop_engine_slot: crate::app::workshop::new_engine_slot(),
+            workshop_engine_warm_started: false,
             workshop_engine_session: None,
+            workshop_turn_progress_entry: None,
             workshop_turn_active: false,
             workshop_turn_tx: None,
             workshop_turn_cancel: None,
@@ -5305,7 +5317,7 @@ impl AppView {
         self.small_screen_tip_evaluated = true;
         super::dispatch::show_small_screen_tip(self);
     }
-    /// One-shot SSH `grok wrap` tip trigger, run at the top of every `draw` right after [`Self::maybe_trigger_small_screen_tip`].
+    /// One-shot SSH `workshop wrap` tip trigger, run at the top of every `draw` right after [`Self::maybe_trigger_small_screen_tip`].
     /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
     /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
     pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {

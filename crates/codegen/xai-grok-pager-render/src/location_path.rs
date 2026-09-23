@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 /// Display-only middle-component shortener for already-abbreviated location paths.
 ///
-/// After a `~` / `$GROK_HOME` prefix (or a leading `/` / drive letter / UNC
+/// After a `~` / `$WORKSHOP_HOME` prefix (or a leading `/` / drive letter / UNC
 /// `\\server\share` / `//host/share` / `\\?\UNC\server\share`), the last two
 /// components stay full and earlier ones become one letter. Leading dots are
 /// kept plus the first non-dot character (`.grok` → `.g`, `..cache` → `..c`).
@@ -11,7 +11,7 @@ use std::borrow::Cow;
 /// after the prefix are unchanged.
 pub(crate) fn shorten_location_path(path: &str) -> Cow<'_, str> {
     const KEEP_FULL: usize = 2;
-    const GROK_HOME_PREFIX: &str = "$GROK_HOME";
+    const GROK_HOME_PREFIX: &str = "$WORKSHOP_HOME";
     const VERBATIM_UNC_PREFIX: &str = r"\\?\UNC\";
 
     let sep = if path.contains('\\') && !path.contains('/') {

@@ -598,7 +598,7 @@ fn wrap_host_image_request_eligible_covers_full_miss_and_attachment_error_only()
     use crate::app::actions::{ClipboardPasteCompletion, ClipboardPasteFailure};
 
     // A clean empty miss and a remote read *error* both fall through to the wrap host-image request
-    // That request is how `grok wrap` pastes images over headless SSH
+    // That request is how `workshop wrap` pastes images over headless SSH
     assert!(wrap_host_image_request_eligible(
         ClipboardPasteCompletion::FullMiss
     ));

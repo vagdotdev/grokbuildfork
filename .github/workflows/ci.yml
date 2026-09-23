@@ -181,6 +181,15 @@ jobs:
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test live_tui_turns rails_ -- --nocapture --include-ignored
+      - name: PTY gates — engine failures are one visible line, config isolation, /models view
+        # Fault-injected `opencode` (crash, never binds, silent model, offline installer, Ctrl+C
+        # during bring-up) must each end in one line with the cause and `/model`; a populated
+        # ~/.grok + GROK_HOME + ~/.claude/settings.json is ignored; /models lists no Grok row.
+        env:
+          WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
+        run: |
+          cargo test -p workshop-gates --test config_isolation --test models_view -- --nocapture --include-ignored
+          cargo test -p workshop-gates --test engine_failures -- --nocapture --include-ignored --test-threads=2
       - name: Upload evidence
         if: always()
         # Evidence upload is diagnostic; an org artifact-storage quota must not fail the required gate.

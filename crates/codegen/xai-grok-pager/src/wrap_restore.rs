@@ -1,6 +1,6 @@
-//! Terminal-mode tracking and restore emission for `grok wrap`.
+//! Terminal-mode tracking and restore emission for `workshop wrap`.
 //!
-//! `grok wrap` cannot tell a clean child exit from a connection drop: an ssh transport death reaches it as a plain PTY EOF plus an exit code.
+//! `workshop wrap` cannot tell a clean child exit from a connection drop: an ssh transport death reaches it as a plain PTY EOF plus an exit code.
 //! What it *can* know is which DEC private modes the child enabled on the local terminal and never disabled; the reset bytes died with the link.
 //! [`ModeTracker`] observes every complete CSI sequence the wrap output filter forwards.
 //! It keeps a bitmask of latched modes plus the kitty keyboard push depth; [`restore_bytes`] emits disables for exactly that latched state.

@@ -19,7 +19,7 @@ pub(super) fn render(failure: &StartupFailure) -> String {
             }
             let explanation = fill_indented(&advice.explanation(), "  ", "  ");
             format!(
-                "Couldn't start Grok: startup timed out after {}.\n\n{explanation}",
+                "Couldn't start Workshop: startup timed out after {}.\n\n{explanation}",
                 whole_seconds(*waited)
             )
         }
@@ -137,7 +137,7 @@ enum NextStep {
 impl NextStep {
     fn text(self) -> &'static str {
         match self {
-            Self::Retry => "Start Grok again.",
+            Self::Retry => "Start Workshop again.",
             Self::CheckNetworkThenRetry => "Check your network connection, then start Grok again.",
             Self::RestartSharedLeader => {
                 "Stop it with the command below, which also stops any other Grok \

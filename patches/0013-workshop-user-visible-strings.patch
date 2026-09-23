@@ -11,6 +11,37 @@ index be893163..e7fd258f 100644
  
  # Rendering primitives (must match the pager's versions).
  ratatui = { workspace = true, features = ["crossterm", "unstable-widget-ref"] }
+diff --git a/crates/codegen/xai-grok-pager-minimal/src/auth.rs b/crates/codegen/xai-grok-pager-minimal/src/auth.rs
+index f879c80c..826ca764 100644
+--- a/crates/codegen/xai-grok-pager-minimal/src/auth.rs
++++ b/crates/codegen/xai-grok-pager-minimal/src/auth.rs
+@@ -190,7 +190,7 @@ pub(super) fn render_auth(buf: &mut Buffer, area: Rect, theme: &Theme, hint: &Mi
+                 area,
+                 y,
+                 bottom,
+-                Line::from(Span::styled("Sign in to Grok", bold)),
++                Line::from(Span::styled("Workshop — connect a model", bold)),
+             );
+             y = put_line(buf, area, y, bottom, Line::default());
+             match url {
+@@ -297,7 +297,7 @@ pub(super) fn render_auth(buf: &mut Buffer, area: Rect, theme: &Theme, hint: &Mi
+                 y,
+                 bottom,
+                 Line::from(Span::styled(
+-                    "Grok Build may run or modify contents in this directory,",
++                    "Workshop may run or modify contents in this directory,",
+                     gray,
+                 )),
+             );
+@@ -469,7 +469,7 @@ mod tests {
+         };
+         render_auth(&mut buf, area, &theme, &hint);
+         let text = crate::buffer_text(&buf);
+-        assert!(text.contains("Sign in to Grok"), "header: {text:?}");
++        assert!(text.contains("Workshop — connect a model"), "header: {text:?}");
+         assert!(text.contains("accounts.x.ai/device"), "url: {text:?}");
+         assert!(text.contains("ABCD-EFGH"), "device code: {text:?}");
+         assert!(
 diff --git a/crates/codegen/xai-grok-pager-minimal/src/welcome.rs b/crates/codegen/xai-grok-pager-minimal/src/welcome.rs
 index 34aa8f96..bdb1620d 100644
 --- a/crates/codegen/xai-grok-pager-minimal/src/welcome.rs
@@ -24,6 +55,198 @@ index 34aa8f96..bdb1620d 100644
              Style::default()
                  .fg(theme.accent_user)
                  .add_modifier(Modifier::BOLD),
+diff --git a/crates/codegen/xai-grok-pager-render/src/clipboard/mod.rs b/crates/codegen/xai-grok-pager-render/src/clipboard/mod.rs
+index e50a31ff..52eb0fd8 100644
+--- a/crates/codegen/xai-grok-pager-render/src/clipboard/mod.rs
++++ b/crates/codegen/xai-grok-pager-render/src/clipboard/mod.rs
+@@ -32,7 +32,7 @@ fn is_container_no_display() -> bool {
+     *CONTAINER.get_or_init(xai_grok_shared::clipboard::is_containerized_without_display)
+ }
+ 
+-/// `grok wrap` intercepts OSC 52 onto the local clipboard and advertises it. Over SSH only `TERM` propagates, so brands look incapable.
++/// `workshop wrap` intercepts OSC 52 onto the local clipboard and advertises it. Over SSH only `TERM` propagates, so brands look incapable.
+ /// `LC_GROK_OSC52_SINK` survives default OpenSSH `SendEnv`/`AcceptEnv` of `LC_*`.
+ pub fn osc52_sink_active() -> bool {
+     static SINK: OnceLock<bool> = OnceLock::new();
+@@ -330,7 +330,7 @@ impl ClipboardFeedback {
+             Self::CopiedOscContainer => "Copied via OSC 52 from the container.",
+             Self::CopiedOscRemote => "Copied via OSC 52.",
+             Self::UnverifiedOscRemote | Self::UnverifiedOscContainer => {
+-                "Copy sent. If paste fails, use grok wrap or /minimal."
++                "Copy sent. If paste fails, use workshop wrap or /minimal."
+             }
+             Self::VsCodeSshNonAscii => {
+                 "Copied. VS Code over SSH may garble non-ASCII; use /minimal if needed."
+@@ -2017,7 +2017,7 @@ mod tests {
+         );
+         assert!(
+             on.osc52,
+-            "grok wrap sink must emit OSC 52 so the local PTY can intercept it"
++            "workshop wrap sink must emit OSC 52 so the local PTY can intercept it"
+         );
+         let killed = resolve_clipboard_route_with(
+             &plain_terminal_ctx(),
+@@ -2266,14 +2266,14 @@ mod tests {
+             (
+                 ClipboardFeedback::UnverifiedOscRemote,
+                 ClipboardDelivery::Unverified,
+-                "Copy sent. If paste fails, use grok wrap or /minimal.",
++                "Copy sent. If paste fails, use workshop wrap or /minimal.",
+                 "unverified_osc_remote",
+                 120,
+             ),
+             (
+                 ClipboardFeedback::UnverifiedOscContainer,
+                 ClipboardDelivery::Unverified,
+-                "Copy sent. If paste fails, use grok wrap or /minimal.",
++                "Copy sent. If paste fails, use workshop wrap or /minimal.",
+                 "unverified_osc_container",
+                 120,
+             ),
+@@ -2414,11 +2414,11 @@ mod tests {
+     /// The `GROK_HOME`-override integration test in `xai-grok-pager` covers that further.
+     #[test]
+     fn display_copy_path_abbreviates_home() {
+-        if std::env::var_os("GROK_HOME").is_none() {
++        if std::env::var_os("WORKSHOP_HOME").is_none() {
+             let home = xai_dirs::home_dir().expect("home resolves in tests");
+             assert_eq!(
+-                display_copy_path(&home.join(".grok").join("last-copy.txt")),
+-                "~/.grok/last-copy.txt"
++                display_copy_path(&home.join(".workshop").join("last-copy.txt")),
++                "~/.workshop/last-copy.txt"
+             );
+         }
+         // Non-home paths pass through untouched, including multi-byte UTF-8 components (must never slice at a non-char boundary)
+diff --git a/crates/codegen/xai-grok-pager-render/src/location_path.rs b/crates/codegen/xai-grok-pager-render/src/location_path.rs
+index cd8abf19..be3b5e49 100644
+--- a/crates/codegen/xai-grok-pager-render/src/location_path.rs
++++ b/crates/codegen/xai-grok-pager-render/src/location_path.rs
+@@ -2,7 +2,7 @@ use std::borrow::Cow;
+ 
+ /// Display-only middle-component shortener for already-abbreviated location paths.
+ ///
+-/// After a `~` / `$GROK_HOME` prefix (or a leading `/` / drive letter / UNC
++/// After a `~` / `$WORKSHOP_HOME` prefix (or a leading `/` / drive letter / UNC
+ /// `\\server\share` / `//host/share` / `\\?\UNC\server\share`), the last two
+ /// components stay full and earlier ones become one letter. Leading dots are
+ /// kept plus the first non-dot character (`.grok` → `.g`, `..cache` → `..c`).
+@@ -11,7 +11,7 @@ use std::borrow::Cow;
+ /// after the prefix are unchanged.
+ pub(crate) fn shorten_location_path(path: &str) -> Cow<'_, str> {
+     const KEEP_FULL: usize = 2;
+-    const GROK_HOME_PREFIX: &str = "$GROK_HOME";
++    const GROK_HOME_PREFIX: &str = "$WORKSHOP_HOME";
+     const VERBATIM_UNC_PREFIX: &str = r"\\?\UNC\";
+ 
+     let sep = if path.contains('\\') && !path.contains('/') {
+diff --git a/crates/codegen/xai-grok-pager-render/src/location_path_tests.rs b/crates/codegen/xai-grok-pager-render/src/location_path_tests.rs
+index 81da0b48..400c0eea 100644
+--- a/crates/codegen/xai-grok-pager-render/src/location_path_tests.rs
++++ b/crates/codegen/xai-grok-pager-render/src/location_path_tests.rs
+@@ -7,8 +7,8 @@ fn shorten_location_path_kerem_grok_home() {
+         "~/.g/w/code-xai/dashboard-design"
+     );
+     assert_eq!(
+-        shorten_location_path("$GROK_HOME/worktrees/code-xai/dashboard-design").as_ref(),
+-        "$GROK_HOME/w/code-xai/dashboard-design"
++        shorten_location_path("$WORKSHOP_HOME/worktrees/code-xai/dashboard-design").as_ref(),
++        "$WORKSHOP_HOME/w/code-xai/dashboard-design"
+     );
+ }
+ 
+@@ -35,10 +35,10 @@ fn shorten_location_path_short_paths_leave_alone() {
+         shorten_location_path("~/.grok/worktrees").as_ref(),
+         "~/.grok/worktrees"
+     );
+-    assert_eq!(shorten_location_path("$GROK_HOME").as_ref(), "$GROK_HOME");
++    assert_eq!(shorten_location_path("$WORKSHOP_HOME").as_ref(), "$WORKSHOP_HOME");
+     assert_eq!(
+-        shorten_location_path("$GROK_HOME/worktrees").as_ref(),
+-        "$GROK_HOME/worktrees"
++        shorten_location_path("$WORKSHOP_HOME/worktrees").as_ref(),
++        "$WORKSHOP_HOME/worktrees"
+     );
+     assert_eq!(shorten_location_path("/work/xai").as_ref(), "/work/xai");
+     assert_eq!(shorten_location_path("relative").as_ref(), "relative");
+@@ -152,7 +152,7 @@ fn shorten_location_path_unix_backslash_stays_in_component() {
+ #[test]
+ fn shorten_location_path_does_not_eat_grok_home_lookalike() {
+     assert_eq!(
+-        shorten_location_path("$GROK_HOME_BACKUP/a/b/c").as_ref(),
++        shorten_location_path("$WORKSHOP_HOME_BACKUP/a/b/c").as_ref(),
+         "$/a/b/c"
+     );
+ }
+diff --git a/crates/codegen/xai-grok-pager-render/src/theme/system_appearance.rs b/crates/codegen/xai-grok-pager-render/src/theme/system_appearance.rs
+index cf143942..36bb7972 100644
+--- a/crates/codegen/xai-grok-pager-render/src/theme/system_appearance.rs
++++ b/crates/codegen/xai-grok-pager-render/src/theme/system_appearance.rs
+@@ -78,7 +78,7 @@ fn resolve_appearance_chain(
+     desktop.or(explicit).or(osc11).or(colorfgbg)
+ }
+ 
+-/// Desktop APIs only. `grok wrap` stamps the local OS theme before SSH; env hints may be a previous hop's snapshot.
++/// Desktop APIs only. `workshop wrap` stamps the local OS theme before SSH; env hints may be a previous hop's snapshot.
+ #[must_use]
+ pub fn detect_desktop() -> Option<SystemAppearance> {
+     match dark_light::detect() {
+diff --git a/crates/codegen/xai-grok-pager-render/src/util.rs b/crates/codegen/xai-grok-pager-render/src/util.rs
+index a85b707f..74bf20d8 100644
+--- a/crates/codegen/xai-grok-pager-render/src/util.rs
++++ b/crates/codegen/xai-grok-pager-render/src/util.rs
+@@ -29,13 +29,13 @@ pub fn display_grok_home_prefix() -> String {
+ pub fn display_grok_home_prefix_for(home: &Path) -> String {
+     let default = xai_grok_config::default_grok_home();
+     if home == default || home == dunce::canonicalize(&default).unwrap_or(default) {
+-        "~/.grok".to_string()
++        "~/.workshop".to_string()
+     } else {
+-        "$GROK_HOME".to_string()
++        "$WORKSHOP_HOME".to_string()
+     }
+ }
+ 
+-/// User-facing path under [`grok_home()`], e.g. ``~/.grok/config.toml``.
++/// User-facing path under [`grok_home()`], e.g. ``~/.workshop/config.toml``.
+ pub fn display_user_grok_path(relative: impl AsRef<Path>) -> String {
+     display_user_grok_path_for(&grok_home(), relative)
+ }
+@@ -397,17 +397,17 @@ mod tests {
+ 
+     #[test]
+     fn display_grok_home_prefix_default_install() {
+-        if std::env::var("GROK_HOME").is_ok() {
++        if std::env::var("WORKSHOP_HOME").is_ok() {
+             return;
+         }
+-        assert_eq!(display_grok_home_prefix(), "~/.grok");
++        assert_eq!(display_grok_home_prefix(), "~/.workshop");
+     }
+ 
+     #[test]
+     fn display_user_grok_path_joins_relative() {
+         let path = display_user_grok_path(xai_grok_config::USER_CONFIG_FILENAME);
+         assert!(path.ends_with("/config.toml") || path.ends_with("\\config.toml"));
+-        assert!(path.contains(".grok") || path.contains("$GROK_HOME"));
++        assert!(path.contains(".workshop") || path.contains("$WORKSHOP_HOME"));
+     }
+ 
+     #[test]
+@@ -415,11 +415,11 @@ mod tests {
+         let custom = std::env::temp_dir().join("grok-home-display-regression");
+         assert_eq!(
+             display_user_grok_path_for(&custom, xai_grok_config::USER_CONFIG_FILENAME),
+-            "$GROK_HOME/config.toml"
++            "$WORKSHOP_HOME/config.toml"
+         );
+         assert_eq!(
+             display_user_grok_path_for(&custom, xai_grok_config::SANDBOX_CONFIG_FILENAME),
+-            format!("$GROK_HOME/{}", xai_grok_config::SANDBOX_CONFIG_FILENAME)
++            format!("$WORKSHOP_HOME/{}", xai_grok_config::SANDBOX_CONFIG_FILENAME)
+         );
+     }
+ 
 diff --git a/crates/codegen/xai-grok-pager/assets/logo/logo05.txt b/crates/codegen/xai-grok-pager/assets/logo/logo05.txt
 index 45701a31..0f74f0c0 100644
 --- a/crates/codegen/xai-grok-pager/assets/logo/logo05.txt
@@ -148,10 +371,416 @@ index ab27a76d..639a3543 100644
  
  If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
  
+diff --git a/crates/codegen/xai-grok-pager/src/app/acp_handler/permissions.rs b/crates/codegen/xai-grok-pager/src/app/acp_handler/permissions.rs
+index 99024eb8..4667b766 100644
+--- a/crates/codegen/xai-grok-pager/src/app/acp_handler/permissions.rs
++++ b/crates/codegen/xai-grok-pager/src/app/acp_handler/permissions.rs
+@@ -46,7 +46,7 @@ pub(super) fn handle_permission_request(
+     {
+         app.notification_service.notify(NotificationEvent {
+             kind: NotificationEventKind::ApprovalRequired,
+-            title: "Grok".into(),
++            title: "Workshop".into(),
+             body: NotificationEventKind::ApprovalRequired.as_ref().into(),
+             session_id: Some(perm.request.session_id.0.to_string()),
+         });
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
+index 42279599..47d0ac65 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
+@@ -24,7 +24,7 @@ fn next_rewrite_nonce() -> u64 {
+ 
+ /// One copy of the send-time thank-you, shared by the immediate and modal commit paths.
+ pub(crate) const FEEDBACK_THANKS_NOTICE: &str =
+-    "Thanks for the feedback! The Grok Build team is on it.";
++    "Thanks for the feedback!";
+ 
+ /// Minimal mode cannot show a toast, so the notice goes to the transcript instead.
+ fn feedback_notice(app: &mut AppView, message: &str) {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/status.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/status.rs
+index baa6baf7..a5eb218b 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/status.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/status.rs
+@@ -522,7 +522,7 @@ pub(super) fn notify_session_ready(
+ ) {
+     notification_service.notify(NotificationEvent {
+         kind: NotificationEventKind::SessionReady,
+-        title: "Grok".into(),
++        title: "Workshop".into(),
+         body: NotificationEventKind::SessionReady.as_ref().into(),
+         session_id: agent.session.session_id.as_ref().map(|s| s.0.to_string()),
+     });
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/task_result.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/task_result.rs
+index 596a7556..c5f491a6 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/task_result.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/task_result.rs
+@@ -598,7 +598,7 @@ fn wrap_host_image_request_eligible_covers_full_miss_and_attachment_error_only()
+     use crate::app::actions::{ClipboardPasteCompletion, ClipboardPasteFailure};
+ 
+     // A clean empty miss and a remote read *error* both fall through to the wrap host-image request
+-    // That request is how `grok wrap` pastes images over headless SSH
++    // That request is how `workshop wrap` pastes images over headless SSH
+     assert!(wrap_host_image_request_eligible(
+         ClipboardPasteCompletion::FullMiss
+     ));
+diff --git a/crates/codegen/xai-grok-pager/src/app/external_editor.rs b/crates/codegen/xai-grok-pager/src/app/external_editor.rs
+index 2734a491..d85a43f1 100644
+--- a/crates/codegen/xai-grok-pager/src/app/external_editor.rs
++++ b/crates/codegen/xai-grok-pager/src/app/external_editor.rs
+@@ -75,7 +75,7 @@ pub(crate) struct PromptEditorFile {
+ 
+ impl PromptEditorFile {
+     fn create(text: &str) -> std::io::Result<Self> {
+-        let path = std::env::temp_dir().join(format!("grok-prompt-{}.md", uuid::Uuid::new_v4()));
++        let path = std::env::temp_dir().join(format!("workshop-prompt-{}.md", uuid::Uuid::new_v4()));
+         let mut options = OpenOptions::new();
+         options.write(true).create_new(true);
+         #[cfg(unix)]
+diff --git a/crates/codegen/xai-grok-pager/src/app/screen_mode_relaunch.rs b/crates/codegen/xai-grok-pager/src/app/screen_mode_relaunch.rs
+index d8039fa8..22ad2068 100644
+--- a/crates/codegen/xai-grok-pager/src/app/screen_mode_relaunch.rs
++++ b/crates/codegen/xai-grok-pager/src/app/screen_mode_relaunch.rs
+@@ -183,7 +183,7 @@ pub(crate) fn screen_mode_relaunch_resume_hint(session_id: &str, want_minimal: b
+     } else {
+         "--fullscreen"
+     };
+-    format!("{GROK_SCREEN_MODE_ENV}={mode} grok {flag} --resume {session_id}")
++    format!("{GROK_SCREEN_MODE_ENV}={mode} workshop {flag} --resume {session_id}")
+ }
+ 
+ /// Replace the current process with a relaunch into the requested screen mode.
+@@ -628,7 +628,7 @@ mod tests {
+ 
+     #[test]
+     fn resume_without_value_then_flag_is_not_eaten() {
+-        // `grok --resume --no-leader` (resume most-recent; next token is a flag).
++        // `workshop --resume --no-leader` (resume most-recent; next token is a flag).
+         let out = build_screen_mode_relaunch_args(
+             args(&["grok", "--resume", "--no-leader"]),
+             "sid",
+@@ -741,11 +741,11 @@ mod tests {
+         // The explicit flag keeps the resume in the right mode if the env is dropped
+         assert_eq!(
+             screen_mode_relaunch_resume_hint("abc-sid", false),
+-            "GROK_SCREEN_MODE=fullscreen grok --fullscreen --resume abc-sid"
++            "GROK_SCREEN_MODE=fullscreen workshop --fullscreen --resume abc-sid"
+         );
+         assert_eq!(
+             screen_mode_relaunch_resume_hint("abc-sid", true),
+-            "GROK_SCREEN_MODE=minimal grok --minimal --resume abc-sid"
++            "GROK_SCREEN_MODE=minimal workshop --minimal --resume abc-sid"
+         );
+     }
+ 
+diff --git a/crates/codegen/xai-grok-pager/src/app/session_title_resolve.rs b/crates/codegen/xai-grok-pager/src/app/session_title_resolve.rs
+index b815852e..1be5c89e 100644
+--- a/crates/codegen/xai-grok-pager/src/app/session_title_resolve.rs
++++ b/crates/codegen/xai-grok-pager/src/app/session_title_resolve.rs
+@@ -68,7 +68,7 @@ pub(crate) fn select_by_title<'a>(
+                 .join("\n");
+             anyhow::bail!(
+                 "Multiple sessions match title {:?}:\n{listing}\n\
+-                 Resume by session id instead: grok --resume <session-id>",
++                 Resume by session id instead: workshop --resume <session-id>",
+                 arg.trim()
+             );
+         }
+diff --git a/crates/codegen/xai-grok-pager/src/app/startup_failure/render.rs b/crates/codegen/xai-grok-pager/src/app/startup_failure/render.rs
+index 4a8529e8..acbffae6 100644
+--- a/crates/codegen/xai-grok-pager/src/app/startup_failure/render.rs
++++ b/crates/codegen/xai-grok-pager/src/app/startup_failure/render.rs
+@@ -19,7 +19,7 @@ pub(super) fn render(failure: &StartupFailure) -> String {
+             }
+             let explanation = fill_indented(&advice.explanation(), "  ", "  ");
+             format!(
+-                "Couldn't start Grok: startup timed out after {}.\n\n{explanation}",
++                "Couldn't start Workshop: startup timed out after {}.\n\n{explanation}",
+                 whole_seconds(*waited)
+             )
+         }
+@@ -137,7 +137,7 @@ enum NextStep {
+ impl NextStep {
+     fn text(self) -> &'static str {
+         match self {
+-            Self::Retry => "Start Grok again.",
++            Self::Retry => "Start Workshop again.",
+             Self::CheckNetworkThenRetry => "Check your network connection, then start Grok again.",
+             Self::RestartSharedLeader => {
+                 "Stop it with the command below, which also stops any other Grok \
+diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs b/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs
+index 2dfa5642..f4c471bf 100644
+--- a/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs
+@@ -41,6 +41,8 @@ pub(super) fn report() -> DiagnosticReport {
+                 fix: None,
+             },
+             voice: None,
++            voice_engine: None,
++            engine: None,
+         },
+         findings: Vec::new(),
+         probe_notes: Vec::new(),
+@@ -87,9 +89,9 @@ pub(super) fn request(home: &Path, shell: &str) -> FixRequest {
+ fn canonical_and_short_ids_resolve_to_canonical_id() {
+     assert_eq!(resolve_fix_id("terminal.ssh-wrap").unwrap(), SSH_WRAP_ID);
+     let command = human_fix_command(SSH_WRAP_ID).expect("SSH fix command");
+-    assert_eq!(command, "grok doctor fix ssh-wrap");
++    assert_eq!(command, "workshop doctor fix ssh-wrap");
+     assert_eq!(
+-        resolve_fix_id(command.strip_prefix("grok doctor fix ").unwrap()).unwrap(),
++        resolve_fix_id(command.strip_prefix("workshop doctor fix ").unwrap()).unwrap(),
+         SSH_WRAP_ID
+     );
+     assert!(human_fix_command(DiagnosticId::new("terminal", "unknown")).is_none());
+@@ -211,7 +213,7 @@ fn tmux_fix_registry_resolves_every_short_and_canonical_id() {
+         assert_eq!(resolve_fix_id(&id.to_string()).unwrap(), id);
+         assert_eq!(
+             human_fix_command(id).unwrap(),
+-            format!("grok doctor fix {handle}")
++            format!("workshop doctor fix {handle}")
+         );
+     }
+ }
+@@ -442,7 +444,7 @@ fn tmux_managed_items_coexist_and_each_apply_is_one_transaction() {
+         assert!(std::fs::read_to_string(&path).unwrap().contains(line));
+     }
+     let content = std::fs::read_to_string(&path).unwrap();
+-    assert_eq!(content.matches("# >>> grok doctor >>>").count(), 1);
++    assert_eq!(content.matches("# >>> workshop doctor >>>").count(), 1);
+     for id in [
+         TMUX_CLIPBOARD_ID,
+         DCS_PASSTHROUGH_ID,
+@@ -580,7 +582,7 @@ fn conflicting_direct_form_after_managed_block_fails_persistent_verification() {
+         std::fs::write(
+             &path,
+             format!(
+-                "# >>> grok doctor >>>\n# >>> terminal.tmux-clipboard >>>\nset -g set-clipboard on\n# <<< terminal.tmux-clipboard <<<\n# <<< grok doctor <<<\n{conflict}\n"
++                "# >>> workshop doctor >>>\n# >>> terminal.tmux-clipboard >>>\nset -g set-clipboard on\n# <<< terminal.tmux-clipboard <<<\n# <<< workshop doctor <<<\n{conflict}\n"
+             ),
+         )
+         .unwrap();
+@@ -597,8 +599,8 @@ fn healthy_direct_does_not_suppress_repair_of_noncanonical_managed_item() {
+     let path = temp.path().join(".tmux.conf");
+     let report = tmux_report(TMUX_CLIPBOARD_ID, TmuxEvidence::Clipboard);
+     for content in [
+-        "set -g set-clipboard on\n# >>> grok doctor >>>\n# >>> terminal.tmux-clipboard >>>\nset -g set-clipboard off\n# <<< terminal.tmux-clipboard <<<\n# <<< grok doctor <<<\n",
+-        "# >>> grok doctor >>>\n# >>> terminal.tmux-clipboard >>>\nset -g set-clipboard off\n# <<< terminal.tmux-clipboard <<<\n# <<< grok doctor <<<\nset -g set-clipboard on\n",
++        "set -g set-clipboard on\n# >>> workshop doctor >>>\n# >>> terminal.tmux-clipboard >>>\nset -g set-clipboard off\n# <<< terminal.tmux-clipboard <<<\n# <<< workshop doctor <<<\n",
++        "# >>> workshop doctor >>>\n# >>> terminal.tmux-clipboard >>>\nset -g set-clipboard off\n# <<< terminal.tmux-clipboard <<<\n# <<< workshop doctor <<<\nset -g set-clipboard on\n",
+     ] {
+         std::fs::write(&path, content).unwrap();
+         let plan = plan_fix(
+@@ -720,12 +722,12 @@ fn tmux_stale_plan_and_idempotence_reuse_managed_writer_safety() {
+ fn bash_zsh_and_fish_plans_use_exact_paths_and_aliases() {
+     let temp = tempfile::tempdir().unwrap();
+     for (shell, relative, alias) in [
+-        ("/bin/bash", ".bashrc", "alias ssh='grok wrap ssh'"),
+-        ("/bin/zsh", ".zshrc", "alias ssh='grok wrap ssh'"),
++        ("/bin/bash", ".bashrc", "alias ssh='workshop wrap ssh'"),
++        ("/bin/zsh", ".zshrc", "alias ssh='workshop wrap ssh'"),
+         (
+             "/usr/local/bin/fish",
+             ".config/fish/config.fish",
+-            "alias ssh 'grok wrap ssh'",
++            "alias ssh 'workshop wrap ssh'",
+         ),
+     ] {
+         let plan = plan_fix(request(temp.path(), shell), &report(), &terminal()).unwrap();
+@@ -734,7 +736,7 @@ fn bash_zsh_and_fish_plans_use_exact_paths_and_aliases() {
+         assert_eq!(
+             plan.change().block,
+             format!(
+-                "# >>> grok doctor >>>\n# >>> terminal.ssh-wrap >>>\n{alias}\n# <<< terminal.ssh-wrap <<<\n# <<< grok doctor <<<"
++                "# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\n{alias}\n# <<< terminal.ssh-wrap <<<\n# <<< workshop doctor <<<"
+             )
+         );
+         assert!(
+@@ -949,7 +951,7 @@ fn comments_and_managed_alias_do_not_create_false_conflicts() {
+     let path = temp.path().join(".zshrc");
+     std::fs::write(
+         &path,
+-        "# alias ssh='ssh -A'\n# >>> grok doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='grok wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< grok doctor <<<\n",
++        "# alias ssh='ssh -A'\n# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='workshop wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< workshop doctor <<<\n",
+     )
+     .unwrap();
+     let plan = plan_fix(request(temp.path(), "/bin/zsh"), &report(), &terminal()).unwrap();
+@@ -963,11 +965,11 @@ fn managed_alias_with_later_unmanaged_conflict_is_not_configured() {
+     let cases = [
+         (
+             ShellKind::Bash,
+-            "# >>> grok doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='grok wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< grok doctor <<<\nalias ssh='ssh -A'\n",
++            "# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='workshop wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< workshop doctor <<<\nalias ssh='ssh -A'\n",
+         ),
+         (
+             ShellKind::Fish,
+-            "# >>> grok doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh 'grok wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< grok doctor <<<\nfunction ssh\n  command ssh -A $argv\nend\n",
++            "# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh 'workshop wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< workshop doctor <<<\nfunction ssh\n  command ssh -A $argv\nend\n",
+         ),
+     ];
+     for (shell, content) in cases {
+@@ -1067,7 +1069,7 @@ fn configured_report_reaches_pass_state_only_for_exact_managed_alias() {
+ fn shell_aliases_expand_to_exact_argv_and_bypass_is_explicit() {
+     let temp = tempfile::tempdir().unwrap();
+     let capture = temp.path().join("capture");
+-    let grok = temp.path().join("grok");
++    let grok = temp.path().join("workshop");
+     std::fs::write(
+         &grok,
+         format!(
+@@ -1081,7 +1083,7 @@ fn shell_aliases_expand_to_exact_argv_and_bypass_is_explicit() {
+ 
+     if let Some(bash) = find_on_path("bash") {
+         let rc = temp.path().join("bashrc");
+-        std::fs::write(&rc, "alias ssh='grok wrap ssh'\n").unwrap();
++        std::fs::write(&rc, "alias ssh='workshop wrap ssh'\n").unwrap();
+         let command = format!(
+             "source '{}'; source '{}'; eval 'ssh -p 2222 host'",
+             rc.display(),
+@@ -1112,7 +1114,7 @@ fn shell_aliases_expand_to_exact_argv_and_bypass_is_explicit() {
+     }
+     if let Some(zsh) = find_on_path("zsh") {
+         let rc = temp.path().join("zshrc");
+-        std::fs::write(&rc, "alias ssh='grok wrap ssh'\n").unwrap();
++        std::fs::write(&rc, "alias ssh='workshop wrap ssh'\n").unwrap();
+         let command = format!(
+             "source '{}'; source '{}'; eval 'ssh -p 2222 host'",
+             rc.display(),
+@@ -1152,7 +1154,7 @@ fn shell_aliases_expand_to_exact_argv_and_bypass_is_explicit() {
+     };
+     let mut shell = std::process::Command::new(bash);
+     shell
+-        .args(["-ic", "alias ssh='grok wrap ssh'; command ssh host"])
++        .args(["-ic", "alias ssh='workshop wrap ssh'; command ssh host"])
+         .env("CAPTURE", &capture)
+         .env(
+             "PATH",
+@@ -1185,7 +1187,7 @@ fn shell_aliases_expand_to_exact_argv_and_bypass_is_explicit() {
+         .unwrap();
+         std::fs::set_permissions(&fish_grok, std::fs::Permissions::from_mode(0o755)).unwrap();
+         let rc = temp.path().join("config.fish");
+-        std::fs::write(&rc, "alias ssh 'fish-grok wrap ssh'\n").unwrap();
++        std::fs::write(&rc, "alias ssh 'fish-workshop wrap ssh'\n").unwrap();
+         let command = format!(
+             "source '{}'; source '{}'; ssh -p 2222 host; env | string match -rq '^ssh='; and exit 9; or exit 0",
+             rc.display(),
+diff --git a/crates/codegen/xai-grok-pager/src/mcp_cmd.rs b/crates/codegen/xai-grok-pager/src/mcp_cmd.rs
+index 6fc58dc8..c4404b67 100644
+--- a/crates/codegen/xai-grok-pager/src/mcp_cmd.rs
++++ b/crates/codegen/xai-grok-pager/src/mcp_cmd.rs
+@@ -12,19 +12,19 @@ use crate::util::display_user_grok_path;
+ const ADD_AFTER_HELP: &str = "\
+ Examples:
+   # Add a stdio server (everything after -- is the server command)
+-  grok mcp add xcode -- xcrun mcpbridge
++  workshop mcp add xcode -- xcrun mcpbridge
+ 
+   # Add a stdio server with environment variables
+-  grok mcp add postgres -e DATABASE_URL=postgres://localhost/mydb -- npx -y @modelcontextprotocol/server-postgres
++  workshop mcp add postgres -e DATABASE_URL=postgres://localhost/mydb -- npx -y @modelcontextprotocol/server-postgres
+ 
+   # Add a remote HTTP server
+-  grok mcp add --transport http sentry https://mcp.sentry.dev/mcp
++  workshop mcp add --transport http sentry https://mcp.sentry.dev/mcp
+ 
+   # Add a remote server with an authentication header
+-  grok mcp add --transport http api https://mcp.example.com/mcp --header \"Authorization: Bearer YOUR_TOKEN\"
++  workshop mcp add --transport http api https://mcp.example.com/mcp --header \"Authorization: Bearer YOUR_TOKEN\"
+ 
+   # Add to the project config (./.grok/config.toml) instead of ~/.grok/config.toml
+-  grok mcp add --scope project github -- npx -y @modelcontextprotocol/server-github";
++  workshop mcp add --scope project github -- npx -y @modelcontextprotocol/server-github";
+ 
+ #[derive(Debug, clap::Args, Clone)]
+ pub struct McpArgs {
+@@ -190,7 +190,7 @@ fn run_list(json: bool) -> Result<()> {
+             .collect();
+         println!("{}", serde_json::to_string_pretty(&payload)?);
+     } else if servers.is_empty() {
+-        println!("No MCP servers configured. Run `grok mcp add --help` to get started.");
++        println!("No MCP servers configured. Run `workshop mcp add --help` to get started.");
+     } else {
+         for (name, (config, scope)) in &servers {
+             let transport = match &config.transport {
+@@ -349,7 +349,7 @@ fn resolve_add(args: &AddArgs) -> Result<ResolvedAdd> {
+         McpTransport::Stdio => {
+             let Some(command) = source else {
+                 bail!(
+-                    "A command is required for stdio servers. Usage: grok mcp add <name> -- <command> [args...]"
++                    "A command is required for stdio servers. Usage: workshop mcp add <name> -- <command> [args...]"
+                 );
+             };
+             if !args.header.is_empty() {
+@@ -381,7 +381,7 @@ fn resolve_add(args: &AddArgs) -> Result<ResolvedAdd> {
+                         format!("http://{command}")
+                     };
+                 warnings.push(format!(
+-                    "Warning: '{command}' looks like a URL, but it is being added as a stdio command because --transport was not specified.\nFor a remote server, use: grok mcp add --transport http {} {suggested_url}",
++                    "Warning: '{command}' looks like a URL, but it is being added as a stdio command because --transport was not specified.\nFor a remote server, use: workshop mcp add --transport http {} {suggested_url}",
+                     args.name
+                 ));
+             }
+@@ -405,7 +405,7 @@ fn resolve_add(args: &AddArgs) -> Result<ResolvedAdd> {
+             };
+             let Some(url) = source else {
+                 bail!(
+-                    "A URL is required for {label} servers. Usage: grok mcp add --transport {label} <name> <url>"
++                    "A URL is required for {label} servers. Usage: workshop mcp add --transport {label} <name> <url>"
+                 );
+             };
+             if !url.starts_with("http://") && !url.starts_with("https://") {
+@@ -631,7 +631,7 @@ async fn run_set_enabled(name: &str, enabled: bool) -> Result<()> {
+         if !available.is_empty() {
+             eprintln!("Available servers: {}", available.join(", "));
+         } else {
+-            eprintln!("No MCP servers configured. Run `grok mcp add --help` to get started.");
++            eprintln!("No MCP servers configured. Run `workshop mcp add --help` to get started.");
+         }
+         std::process::exit(1);
+     }
+@@ -725,7 +725,7 @@ async fn run_remove(name: &str, requested_scope: Option<McpScope>) -> Result<()>
+                 display_user_grok_path(xai_grok_config::USER_CONFIG_FILENAME)
+             );
+             eprintln!("  project: {}", project_path.display());
+-            eprintln!("Specify which one to remove, e.g.: grok mcp remove {name} --scope project");
++            eprintln!("Specify which one to remove, e.g.: workshop mcp remove {name} --scope project");
+             std::process::exit(1);
+         }
+     };
+diff --git a/crates/codegen/xai-grok-pager/src/notifications/hooks.rs b/crates/codegen/xai-grok-pager/src/notifications/hooks.rs
+index d58b7b35..c481e3c8 100644
+--- a/crates/codegen/xai-grok-pager/src/notifications/hooks.rs
++++ b/crates/codegen/xai-grok-pager/src/notifications/hooks.rs
+@@ -123,7 +123,7 @@ mod tests {
+     fn test_event() -> NotificationEvent {
+         NotificationEvent {
+             kind: NotificationEventKind::TurnComplete,
+-            title: "Grok".into(),
++            title: "Workshop".into(),
+             body: "test body payload".into(),
+             session_id: Some("test-session-123".into()),
+         }
 diff --git a/crates/codegen/xai-grok-pager/src/notifications/mod.rs b/crates/codegen/xai-grok-pager/src/notifications/mod.rs
-index cd048484..91f803c8 100644
+index cd048484..c2ea48f3 100644
 --- a/crates/codegen/xai-grok-pager/src/notifications/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/notifications/mod.rs
+@@ -430,7 +430,7 @@ mod tests {
+         svc.escape_writer = EscapeWriter::new(tx, WriterSync::new());
+         svc.notify(NotificationEvent {
+             kind: NotificationEventKind::TurnComplete,
+-            title: "Grok".into(),
++            title: "Workshop".into(),
+             body: "Turn complete".into(),
+             session_id: Some("test-session".into()),
+         });
+@@ -451,7 +451,7 @@ mod tests {
+         svc.escape_writer = EscapeWriter::new(tx, WriterSync::new());
+         svc.notify(NotificationEvent {
+             kind: NotificationEventKind::SessionReady,
+-            title: "Grok".into(),
++            title: "Workshop".into(),
+             body: "Session ready".into(),
+             session_id: None,
+         });
 @@ -631,7 +631,7 @@ mod tests {
              .try_recv()
              .expect("shutdown escapes must ride the writer queue");
@@ -161,10 +790,66 @@ index cd048484..91f803c8 100644
              "expected the title reset in the queued escape"
          );
          assert!(rx.try_recv().is_err(), "one combined payload expected");
+diff --git a/crates/codegen/xai-grok-pager/src/notifications/protocol.rs b/crates/codegen/xai-grok-pager/src/notifications/protocol.rs
+index 59e9fec8..cbfd8261 100644
+--- a/crates/codegen/xai-grok-pager/src/notifications/protocol.rs
++++ b/crates/codegen/xai-grok-pager/src/notifications/protocol.rs
+@@ -8,7 +8,7 @@ use crate::terminal::{MultiplexerKind, TerminalContext, TerminalName};
+ pub enum NotificationProtocol {
+     /// iTerm2/WezTerm/Warp: `\x1b]9;{message}\x07`
+     Osc9,
+-    /// Kitty: `\x1b]99;i=grok;{message}\x1b\\`
++    /// Kitty: `\x1b]99;i=workshop;{message}\x1b\\`
+     Osc99,
+     /// Ghostty/VTE: `\x1b]777;notify;{title};{body}\x1b\\`
+     Osc777,
+@@ -66,8 +66,8 @@ fn notification_sequence(
+         // Body-only protocols fold the title (session name) into the body.
+         // OSC 777 already uses the tab title as subtitle, so keep "Grok".
+         NotificationProtocol::Osc9 => format!("\x1b]9;{body} \u{b7} {title}\x07").into(),
+-        NotificationProtocol::Osc99 => format!("\x1b]99;i=grok;{body} \u{b7} {title}\x1b\\").into(),
+-        NotificationProtocol::Osc777 => format!("\x1b]777;notify;Grok;{body}\x1b\\").into(),
++        NotificationProtocol::Osc99 => format!("\x1b]99;i=workshop;{body} \u{b7} {title}\x1b\\").into(),
++        NotificationProtocol::Osc777 => format!("\x1b]777;notify;Workshop;{body}\x1b\\").into(),
+         NotificationProtocol::Bel => Cow::Borrowed("\x07"),
+         NotificationProtocol::None => return None,
+     })
+@@ -214,7 +214,7 @@ mod tests {
+         let (writer, rx) = capture_writer();
+         emit_notification(NotificationProtocol::Osc777, "title", "body", &ctx, &writer);
+         let payload = rx.try_recv().expect("one payload enqueued");
+-        assert_eq!(payload.data(), "\x1b]777;notify;Grok;body\x1b\\".as_bytes());
++        assert_eq!(payload.data(), "\x1b]777;notify;Workshop;body\x1b\\".as_bytes());
+     }
+ 
+     #[test]
+@@ -240,11 +240,11 @@ mod tests {
+     fn notification_sequence_osc99_and_osc777_strip_controls() {
+         let osc99 = notification_sequence(NotificationProtocol::Osc99, "t\x1b", "b\x07")
+             .expect("osc99 yields a sequence");
+-        assert_eq!(osc99.as_ref(), "\x1b]99;i=grok;b \u{b7} t\x1b\\");
++        assert_eq!(osc99.as_ref(), "\x1b]99;i=workshop;b \u{b7} t\x1b\\");
+ 
+         let osc777 = notification_sequence(NotificationProtocol::Osc777, "ignored\x1b", "b\x1body")
+             .expect("osc777 yields a sequence");
+-        assert_eq!(osc777.as_ref(), "\x1b]777;notify;Grok;body\x1b\\");
++        assert_eq!(osc777.as_ref(), "\x1b]777;notify;Workshop;body\x1b\\");
+     }
+ 
+     #[test]
 diff --git a/crates/codegen/xai-grok-pager/src/notifications/sleep.rs b/crates/codegen/xai-grok-pager/src/notifications/sleep.rs
-index 958d1328..5dc49fb6 100644
+index 958d1328..c16e6ccd 100644
 --- a/crates/codegen/xai-grok-pager/src/notifications/sleep.rs
 +++ b/crates/codegen/xai-grok-pager/src/notifications/sleep.rs
+@@ -57,7 +57,7 @@ impl SleepInhibitor {
+     #[cfg(target_os = "macos")]
+     fn platform_inhibit(&self) -> bool {
+         let mut assertion_id: u32 = 0;
+-        let reason = core_foundation::string::CFString::new("grok: agent turn in progress");
++        let reason = core_foundation::string::CFString::new("workshop: agent turn in progress");
+         let assertion_type =
+             core_foundation::string::CFString::from_static_string("NoIdleSleepAssertion");
+ 
 @@ -96,7 +96,7 @@ impl SleepInhibitor {
          let mut cmd = std::process::Command::new("systemd-inhibit");
          cmd.args([
@@ -433,6 +1118,212 @@ index 800555d8..b0d102b1 100644
          );
      }
  
+diff --git a/crates/codegen/xai-grok-pager/src/plugin_cmd.rs b/crates/codegen/xai-grok-pager/src/plugin_cmd.rs
+index 36b53be9..443fca10 100644
+--- a/crates/codegen/xai-grok-pager/src/plugin_cmd.rs
++++ b/crates/codegen/xai-grok-pager/src/plugin_cmd.rs
+@@ -20,7 +20,7 @@ use xai_grok_shell::plugin::{self, RepoUpdateOutcome, UninstallError};
+ 
+ // ── JSON output types ───────────────────────────────────────────────
+ 
+-/// Typed entry for `grok plugin list --json`.
++/// Typed entry for `workshop plugin list --json`.
+ /// The `status` field is the discriminator.
+ /// `"installed"` entries have repo and path fields, `"available"` entries have description and component fields.
+ #[derive(Serialize)]
+@@ -48,7 +48,7 @@ enum PluginEntry {
+     },
+ }
+ 
+-/// Typed entry for `grok plugin marketplace list --json`.
++/// Typed entry for `workshop plugin marketplace list --json`.
+ #[derive(Serialize)]
+ struct MarketplaceSourceEntry {
+     name: String,
+@@ -103,7 +103,7 @@ pub enum PluginCommand {
+     /// Uninstall an installed plugin by name
+     #[command(visible_alias = "rm", visible_alias = "remove")]
+     Uninstall {
+-        /// Plugin name (as shown by `grok plugin list`).
++        /// Plugin name (as shown by `workshop plugin list`).
+         name: String,
+         /// Skip confirmation for multi-plugin repos.
+         #[arg(long)]
+@@ -229,7 +229,7 @@ fn trust_prompt(subject: &str, source_arg: &str) -> String {
+         "Installing {subject} requires confirmation.\n\
+          Plugins can run hooks, MCP servers, and skills on your machine, so installation needs explicit trust.\n\
+          \n\
+-         To proceed, re-run with --trust:\n  grok plugin install {source_arg} --trust"
++         To proceed, re-run with --trust:\n  workshop plugin install {source_arg} --trust"
+     )
+ }
+ 
+@@ -272,7 +272,7 @@ fn cmd_list(json: bool, available: bool) -> Result<()> {
+         }
+         println!("{}", serde_json::to_string_pretty(&entries)?);
+     } else if repos.is_empty() {
+-        println!("No plugins installed. Run `grok plugin install --help` to get started.");
++        println!("No plugins installed. Run `workshop plugin install --help` to get started.");
+     } else {
+         for (repo_key, repo) in &repos {
+             let mp = repo
+@@ -484,7 +484,7 @@ fn cmd_install_marketplace(
+                     .unwrap_or(&mref.name);
+                 println!(
+                     "Plugin \"{}\" is already installed from {}. \
+-                     Run `grok plugin update {}` to update it.",
++                     Run `workshop plugin update {}` to update it.",
+                     mref.name, outcome.source_display_name, update_name,
+                 );
+                 return Ok(());
+@@ -539,7 +539,7 @@ fn cmd_uninstall(name: &str, confirm: bool, keep_data: bool) -> Result<()> {
+             "Plugin \"{name}\" belongs to repo \"{repo_key}\" which also contains:\n\
+              {}\n\n\
+              Uninstalling will remove all {total} plugin(s). To proceed:\n\
+-               grok plugin uninstall {name} --confirm",
++               workshop plugin uninstall {name} --confirm",
+             other_plugins
+                 .iter()
+                 .map(|p| format!("  - {p}"))
+@@ -612,7 +612,7 @@ fn cmd_enable(name: &str) -> Result<()> {
+     if registry.find_plugin(name).is_none() {
+         bail!(
+             "Plugin \"{name}\" not found.\n\
+-               Run `grok plugin list` to see installed plugins."
++               Run `workshop plugin list` to see installed plugins."
+         );
+     }
+     if let Err(e) = xai_grok_shell::config::remove_disabled_plugin(name) {
+@@ -629,7 +629,7 @@ fn cmd_disable(name: &str) -> Result<()> {
+     if registry.find_plugin(name).is_none() {
+         bail!(
+             "Plugin \"{name}\" not found.\n\
+-               Run `grok plugin list` to see installed plugins."
++               Run `workshop plugin list` to see installed plugins."
+         );
+     }
+     if let Err(e) = xai_grok_shell::config::remove_enabled_plugin(name) {
+@@ -646,7 +646,7 @@ fn cmd_details(name: &str) -> Result<()> {
+     let (repo_key, repo, _) = registry.find_plugin(name).ok_or_else(|| {
+         anyhow::anyhow!(
+             "Plugin \"{name}\" not found.\n\
+-             Run `grok plugin list` to see installed plugins."
++             Run `workshop plugin list` to see installed plugins."
+         )
+     })?;
+ 
+@@ -726,7 +726,7 @@ fn cmd_tag(path: &str, push: bool, force: bool, dry_run: bool) -> Result<()> {
+     let version = match load_manifest(&root) {
+         Ok(ManifestLoadResult::Found(m)) => m.version.ok_or_else(|| {
+             anyhow::anyhow!(
+-                "No `version` field in plugin.json. Set a version to use `grok plugin tag`."
++                "No `version` field in plugin.json. Set a version to use `workshop plugin tag`."
+             )
+         })?,
+         Ok(ManifestLoadResult::NotFound) => bail!("No plugin.json found in {path}."),
+@@ -836,7 +836,7 @@ fn marketplace_list(
+     } else if sources.is_empty() {
+         println!(
+             "No marketplace sources configured.\n\
+-             Run `grok plugin marketplace add --help` to get started."
++             Run `workshop plugin marketplace add --help` to get started."
+         );
+     } else {
+         for s in sources {
+@@ -1106,7 +1106,7 @@ mod tests {
+     use super::*;
+     use xai_grok_plugin_marketplace::MarketplaceSource;
+ 
+-    /// `grok plugin update` must exit nonzero when any update failed (e.g.
++    /// `workshop plugin update` must exit nonzero when any update failed (e.g.
+     /// every update policy-blocked), so scripts can detect the block.
+     #[test]
+     fn update_failure_summary_reports_failed_outcomes() {
+@@ -1219,7 +1219,7 @@ mod tests {
+         );
+         assert!(msg.contains("hooks, MCP servers, and skills"));
+         assert!(msg.contains(
+-            "To proceed, re-run with --trust:\n  grok plugin install sentry@xai-org/plugin-marketplace --trust"
++            "To proceed, re-run with --trust:\n  workshop plugin install sentry@xai-org/plugin-marketplace --trust"
+         ));
+         assert!(!msg.contains("Error"));
+         assert!(!msg.contains("Failed"));
+@@ -1235,7 +1235,7 @@ mod tests {
+             ),
+             "{git}"
+         );
+-        assert!(git.ends_with("  grok plugin install u/r --trust"), "{git}");
++        assert!(git.ends_with("  workshop plugin install u/r --trust"), "{git}");
+         let local = trust_prompt("from directory /tmp/p", "./p");
+         assert!(
+             local.starts_with("Installing from directory /tmp/p requires confirmation."),
+diff --git a/crates/codegen/xai-grok-pager/src/pty_wrap.rs b/crates/codegen/xai-grok-pager/src/pty_wrap.rs
+index b47e6c6e..67366419 100644
+--- a/crates/codegen/xai-grok-pager/src/pty_wrap.rs
++++ b/crates/codegen/xai-grok-pager/src/pty_wrap.rs
+@@ -1,4 +1,4 @@
+-//! Local PTY wrapper: the engine behind `grok wrap` (see [`crate::wrap_cmd`]).
++//! Local PTY wrapper: the engine behind `workshop wrap` (see [`crate::wrap_cmd`]).
+ //!
+ //! Spawns a command inside a local pseudo-terminal and pipes its output through `crate::wrap_filter::Osc52Filter`.
+ //! The filter intercepts OSC 52 clipboard sequences, making "copy" work for programs that cannot reach the user's clipboard (containers, SSH).
+@@ -31,7 +31,7 @@ fn apply_wrap_child_env(
+     }
+ }
+ 
+-/// Run an arbitrary command inside a local PTY with OSC 52 output filtering. This is the engine behind `grok wrap`:
++/// Run an arbitrary command inside a local PTY with OSC 52 output filtering. This is the engine behind `workshop wrap`:
+ /// it spawns `program` (with `args`) attached to a local pseudo-terminal. Size changes of the outer terminal are
+ /// forwarded to the child. All other output passes through unchanged.
+ pub(crate) fn run_wrapped_command(program: &str, args: &[String]) -> Result<i32> {
+@@ -62,7 +62,7 @@ pub(crate) fn run_wrapped_command(program: &str, args: &[String]) -> Result<i32>
+     drop(pair.slave);
+ 
+     // Obtain reader from the master PTY. Confining `write_all` to a single owner thread avoids that Handles are
+-    // intentionally detached: `grok wrap` is short-lived and exits with the child.
++    // intentionally detached: `workshop wrap` is short-lived and exits with the child.
+     let mut pty_reader = pair.master.try_clone_reader()?;
+ 
+     // We deliberately do NOT block SIGWINCH here
+diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/toggle_mouse_reporting.rs b/crates/codegen/xai-grok-pager/src/slash/commands/toggle_mouse_reporting.rs
+index 3ce5efa8..0859cdbf 100644
+--- a/crates/codegen/xai-grok-pager/src/slash/commands/toggle_mouse_reporting.rs
++++ b/crates/codegen/xai-grok-pager/src/slash/commands/toggle_mouse_reporting.rs
+@@ -32,7 +32,7 @@ impl SlashCommand for ToggleMouseReportingCommand {
+         } else {
+             CommandResult::Message(
+                 "Mouse reporting toggle is off. Set `[ui] mouse_reporting_toggle = true` \
+-                 in ~/.grok/config.toml to enable it."
++                 in ~/.workshop/config.toml to enable it."
+                     .to_string(),
+             )
+         }
+diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/tutorial.rs b/crates/codegen/xai-grok-pager/src/slash/commands/tutorial.rs
+index ec8c0820..39911587 100644
+--- a/crates/codegen/xai-grok-pager/src/slash/commands/tutorial.rs
++++ b/crates/codegen/xai-grok-pager/src/slash/commands/tutorial.rs
+@@ -14,7 +14,7 @@ impl SlashCommand for TutorialCommand {
+     slash_meta! {
+         name: "tutorial",
+         aliases: ["tour", "onboarding"],
+-        description: "Quick tips to get the most out of Grok Build",
++        description: "Quick tips to get the most out of Workshop",
+         usage: "/tutorial",
+         // Gated off rather than merely hidden: minimal has no modal host, so the overlay's input intercept would freeze the session invisibly.
+         mode_support: ModeSupport::FullscreenOnly(Remedy::SwitchMode {
+diff --git a/crates/codegen/xai-grok-pager/src/views/import_claude_modal.rs b/crates/codegen/xai-grok-pager/src/views/import_claude_modal.rs
+index 1a517d92..1144391d 100644
+--- a/crates/codegen/xai-grok-pager/src/views/import_claude_modal.rs
++++ b/crates/codegen/xai-grok-pager/src/views/import_claude_modal.rs
+@@ -702,7 +702,7 @@ fn build_rows(
+     if !plan.global_items.is_empty() {
+         let scope_start = flat_index;
+         let scope_key = format!("scope:{:?}", Scope::Global);
+-        let label = "Global  ~/.grok/config.toml".to_string();
++        let label = "Global  ~/.workshop/config.toml".to_string();
+         // Placeholder header; flat_indices filled after children are pushed.
+         let scope_header_pos = rows.len();
+         rows.push(Row::ScopeHeader {
 diff --git a/crates/codegen/xai-grok-pager/src/views/memory_modal.rs b/crates/codegen/xai-grok-pager/src/views/memory_modal.rs
 index ef7c763c..3ccb81f8 100644
 --- a/crates/codegen/xai-grok-pager/src/views/memory_modal.rs
@@ -464,6 +1355,277 @@ index ef7c763c..3ccb81f8 100644
  turning it back on."
          }
      }
+diff --git a/crates/codegen/xai-grok-pager/src/views/modal.rs b/crates/codegen/xai-grok-pager/src/views/modal.rs
+index 8217e5b1..5a2f120a 100644
+--- a/crates/codegen/xai-grok-pager/src/views/modal.rs
++++ b/crates/codegen/xai-grok-pager/src/views/modal.rs
+@@ -1028,11 +1028,11 @@ fn fit_docs_ask_grok_tip(docs_path: &str, width: usize) -> String {
+         return String::new();
+     }
+     let long =
+-        format!("Tip · Ask Grok about the docs ({docs_path}), e.g. \"how do I set up MCP?\"");
++        format!("Tip · Ask the model about the docs ({docs_path}), e.g. \"how do I set up MCP?\"");
+     if long.width() <= width {
+         return long;
+     }
+-    let short = format!("Tip · Ask Grok about the docs · {docs_path}");
++    let short = format!("Tip · Ask the model about the docs · {docs_path}");
+     if short.width() <= width {
+         return short;
+     }
+@@ -1520,8 +1520,8 @@ mod doc_picker_tip_tests {
+     #[test]
+     fn fit_docs_tip_prefers_path_and_never_overflows() {
+         let path = crate::util::display_user_grok_path(DOCS_USER_GUIDE_REL);
+-        let long = format!("Tip · Ask Grok about the docs ({path}), e.g. \"how do I set up MCP?\"");
+-        let short = format!("Tip · Ask Grok about the docs · {path}");
++        let long = format!("Tip · Ask the model about the docs ({path}), e.g. \"how do I set up MCP?\"");
++        let short = format!("Tip · Ask the model about the docs · {path}");
+         let path_only = format!("Tip · {path}");
+         assert_eq!(fit_docs_ask_grok_tip(&path, long.width()), long);
+         assert_eq!(fit_docs_ask_grok_tip(&path, short.width()), short);
+@@ -1562,7 +1562,7 @@ mod doc_picker_tip_tests {
+             all.push('\n');
+         }
+         assert!(
+-            all.contains("Tip") && all.contains("Ask Grok"),
++            all.contains("Tip") && all.contains("Ask the model"),
+             "missing tip footer:\n{all}"
+         );
+         assert!(
+diff --git a/crates/codegen/xai-grok-pager/src/views/modal_window.rs b/crates/codegen/xai-grok-pager/src/views/modal_window.rs
+index cdad7a77..4b22deba 100644
+--- a/crates/codegen/xai-grok-pager/src/views/modal_window.rs
++++ b/crates/codegen/xai-grok-pager/src/views/modal_window.rs
+@@ -1199,7 +1199,7 @@ mod tests {
+         use ratatui::layout::Rect;
+ 
+         let theme = Theme::current();
+-        const TEXT: &str = "Tip · Ask Grok about the docs";
++        const TEXT: &str = "Tip · Ask the model about the docs";
+         let row_text = |width: u16| {
+             let area = Rect {
+                 x: 0,
+@@ -1218,7 +1218,7 @@ mod tests {
+         let start = wide.find("Tip").expect("Tip");
+         let trailing = wide.chars().rev().take_while(|c| *c == ' ').count();
+         assert!(start.abs_diff(trailing) <= 1, "not centered: {wide:?}");
+-        assert!(wide.contains("Ask Grok about the docs"));
++        assert!(wide.contains("Ask the model about the docs"));
+ 
+         let tiny = row_text(10);
+         assert!(tiny.contains("Tip"));
+diff --git a/crates/codegen/xai-grok-pager/src/views/question_view.rs b/crates/codegen/xai-grok-pager/src/views/question_view.rs
+index da83963f..3e6301e1 100644
+--- a/crates/codegen/xai-grok-pager/src/views/question_view.rs
++++ b/crates/codegen/xai-grok-pager/src/views/question_view.rs
+@@ -2661,7 +2661,7 @@ mod tests {
+     #[test]
+     fn chrome_height_option_less_question_drops_the_label_gap() {
+         // Nothing under the label to separate it from, so the gap goes: vpad(1) + label(1) + gap(1) = 3.
+-        let q = make_question("How can we improve Grok Build?", &[], false);
++        let q = make_question("How can we improve Workshop?", &[], false);
+         assert_eq!(
+             chrome_height(
+                 &q,
+diff --git a/crates/codegen/xai-grok-pager/src/views/scroll_debug_hud.rs b/crates/codegen/xai-grok-pager/src/views/scroll_debug_hud.rs
+index c23cc0b5..457fd535 100644
+--- a/crates/codegen/xai-grok-pager/src/views/scroll_debug_hud.rs
++++ b/crates/codegen/xai-grok-pager/src/views/scroll_debug_hud.rs
+@@ -2,7 +2,7 @@
+ //!
+ //! A compact top-right overlay paints a per-frame snapshot of the scroll state machine ([`MouseScrollState::debug_snapshot`]).
+ //! It also shows the active scrollback's viewport facts, inside a REAL session with the REAL event loop.
+-//! Recipe: `GROK_FPS=1 GROK_SCROLL_DEBUG=1 grok --resume <session>`.
++//! Recipe: `GROK_FPS=1 GROK_SCROLL_DEBUG=1 workshop --resume <session>`.
+ //! Then flip `scroll_mode`, `scroll_lines`, `invert_scroll`, or `scroll_speed` in `/settings` to compare variants live.
+ //! This HUD samples once per frame; `GROK_SCROLL_LOG=1` additionally records every event as JSONL (`input::scroll_log` in xai-grok-pager-render).
+ //!
+diff --git a/crates/codegen/xai-grok-pager/src/views/session_picker.rs b/crates/codegen/xai-grok-pager/src/views/session_picker.rs
+index 628ed80b..020f190f 100644
+--- a/crates/codegen/xai-grok-pager/src/views/session_picker.rs
++++ b/crates/codegen/xai-grok-pager/src/views/session_picker.rs
+@@ -209,7 +209,7 @@ pub enum SourceFilter {
+ impl SourceFilter {
+     pub fn label(self) -> &'static str {
+         match self {
+-            Self::Grok => "Grok",
++            Self::Grok => "Workshop",
+             Self::Headless => "Headless",
+             Self::Local => "Local",
+             Self::Remote => "Remote",
+diff --git a/crates/codegen/xai-grok-pager/src/views/settings_modal/render.rs b/crates/codegen/xai-grok-pager/src/views/settings_modal/render.rs
+index bc5d1a55..7310dac4 100644
+--- a/crates/codegen/xai-grok-pager/src/views/settings_modal/render.rs
++++ b/crates/codegen/xai-grok-pager/src/views/settings_modal/render.rs
+@@ -427,8 +427,8 @@ pub(super) fn render_row_list_with_search_bar(
+ 
+ pub(super) fn render_docs_footer(buf: &mut Buffer, area: Rect, theme: &Theme) {
+     const LONG: &str =
+-        "Tip · Ask Grok: \"change theme to grokday\" or \"what does compact mode do?\"";
+-    const SHORT: &str = "Tip · Ask Grok to change a setting";
++        "Tip · Ask the model: \"change theme to day\" or \"what does compact mode do?\"";
++    const SHORT: &str = "Tip · Ask the model to change a setting";
+     let text = modal_window::fit_tip_line(&[LONG, SHORT], area.width as usize);
+     modal_window::render_centered_tip_footer(buf, area, theme, text.as_ref());
+ }
+diff --git a/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs b/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs
+index 788104bb..76062118 100644
+--- a/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs
++++ b/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs
+@@ -174,7 +174,7 @@ fn enum_choice_gated_off_covers_voice_permission_and_terminal_theme() {
+     for key in ["theme", "auto_dark_theme", "auto_light_theme"] {
+         assert!(enum_choice_gated_off(key, "terminal", theme_off));
+         assert!(!enum_choice_gated_off(key, "terminal", on));
+-        assert!(!enum_choice_gated_off(key, "groknight", theme_off));
++        assert!(!enum_choice_gated_off(key, "night", theme_off));
+     }
+ }
+ 
+@@ -2256,9 +2256,9 @@ fn int_editing_value_click_on_value_text_is_noop() {
+ #[test]
+ fn picking_enum_esc_dispatches_preview_revert_for_each_key() {
+     let cases: &[(&str, &str)] = &[
+-        ("theme", "groknight"),
+-        ("auto_dark_theme", "groknight"),
+-        ("auto_light_theme", "grokday"),
++        ("theme", "night"),
++        ("auto_dark_theme", "night"),
++        ("auto_light_theme", "day"),
+     ];
+     for &(key, original) in cases {
+         let mut s = make_state();
+@@ -2294,12 +2294,12 @@ fn picking_enum_esc_dispatches_preview_revert_for_each_key() {
+ #[test]
+ fn picking_enum_esc_returns_to_browse() {
+     let mut s = make_state();
+-    s.transition_to_picking_enum("theme", 0, SettingValue::Enum("groknight"), true);
++    s.transition_to_picking_enum("theme", 0, SettingValue::Enum("night"), true);
+     let outcome = handle_settings_key(&mut s, &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+     match outcome {
+         SettingsKeyOutcome::Action(Action::PreviewTheme(name)) => {
+             assert_eq!(
+-                name, "groknight",
++                name, "night",
+                 "Esc revert must dispatch the original canonical"
+             );
+         }
+@@ -2568,7 +2568,7 @@ fn browse_path_enter_commit_returns_to_browse() {
+ #[test]
+ fn deep_link_theme_commit_closes_with_set() {
+     let mut s = make_state();
+-    s.transition_to_picking_enum("theme", 0, SettingValue::Enum("groknight"), true);
++    s.transition_to_picking_enum("theme", 0, SettingValue::Enum("night"), true);
+     s.close_on_picker_exit = true;
+ 
+     let outcome = handle_settings_key(&mut s, &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+@@ -2585,13 +2585,13 @@ fn deep_link_theme_commit_closes_with_set() {
+ #[test]
+ fn deep_link_picker_esc_reverts_preview_and_closes() {
+     let mut s = make_state();
+-    s.transition_to_picking_enum("theme", 0, SettingValue::Enum("groknight"), true);
++    s.transition_to_picking_enum("theme", 0, SettingValue::Enum("night"), true);
+     s.close_on_picker_exit = true;
+ 
+     let outcome = handle_settings_key(&mut s, &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+     match outcome {
+         SettingsKeyOutcome::ActionThenClose(Action::PreviewTheme(name)) => {
+-            assert_eq!(name, "groknight");
++            assert_eq!(name, "night");
+         }
+         other => panic!("expected ActionThenClose(PreviewTheme), got {other:?}"),
+     }
+@@ -5797,15 +5797,15 @@ fn docs_footer_tip_is_centered() {
+     );
+ 
+     // SHORT path: width that fits SHORT but not LONG.
+-    // SHORT is "Tip · Ask Grok to change a setting" (34 cells); LONG is ~73 cells. width=40 lands in the SHORT band.
++    // SHORT is "Tip · Ask the model to change a setting" (39 cells); LONG is ~73 cells. width=40 lands in the SHORT band.
+     let (row_short, tip_start_short, trailing_short) = render(40);
+     assert!(
+         row_short.contains("change a setting"),
+         "width=40 must render SHORT path (contains `change a setting`): {row_short:?}",
+     );
+     assert!(
+-        !row_short.contains("grokday"),
+-        "width=40 must NOT render LONG path (no `grokday`): {row_short:?}",
++        !row_short.contains("day"),
++        "width=40 must NOT render LONG path (no `day`): {row_short:?}",
+     );
+     assert!(
+         tip_start_short.abs_diff(trailing_short) <= 1,
+@@ -5845,7 +5845,7 @@ fn tip_line_has_blank_row_above() {
+     let mut tip_y: Option<u16> = None;
+     for y in 0..area.height {
+         let txt = buf_row_text(&buf, y, area.x, area.width);
+-        if txt.contains("Tip") && txt.contains("Ask Grok") {
++        if txt.contains("Tip") && txt.contains("Ask the model") {
+             tip_y = Some(y);
+             break;
+         }
+@@ -6096,11 +6096,11 @@ fn click_settings_breadcrumb_collapses_picker_to_browse() {
+         click_y,
+     );
+     // For preview-supporting enums (theme), the breadcrumb-click revert dispatches `Action::PreviewTheme(original)`
+-    // The default theme's original canonical is `"groknight"`
++    // The default theme's original canonical is `"night"`
+     match outcome {
+         SettingsKeyOutcome::Action(Action::PreviewTheme(orig)) => {
+             assert_eq!(
+-                orig, "groknight",
++                orig, "night",
+                 "breadcrumb-click revert must carry the original canonical",
+             );
+         }
+@@ -6148,7 +6148,7 @@ fn click_settings_breadcrumb_ignores_close_on_picker_exit() {
+     );
+     match outcome {
+         SettingsKeyOutcome::Action(Action::PreviewTheme(orig)) => {
+-            assert_eq!(orig, "groknight");
++            assert_eq!(orig, "night");
+         }
+         other => panic!("expected preview revert Action, got {other:?}"),
+     }
+@@ -6189,7 +6189,7 @@ fn click_settings_breadcrumb_after_nav_reverts_to_original() {
+         other => panic!("expected PickingEnum, got {other:?}"),
+     };
+     // Pick a different index
+-    // The default theme is `groknight` (index 1 per the registry); advance to index 0 to ensure we're navigating to a different value
++    // The default theme is `night` (index 1 per the registry); advance to index 0 to ensure we're navigating to a different value
+     let target_idx = if advanced_idx == 0 { 1 } else { 0 };
+     match s.mode() {
+         SettingsModalMode::PickingEnum {
+@@ -6245,10 +6245,10 @@ fn d_key_in_picking_enum_dispatches_open_reset_confirm() {
+                 key, "theme",
+                 "OpenResetConfirm key must be the active picker setting",
+             );
+-            // Default theme is `groknight`
++            // Default theme is `night`
+             // Entering the picker captures `original_value = current value = groknight`, so the revert dispatches with that canonical
+             assert_eq!(
+-                orig, "groknight",
++                orig, "night",
+                 "PreviewTheme revert must carry the original canonical",
+             );
+         }
+@@ -6451,7 +6451,7 @@ fn consent_chooser_drops_tip_and_reset() {
+     let mut consent = enter_picker_for("coding_data_sharing");
+     let text = screen(&mut consent);
+     assert!(
+-        !text.contains("Ask Grok"),
++        !text.contains("Ask the model"),
+         "consent chooser must not render the docs tip:\n{text}"
+     );
+     assert!(
+@@ -6480,7 +6480,7 @@ fn consent_chooser_drops_tip_and_reset() {
+     let mut ordinary = enter_picker_for("theme");
+     let text = screen(&mut ordinary);
+     assert!(
+-        text.contains("d reset") && text.contains("Ask Grok"),
++        text.contains("d reset") && text.contains("Ask the model"),
+         "ordinary pickers keep the tip and the reset hint:\n{text}"
+     );
+     assert!(
 diff --git a/crates/codegen/xai-grok-pager/src/views/tutorial.rs b/crates/codegen/xai-grok-pager/src/views/tutorial.rs
 index 24e4defb..cd48b497 100644
 --- a/crates/codegen/xai-grok-pager/src/views/tutorial.rs
@@ -1110,6 +2272,194 @@ index 0ffb88d8..7178a53a 100644
 +        }
 +    }
  }
+diff --git a/crates/codegen/xai-grok-pager/src/wrap_clipboard_image.rs b/crates/codegen/xai-grok-pager/src/wrap_clipboard_image.rs
+index f52a282b..48c211c0 100644
+--- a/crates/codegen/xai-grok-pager/src/wrap_clipboard_image.rs
++++ b/crates/codegen/xai-grok-pager/src/wrap_clipboard_image.rs
+@@ -1,4 +1,4 @@
+-//! Host clipboard image paste mediated by `grok wrap`.
++//! Host clipboard image paste mediated by `workshop wrap`.
+ //!
+ //! On a full remote paste miss (no image/text/file URLs) with `osc52_sink_active()`, remote emits a private OSC on stderr.
+ //! Wrap injects a bracketed-paste frame on PTY stdin for the normal paste-chip path.
+@@ -7,7 +7,7 @@
+ //!
+ //! Answering the private request OSC is effectively an image clipboard *read* for the wrapped session.
+ //! Any process that can write to the PTY (not only the inner `grok`) can solicit the host pasteboard.
+-//! That is intentional and acceptable for `grok wrap`: the user opted into wrap on their own host, and the answer stays inside their session.
++//! That is intentional and acceptable for `workshop wrap`: the user opted into wrap on their own host, and the answer stays inside their session.
+ //! The remote also only requests when `osc52_sink_active()` (wrap already set `GROK_OSC52_SINK` / `LC_GROK_OSC52_SINK`).
+ //! Do not generalize this pattern to untrusted multiplexers without an explicit allowlist.
+ 
+diff --git a/crates/codegen/xai-grok-pager/src/wrap_cmd.rs b/crates/codegen/xai-grok-pager/src/wrap_cmd.rs
+index 1d4514fa..8dfcf887 100644
+--- a/crates/codegen/xai-grok-pager/src/wrap_cmd.rs
++++ b/crates/codegen/xai-grok-pager/src/wrap_cmd.rs
+@@ -1,4 +1,4 @@
+-//! `grok wrap` runs any command in a local PTY that forwards its clipboard.
++//! `workshop wrap` runs any command in a local PTY that forwards its clipboard.
+ //!
+ //! Generalizes the `grok ssh` wrapper: spawns an arbitrary command inside a local pseudo-terminal.
+ //! It intercepts OSC 52 clipboard escape sequences from the command's output and writes their payload to the local system clipboard.
+@@ -7,7 +7,7 @@
+ //! It also stamps `LC_GROK_APPEARANCE` from the local OS theme so a remote `theme = "auto"` can resolve over SSH and tmux.
+ //!
+ //! Resolvable programs spawn directly.
+-//! On Unix, a command a direct spawn cannot run (a single shell-quoted string `grok wrap "mycli ssh host"` or a shell alias) goes to `$SHELL -i -c`.
++//! On Unix, a command a direct spawn cannot run (a single shell-quoted string `workshop wrap "mycli ssh host"` or a shell alias) goes to `$SHELL -i -c`.
+ //! The user's own shell then does the word-splitting and alias expansion.
+ //! The exec fallback (a non-TTY session, or PTY setup failure) keeps the same route but drops `-i` to avoid job-control noise without our PTY.
+ //!
+@@ -17,13 +17,13 @@ use anyhow::Result;
+ 
+ use crate::app::WrapArgs;
+ 
+-/// Run the `grok wrap` command. Otherwise the command is executed directly (no wrapping).
++/// Run the `workshop wrap` command. Otherwise the command is executed directly (no wrapping).
+ pub fn run(args: &WrapArgs) -> Result<()> {
+     // `command` is `required` in clap, so it always has at least one element.
+     let program = args
+         .command
+         .first()
+-        .ok_or_else(|| anyhow::anyhow!("grok wrap: no command given"))?;
++        .ok_or_else(|| anyhow::anyhow!("workshop wrap: no command given"))?;
+ 
+     // Unix: derive both spawn plans up front from one env snapshot so the PTY attempt and its fallback route consistently
+     // The wrapped run uses `$SHELL -i` when routing through the shell (rc files load, aliases expand; safe because it runs inside our PTY)
+@@ -55,7 +55,7 @@ pub fn run(args: &WrapArgs) -> Result<()> {
+             Ok(code) => std::process::exit(code),
+             Err(e) => {
+                 // PTY setup failed; keep the chosen route without our PTY so the command still works (just without clipboard forwarding)
+-                eprintln!("grok wrap: wrapped mode failed, running without PTY wrapping: {e}");
++                eprintln!("workshop wrap: wrapped mode failed, running without PTY wrapping: {e}");
+                 exec_command(&fallback.program, &fallback.args)
+             }
+         }
+@@ -64,7 +64,7 @@ pub fn run(args: &WrapArgs) -> Result<()> {
+     }
+ }
+ 
+-/// The program and argv `grok wrap` will actually spawn.
++/// The program and argv `workshop wrap` will actually spawn.
+ #[derive(Clone)]
+ struct SpawnPlan {
+     program: String,
+@@ -109,14 +109,14 @@ fn derive_spawn(
+         };
+     };
+ 
+-    // A single argument containing whitespace is a shell-quoted command line (`grok wrap "mycli ssh host"`), not a program name
++    // A single argument containing whitespace is a shell-quoted command line (`workshop wrap "mycli ssh host"`), not a program name
+     // Hand it to the shell verbatim so it does word-splitting, alias expansion, pipes, etc
+     if command.len() == 1 && first.contains(char::is_whitespace) {
+         return via_shell(first.clone());
+     }
+ 
+     // A bare program name that PATH cannot resolve is usually a shell alias (`alias mycli=remote`); only a shell can
+-    // expand it. An empty one (`grok wrap "$PROG".` with `$PROG` unset) must keep failing fast instead of silently
++    // expand it. An empty one (`workshop wrap "$PROG".` with `$PROG` unset) must keep failing fast instead of silently
+     // running the tail.
+     if !first.is_empty()
+         && !first.contains('/')
+diff --git a/crates/codegen/xai-grok-pager/src/wrap_cmd_tests.rs b/crates/codegen/xai-grok-pager/src/wrap_cmd_tests.rs
+index e28951ed..98abd42f 100644
+--- a/crates/codegen/xai-grok-pager/src/wrap_cmd_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/wrap_cmd_tests.rs
+@@ -1,4 +1,4 @@
+-//! Unit tests for the `grok wrap` spawn planning in [`super`] (`wrap_cmd`), split out via `#[path]` to keep the module itself small.
++//! Unit tests for the `workshop wrap` spawn planning in [`super`] (`wrap_cmd`), split out via `#[path]` to keep the module itself small.
+ //!
+ //! Everything is pure: `derive_spawn` takes the PATH lookup result and the shell as inputs.
+ //! The exception is the final test, which round-trips the rejoined line through a real `/bin/sh -c` to prove the quoting contract end to end.
+diff --git a/crates/codegen/xai-grok-pager/src/wrap_filter.rs b/crates/codegen/xai-grok-pager/src/wrap_filter.rs
+index ff294785..cc44aef6 100644
+--- a/crates/codegen/xai-grok-pager/src/wrap_filter.rs
++++ b/crates/codegen/xai-grok-pager/src/wrap_filter.rs
+@@ -1,4 +1,4 @@
+-//! Streaming output filter for `grok wrap`: OSC 52 clipboard interception, host-image request handling, and DEC-mode observation.
++//! Streaming output filter for `workshop wrap`: OSC 52 clipboard interception, host-image request handling, and DEC-mode observation.
+ //!
+ //! `Osc52Filter` sits between the wrap PTY reader and stdout (see `crate::pty_wrap`).
+ //! It consumes OSC 52 clipboard sequences (plain and tmux DCS passthrough) and the private host-image request OSC ([`crate::wrap_clipboard_image`]).
+diff --git a/crates/codegen/xai-grok-pager/src/wrap_restore.rs b/crates/codegen/xai-grok-pager/src/wrap_restore.rs
+index e56f0950..6c07fbc9 100644
+--- a/crates/codegen/xai-grok-pager/src/wrap_restore.rs
++++ b/crates/codegen/xai-grok-pager/src/wrap_restore.rs
+@@ -1,6 +1,6 @@
+-//! Terminal-mode tracking and restore emission for `grok wrap`.
++//! Terminal-mode tracking and restore emission for `workshop wrap`.
+ //!
+-//! `grok wrap` cannot tell a clean child exit from a connection drop: an ssh transport death reaches it as a plain PTY EOF plus an exit code.
++//! `workshop wrap` cannot tell a clean child exit from a connection drop: an ssh transport death reaches it as a plain PTY EOF plus an exit code.
+ //! What it *can* know is which DEC private modes the child enabled on the local terminal and never disabled; the reset bytes died with the link.
+ //! [`ModeTracker`] observes every complete CSI sequence the wrap output filter forwards.
+ //! It keeps a bitmask of latched modes plus the kitty keyboard push depth; [`restore_bytes`] emits disables for exactly that latched state.
+diff --git a/crates/codegen/xai-grok-pager/tests/grok_home_paths.rs b/crates/codegen/xai-grok-pager/tests/grok_home_paths.rs
+index 7f75fd5c..fddc147a 100644
+--- a/crates/codegen/xai-grok-pager/tests/grok_home_paths.rs
++++ b/crates/codegen/xai-grok-pager/tests/grok_home_paths.rs
+@@ -1,14 +1,14 @@
+-//! `GROK_HOME` override tests in an isolated binary so `grok_home()`'s process-wide `OnceLock` initializes from the overridden env var.
++//! `WORKSHOP_HOME` override tests in an isolated binary so `grok_home()`'s process-wide `OnceLock` initializes from the overridden env var.
+ 
+ use std::path::PathBuf;
+ 
+ #[test]
+-#[serial_test::serial(GROK_HOME)]
++#[serial_test::serial(WORKSHOP_HOME)]
+ fn grok_home_override_path_helpers() {
+     let tmp = tempfile::tempdir().expect("tempdir");
+     let grok_home = tmp.path().to_path_buf();
+     unsafe {
+-        std::env::set_var("GROK_HOME", &grok_home);
++        std::env::set_var("WORKSHOP_HOME", &grok_home);
+     }
+ 
+     assert_eq!(
+@@ -17,23 +17,23 @@ fn grok_home_override_path_helpers() {
+     );
+     assert_eq!(
+         xai_grok_pager::util::display_grok_home_prefix(),
+-        "$GROK_HOME"
++        "$WORKSHOP_HOME"
+     );
+     assert_eq!(
+         xai_grok_pager::util::display_user_grok_path("config.toml"),
+-        "$GROK_HOME/config.toml"
++        "$WORKSHOP_HOME/config.toml"
+     );
+ 
+     let memory_path = grok_home.join("memory/MEMORY.md");
+     assert_eq!(
+         xai_grok_pager::util::abbreviate_path(&memory_path.display().to_string()),
+-        "$GROK_HOME/memory/MEMORY.md"
++        "$WORKSHOP_HOME/memory/MEMORY.md"
+     );
+ 
+-    // The copy toast abbreviates paths the same way, so a custom $GROK_HOME outside $HOME still shows the short form
++    // The copy toast abbreviates paths the same way, so a custom $WORKSHOP_HOME outside $HOME still shows the short form
+     assert_eq!(
+         xai_grok_pager::clipboard::display_copy_path(&grok_home.join("last-copy.txt")),
+-        "$GROK_HOME/last-copy.txt"
++        "$WORKSHOP_HOME/last-copy.txt"
+     );
+ 
+     assert!(xai_grok_pager::util::is_under_user_grok_home(&memory_path));
+@@ -44,12 +44,12 @@ fn grok_home_override_path_helpers() {
+ 
+ /// Isolated because `grok_home()`'s `OnceLock` is already initialized by the time the shared lib-test binary reaches a case like this.
+ #[test]
+-#[serial_test::serial(GROK_HOME)]
++#[serial_test::serial(WORKSHOP_HOME)]
+ fn disk_usage_run_creates_no_grok_home() {
+     let tmp = tempfile::tempdir().expect("tempdir");
+     let ghost = tmp.path().join("ghost-home");
+     unsafe {
+-        std::env::set_var("GROK_HOME", &ghost);
++        std::env::set_var("WORKSHOP_HOME", &ghost);
+     }
+ 
+     for json in [false, true] {
 diff --git a/crates/codegen/xai-grok-shell/README.md b/crates/codegen/xai-grok-shell/README.md
 index 286e5ea9..ec7436c3 100644
 --- a/crates/codegen/xai-grok-shell/README.md

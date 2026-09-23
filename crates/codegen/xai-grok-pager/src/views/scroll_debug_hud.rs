@@ -2,7 +2,7 @@
 //!
 //! A compact top-right overlay paints a per-frame snapshot of the scroll state machine ([`MouseScrollState::debug_snapshot`]).
 //! It also shows the active scrollback's viewport facts, inside a REAL session with the REAL event loop.
-//! Recipe: `GROK_FPS=1 GROK_SCROLL_DEBUG=1 grok --resume <session>`.
+//! Recipe: `GROK_FPS=1 GROK_SCROLL_DEBUG=1 workshop --resume <session>`.
 //! Then flip `scroll_mode`, `scroll_lines`, `invert_scroll`, or `scroll_speed` in `/settings` to compare variants live.
 //! This HUD samples once per frame; `GROK_SCROLL_LOG=1` additionally records every event as JSONL (`input::scroll_log` in xai-grok-pager-render).
 //!

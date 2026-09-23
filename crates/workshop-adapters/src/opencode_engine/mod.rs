@@ -24,6 +24,7 @@ mod catalog;
 mod events;
 mod http;
 mod install;
+pub mod state;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -42,9 +43,14 @@ pub use catalog::{FreeCatalog, FreeModel, parse_free_catalog};
 pub use events::{PermissionRequest, ServeTurn};
 pub use http::{HttpError, ServerClient};
 pub use install::{
-    InstallError, InstallOptions, InstallTarget, OFFICIAL_INSTALLER_URL, ensure_opencode,
-    install_opencode, is_workshop_managed, workshop_tools_dir,
+    InstallError, InstallOptions, InstallTarget, OFFICIAL_INSTALLER_URL, detect_opencode,
+    ensure_opencode, install_opencode, is_workshop_managed, workshop_tools_dir,
 };
+pub use state::{clear_quarantine, quarantine_flag};
+
+/// Receives one line of `opencode serve` stdout/stderr (or a start marker); the host decides where
+/// it goes. Keeps file I/O out of this crate.
+pub type LogSink = Arc<dyn Fn(&str) + Send + Sync>;
 
 use crate::adapter::{Adapter, AdapterId, PermissionPolicy, PinStatus, Terminal};
 use crate::detect::InstalledCli;
@@ -87,6 +93,9 @@ pub struct EngineOptions {
     pub cancel_grace: Duration,
     pub permission_handler: Option<PermissionHandler>,
     pub allow_untested_versions: bool,
+    /// Receives the server's stdout and stderr lines so a failed start on a machine we cannot
+    /// see still leaves the actual cause somewhere the host chooses (a log file).
+    pub log_sink: Option<LogSink>,
 }
 
 impl EngineOptions {
@@ -99,6 +108,7 @@ impl EngineOptions {
             cancel_grace: Duration::from_secs(10),
             permission_handler: None,
             allow_untested_versions: true,
+            log_sink: None,
         }
     }
 }
@@ -130,6 +140,8 @@ pub enum EngineError {
     Spawn(#[source] std::io::Error),
     #[error("`opencode serve` did not become ready within {timeout:?}: {detail}")]
     Startup { timeout: Duration, detail: String },
+    #[error("`opencode serve` exited during startup ({status}): {stderr}")]
+    Exited { status: String, stderr: String },
     #[error(transparent)]
     Http(#[from] HttpError),
     #[error("unexpected response shape from {endpoint}: {detail}")]
@@ -277,8 +289,16 @@ impl OpenCodeEngine {
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
         let (addr_tx, addr_rx) = oneshot::channel();
-        tokio::spawn(watch_stdout(stdout, addr_tx));
-        let stderr_tail = tokio::spawn(collect_tail(stderr, 16 * 1024));
+        if let Some(log) = &opts.log_sink {
+            log(&format!(
+                "start: {} serve --hostname 127.0.0.1 --port {port} (version {}, workspace {})",
+                cli.path.display(),
+                cli.version,
+                opts.workspace.display()
+            ));
+        }
+        tokio::spawn(watch_stdout(stdout, addr_tx, opts.log_sink.clone()));
+        let stderr_tail = tokio::spawn(collect_tail(stderr, 16 * 1024, opts.log_sink.clone()));
 
         let mut process = ServerProcess {
             child,
@@ -287,11 +307,25 @@ impl OpenCodeEngine {
         };
         let client = match tokio::time::timeout(opts.startup_timeout, addr_rx).await {
             Ok(Ok(addr)) => ServerClient::new(addr, "opencode", &password),
-            Ok(Err(_)) | Err(_) => {
-                let detail = teardown(&mut process).await;
+            // The stdout reader is gone: the process exited before it ever listened.
+            Ok(Err(_)) => {
+                let (status, tail) = teardown(&mut process).await;
+                return Err(EngineError::Exited {
+                    status: status
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "unknown".into()),
+                    stderr: if tail.is_empty() {
+                        "no output".into()
+                    } else {
+                        tail
+                    },
+                });
+            }
+            Err(_) => {
+                let (_, tail) = teardown(&mut process).await;
                 return Err(EngineError::Startup {
                     timeout: opts.startup_timeout,
-                    detail: format!("no `listening on` line; stderr: {detail}"),
+                    detail: with_stderr("never printed `listening on`", &tail),
                 });
             }
         };
@@ -299,17 +333,17 @@ impl OpenCodeEngine {
         {
             Ok(Ok(version)) => version,
             Ok(Err(e)) => {
-                let detail = teardown(&mut process).await;
+                let (_, tail) = teardown(&mut process).await;
                 return Err(EngineError::Startup {
                     timeout: opts.startup_timeout,
-                    detail: format!("{e}; stderr: {detail}"),
+                    detail: with_stderr(&e.to_string(), &tail),
                 });
             }
             Err(_) => {
-                let detail = teardown(&mut process).await;
+                let (_, tail) = teardown(&mut process).await;
                 return Err(EngineError::Startup {
                     timeout: opts.startup_timeout,
-                    detail: format!("health check never passed; stderr: {detail}"),
+                    detail: with_stderr("health check never passed", &tail),
                 });
             }
         };
@@ -551,16 +585,31 @@ pub fn parse_model_ref(model: &str) -> Result<(String, String), EngineError> {
     }
 }
 
+fn with_stderr(detail: &str, tail: &str) -> String {
+    if tail.trim().is_empty() {
+        detail.to_owned()
+    } else {
+        format!("{detail}; stderr: {}", tail.trim())
+    }
+}
+
 async fn pick_free_port() -> std::io::Result<u16> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     Ok(listener.local_addr()?.port())
 }
 
-async fn watch_stdout(stdout: tokio::process::ChildStdout, addr_tx: oneshot::Sender<SocketAddr>) {
+async fn watch_stdout(
+    stdout: tokio::process::ChildStdout,
+    addr_tx: oneshot::Sender<SocketAddr>,
+    log: Option<LogSink>,
+) {
     let mut lines = BufReader::new(stdout).lines();
     let mut addr_tx = Some(addr_tx);
     while let Ok(Some(line)) = lines.next_line().await {
         tracing::debug!(target: "opencode_serve", "{line}");
+        if let Some(log) = &log {
+            log(&format!("stdout: {line}"));
+        }
         if let Some(tx) = addr_tx.take_if(|_| line.contains("listening on"))
             && let Some(addr) = parse_listening_line(&line)
         {
@@ -569,13 +618,22 @@ async fn watch_stdout(stdout: tokio::process::ChildStdout, addr_tx: oneshot::Sen
     }
 }
 
-async fn collect_tail(mut stderr: tokio::process::ChildStderr, limit: usize) -> String {
+async fn collect_tail(
+    mut stderr: tokio::process::ChildStderr,
+    limit: usize,
+    log: Option<LogSink>,
+) -> String {
     let mut tail: Vec<u8> = Vec::new();
     let mut buf = vec![0u8; 8192];
     loop {
         match stderr.read(&mut buf).await {
             Ok(0) | Err(_) => break,
             Ok(n) => {
+                if let Some(log) = &log {
+                    for line in String::from_utf8_lossy(&buf[..n]).lines() {
+                        log(&format!("stderr: {line}"));
+                    }
+                }
                 tail.extend_from_slice(&buf[..n]);
                 if tail.len() > limit {
                     let cut = tail.len() - limit;
@@ -608,7 +666,10 @@ async fn wait_healthy(client: &ServerClient) -> Result<String, EngineError> {
 
 /// SIGTERM the server's group, wait briefly, then SIGKILL. Returns the
 /// stderr tail for diagnostics.
-async fn teardown(process: &mut ServerProcess) -> String {
+async fn teardown(process: &mut ServerProcess) -> (Option<std::process::ExitStatus>, String) {
+    // A server that already died (Gatekeeper SIGKILL, missing shared library, bad binary) is the
+    // interesting case: report how it exited before anything else.
+    let early_exit = process.child.try_wait().ok().flatten();
     let _ = process.group.terminate();
     if tokio::time::timeout(Duration::from_secs(5), process.child.wait())
         .await
@@ -619,10 +680,11 @@ async fn teardown(process: &mut ServerProcess) -> String {
         let _ = process.child.wait().await;
     }
     let _ = process.group.kill();
-    match tokio::time::timeout(Duration::from_secs(2), &mut process.stderr_tail).await {
-        Ok(Ok(tail)) => tail,
+    let tail = match tokio::time::timeout(Duration::from_secs(2), &mut process.stderr_tail).await {
+        Ok(Ok(tail)) => tail.trim().to_owned(),
         _ => String::new(),
-    }
+    };
+    (early_exit, tail)
 }
 
 /// A live or finished turn. Same contract as [`crate::RunHandle`].

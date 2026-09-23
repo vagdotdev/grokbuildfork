@@ -3,7 +3,7 @@ use serde::Serialize;
 use crate::clipboard::{ClipboardDelivery, NativeClipboardPreflight, Osc52Capability};
 use crate::diagnostics::{
     DataControlFact, DiagnosticFinding, DiagnosticReport, FindingDisposition, NewlineFact,
-    ProbeNote, ProbeStatus, RuntimeFact, VoiceEngineFacts, VoiceFacts,
+    OpenCodeEngineFacts, ProbeNote, ProbeStatus, RuntimeFact, VoiceEngineFacts, VoiceFacts,
 };
 use crate::host::HostOs;
 use crate::terminal::{ByobuBackend, ModifierFate, MultiplexerKind, TerminalName};
@@ -61,6 +61,45 @@ struct JsonFacts<'a> {
     /// Workshop overlay: local speech-to-text engine and model facts.
     #[serde(skip_serializing_if = "Option::is_none")]
     voice_engine: Option<JsonVoiceEngineFacts<'a>>,
+    /// Workshop overlay: OpenCode engine binary, quarantine flag, last start and log path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine: Option<JsonOpenCodeEngineFacts<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonOpenCodeEngineFacts<'a> {
+    connection: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binary: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<&'a str>,
+    binary_status: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quarantined: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_phase: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_start_unix: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_error: Option<&'a str>,
+    log_path: &'a str,
+}
+
+impl<'a> From<&'a OpenCodeEngineFacts> for JsonOpenCodeEngineFacts<'a> {
+    fn from(f: &'a OpenCodeEngineFacts) -> Self {
+        Self {
+            connection: &f.connection,
+            binary: f.binary.as_deref(),
+            version: f.version.as_deref(),
+            binary_status: &f.binary_status,
+            quarantined: f.quarantined.as_deref(),
+            last_phase: f.last_phase.as_deref(),
+            last_start_unix: f.last_start_unix,
+            last_error: f.last_error.as_deref(),
+            log_path: &f.log_path,
+        }
+    }
 }
 
 impl<'a> From<&'a DiagnosticReport> for JsonFacts<'a> {
@@ -95,6 +134,7 @@ impl<'a> From<&'a DiagnosticReport> for JsonFacts<'a> {
             clipboard: JsonClipboardFacts::from(&facts.clipboard),
             voice: facts.voice.as_ref().map(JsonVoiceFacts::from),
             voice_engine: facts.voice_engine.as_ref().map(JsonVoiceEngineFacts::from),
+            engine: facts.engine.as_ref().map(JsonOpenCodeEngineFacts::from),
         }
     }
 }

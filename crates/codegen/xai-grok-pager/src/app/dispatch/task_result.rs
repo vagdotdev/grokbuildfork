@@ -281,7 +281,7 @@ pub(super) fn maybe_show_x11_primary_paste_hint(
     show_clipboard_toast(target, X11_PRIMARY_PASTE_HINT, app);
 }
 /// A clean `FullMiss` always qualifies; a remote read *error* (`AttachmentRead`) qualifies too.
-/// Inside `grok wrap` the authoritative pasteboard is the local host's, not the (absent) remote one.
+/// Inside `workshop wrap` the authoritative pasteboard is the local host's, not the (absent) remote one.
 /// Every other failure (`TextRead`, `TargetInsertion`, `AlreadyReported`) is a real dead end and must keep toasting.
 pub(super) fn wrap_host_image_request_eligible(completion: ClipboardPasteCompletion) -> bool {
     matches!(

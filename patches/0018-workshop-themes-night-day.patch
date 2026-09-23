@@ -1,0 +1,736 @@
+diff --git a/crates/codegen/xai-grok-pager-render/src/theme/mod.rs b/crates/codegen/xai-grok-pager-render/src/theme/mod.rs
+index a32853ed..84494959 100644
+--- a/crates/codegen/xai-grok-pager-render/src/theme/mod.rs
++++ b/crates/codegen/xai-grok-pager-render/src/theme/mod.rs
+@@ -96,9 +96,9 @@ impl ThemeKind {
+ 
+     pub fn display_name(self) -> &'static str {
+         match self {
+-            Self::GrokNight => "groknight",
++            Self::GrokNight => "night",
+             Self::TokyoNight => "tokyonight",
+-            Self::GrokDay => "grokday",
++            Self::GrokDay => "day",
+             Self::RosePineMoon => "rosepine-moon",
+             Self::OscuraMidnight => "oscura-midnight",
+             Self::Terminal => "terminal",
+@@ -130,9 +130,11 @@ impl ThemeKind {
+     /// Alternate lowercase spellings accepted by [`from_name`](Self::from_name), excluding [`display_name`](Self::display_name).
+     pub fn aliases(self) -> &'static [&'static str] {
+         match self {
+-            Self::GrokNight => &["grok-night", "dark"],
++            // Workshop: the themes are "Night" and "Day"; the upstream spellings stay as hidden
++            // aliases so an existing `theme = "groknight"` config keeps resolving.
++            Self::GrokNight => &["groknight", "grok-night", "dark"],
+             Self::TokyoNight => &["tokyo-night", "tokyo"],
+-            Self::GrokDay => &["grok-day", "light", "day"],
++            Self::GrokDay => &["grokday", "grok-day", "light"],
+             Self::RosePineMoon => &["rosepine", "rose-pine", "rose-pine-moon"],
+             Self::OscuraMidnight => &["oscura"],
+             Self::Terminal => &["terminal-default", "transparent", "native"],
+@@ -180,13 +182,13 @@ pub fn canonical_name(value: &str) -> Option<&'static str> {
+     ThemeKind::from_name(value).map(|k| k.display_name())
+ }
+ 
+-/// Human-friendly display name for a canonical theme value (e.g. `"groknight"` becomes `"Grok Night"`).
++/// Human-friendly display name for a canonical theme value (e.g. `"night"` becomes `"Night"`).
+ /// Falls back to `value` verbatim.
+ pub fn display_name_for_canonical(value: &str) -> &str {
+     match value {
+         "auto" => "Auto",
+-        "groknight" => "Grok Night",
+-        "grokday" => "Grok Day",
++        "night" | "groknight" => "Night",
++        "day" | "grokday" => "Day",
+         "tokyonight" => "Tokyo Night",
+         "rosepine-moon" => "Rose Pine Moon",
+         "terminal" => "Terminal",
+@@ -1175,6 +1177,7 @@ mod tests {
+         let cases = [
+             ("auto", ThemeKind::Auto),
+             ("system", ThemeKind::Auto),
++            ("night", ThemeKind::GrokNight),
+             ("groknight", ThemeKind::GrokNight),
+             ("grok-night", ThemeKind::GrokNight),
+             ("dark", ThemeKind::GrokNight),
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/settings.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/settings.rs
+index 4fec06be..f5811957 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/settings.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/settings.rs
+@@ -955,7 +955,7 @@ fn deep_link_preview_esc_closes_modal_and_forwards_revert_action() {
+     );
+     match outcome {
+         InputOutcome::Action(Action::PreviewTheme(name)) => {
+-            assert_eq!(name, "groknight");
++            assert_eq!(name, "night");
+         }
+         other => panic!("expected Action(PreviewTheme), got {other:?}"),
+     }
+@@ -3082,9 +3082,9 @@ fn dispatch_cycle_mode_refreshes_open_modal_snapshot() {
+         "current_value_for must read the refreshed snapshot",
+     );
+ }
+-/// `dispatch(Action::SetTheme("grokday"), &mut app)` emits exactly one `Effect::PersistSetting` and mutates `app.current_ui.theme`.
++/// `dispatch(Action::SetTheme("day"), &mut app)` emits exactly one `Effect::PersistSetting` and mutates `app.current_ui.theme`.
+ /// It also fires a toast and toggles AUTO_MODE off (kind is concrete).
+-/// The test persists `grokday` (a non-truecolor theme) because the asserted payload is the registry's CANONICAL, not the live theme cache.
++/// The test persists `day` (a non-truecolor theme) because the asserted payload is the registry's CANONICAL, not the live theme cache.
+ #[test]
+ fn set_theme_emits_persist_setting_with_correct_payload() {
+     use crate::settings::SettingValue;
+@@ -3092,7 +3092,7 @@ fn set_theme_emits_persist_setting_with_correct_payload() {
+         let mut app = test_app_with_agent();
+         assert_eq!(app.current_ui.theme, None);
+         crate::theme::cache::set(crate::theme::ThemeKind::GrokNight);
+-        let effects = dispatch(Action::SetTheme("grokday".into()), &mut app);
++        let effects = dispatch(Action::SetTheme("day".into()), &mut app);
+         assert_eq!(effects.len(), 1);
+         match effects.first() {
+             Some(Effect::PersistSetting {
+@@ -3101,12 +3101,12 @@ fn set_theme_emits_persist_setting_with_correct_payload() {
+                 rollback_value,
+             }) => {
+                 assert_eq!(*key, "theme");
+-                assert_eq!(*value, SettingValue::Enum("grokday"));
+-                assert_eq!(*rollback_value, SettingValue::Enum("groknight"));
++                assert_eq!(*value, SettingValue::Enum("day"));
++                assert_eq!(*rollback_value, SettingValue::Enum("night"));
+             }
+             other => panic!("expected PersistSetting, got {other:?}"),
+         }
+-        assert_eq!(app.current_ui.theme.as_deref(), Some("grokday"));
++        assert_eq!(app.current_ui.theme.as_deref(), Some("day"));
+         assert!(
+             !crate::theme::cache::is_auto_mode(),
+             "concrete theme commit must disable AUTO_MODE",
+@@ -3114,14 +3114,14 @@ fn set_theme_emits_persist_setting_with_correct_payload() {
+     });
+ }
+ /// Same payload contract as `set_theme_emits_persist_setting_with_correct_payload` for the auto-dark sibling.
+-/// Uses `grokday` to avoid the `clamp_to_terminal` ambiguity in non-truecolor test envs.
++/// Uses `day` to avoid the `clamp_to_terminal` ambiguity in non-truecolor test envs.
+ /// `apply_kind` doesn't fire here (parent theme is not auto by default), but a non-truecolor canonical keeps the test robust across environments.
+ #[test]
+ fn set_auto_dark_theme_emits_persist_setting_with_correct_payload() {
+     use crate::settings::SettingValue;
+     with_theme_test_env(|| {
+         let mut app = test_app_with_agent();
+-        let effects = dispatch(Action::SetAutoDarkTheme("grokday".into()), &mut app);
++        let effects = dispatch(Action::SetAutoDarkTheme("day".into()), &mut app);
+         assert_eq!(effects.len(), 1);
+         match effects.first() {
+             Some(Effect::PersistSetting {
+@@ -3130,12 +3130,12 @@ fn set_auto_dark_theme_emits_persist_setting_with_correct_payload() {
+                 rollback_value,
+             }) => {
+                 assert_eq!(*key, "auto_dark_theme");
+-                assert_eq!(*value, SettingValue::Enum("grokday"));
+-                assert_eq!(*rollback_value, SettingValue::Enum("groknight"));
++                assert_eq!(*value, SettingValue::Enum("day"));
++                assert_eq!(*rollback_value, SettingValue::Enum("night"));
+             }
+             other => panic!("expected PersistSetting, got {other:?}"),
+         }
+-        assert_eq!(app.current_ui.auto_dark_theme.as_deref(), Some("grokday"));
++        assert_eq!(app.current_ui.auto_dark_theme.as_deref(), Some("day"));
+     });
+ }
+ #[test]
+@@ -3143,7 +3143,7 @@ fn set_auto_light_theme_emits_persist_setting_with_correct_payload() {
+     use crate::settings::SettingValue;
+     with_theme_test_env(|| {
+         let mut app = test_app_with_agent();
+-        let effects = dispatch(Action::SetAutoLightTheme("groknight".into()), &mut app);
++        let effects = dispatch(Action::SetAutoLightTheme("night".into()), &mut app);
+         assert_eq!(effects.len(), 1);
+         match effects.first() {
+             Some(Effect::PersistSetting {
+@@ -3152,14 +3152,14 @@ fn set_auto_light_theme_emits_persist_setting_with_correct_payload() {
+                 rollback_value,
+             }) => {
+                 assert_eq!(*key, "auto_light_theme");
+-                assert_eq!(*value, SettingValue::Enum("groknight"));
+-                assert_eq!(*rollback_value, SettingValue::Enum("grokday"));
++                assert_eq!(*value, SettingValue::Enum("night"));
++                assert_eq!(*rollback_value, SettingValue::Enum("day"));
+             }
+             other => panic!("expected PersistSetting, got {other:?}"),
+         }
+         assert_eq!(
+             app.current_ui.auto_light_theme.as_deref(),
+-            Some("groknight"),
++            Some("night"),
+         );
+     });
+ }
+@@ -3209,7 +3209,7 @@ fn preview_auto_light_theme_emits_no_persist_and_no_current_ui_mutation() {
+     });
+ }
+ /// Auto-theme commit applies the live theme **only** when `theme="auto"` AND the system is in the matching mode.
+-/// Scenario: `theme="groknight"` (concrete) while the system is Dark, and the user commits `auto_dark_theme="grokday"`.
++/// Scenario: `theme="night"` (concrete) while the system is Dark, and the user commits `auto_dark_theme="day"`.
+ /// The setting is dormant (parent theme is concrete, not auto), so the live display must stay on GrokNight.
+ #[test]
+ fn set_auto_dark_theme_does_not_apply_when_theme_is_not_auto() {
+@@ -3218,18 +3218,18 @@ fn set_auto_dark_theme_does_not_apply_when_theme_is_not_auto() {
+             crate::theme::system_appearance::SystemAppearance::Dark,
+         ));
+         let mut app = test_app_with_agent();
+-        let _ = dispatch(Action::SetTheme("groknight".into()), &mut app);
++        let _ = dispatch(Action::SetTheme("night".into()), &mut app);
+         assert_eq!(
+             crate::theme::cache::current_kind(),
+             crate::theme::ThemeKind::GrokNight,
+         );
+-        let _ = dispatch(Action::SetAutoDarkTheme("grokday".into()), &mut app);
++        let _ = dispatch(Action::SetAutoDarkTheme("day".into()), &mut app);
+         assert_eq!(
+             crate::theme::cache::current_kind(),
+             crate::theme::ThemeKind::GrokNight,
+             "auto_dark_theme commit must NOT change live display when theme is not auto",
+         );
+-        assert_eq!(app.current_ui.auto_dark_theme.as_deref(), Some("grokday"));
++        assert_eq!(app.current_ui.auto_dark_theme.as_deref(), Some("day"));
+     });
+ }
+ /// Auto-theme commit DOES apply the live theme when both (a) the parent theme is auto AND (b) the system matches.
+@@ -3248,7 +3248,7 @@ fn set_auto_dark_theme_applies_when_theme_is_auto_and_system_is_dark() {
+             crate::theme::cache::current_kind(),
+             crate::theme::ThemeKind::GrokNight,
+         );
+-        let _ = dispatch(Action::SetAutoDarkTheme("grokday".into()), &mut app);
++        let _ = dispatch(Action::SetAutoDarkTheme("day".into()), &mut app);
+         assert_eq!(
+             crate::theme::cache::current_kind(),
+             crate::theme::ThemeKind::GrokDay,
+@@ -3257,7 +3257,7 @@ fn set_auto_dark_theme_applies_when_theme_is_auto_and_system_is_dark() {
+     });
+ }
+ /// Auto-theme commit does NOT apply when system is in the non-matching mode (auto_dark_theme while the system is Light).
+-/// Uses `groknight` for the auto_dark_theme value to avoid `clamp_to_terminal` ambiguity.
++/// Uses `night` for the auto_dark_theme value to avoid `clamp_to_terminal` ambiguity.
+ /// We want a concrete kind that's clearly different from GrokDay, the active resolved theme.
+ #[test]
+ fn set_auto_dark_theme_does_not_apply_when_system_is_light() {
+@@ -3271,17 +3271,17 @@ fn set_auto_dark_theme_does_not_apply_when_system_is_light() {
+             crate::theme::cache::current_kind(),
+             crate::theme::ThemeKind::GrokDay,
+         );
+-        let _ = dispatch(Action::SetAutoDarkTheme("groknight".into()), &mut app);
++        let _ = dispatch(Action::SetAutoDarkTheme("night".into()), &mut app);
+         assert_eq!(
+             crate::theme::cache::current_kind(),
+             crate::theme::ThemeKind::GrokDay,
+             "auto_dark_theme commit must NOT change live display when system=Light",
+         );
+-        assert_eq!(app.current_ui.auto_dark_theme.as_deref(), Some("groknight"),);
++        assert_eq!(app.current_ui.auto_dark_theme.as_deref(), Some("night"),);
+     });
+ }
+ /// Symmetric to the dark test: `set_auto_light_theme` applies only when the theme is auto and the system is Light.
+-/// Uses a non-truecolor theme (`groknight`) for the same clamp reason as the dark variant.
++/// Uses a non-truecolor theme (`night`) for the same clamp reason as the dark variant.
+ #[test]
+ fn set_auto_light_theme_applies_when_theme_is_auto_and_system_is_light() {
+     with_theme_test_env(|| {
+@@ -3294,7 +3294,7 @@ fn set_auto_light_theme_applies_when_theme_is_auto_and_system_is_light() {
+             crate::theme::cache::current_kind(),
+             crate::theme::ThemeKind::GrokDay,
+         );
+-        let _ = dispatch(Action::SetAutoLightTheme("groknight".into()), &mut app);
++        let _ = dispatch(Action::SetAutoLightTheme("night".into()), &mut app);
+         assert_eq!(
+             crate::theme::cache::current_kind(),
+             crate::theme::ThemeKind::GrokNight,
+@@ -3367,15 +3367,15 @@ fn set_auto_light_theme_rejects_auto_value() {
+ fn set_theme_toast_format_uses_display_name() {
+     with_theme_test_env(|| {
+         let mut app = test_app_with_agent();
+-        let _ = dispatch(Action::SetTheme("grokday".into()), &mut app);
++        let _ = dispatch(Action::SetTheme("day".into()), &mut app);
+         let toast = read_toast(&app);
+         assert!(
+             toast.contains("Theme"),
+             "toast must contain label, got: {toast:?}",
+         );
+         assert!(
+-            toast.contains("Grok Day"),
+-            "toast must use display name `Grok Day`, not canonical `grokday`, got: {toast:?}",
++            toast.contains("Day"),
++            "toast must use display name `Day`, not canonical `day`, got: {toast:?}",
+         );
+         assert!(toast.contains('\u{2713}'), "toast must contain the ✓ glyph");
+     });
+@@ -3384,10 +3384,10 @@ fn set_theme_toast_format_uses_display_name() {
+ fn set_auto_dark_theme_toast_format_uses_display_name() {
+     with_theme_test_env(|| {
+         let mut app = test_app_with_agent();
+-        let _ = dispatch(Action::SetAutoDarkTheme("grokday".into()), &mut app);
++        let _ = dispatch(Action::SetAutoDarkTheme("day".into()), &mut app);
+         let toast = read_toast(&app);
+         assert!(toast.contains("Auto dark theme"));
+-        assert!(toast.contains("Grok Day"));
++        assert!(toast.contains("Day"));
+         assert!(toast.contains('\u{2713}'));
+     });
+ }
+@@ -3395,22 +3395,22 @@ fn set_auto_dark_theme_toast_format_uses_display_name() {
+ fn set_auto_light_theme_toast_format_uses_display_name() {
+     with_theme_test_env(|| {
+         let mut app = test_app_with_agent();
+-        let _ = dispatch(Action::SetAutoLightTheme("groknight".into()), &mut app);
++        let _ = dispatch(Action::SetAutoLightTheme("night".into()), &mut app);
+         let toast = read_toast(&app);
+         assert!(toast.contains("Auto light theme"));
+-        assert!(toast.contains("Grok Night"));
++        assert!(toast.contains("Night"));
+     });
+ }
+ /// `apply_setting_rollback` for theme keys: a failed persist reverts `app.current_ui.theme` AND the live cache.
+ /// Mirror of `rollback_known_key_reverts_cache_and_no_effect`.
+-/// Uses the non-truecolor themes `grokday` and `groknight` to avoid the `clamp_to_terminal` interaction in test envs without truecolor support.
++/// Uses the non-truecolor themes `day` and `night` to avoid the `clamp_to_terminal` interaction in test envs without truecolor support.
+ #[test]
+ fn rollback_theme_reverts_current_ui_and_cache() {
+     use crate::settings::SettingValue;
+     with_theme_test_env(|| {
+         let mut app = test_app_with_agent();
+-        let _ = dispatch(Action::SetTheme("grokday".into()), &mut app);
+-        assert_eq!(app.current_ui.theme.as_deref(), Some("grokday"));
++        let _ = dispatch(Action::SetTheme("day".into()), &mut app);
++        assert_eq!(app.current_ui.theme.as_deref(), Some("day"));
+         assert_eq!(
+             crate::theme::cache::current_kind(),
+             crate::theme::ThemeKind::GrokDay,
+@@ -3418,14 +3418,14 @@ fn rollback_theme_reverts_current_ui_and_cache() {
+         let _ = dispatch(
+             Action::TaskComplete(TaskResult::SettingPersistFailed {
+                 key: "theme",
+-                rollback_value: SettingValue::Enum("groknight"),
++                rollback_value: SettingValue::Enum("night"),
+                 error: "disk full".into(),
+             }),
+             &mut app,
+         );
+         assert_eq!(
+             app.current_ui.theme.as_deref(),
+-            Some("groknight"),
++            Some("night"),
+             "rollback must update app.current_ui.theme",
+         );
+         assert_eq!(
+@@ -3440,17 +3440,17 @@ fn rollback_auto_dark_theme_reverts_current_ui() {
+     use crate::settings::SettingValue;
+     with_theme_test_env(|| {
+         let mut app = test_app_with_agent();
+-        let _ = dispatch(Action::SetAutoDarkTheme("grokday".into()), &mut app);
+-        assert_eq!(app.current_ui.auto_dark_theme.as_deref(), Some("grokday"));
++        let _ = dispatch(Action::SetAutoDarkTheme("day".into()), &mut app);
++        assert_eq!(app.current_ui.auto_dark_theme.as_deref(), Some("day"));
+         let _ = dispatch(
+             Action::TaskComplete(TaskResult::SettingPersistFailed {
+                 key: "auto_dark_theme",
+-                rollback_value: SettingValue::Enum("groknight"),
++                rollback_value: SettingValue::Enum("night"),
+                 error: "disk full".into(),
+             }),
+             &mut app,
+         );
+-        assert_eq!(app.current_ui.auto_dark_theme.as_deref(), Some("groknight"),);
++        assert_eq!(app.current_ui.auto_dark_theme.as_deref(), Some("night"),);
+     });
+ }
+ #[test]
+@@ -3458,20 +3458,20 @@ fn rollback_auto_light_theme_reverts_current_ui() {
+     use crate::settings::SettingValue;
+     with_theme_test_env(|| {
+         let mut app = test_app_with_agent();
+-        let _ = dispatch(Action::SetAutoLightTheme("groknight".into()), &mut app);
++        let _ = dispatch(Action::SetAutoLightTheme("night".into()), &mut app);
+         assert_eq!(
+             app.current_ui.auto_light_theme.as_deref(),
+-            Some("groknight"),
++            Some("night"),
+         );
+         let _ = dispatch(
+             Action::TaskComplete(TaskResult::SettingPersistFailed {
+                 key: "auto_light_theme",
+-                rollback_value: SettingValue::Enum("grokday"),
++                rollback_value: SettingValue::Enum("day"),
+                 error: "disk full".into(),
+             }),
+             &mut app,
+         );
+-        assert_eq!(app.current_ui.auto_light_theme.as_deref(), Some("grokday"));
++        assert_eq!(app.current_ui.auto_light_theme.as_deref(), Some("day"));
+     });
+ }
+ /// Edge case: if the rollback value is `"auto"` (corrupted hand-edit), `apply_setting_rollback` clears `app.current_ui.auto_dark_theme` to `None`.
+@@ -3482,8 +3482,8 @@ fn rollback_auto_dark_theme_with_auto_value_clears_to_none() {
+     use crate::settings::SettingValue;
+     with_theme_test_env(|| {
+         let mut app = test_app_with_agent();
+-        let _ = dispatch(Action::SetAutoDarkTheme("grokday".into()), &mut app);
+-        assert_eq!(app.current_ui.auto_dark_theme.as_deref(), Some("grokday"));
++        let _ = dispatch(Action::SetAutoDarkTheme("day".into()), &mut app);
++        assert_eq!(app.current_ui.auto_dark_theme.as_deref(), Some("day"));
+         let _ = dispatch(
+             Action::TaskComplete(TaskResult::SettingPersistFailed {
+                 key: "auto_dark_theme",
+@@ -3504,10 +3504,10 @@ fn rollback_auto_light_theme_with_auto_value_clears_to_none() {
+     use crate::settings::SettingValue;
+     with_theme_test_env(|| {
+         let mut app = test_app_with_agent();
+-        let _ = dispatch(Action::SetAutoLightTheme("groknight".into()), &mut app);
++        let _ = dispatch(Action::SetAutoLightTheme("night".into()), &mut app);
+         assert_eq!(
+             app.current_ui.auto_light_theme.as_deref(),
+-            Some("groknight"),
++            Some("night"),
+         );
+         let _ = dispatch(
+             Action::TaskComplete(TaskResult::SettingPersistFailed {
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/status.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/status.rs
+index 2d8e1168..552e47f0 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/status.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/status.rs
+@@ -1564,16 +1564,16 @@ fn dispatch_confirm_reset_setting_reset_dispatches_typed_setter_for_shared_enum(
+             &mut app,
+         );
+ 
+-        // Reset dispatches SetTheme("groknight"), the registered default
++        // Reset dispatches SetTheme("night"), the registered default
+         assert_eq!(effects.len(), 1);
+         match effects.first() {
+             Some(Effect::PersistSetting { key, value, .. }) => {
+                 assert_eq!(*key, "theme");
+-                assert_eq!(value, &SettingValue::Enum("groknight"));
++                assert_eq!(value, &SettingValue::Enum("night"));
+             }
+             other => panic!("expected PersistSetting, got {other:?}"),
+         }
+-        assert_eq!(app.current_ui.theme.as_deref(), Some("groknight"));
++        assert_eq!(app.current_ui.theme.as_deref(), Some("night"));
+     });
+ }
+ 
+diff --git a/crates/codegen/xai-grok-pager/src/settings/defs.rs b/crates/codegen/xai-grok-pager/src/settings/defs.rs
+index 671138df..3103925b 100644
+--- a/crates/codegen/xai-grok-pager/src/settings/defs.rs
++++ b/crates/codegen/xai-grok-pager/src/settings/defs.rs
+@@ -34,13 +34,13 @@ const THEME_CHOICES: &[EnumChoice] = &[
+         description: "Follow system dark/light appearance.",
+     },
+     EnumChoice {
+-        canonical: "groknight",
+-        display: "Grok Night",
++        canonical: "night",
++        display: "Night",
+         description: "Neutral dark with magenta accent.",
+     },
+     EnumChoice {
+-        canonical: "grokday",
+-        display: "Grok Day",
++        canonical: "day",
++        display: "Day",
+         description: "Light theme for bright environments.",
+     },
+     EnumChoice {
+@@ -258,12 +258,12 @@ const SCREEN_MODE_CHOICES: &[EnumChoice] = &[
+     EnumChoice {
+         canonical: "fullscreen",
+         display: "Fullscreen",
+-        description: "Open plain grok in the standard fullscreen TUI. Default when unset.",
++        description: "Open plain workshop in the standard fullscreen TUI. Default when unset.",
+     },
+     EnumChoice {
+         canonical: "minimal",
+         display: "Minimal",
+-        description: "Open plain grok in scrollback-native (minimal) mode.",
++        description: "Open plain workshop in scrollback-native (minimal) mode.",
+     },
+ ];
+ 
+@@ -422,13 +422,13 @@ const VOICE_STT_LANGUAGE_CHOICES: &[EnumChoice] = &[
+ /// There is no dark/light filtering: the user can pair any theme with any system-appearance bucket.
+ const CONCRETE_THEME_CHOICES: &[EnumChoice] = &[
+     EnumChoice {
+-        canonical: "groknight",
+-        display: "Grok Night",
++        canonical: "night",
++        display: "Night",
+         description: "Neutral dark with magenta accent.",
+     },
+     EnumChoice {
+-        canonical: "grokday",
+-        display: "Grok Day",
++        canonical: "day",
++        display: "Day",
+         description: "Light theme for bright environments.",
+     },
+     EnumChoice {
+@@ -493,7 +493,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
+             category: SettingCategory::Appearance,
+             owner: SettingOwner::Shell,
+             label: "Default screen mode",
+-            description: "How plain grok opens next time: Fullscreen (default when unset) or \
++            description: "How Workshop opens next time: Fullscreen (default when unset) or \
+                           Minimal. Writes [ui] screen_mode in config.toml. Restart required. \
+                           Switch this session only with /minimal or /fullscreen.",
+             keywords: &[
+@@ -701,8 +701,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
+                 "light",
+             ],
+             kind: SettingKind::Enum {
+-                // `Option<String>`: `None` resolves to "groknight"
+-                default: "groknight",
++                // `Option<String>`: `None` resolves to "night"
++                default: "night",
+                 choices: THEME_CHOICES,
+                 supports_preview: true,
+             },
+@@ -717,8 +717,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
+             description: "Theme to use when the system is in dark mode (only with theme=auto).",
+             keywords: &["auto", "dark", "theme", "system", "appearance", "night"],
+             kind: SettingKind::Enum {
+-                // `Option<String>`: `None` falls back to "groknight"
+-                default: "groknight",
++                // `Option<String>`: `None` falls back to "night"
++                default: "night",
+                 choices: CONCRETE_THEME_CHOICES,
+                 supports_preview: true,
+             },
+@@ -733,8 +733,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
+             description: "Theme to use when the system is in light mode (only with theme=auto).",
+             keywords: &["auto", "light", "theme", "system", "appearance", "day"],
+             kind: SettingKind::Enum {
+-                // `Option<String>`: `None` falls back to "grokday"
+-                default: "grokday",
++                // `Option<String>`: `None` falls back to "day"
++                default: "day",
+                 choices: CONCRETE_THEME_CHOICES,
+                 supports_preview: true,
+             },
+@@ -1143,10 +1143,10 @@ pub fn default_settings() -> Vec<SettingMeta> {
+             category: SettingCategory::Privacy,
+             owner: SettingOwner::Shell,
+             label: "Coding data, retention, and training",
+-            description: "Opt-in to provide SpaceXAI the ability to retain and train on \
+-                          coding data, e.g., prompts, traces, & metrics, for training and \
+-                          debugging purposes. We may still collect simple user metrics, \
+-                          e.g. how many times you use the product or a feature.",
++            description: "Whether the optional xAI account connection may retain and train on \
++                          your coding data (prompts, traces, metrics). Workshop itself sends \
++                          nothing anywhere; other connections follow their own provider's \
++                          terms.",
+             keywords: &[
+                 "privacy",
+                 "data",
+@@ -1407,7 +1407,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
+             category: SettingCategory::Editor,
+             owner: SettingOwner::Shell,
+             label: "Voice language",
+-            description: "Speech-to-text language for voice dictation (Grok STT). \
++            description: "Speech-to-text language for voice dictation. \
+                           English by default; System uses your locale when supported. \
+                           Sets formatting language for numbers and currencies.",
+             keywords: &["voice", "language", "locale", "dictation", "stt", "speech"],
+@@ -1542,7 +1542,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
+             category: SettingCategory::Advanced,
+             owner: SettingOwner::Shell,
+             label: "SSH wrap",
+-            description: "Show a `/doctor` tip when an SSH session is not using `grok wrap`.",
++            description: "Show a `/doctor` tip when an SSH session is not using `workshop wrap`.",
+             keywords: &[
+                 "ssh",
+                 "wrap",
+diff --git a/crates/codegen/xai-grok-pager/src/settings/registry.rs b/crates/codegen/xai-grok-pager/src/settings/registry.rs
+index fbaebaa3..242e0812 100644
+--- a/crates/codegen/xai-grok-pager/src/settings/registry.rs
++++ b/crates/codegen/xai-grok-pager/src/settings/registry.rs
+@@ -67,9 +67,9 @@ impl SettingCategory {
+ /// One choice in an `Enum` setting.
+ #[derive(Debug, Clone, Copy)]
+ pub struct EnumChoice {
+-    /// Canonical persisted value (e.g. `"groknight"`).
++    /// Canonical persisted value (e.g. `"night"`).
+     pub canonical: &'static str,
+-    /// Display label shown in the chooser (e.g. `"Grok Night"`).
++    /// Display label shown in the chooser (e.g. `"Night"`).
+     pub display: &'static str,
+     /// Sub-text shown in the chooser sheet (e.g. `"Dark + magenta accent"`).
+     pub description: &'static str,
+@@ -574,21 +574,21 @@ pub fn current_value_for(
+             ui.theme
+                 .as_deref()
+                 .and_then(crate::theme::canonical_name)
+-                .unwrap_or("groknight"),
++                .unwrap_or("night"),
+         )),
+         "auto_dark_theme" => Some(SettingValue::Enum(
+             ui.auto_dark_theme
+                 .as_deref()
+                 .and_then(crate::theme::canonical_name)
+                 .filter(|s| *s != "auto")
+-                .unwrap_or("groknight"),
++                .unwrap_or("night"),
+         )),
+         "auto_light_theme" => Some(SettingValue::Enum(
+             ui.auto_light_theme
+                 .as_deref()
+                 .and_then(crate::theme::canonical_name)
+                 .filter(|s| *s != "auto")
+-                .unwrap_or("grokday"),
++                .unwrap_or("day"),
+         )),
+         // render_mermaid: SHELL-owned (persisted to `[ui].render_mermaid`).
+         // Read from the process-wide cache mirror, which reflects the live value the render path uses
+@@ -836,7 +836,7 @@ mod tests {
+                         .theme
+                         .as_deref()
+                         .and_then(crate::theme::canonical_name)
+-                        .unwrap_or("groknight");
++                        .unwrap_or("night");
+                     assert_eq!(
+                         *default, expected,
+                         "theme default drifts from UiConfig::default()",
+@@ -852,7 +852,7 @@ mod tests {
+                         .as_deref()
+                         .and_then(crate::theme::canonical_name)
+                         .filter(|s| *s != "auto")
+-                        .unwrap_or("groknight");
++                        .unwrap_or("night");
+                     assert_eq!(
+                         *default, expected,
+                         "auto_dark_theme default drifts from UiConfig::default()",
+@@ -868,7 +868,7 @@ mod tests {
+                         .as_deref()
+                         .and_then(crate::theme::canonical_name)
+                         .filter(|s| *s != "auto")
+-                        .unwrap_or("grokday");
++                        .unwrap_or("day");
+                     assert_eq!(
+                         *default, expected,
+                         "auto_light_theme default drifts from UiConfig::default()",
+@@ -1395,7 +1395,7 @@ mod tests {
+         let value = current_value_for("auto_dark_theme", &ui, &pager).expect("must resolve");
+         assert_eq!(
+             value,
+-            SettingValue::Enum("groknight"),
++            SettingValue::Enum("night"),
+             "corrupted `auto_dark_theme = \"auto\"` must fall back to canonical default",
+         );
+     }
+@@ -1410,7 +1410,7 @@ mod tests {
+         let value = current_value_for("auto_light_theme", &ui, &pager).expect("must resolve");
+         assert_eq!(
+             value,
+-            SettingValue::Enum("grokday"),
++            SettingValue::Enum("day"),
+             "corrupted `auto_light_theme = \"auto\"` must fall back to canonical default",
+         );
+     }
+@@ -1424,7 +1424,7 @@ mod tests {
+         };
+         let pager = PagerLocalSnapshot::default();
+         let value = current_value_for("auto_dark_theme", &ui, &pager).expect("must resolve");
+-        assert_eq!(value, SettingValue::Enum("groknight"));
++        assert_eq!(value, SettingValue::Enum("night"));
+     }
+ 
+     /// The persisted `fork_secondary_model` slug resolves to the catalog display name.
+diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/theme.rs b/crates/codegen/xai-grok-pager/src/slash/commands/theme.rs
+index 53b62d0d..f8eb684c 100644
+--- a/crates/codegen/xai-grok-pager/src/slash/commands/theme.rs
++++ b/crates/codegen/xai-grok-pager/src/slash/commands/theme.rs
+@@ -270,8 +270,8 @@ mod tests {
+             let items = cmd.suggest_args(&ctx, "").expect("should return items");
+             let groknight = items
+                 .iter()
+-                .find(|i| i.insert_text == "groknight")
+-                .expect("groknight should be in list");
++                .find(|i| i.insert_text == "night")
++                .expect("night should be in list");
+             assert!(
+                 groknight.description.contains("(active)"),
+                 "explicit theme should show (active), got: {}",
+@@ -333,7 +333,7 @@ mod tests {
+             let mut matcher = crate::slash::matcher::FuzzyMatcher::new();
+             for (alias, canonical) in [
+                 ("transparent", "terminal"),
+-                ("dark", "groknight"),
++                ("dark", "night"),
+                 ("system", "auto"),
+             ] {
+                 let hits = matcher.rank(&items, alias, items.len(), |item| &item.match_text);
+@@ -370,10 +370,10 @@ mod tests {
+                     ..crate::settings::PagerLocalSnapshot::default()
+                 },
+             };
+-            let result = cmd.run(&mut ctx, "groknight");
++            let result = cmd.run(&mut ctx, "night");
+             match result {
+                 CommandResult::Action(Action::SetTheme(name)) => {
+-                    assert_eq!(name, "groknight");
++                    assert_eq!(name, "night");
+                 }
+                 other => panic!("expected Action::SetTheme(\"groknight\"), got {other:?}"),
+             }
+@@ -534,7 +534,7 @@ mod tests {
+             let result = cmd.run(&mut ctx, "dark");
+             match result {
+                 CommandResult::Action(Action::SetTheme(name)) => {
+-                    assert_eq!(name, "groknight", "alias must normalise to canonical");
++                    assert_eq!(name, "night", "alias must normalise to canonical");
+                 }
+                 other => panic!("expected Action::SetTheme(\"groknight\"), got {other:?}"),
+             }
+@@ -559,7 +559,7 @@ mod tests {
+         with_test_env(|| {
+             theme_cache::set(ThemeKind::GrokNight);
+             let cmd = ThemeCommand;
+-            cmd.preview_arg("grokday");
++            cmd.preview_arg("day");
+             assert_eq!(Theme::current_kind(), ThemeKind::GrokDay);
+         });
+     }
+@@ -586,11 +586,11 @@ mod tests {
+             theme_cache::set(ThemeKind::GrokNight);
+             let cmd = ThemeCommand;
+             // Simulate user navigating into a different theme during preview.
+-            cmd.preview_arg("grokday");
++            cmd.preview_arg("day");
+             assert_eq!(Theme::current_kind(), ThemeKind::GrokDay);
+ 
+             // Then Escape (or arg picker dismissal): restore.
+-            cmd.cancel_preview("groknight");
++            cmd.cancel_preview("night");
+             assert_eq!(
+                 Theme::current_kind(),
+                 ThemeKind::GrokNight,
+diff --git a/crates/codegen/xai-grok-pager/tests/settings_e2e.rs b/crates/codegen/xai-grok-pager/tests/settings_e2e.rs
+index 02692458..8d4655dd 100644
+--- a/crates/codegen/xai-grok-pager/tests/settings_e2e.rs
++++ b/crates/codegen/xai-grok-pager/tests/settings_e2e.rs
+@@ -1999,9 +1999,9 @@ fn defaults_round_trip_through_registry() {
+             "remember_tool_approvals" => SettingValue::Bool(true),
+             "toolset.ask_user_question.timeout_enabled" => SettingValue::Bool(true),
+             "keep_text_selection" => SettingValue::Enum("flash"),
+-            "theme" => SettingValue::Enum("groknight"),
+-            "auto_dark_theme" => SettingValue::Enum("groknight"),
+-            "auto_light_theme" => SettingValue::Enum("grokday"),
++            "theme" => SettingValue::Enum("night"),
++            "auto_dark_theme" => SettingValue::Enum("night"),
++            "auto_light_theme" => SettingValue::Enum("day"),
+             "render_mermaid" => SettingValue::Enum("auto"),
+             "multiline_mode" => SettingValue::Bool(false),
+             "permission_mode" => SettingValue::Enum("ask"),
+@@ -3691,7 +3691,7 @@ fn docs_footer_renders_for_browse_and_picker() {
+              {all_text}"
+         );
+         assert!(
+-            all_text.contains("change theme to grokday"),
++            all_text.contains("change theme to day"),
+             "[{fixture_label}] docs footer must include the example phrasing"
+         );
+     }

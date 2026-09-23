@@ -20,7 +20,7 @@ pub struct ModelCommand;
 impl SlashCommand for ModelCommand {
     slash_meta! {
         name: "model",
-        aliases: ["m"],
+        aliases: ["m", "models"],
         description: "Switch the active model",
         usage: "/model [<name> [effort]]",
         takes_args: true,

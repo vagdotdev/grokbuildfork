@@ -42,6 +42,7 @@ pub(super) fn report() -> DiagnosticReport {
             },
             voice: None,
             voice_engine: None,
+            engine: None,
         },
         findings: Vec::new(),
         probe_notes: Vec::new(),
@@ -721,12 +722,12 @@ fn tmux_stale_plan_and_idempotence_reuse_managed_writer_safety() {
 fn bash_zsh_and_fish_plans_use_exact_paths_and_aliases() {
     let temp = tempfile::tempdir().unwrap();
     for (shell, relative, alias) in [
-        ("/bin/bash", ".bashrc", "alias ssh='grok wrap ssh'"),
-        ("/bin/zsh", ".zshrc", "alias ssh='grok wrap ssh'"),
+        ("/bin/bash", ".bashrc", "alias ssh='workshop wrap ssh'"),
+        ("/bin/zsh", ".zshrc", "alias ssh='workshop wrap ssh'"),
         (
             "/usr/local/bin/fish",
             ".config/fish/config.fish",
-            "alias ssh 'grok wrap ssh'",
+            "alias ssh 'workshop wrap ssh'",
         ),
     ] {
         let plan = plan_fix(request(temp.path(), shell), &report(), &terminal()).unwrap();
@@ -950,7 +951,7 @@ fn comments_and_managed_alias_do_not_create_false_conflicts() {
     let path = temp.path().join(".zshrc");
     std::fs::write(
         &path,
-        "# alias ssh='ssh -A'\n# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='grok wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< workshop doctor <<<\n",
+        "# alias ssh='ssh -A'\n# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='workshop wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< workshop doctor <<<\n",
     )
     .unwrap();
     let plan = plan_fix(request(temp.path(), "/bin/zsh"), &report(), &terminal()).unwrap();
@@ -964,11 +965,11 @@ fn managed_alias_with_later_unmanaged_conflict_is_not_configured() {
     let cases = [
         (
             ShellKind::Bash,
-            "# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='grok wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< workshop doctor <<<\nalias ssh='ssh -A'\n",
+            "# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='workshop wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< workshop doctor <<<\nalias ssh='ssh -A'\n",
         ),
         (
             ShellKind::Fish,
-            "# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh 'grok wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< workshop doctor <<<\nfunction ssh\n  command ssh -A $argv\nend\n",
+            "# >>> workshop doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh 'workshop wrap ssh'\n# <<< terminal.ssh-wrap <<<\n# <<< workshop doctor <<<\nfunction ssh\n  command ssh -A $argv\nend\n",
         ),
     ];
     for (shell, content) in cases {
@@ -1068,7 +1069,7 @@ fn configured_report_reaches_pass_state_only_for_exact_managed_alias() {
 fn shell_aliases_expand_to_exact_argv_and_bypass_is_explicit() {
     let temp = tempfile::tempdir().unwrap();
     let capture = temp.path().join("capture");
-    let grok = temp.path().join("grok");
+    let grok = temp.path().join("workshop");
     std::fs::write(
         &grok,
         format!(
@@ -1082,7 +1083,7 @@ fn shell_aliases_expand_to_exact_argv_and_bypass_is_explicit() {
 
     if let Some(bash) = find_on_path("bash") {
         let rc = temp.path().join("bashrc");
-        std::fs::write(&rc, "alias ssh='grok wrap ssh'\n").unwrap();
+        std::fs::write(&rc, "alias ssh='workshop wrap ssh'\n").unwrap();
         let command = format!(
             "source '{}'; source '{}'; eval 'ssh -p 2222 host'",
             rc.display(),
@@ -1113,7 +1114,7 @@ fn shell_aliases_expand_to_exact_argv_and_bypass_is_explicit() {
     }
     if let Some(zsh) = find_on_path("zsh") {
         let rc = temp.path().join("zshrc");
-        std::fs::write(&rc, "alias ssh='grok wrap ssh'\n").unwrap();
+        std::fs::write(&rc, "alias ssh='workshop wrap ssh'\n").unwrap();
         let command = format!(
             "source '{}'; source '{}'; eval 'ssh -p 2222 host'",
             rc.display(),
@@ -1153,7 +1154,7 @@ fn shell_aliases_expand_to_exact_argv_and_bypass_is_explicit() {
     };
     let mut shell = std::process::Command::new(bash);
     shell
-        .args(["-ic", "alias ssh='grok wrap ssh'; command ssh host"])
+        .args(["-ic", "alias ssh='workshop wrap ssh'; command ssh host"])
         .env("CAPTURE", &capture)
         .env(
             "PATH",
@@ -1186,7 +1187,7 @@ fn shell_aliases_expand_to_exact_argv_and_bypass_is_explicit() {
         .unwrap();
         std::fs::set_permissions(&fish_grok, std::fs::Permissions::from_mode(0o755)).unwrap();
         let rc = temp.path().join("config.fish");
-        std::fs::write(&rc, "alias ssh 'fish-grok wrap ssh'\n").unwrap();
+        std::fs::write(&rc, "alias ssh 'fish-workshop wrap ssh'\n").unwrap();
         let command = format!(
             "source '{}'; source '{}'; ssh -p 2222 host; env | string match -rq '^ssh='; and exit 9; or exit 0",
             rc.display(),

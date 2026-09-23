@@ -2395,6 +2395,7 @@ pub(crate) async fn run(
             maybe_ev = input_rx.recv() => {
                 // `None` means the dedicated terminal reader thread has ended.
                 let Some(ev) = maybe_ev else { break };
+                let typed_char = typed_character(&ev.event);
                 let handled_at = std::time::Instant::now();
                 let waited =
                     super::event_loop_stall::input_wait(ev.arrived_at, handled_at, loop_entry);
@@ -2411,6 +2412,9 @@ pub(crate) async fn run(
                 }
                 if result.should_quit {
                     break;
+                }
+                if typed_char {
+                    maybe_warm_engine_on_first_message_keystroke(&mut app);
                 }
                 if !app.pending_effects.is_empty() {
                     let effs = std::mem::take(&mut app.pending_effects);
@@ -4046,9 +4050,31 @@ fn handle_workshop_turn_msg(
     use crate::app::workshop::WorkshopTurnMsg as M;
     use crate::scrollback::block::RenderBlock;
 
+    // The engine warm-up reports before any turn (and any agent) exists.
+    if let M::EngineWarm { engine } = msg {
+        app.workshop_engine = Some(engine);
+        return (false, vec![]);
+    }
     let Some(agent_id) = app.workshop_turn_agent else {
         return (false, vec![]);
     };
+    // Bring-up status is transient: the first real output, a fallback, or the end of the turn
+    // removes it.
+    let clears_progress = matches!(
+        msg,
+        M::Delta(_)
+            | M::Tool { .. }
+            | M::Permission { .. }
+            | M::Error(_)
+            | M::EngineUnavailable { .. }
+            | M::Done { .. }
+    );
+    if clears_progress
+        && let Some(id) = app.workshop_turn_progress_entry.take()
+        && let Some(agent) = app.agents.get_mut(&agent_id)
+    {
+        agent.scrollback.remove_entry(id);
+    }
     if let M::EngineUnavailable { reason, text } = msg {
         let effects = dispatch::dispatch(
             Action::WorkshopEngineUnavailable {
@@ -4061,6 +4087,17 @@ fn handle_workshop_turn_msg(
         return (true, effects);
     }
     let redraw = match msg {
+        M::EngineWarm { .. } => false,
+        M::Progress(text) => {
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                if let Some(id) = app.workshop_turn_progress_entry.take() {
+                    agent.scrollback.remove_entry(id);
+                }
+                let id = agent.scrollback.push_block(RenderBlock::system(text));
+                app.workshop_turn_progress_entry = Some(id);
+            }
+            true
+        }
         M::EngineDefaultResolved { model } => {
             // OpenCode's live default replaces the pinned seed the first run activated.
             let conn = crate::app::workshop::WorkshopConnection::Engine { model };
@@ -4169,6 +4206,46 @@ fn handle_workshop_turn_msg(
         M::EngineUnavailable { .. } => false,
     };
     (redraw, vec![])
+}
+
+/// A plain character key press (not a Ctrl/Alt chord, not a release).
+fn typed_character(event: &Event) -> bool {
+    let Event::Key(key) = event else { return false };
+    matches!(key.code, KeyCode::Char(_))
+        && key.kind != KeyEventKind::Release
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+}
+
+/// Workshop: the OpenCode engine is brought up (installed on first run, `opencode serve`) the
+/// moment the user starts typing a *message*, never on launch and never for a slash command —
+/// a fresh home that is opened, browsed with `/model` and `/auth`, and quit makes no network call
+/// and gains no `tools/` directory, while a typed first message only waits for the model.
+fn maybe_warm_engine_on_first_message_keystroke(app: &mut AppView) {
+    if app.workshop_engine_warm_started || !app.workshop_connection.is_engine() {
+        return;
+    }
+    let composer = match app.active_view {
+        ActiveView::Welcome => app.welcome_prompt.text(),
+        ActiveView::Agent(id) => match app.agents.get(&id) {
+            Some(agent) => agent.prompt.text(),
+            None => return,
+        },
+        _ => return,
+    };
+    let text = composer.trim_start();
+    if text.is_empty() || text.starts_with('/') {
+        return;
+    }
+    let Some(tx) = app.workshop_turn_tx.clone() else { return };
+    app.workshop_engine_warm_started = true;
+    let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    tokio::spawn(crate::app::workshop::warm_engine(
+        app.workshop_engine_slot.clone(),
+        workspace,
+        tx,
+    ));
 }
 
 fn process_effects(

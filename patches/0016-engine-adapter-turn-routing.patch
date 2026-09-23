@@ -38,10 +38,18 @@ index ae3b381c..64b8ac8d 100644
      /// Whether a local or wake cancel is still in flight.
      pub(crate) fn any_cancel_pending(&self) -> bool {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-index a4d77733..f835d06b 100644
+index a4d77733..20026be1 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-@@ -614,6 +614,80 @@ pub(super) fn dispatch_send_prompt_inner(
+@@ -82,6 +82,7 @@ pub(super) fn collect_live_doctor_report_for_terminal(
+     if crate::app::voice_mode_enabled() {
+         crate::diagnostics::apply_voice_probe(&mut report, true);
+     }
++    crate::diagnostics::apply_engine_probe(&mut report);
+     Some(report)
+ }
+ 
+@@ -614,6 +615,80 @@ pub(super) fn dispatch_send_prompt_inner(
      dispatch_send_prompt_submission(app, text, None, consume_input, literal, is_follow_up)
  }
  
@@ -63,7 +71,7 @@ index a4d77733..f835d06b 100644
 +    use crate::app::workshop::{self, WorkshopConnection, WorkshopTurnKind, WorkshopTurnSpec};
 +
 +    if app.workshop_turn_active {
-+        app.show_toast("A model turn is already running (Esc to cancel).");
++        app.show_toast("Still working on your last message — Ctrl+C cancels it, /model switches model.");
 +        return vec![];
 +    }
 +    let Some(tx) = app.workshop_turn_tx.clone() else {
@@ -79,7 +87,7 @@ index a4d77733..f835d06b 100644
 +    let kind = match &app.workshop_connection {
 +        WorkshopConnection::Shell => return vec![],
 +        WorkshopConnection::Engine { model } => WorkshopTurnKind::Engine {
-+            engine: app.workshop_engine.clone(),
++            slot: app.workshop_engine_slot.clone(),
 +            session: app
 +                .workshop_engine_session
 +                .clone()
@@ -122,7 +130,7 @@ index a4d77733..f835d06b 100644
  pub(super) fn dispatch_send_prompt_submission(
      app: &mut AppView,
      text: String,
-@@ -689,6 +763,16 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -689,6 +764,16 @@ pub(super) fn dispatch_send_prompt_submission(
          text
      };
  
@@ -139,10 +147,51 @@ index a4d77733..f835d06b 100644
      // Capture app-level fields before the mut-borrow on `agent`.
      let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
      let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
+@@ -701,6 +786,7 @@ pub(super) fn dispatch_send_prompt_submission(
+     let login_method_id_from_app = app.login_method_id.as_ref().map(|id| id.0.to_string());
+     let leader_mode = app.leader_mode;
+     let screen_mode_is_minimal = app.screen_mode.is_minimal();
++    let workshop_connection_is_shell = app.workshop_connection.is_shell();
+     let Some(agent) = app.agents.get_mut(&id) else {
+         return prelude;
+     };
+@@ -1029,6 +1115,23 @@ pub(super) fn dispatch_send_prompt_submission(
+                 return effects;
+             }
+             CommandResult::QueueCommand(cmd_text) => {
++                // Workshop: shell-side commands (`/compact`, `/dream`, `/flush`, …) run on
++                // Workshop's own agent loop, which an Engine/Adapter connection bypasses; queuing
++                // them would hit the placeholder model and fail with a loopback connection error.
++                if !workshop_connection_is_shell {
++                    let name = cmd_text.split_whitespace().next().unwrap_or("This command");
++                    push_and_page_flip(
++                        &mut agent.scrollback,
++                        RenderBlock::system(format!(
++                            "{name} runs on Workshop's own agent loop, not on this connection — \
++                             pick a Direct API or Local model with /model to use it."
++                        )),
++                    );
++                    if consume_input {
++                        agent.prompt.set_text("");
++                    }
++                    return effects;
++                }
+                 agent.session.enqueue_command(cmd_text);
+             }
+             CommandResult::InjectSkill {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
-index a80f3faf..662108e6 100644
+index a80f3faf..6b08a5e1 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
+@@ -674,7 +674,7 @@ pub(in crate::app::dispatch) fn dispatch_trust_folder(app: &mut AppView) -> Vec<
+         TrustGateOutcome::Finish => finish_trust(app),
+         TrustGateOutcome::FinishSessionLocal => {
+             app.show_toast(
+-                "Folder trusted for this session only. Run `grok --trust` here to save it for next time.",
++                "Folder trusted for this session only. Run `workshop --trust` here to save it for next time.",
+             );
+             finish_trust(app)
+         }
 @@ -785,9 +785,13 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
      let announcements = app.active_announcements.clone();
      let restricted = app.tier_restricted_commands.clone();
@@ -216,3 +265,129 @@ index 40625217..e04fb559 100644
      let ActiveView::Agent(id) = app.active_view else {
          return vec![];
      };
+diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_engine_state.rs b/crates/codegen/xai-grok-pager/src/app/workshop_engine_state.rs
+new file mode 100644
+index 00000000..69653ffb
+--- /dev/null
++++ b/crates/codegen/xai-grok-pager/src/app/workshop_engine_state.rs
+@@ -0,0 +1,120 @@
++//! Workshop overlay: on-disk OpenCode engine diagnostics under `$WORKSHOP_HOME` — the last start
++//! attempt (`engine/state.json`) and the `opencode serve` log (`logs/opencode-engine.log`).
++//!
++//! Written every time the engine is (re)started so `workshop doctor` can show the binary, its
++//! version, the last error, and where the server output went — the answer to "nothing works" on a
++//! machine we cannot see. Lives in the pager because `workshop-adapters` never reads file
++//! contents (its no-theft gate); the adapter crate only hands us log lines.
++
++use std::path::{Path, PathBuf};
++
++use serde::{Deserialize, Serialize};
++
++/// `$WORKSHOP_HOME/engine/state.json`.
++pub fn state_path(workshop_home: &Path) -> PathBuf {
++    workshop_home.join("engine").join("state.json")
++}
++
++/// `$WORKSHOP_HOME/logs/opencode-engine.log` (stdout + stderr of `opencode serve`, appended).
++pub fn log_path(workshop_home: &Path) -> PathBuf {
++    workshop_home.join("logs").join("opencode-engine.log")
++}
++
++/// What the last engine start attempt looked like.
++#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
++pub struct EngineState {
++    /// Resolved `opencode` binary (`None` until detection succeeded once).
++    #[serde(default)]
++    pub binary: Option<PathBuf>,
++    #[serde(default)]
++    pub version: Option<String>,
++    /// Unix seconds of the last start attempt.
++    #[serde(default)]
++    pub last_start_unix: Option<u64>,
++    /// The phase the last attempt reached: `detect`, `install`, `start`, `ready`.
++    #[serde(default)]
++    pub last_phase: Option<String>,
++    /// The error the last attempt ended with, if it failed.
++    #[serde(default)]
++    pub last_error: Option<String>,
++    #[serde(default)]
++    pub log_path: Option<PathBuf>,
++}
++
++impl EngineState {
++    pub fn load(workshop_home: &Path) -> Option<Self> {
++        let raw = std::fs::read_to_string(state_path(workshop_home)).ok()?;
++        serde_json::from_str(&raw).ok()
++    }
++
++    /// Best-effort private write; failures are logged, never fatal.
++    pub fn save(&self, workshop_home: &Path) {
++        let path = state_path(workshop_home);
++        if let Some(parent) = path.parent()
++            && let Err(e) = std::fs::create_dir_all(parent)
++        {
++            tracing::warn!(error = %e, path = %parent.display(), "engine state dir");
++            return;
++        }
++        let Ok(json) = serde_json::to_vec_pretty(self) else {
++            return;
++        };
++        if let Err(e) = workshop_providers::atomic_write_private(&path, &json) {
++            tracing::warn!(error = %e, path = %path.display(), "engine state write");
++        }
++    }
++}
++
++pub fn now_unix() -> u64 {
++    std::time::SystemTime::now()
++        .duration_since(std::time::UNIX_EPOCH)
++        .map(|d| d.as_secs())
++        .unwrap_or(0)
++}
++
++/// Append one stamped line to the engine log; creates the directory on first use.
++pub fn append_log(path: &Path, line: &str) {
++    use std::io::Write;
++    if let Some(parent) = path.parent() {
++        let _ = std::fs::create_dir_all(parent);
++    }
++    if let Ok(mut f) = std::fs::OpenOptions::new()
++        .create(true)
++        .append(true)
++        .open(path)
++    {
++        let _ = writeln!(f, "[{}] {}", now_unix(), line.trim_end());
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn state_round_trips() {
++        let home = tempfile::tempdir().unwrap();
++        let state = EngineState {
++            binary: Some(PathBuf::from("/x/opencode")),
++            version: Some("1.18.31".into()),
++            last_start_unix: Some(1),
++            last_phase: Some("ready".into()),
++            last_error: None,
++            log_path: Some(log_path(home.path())),
++        };
++        state.save(home.path());
++        assert_eq!(EngineState::load(home.path()), Some(state));
++    }
++
++    #[test]
++    fn missing_state_is_none_and_log_appends() {
++        let home = tempfile::tempdir().unwrap();
++        assert_eq!(EngineState::load(home.path()), None);
++        let log = log_path(home.path());
++        append_log(&log, "one");
++        append_log(&log, "two\n");
++        let text = std::fs::read_to_string(&log).unwrap();
++        assert_eq!(text.lines().count(), 2);
++        assert!(text.lines().all(|l| l.starts_with('[')));
++    }
++}

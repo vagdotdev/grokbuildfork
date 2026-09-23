@@ -2023,7 +2023,24 @@ fn dispatch_doctor_if_requested(args: &PagerArgs) -> bool {
     }
     true
 }
+/// Workshop (gate:config-isolation): the product never reads a Grok Build home. Upstream's
+/// `GROK_HOME` is dropped from this process before any path resolves, so a machine that also runs
+/// Grok Build — with `GROK_HOME` exported, or `~/.grok` full of hooks and settings — keeps that to
+/// itself; Workshop uses `$WORKSHOP_HOME` (default `~/.workshop`) and nothing else. The
+/// `GROK_*` compat env cells that would pull another tool's hooks/MCPs in are dropped too; those
+/// are opted into through `[compat.<vendor>]` in Workshop's own config.
+fn isolate_from_grok_build_env() {
+    // SAFETY: first thing in `main`, before any other thread exists.
+    unsafe {
+        std::env::remove_var(xai_dirs::LEGACY_HOME_ENV);
+        for cell in xai_grok_tools::types::compat::COMPAT_CELLS {
+            std::env::remove_var(cell.env_var());
+        }
+    }
+}
+
 fn main() {
+    isolate_from_grok_build_env();
     xai_grok_version::set_full_version(env!("VERSION_WITH_COMMIT"));
     xai_grok_telemetry::startup::mark_process_start();
     if let Some(code) = xai_grok_pager::app::mermaid_worker::maybe_run_render_subprocess() {
@@ -2061,10 +2078,10 @@ fn main() {
     xai_grok_pager::memory_trace::start(xai_grok_pager::memory_trace::default_dir());
     raise_fd_limit();
     if let Err(e) = xai_grok_config::validate_requirements() {
-        eprintln!("Couldn't start Grok: {e}");
+        eprintln!("Couldn't start Workshop: {e}");
         eprintln!();
         eprintln!(
-            "Update Grok to a version the policy allows, or ask your administrator \
+            "Update Workshop to a version the policy allows, or ask your administrator \
              to fix the managed requirements."
         );
         std::process::exit(2);

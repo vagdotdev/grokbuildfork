@@ -7,8 +7,8 @@ fn shorten_location_path_kerem_grok_home() {
         "~/.g/w/code-xai/dashboard-design"
     );
     assert_eq!(
-        shorten_location_path("$GROK_HOME/worktrees/code-xai/dashboard-design").as_ref(),
-        "$GROK_HOME/w/code-xai/dashboard-design"
+        shorten_location_path("$WORKSHOP_HOME/worktrees/code-xai/dashboard-design").as_ref(),
+        "$WORKSHOP_HOME/w/code-xai/dashboard-design"
     );
 }
 
@@ -35,10 +35,10 @@ fn shorten_location_path_short_paths_leave_alone() {
         shorten_location_path("~/.grok/worktrees").as_ref(),
         "~/.grok/worktrees"
     );
-    assert_eq!(shorten_location_path("$GROK_HOME").as_ref(), "$GROK_HOME");
+    assert_eq!(shorten_location_path("$WORKSHOP_HOME").as_ref(), "$WORKSHOP_HOME");
     assert_eq!(
-        shorten_location_path("$GROK_HOME/worktrees").as_ref(),
-        "$GROK_HOME/worktrees"
+        shorten_location_path("$WORKSHOP_HOME/worktrees").as_ref(),
+        "$WORKSHOP_HOME/worktrees"
     );
     assert_eq!(shorten_location_path("/work/xai").as_ref(), "/work/xai");
     assert_eq!(shorten_location_path("relative").as_ref(), "relative");
@@ -152,7 +152,7 @@ fn shorten_location_path_unix_backslash_stays_in_component() {
 #[test]
 fn shorten_location_path_does_not_eat_grok_home_lookalike() {
     assert_eq!(
-        shorten_location_path("$GROK_HOME_BACKUP/a/b/c").as_ref(),
+        shorten_location_path("$WORKSHOP_HOME_BACKUP/a/b/c").as_ref(),
         "$/a/b/c"
     );
 }

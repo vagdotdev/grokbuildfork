@@ -19,3 +19,6 @@
 0015-voice-local-engine.patch  # product
 0016-engine-adapter-turn-routing.patch  # product
 0017-pager-test-fixes.patch  # product
+0018-workshop-themes-night-day.patch  # branding
+0019-foreign-config-off-by-default.patch  # product
+0020-workshop-system-prompt.patch  # branding

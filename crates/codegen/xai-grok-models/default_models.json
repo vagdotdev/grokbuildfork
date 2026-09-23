@@ -52,7 +52,8 @@
           "label": "Low Effort",
           "description": "Quick, fast implementations"
         }
-      ]
+      ],
+      "supported_in_api": false
     },
     {
       "id": "grok-4.5",
@@ -85,7 +86,8 @@
           "label": "Low Effort",
           "description": "Quick, fast implementations"
         }
-      ]
+      ],
+      "supported_in_api": false
     }
   ]
 }
