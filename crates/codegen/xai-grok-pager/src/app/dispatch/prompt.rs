@@ -656,6 +656,16 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
     };
     let cwd = agent.session.cwd.clone();
     let mode = workshop_permission_mode(agent);
+    // Images pasted with the prompt travel with it (the engine sends them as file parts).
+    let images: Vec<_> = match app.agents.get_mut(&id) {
+        Some(agent) => agent
+            .prompt
+            .drain_images()
+            .iter()
+            .filter_map(crate::app::workshop::prompt_file)
+            .collect(),
+        None => Vec::new(),
+    };
 
     let kind = match &app.workshop_connection {
         WorkshopConnection::Shell => return vec![],
@@ -676,6 +686,7 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
         kind,
         cwd,
         text: text.clone(),
+        images,
         mode,
     };
 
