@@ -1701,9 +1701,12 @@ mod tests {
     #[test]
     fn required_arg_command_blocks_without_args() {
         let reg = test_registry();
-        // /model has takes_args=true, args_required=true.
-        assert!(!is_command_complete("/model", &reg));
-        assert!(!is_command_complete("/model ", &reg));
+        // /rename has takes_args=true, args_required=true.
+        assert!(!is_command_complete("/rename", &reg));
+        assert!(!is_command_complete("/rename ", &reg));
+        assert!(is_command_complete("/rename my session", &reg));
+        // Workshop: bare /model opens the Models overlay, so it is complete without args.
+        assert!(is_command_complete("/model", &reg));
         assert!(is_command_complete("/model grok-4", &reg));
     }
 

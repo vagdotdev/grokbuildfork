@@ -178,6 +178,8 @@ pub(crate) fn test_app() -> AppView {
         workshop_turn_cancel: None,
         workshop_turn_stream_entry: None,
         workshop_turn_agent: None,
+        workshop_turn_prompt_entry: None,
+        workshop_resend: None,
         auth_clipboard_delivery: None,
         auth_clipboard_feedback_generation: 0,
         team_id: None,

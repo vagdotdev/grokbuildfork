@@ -406,12 +406,54 @@ fn identity_home_is_workshop() {
     }
 }
 
-/// The picker policy: the xAI row is last, never preselected, and only an explicit double-Enter
-/// reaches it; every non-xAI row yields something other than a login.
+/// Branding: the terminal window title Workshop sets (OSC 0, via crossterm `SetTitle`) reads
+/// `Workshop`, never `grok`. Both title builders are pinned: the startup/session title in
+/// `app/mod.rs` and the per-tick `TitleManager` in `notifications/title.rs`.
+#[test]
+fn branding_terminal_title_is_workshop_never_grok() {
+    let root = workshop_gates::repo_root();
+    let title_rs = std::fs::read_to_string(
+        root.join("crates/codegen/xai-grok-pager/src/notifications/title.rs"),
+    )
+    .expect("read notifications/title.rs");
+    let title_src = workshop_gates::scannable_source(&title_rs);
+    assert_eq!(
+        title_src.matches("\"grok\"").count(),
+        0,
+        "TitleManager must not compose a `grok` title"
+    );
+    assert!(
+        title_src.matches("\"Workshop\"").count() >= 2,
+        "TitleManager composes the `Workshop` title (fallback and reset)"
+    );
+
+    let mod_rs = std::fs::read_to_string(root.join("crates/codegen/xai-grok-pager/src/app/mod.rs"))
+        .expect("read app/mod.rs");
+    let start = mod_rs
+        .find("fn terminal_title_string(")
+        .expect("app/mod.rs has terminal_title_string");
+    let body_end = mod_rs[start..]
+        .find("\n}\n")
+        .map(|i| start + i)
+        .expect("terminal_title_string body end");
+    let body = &mod_rs[start..body_end];
+    assert!(
+        !body.to_ascii_lowercase().contains("grok"),
+        "the startup terminal title must not say grok:\n{body}"
+    );
+    assert!(
+        body.contains("\"Workshop\"") && body.contains("- Workshop"),
+        "the startup terminal title is `Workshop` / `<session> - Workshop`:\n{body}"
+    );
+}
+
+/// The picker policy: the xAI card is the last Subscriptions entry, never preselected, and only
+/// an explicit double-Enter reaches it; every other entry on both views yields something other
+/// than a login. The Models view (`/model`) has no xAI card at all.
 #[test]
 fn picker_xai_is_optional_last_and_explicit() {
     use workshop_auth::{
-        ModelsRow, PickerInput, PickerOutcome, PickerSnapshot, PickerState, models_rows,
+        ModelsRow, PickerInput, PickerOutcome, PickerSnapshot, PickerState, PickerTab, models_rows,
     };
     let mut p = PickerState::new();
     let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]);
@@ -421,26 +463,36 @@ fn picker_xai_is_optional_last_and_explicit() {
         default_selection: Some(workshop_providers::select_default(&[], true)),
         secret_backend: Some("memory"),
     });
-    assert!(p.rows.last().is_some_and(ModelsRow::is_xai));
-    assert!(!p.selected_row().is_some_and(ModelsRow::is_xai));
-    let n = p.rows.len();
-    for i in 0..n {
+    assert!(!p.rows.iter().any(ModelsRow::is_xai), "no xAI on /model");
+    for i in 0..p.rows.len() {
         p.models_selected = i;
-        p.detail_open = false;
         p.xai_armed = false;
-        if p.rows.get(i).is_some_and(ModelsRow::is_xai) {
-            continue;
-        }
         assert_ne!(
             p.handle(PickerInput::Enter),
             PickerOutcome::StartOptionalXaiLogin,
-            "row {i} must not start the xAI login"
+            "model row {i} must not start the xAI login"
         );
     }
-    // The xAI row needs two explicit Enters.
-    p.models_selected = n - 1;
+    p.handle(PickerInput::SwitchTab);
+    assert_eq!(p.tab, PickerTab::Subscriptions);
+    assert!(p.auth_rows.last().is_some_and(ModelsRow::is_xai));
+    assert_eq!(p.rail_selected, 0, "never preselected");
+    let n = p.subscriptions_len();
+    for i in 0..n - 1 {
+        p.rail_selected = i;
+        p.detail_open = false;
+        p.xai_armed = false;
+        assert_ne!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::StartOptionalXaiLogin,
+            "subscriptions entry {i} must not start the xAI login"
+        );
+    }
+    // The xAI card needs two explicit Enters.
+    p.rail_selected = n - 1;
     p.detail_open = false;
     p.xai_armed = false;
+    assert!(p.selected_auth_row().is_some_and(ModelsRow::is_xai));
     assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
     assert_eq!(
         p.handle(PickerInput::Enter),

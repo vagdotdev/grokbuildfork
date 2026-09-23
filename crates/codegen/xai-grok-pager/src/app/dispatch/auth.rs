@@ -204,18 +204,21 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
     }
 }
 
-/// Login. Triggered by pressing 'l' on the welcome screen, by `/login`, `/auth`, `/models`, and at first run.
+/// Login. Triggered by pressing 'l' on an auth-pending welcome screen, by `/login` and `/auth`.
 ///
-/// Workshop: this opens the **connection picker** and never sends an `AuthenticateRequest` by itself
-/// (gate:no-xai, Gate 2). The inherited interactive session login runs only from the picker's labeled
-/// optional xAI card (`dispatch_connection_picker` → `start_optional_xai_login`).
-/// Only the welcome view renders the picker, so a mid-session invocation stashes the caller's view in
-/// `auth_return_view` and switches to `Welcome`, exactly like the inherited auth UI did.
+/// Workshop: this opens the **Subscriptions** view of the connection picker and never sends an
+/// `AuthenticateRequest` by itself (gate:no-xai, Gate 2). The inherited interactive session login
+/// runs only from the picker's labeled optional xAI card (`dispatch_connection_picker` →
+/// `start_optional_xai_login`). A first run never comes here: it activates the OpenCode engine's
+/// default model directly (`dispatch_workshop_first_run`).
 pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
-    dispatch_open_connection_picker(app, workshop_auth::PickerTab::Models)
+    dispatch_open_connection_picker(app, workshop_auth::PickerTab::Subscriptions)
 }
 
-/// Open the connection picker on `tab` (Workshop). Idempotent while already open.
+/// Open the connection picker overlay on `tab` (`/model` → Models, `/auth` → Subscriptions).
+/// Idempotent while already open. Only the welcome view renders the overlay, so a mid-session
+/// invocation stashes the caller's view in `auth_return_view` and switches to `Welcome`; Esc
+/// restores it.
 pub(super) fn dispatch_open_connection_picker(
     app: &mut AppView,
     tab: workshop_auth::PickerTab,
@@ -235,12 +238,80 @@ pub(super) fn dispatch_open_connection_picker(
             vec![]
         }
         None => {
-            app.connection_picker = Some(workshop_auth::PickerState::new().with_tab(tab));
+            app.connection_picker = Some(
+                workshop_auth::PickerState::new()
+                    .with_tab(tab)
+                    .with_active(app.workshop_connection.active_row_id()),
+            );
             // Rows and rails load asynchronously: loopback local-server probe, catalogs, and the
             // official CLI detection (child processes on the blocking pool). No auth files.
             vec![Effect::WorkshopLoadPicker]
         }
     }
+}
+
+/// Make `conn` the active connection and remember it for the next launch.
+fn set_workshop_connection(app: &mut AppView, conn: crate::app::workshop::WorkshopConnection) {
+    crate::app::workshop::save_active_connection(&conn);
+    app.workshop_connection = conn;
+}
+
+/// First run (nothing connected yet): land in the composer with the OpenCode engine's default free
+/// model active — no picker, no network until the first message (`opencode` installs itself
+/// then). The placeholder shell model + anonymous session are established in-process exactly as
+/// selecting the row in `/model` would; `/model` and `/auth` remain the only doors afterwards.
+pub(super) fn dispatch_workshop_first_run(app: &mut AppView) -> Vec<Effect> {
+    set_workshop_connection(app, crate::app::workshop::first_run_connection());
+    match crate::app::workshop::activate_placeholder_session() {
+        Ok(key) => start_workshop_activation(app, key),
+        Err(e) => {
+            app.auth_state = AuthState::Pending {
+                error: Some(format!("Could not write config.toml: {e}")),
+            };
+            vec![]
+        }
+    }
+}
+
+/// The OpenCode engine could not start for a turn (offline, installer failed): say so in one
+/// line, switch to the Kilo keyless pool, and resend the prompt once the switch has completed
+/// (`handle_auth_complete` drains `workshop_resend`).
+pub(super) fn dispatch_workshop_engine_unavailable(
+    app: &mut AppView,
+    agent_id: AgentId,
+    reason: String,
+    text: String,
+) -> Vec<Effect> {
+    let Some(kilo) = crate::app::workshop::kilo_fallback_model() else {
+        return vec![];
+    };
+    let reason = reason.lines().next().unwrap_or_default().trim().to_owned();
+    let plan = match crate::app::workshop::activate_catalog_model(&kilo) {
+        Ok(plan) => plan,
+        Err(e) => {
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent.scrollback.push_block(RenderBlock::system(format!(
+                    "OpenCode unavailable ({reason}); the Kilo fallback failed too: {e}. /model to pick another model."
+                )));
+            }
+            return vec![];
+        }
+    };
+    if let Some(agent) = app.agents.get_mut(&agent_id) {
+        // The engine attempt's bubble is re-rendered by the resend; drop it so the prompt shows once.
+        if let Some(entry) = app.workshop_turn_prompt_entry.take() {
+            agent.scrollback.remove_entry(entry);
+        }
+        agent.scrollback.push_block(RenderBlock::system(format!(
+            "OpenCode unavailable ({reason}) — using {} (Kilo · free shared pool) instead.",
+            plan.display_name
+        )));
+    }
+    crate::app::workshop::export_env(&plan.env);
+    set_workshop_connection(app, crate::app::workshop::WorkshopConnection::Shell);
+    app.workshop_resend = Some((agent_id, text));
+    app.auth_return_view = Some(ActiveView::Agent(agent_id));
+    start_workshop_activation(app, plan.key)
 }
 
 /// Close the picker and return to the view it was opened from.
@@ -285,7 +356,7 @@ pub(super) fn dispatch_connection_picker(
                         "Connecting {} ({})…",
                         plan.display_name, plan.base_url
                     ));
-                    app.workshop_connection = crate::app::workshop::WorkshopConnection::Shell;
+                    set_workshop_connection(app, crate::app::workshop::WorkshopConnection::Shell);
                     start_workshop_activation(app, plan.key)
                 }
                 Err(e) => {
@@ -320,7 +391,10 @@ pub(super) fn dispatch_connection_picker(
             }
         }
         PickerOutcome::SelectEngine(model) => {
-            app.workshop_connection = crate::app::workshop::WorkshopConnection::Engine { model };
+            set_workshop_connection(
+                app,
+                crate::app::workshop::WorkshopConnection::Engine { model },
+            );
             // Engine/Adapter turns bypass the shell model, but the shell still needs an auth method
             // to open an ACP session (the agent view that renders the streamed turn). Establish the
             // same keyless/anonymous session Direct/Local uses; the placeholder model is never hit.
@@ -337,8 +411,10 @@ pub(super) fn dispatch_connection_picker(
             vec![]
         }
         PickerOutcome::SelectRailModel(rail, model) => {
-            app.workshop_connection =
-                crate::app::workshop::WorkshopConnection::Adapter { rail, model };
+            set_workshop_connection(
+                app,
+                crate::app::workshop::WorkshopConnection::Adapter { rail, model },
+            );
             finish_workshop_adapter_selection(app)
         }
     }
@@ -367,7 +443,7 @@ fn finish_workshop_adapter_selection(app: &mut AppView) -> Vec<Effect> {
 /// the active session. Completion arrives as `AuthComplete` / `AuthFailed` for `request_seq`.
 fn start_workshop_activation(app: &mut AppView, model_id: String) -> Vec<Effect> {
     // Stamp the composer label from the active connection: `None` for Direct/Local (Shell) → the
-    // shell model name shows; `Big Pickle · OpenCode` / `Claude · {model}` for Engine/Adapter.
+    // shell model name shows; `OpenCode · Big Pickle` / `Claude · {model}` for Engine/Adapter.
     let label = app.workshop_connection.composer_label();
     for agent in app.agents.values_mut() {
         agent.workshop_model_label = label.clone();
@@ -525,6 +601,18 @@ pub(super) fn handle_auth_complete(
             // Auth is global, so handle every agent (the login may have been started from the dashboard, not the agent that 401'd)
             let mut retry_effects = Vec::new();
             let mut page_flips = Vec::new();
+            // Workshop: the prompt whose OpenCode turn could not start goes out again on the Kilo
+            // fallback that has just been activated (`dispatch_workshop_engine_unavailable`).
+            if let Some((id, text)) = app.workshop_resend.take()
+                && let Some(agent) = app.agents.get_mut(&id)
+            {
+                agent
+                    .session
+                    .enqueue_entry(text, crate::app::agent::QueueEntryKind::Prompt);
+                let drain = maybe_drain_queue(agent, &mut app.pending_image_notices);
+                retry_effects.extend(drain.effects);
+                page_flips.push((agent.session.id, drain.page_flip_entry));
+            }
             for agent in app.agents.values_mut() {
                 strip_trailing_auth_error_blocks(agent);
                 // Auto-resubmit the prompt that failed on the expired login so the user doesn't have to retype it

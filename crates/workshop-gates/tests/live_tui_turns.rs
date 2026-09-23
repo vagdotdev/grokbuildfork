@@ -1,10 +1,11 @@
 //! Live end-to-end turns through the real TUI (milestones C/D/E user journeys), opt-in because
 //! they need the network and/or an installed `opencode`:
 //!
-//! * `WORKSHOP_LIVE_KILO=1`   — P2a: cold start → picker → Kilo "Free Models Router" (`:free`,
+//! * `WORKSHOP_LIVE_KILO=1`   — P2a: cold start → `/model` → Kilo "Free Models Router" (`:free`,
 //!   keyless) → a prompt whose answer needs a file-write tool call → the file exists on disk.
-//! * `WORKSHOP_LIVE_OPENCODE=1` — P2b: cold start → picker → "Big Pickle (OpenCode default)" →
-//!   the OpenCode engine (`opencode serve`) runs the turn → a tool call → the file exists on disk.
+//! * `WORKSHOP_LIVE_OPENCODE=1` — P2b: cold start lands on "OpenCode · Big Pickle" (type-and-go,
+//!   no picker) → the first message installs/starts the OpenCode engine (`opencode serve`) → a
+//!   tool call → the file exists on disk.
 //!
 //! Both need `WORKSHOP_BIN` (the built `workshop` binary) and `--include-ignored`. When `strace` is
 //! on `PATH` the TUI runs under `strace -f -e trace=network`, so the evidence directory also holds
@@ -145,19 +146,36 @@ fn which(name: &str) -> Option<PathBuf> {
     })
 }
 
-/// Pick `row` in the Models tab and wait for the picker to hand over to the home prompt.
+/// The type-and-go first run: the composer is up with the OpenCode default active.
+const FIRST_RUN_LABEL: &str = "OpenCode \u{b7} Big Pickle";
+/// Frame text of the two overlays (the title carries the other view's Tab hint).
+const MODELS_OVERLAY: &str = "Tab: Subscriptions";
+const SUBSCRIPTIONS_OVERLAY: &str = "Tab: Models";
+
+/// Type a slash command into the composer and submit it.
+fn slash(h: &mut PtyHarness, cmd: &str) {
+    h.inject_keys(cmd.as_bytes()).unwrap();
+    h.update(Duration::from_millis(400));
+    h.inject_keys(b"\r").unwrap();
+}
+
+/// Wait for the first-run composer, open `/model`, pick `row`, and wait for the overlay to hand
+/// the session back with `ready_text` in the composer.
 fn pick_model_row(j: &mut Journey, row: &str, ready_text: &str) {
-    wait_for(&mut j.h, "connect a model", 45);
+    wait_for(&mut j.h, FIRST_RUN_LABEL, 45);
+    snapshot(&j.h, &j.dir, "00-first-run-composer");
+    slash(&mut j.h, "/model");
+    wait_for(&mut j.h, MODELS_OVERLAY, 15);
     move_selection_to(&mut j.h, row);
-    snapshot(&j.h, &j.dir, "01-picker-row-selected");
+    snapshot(&j.h, &j.dir, "01-model-overlay-row-selected");
     j.h.inject_keys(b"\r").unwrap();
-    // The picker closes once the shell has the model (Direct API: config.toml written + models
-    // reloaded; engine: `opencode serve` up + catalog fetched).
+    // The overlay closes once the shell has the model (Direct API: config.toml written + models
+    // reloaded; engine: placeholder session established).
     if let Err(e) =
-        j.h.wait_for_text_absent("connect a model", Duration::from_secs(120))
+        j.h.wait_for_text_absent(MODELS_OVERLAY, Duration::from_secs(120))
     {
         panic!(
-            "picker never closed after selecting {row:?}: {e}\nscreen:\n{}",
+            "overlay never closed after selecting {row:?}: {e}\nscreen:\n{}",
             j.h.screen_contents()
         );
     }
@@ -360,8 +378,11 @@ fn opencode_big_pickle_turn_with_tool_call() {
     }
     let Some(bin) = bin_from_env() else { return };
     let mut j = spawn("opencode", &bin, &[], None);
-    // After selecting, the app lands in an agent composer whose label names the engine connection.
-    pick_model_row(&mut j, "Big Pickle", "Big Pickle \u{00b7} OpenCode");
+    // Type-and-go: the first run lands in the composer with the engine default already active;
+    // nothing is picked and `opencode` is installed by the first message below.
+    wait_for(&mut j.h, FIRST_RUN_LABEL, 45);
+    j.h.update(Duration::from_millis(1000));
+    snapshot(&j.h, &j.dir, "02-home-connected");
     // 1. A real tool-calling turn writes a file (streamed into the scrollback).
     let text = run_write_turn(&mut j, 240);
     assert!(text.contains(FILE_CONTENT), "file content: {text:?}");
@@ -536,10 +557,11 @@ fn install_fakes(logged_in: bool) -> Fakes {
     }
 }
 
-/// Open the picker's Subscriptions tab and wait for the three rails.
+/// From the first-run composer, `/auth` opens the Subscriptions overlay; wait for the three rails.
 fn open_subscriptions(j: &mut Journey) {
-    wait_for(&mut j.h, "connect a model", 30);
-    j.h.inject_keys(b"\t").unwrap(); // Models -> Subscriptions
+    wait_for(&mut j.h, FIRST_RUN_LABEL, 30);
+    slash(&mut j.h, "/auth");
+    wait_for(&mut j.h, SUBSCRIPTIONS_OVERLAY, 15);
     wait_for(&mut j.h, "Claude", 10);
     wait_for(&mut j.h, "Codex", 5);
     wait_for(&mut j.h, "Cursor", 5);
@@ -555,20 +577,20 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
     let mut j = spawn("rails-ready", &bin, &[], Some(&fakes.bin));
     open_subscriptions(&mut j);
     // The Claude rail (first) reports logged in → Ready.
-    wait_for(&mut j.h, "Ready", 15);
+    wait_for(&mut j.h, "[Ready]", 15);
     snapshot(&j.h, &j.dir, "01-rails-ready");
     // Enter opens the Claude rail detail (its model radios), Enter again selects the first model.
     j.h.inject_keys(b"\r").unwrap();
     j.h.update(Duration::from_millis(400));
     snapshot(&j.h, &j.dir, "02-claude-rail-detail");
     j.h.inject_keys(b"\r").unwrap();
-    // The anonymous session activates (async); the picker closes and an agent composer appears,
+    // The anonymous session activates (async); the overlay closes and the agent composer is
     // labeled for the adapter connection (`Claude · …`).
     if let Err(e) =
-        j.h.wait_for_text_absent("connect a model", Duration::from_secs(120))
+        j.h.wait_for_text_absent(SUBSCRIPTIONS_OVERLAY, Duration::from_secs(120))
     {
         panic!(
-            "picker never closed after selecting a Claude model: {e}\n{}",
+            "overlay never closed after selecting a Claude model: {e}\n{}",
             j.h.screen_contents()
         );
     }
@@ -619,7 +641,7 @@ fn rails_signin_connect_launches_login() {
     let fakes = install_fakes(false);
     let mut j = spawn("rails-signin", &bin, &[], Some(&fakes.bin));
     open_subscriptions(&mut j);
-    wait_for(&mut j.h, "Sign in", 15);
+    wait_for(&mut j.h, "[Sign in]", 15);
     snapshot(&j.h, &j.dir, "01-rails-signin");
     // Enter on the signed-out Claude rail opens its detail and is Connect → suspends the TUI and
     // runs the vendor's documented login command (`claude auth login`) attached to the terminal.
@@ -640,8 +662,8 @@ fn rails_signin_connect_launches_login() {
         "Connect must launch `claude auth login` (marker missing):\n{}",
         j.h.screen_contents()
     );
-    // The TUI is back (alternate screen, picker frame) and the rails are re-probed.
-    wait_for(&mut j.h, "connect a model", 15);
+    // The TUI is back (alternate screen, overlay frame) and the rails are re-probed.
+    wait_for(&mut j.h, SUBSCRIPTIONS_OVERLAY, 15);
     assert!(
         j.h.terminal_modes().alt_screen,
         "TUI must re-enter the alternate screen after the login child exits"
@@ -683,7 +705,7 @@ fn rails_signin_ctrl_c_cancels_only_the_vendor_login() {
     std::fs::write(claude_state.join("login_hang"), "1").unwrap();
     let mut j = spawn("rails-signin-ctrl-c", &bin, &[], Some(&fakes.bin));
     open_subscriptions(&mut j);
-    wait_for(&mut j.h, "Sign in", 15);
+    wait_for(&mut j.h, "[Sign in]", 15);
     assert!(
         j.h.terminal_modes().alt_screen,
         "the TUI runs on the alternate screen"
@@ -712,15 +734,15 @@ fn rails_signin_ctrl_c_cancels_only_the_vendor_login() {
         "banner and the login's own output must be visible:\n{screen}"
     );
     assert!(
-        !screen.contains("connect a model"),
-        "the picker frame must not be visible under the login output:\n{screen}"
+        !screen.contains(SUBSCRIPTIONS_OVERLAY),
+        "the overlay frame must not be visible under the login output:\n{screen}"
     );
     snapshot(&j.h, &j.dir, "01-login-owns-the-terminal");
 
     // Ctrl+C in the (cooked-mode) terminal: SIGINT to the foreground process group.
     j.h.inject_keys(b"\x03").unwrap();
     wait_for(&mut j.h, "sign-in cancelled", 20);
-    wait_for(&mut j.h, "connect a model", 5);
+    wait_for(&mut j.h, SUBSCRIPTIONS_OVERLAY, 5);
     assert!(
         j.h.is_running().unwrap_or(false),
         "Workshop must survive the Ctrl+C that ended the login:\n{}",
@@ -760,7 +782,7 @@ fn rails_signin_ctrl_c_cancels_only_the_vendor_login() {
     finish(
         j,
         "P3 rails (logged-out fakes, hanging login): Connect left the alternate screen for the \
-         vendor login; Ctrl+C ended only the login child; Workshop returned to the picker with \
-         a sign-in cancelled status, rails unchanged, ↓ working. No network (fake CLIs).\n",
+         vendor login; Ctrl+C ended only the login child; Workshop returned to the /auth overlay \
+         with a sign-in cancelled status, rails unchanged, ↓ working. No network (fake CLIs).\n",
     );
 }

@@ -2,31 +2,30 @@
 
 use crate::{ModelsRow, PickerState, PickerTab, RowKind};
 
-/// Render both tabs as plain text. Used by the `workshop login` CLI and by PTY tests.
+/// Render both views as plain text. Used by the `workshop login` CLI and by PTY tests.
 pub fn render(state: &PickerState) -> String {
     let mut out = String::new();
     out.push_str("Workshop — connect a model\n");
-    out.push_str(
-        "Workshop never signs you in anywhere by default. Pick how it should reach a model.\n\n",
-    );
+    out.push_str("Workshop starts on the OpenCode free model and never signs you in anywhere by default.\n\n");
 
     out.push_str(&format!("[{}]\n", PickerTab::Models.title()));
-    let mut last_group: Option<&str> = None;
     for (i, row) in state.rows.iter().enumerate() {
-        if last_group != Some(row.group.as_str()) {
-            out.push_str(&format!("  {}  — {}\n", row.group, row.badge));
-            last_group = Some(row.group.as_str());
-        }
         let marker = if state.tab == PickerTab::Models && i == state.models_selected {
             "›"
         } else {
             " "
         };
+        let active = if state.is_active(row) {
+            " · active"
+        } else {
+            ""
+        };
         out.push_str(&format!(
-            "{marker} {:<2} {}  ({})\n",
+            "{marker} {:<2} {} · {} · {}{active}\n",
             i + 1,
-            row_title(row),
-            row.class.label()
+            row.title(),
+            row.provider(),
+            row.short_badge(),
         ));
     }
 
@@ -46,6 +45,21 @@ pub fn render(state: &PickerState) -> String {
             rail.rail.display_name(),
             rail.pill.label(),
             copy
+        ));
+    }
+    for (i, row) in state.auth_rows.iter().enumerate() {
+        let marker = if state.tab == PickerTab::Subscriptions
+            && state.rails.len() + i == state.rail_selected
+        {
+            "›"
+        } else {
+            " "
+        };
+        out.push_str(&format!(
+            "{marker} {} · {} · {}\n",
+            row_title(row),
+            row.provider(),
+            row.short_badge()
         ));
     }
 
@@ -71,7 +85,7 @@ fn row_title(row: &ModelsRow) -> String {
 pub fn cli_login_text(state: &PickerState) -> String {
     let mut out = render(state);
     out.push_str("\nNext steps\n");
-    out.push_str("  • Start `workshop` and press l (or type /auth): Enter on a row writes it to config.toml and makes it the active model.\n");
+    out.push_str("  • Start `workshop` and type: /model switches the model, /auth connects a subscription or API key.\n");
     out.push_str("  • For a subscription, sign in with the official CLI in this terminal (claude auth login / codex login / cursor-agent login).\n");
     out.push_str("  • Optional xAI account login only: `workshop login --xai` (opens auth.x.ai). Not required.\n");
     out
@@ -83,7 +97,7 @@ mod tests {
     use crate::{PickerSnapshot, models_rows};
 
     #[test]
-    fn text_picker_shows_tabs_rails_pills_and_xai_last() {
+    fn text_picker_shows_views_rails_pills_and_xai_last() {
         let mut s = PickerState::new();
         let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]);
         let rails = workshop_detect::Rail::ALL
@@ -103,6 +117,7 @@ mod tests {
         let t = render(&s);
         assert!(t.contains("[Models]"));
         assert!(t.contains("[Subscriptions]"));
+        assert!(t.contains("Big Pickle · OpenCode · free"));
         let claude = t.find("Claude ").unwrap();
         let codex = t.find("Codex ").unwrap();
         let cursor = t.find("Cursor ").unwrap();
@@ -112,8 +127,8 @@ mod tests {
         );
         assert!(t.contains("[Sign in]"));
         let xai = t.find("xAI (optional)").unwrap();
-        let add_later = t.find("Add a connection later").unwrap();
-        assert!(add_later < xai, "xAI card is last");
+        let openrouter = t.find("OpenRouter").unwrap();
+        assert!(openrouter < xai, "xAI card is last");
         assert!(t.contains("Not required."));
         assert!(t.contains("Kilo"));
         assert!(!t.contains("Login with grok.com"));

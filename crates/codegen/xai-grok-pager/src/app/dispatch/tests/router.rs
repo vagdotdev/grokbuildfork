@@ -1168,14 +1168,24 @@ fn slash_model_invalid_arg_produces_scrollback_error() {
     assert_eq!(agent_ref(&app, id).scrollback.len(), initial_scrollback + 1);
     assert!(agent_ref(&app, id).prompt.text().is_empty());
 }
+/// Workshop: bare `/model` opens the Models overlay (loads its rows) instead of a scrollback error.
 #[test]
-fn slash_model_no_args_produces_scrollback_error() {
+fn slash_model_no_args_opens_the_models_overlay() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let initial_scrollback = agent_ref(&app, id).scrollback.len();
     let effects = dispatch(Action::SendPrompt("/model".into()), &mut app);
-    assert!(effects.is_empty());
-    assert_eq!(agent_ref(&app, id).scrollback.len(), initial_scrollback + 1);
+    assert!(
+        effects
+            .iter()
+            .all(|e| matches!(e, Effect::WorkshopLoadPicker)),
+        "only the picker load, got {effects:?}"
+    );
+    assert_eq!(agent_ref(&app, id).scrollback.len(), initial_scrollback);
+    assert_eq!(
+        app.connection_picker.as_ref().map(|p| p.tab),
+        Some(workshop_auth::PickerTab::Models)
+    );
 }
 #[test]
 fn slash_hooks_opens_modal() {

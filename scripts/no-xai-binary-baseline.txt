@@ -25,8 +25,8 @@ auth.x.ai	`workshop login --xai` (opens auth.x.ai). Not required.
 #   ^ `workshop login` help / embedded docs: the explicit opt-in flag
 auth.x.ai	optional xAI account login selected; this opens auth.x.ai.
 #   ^ CLI notice printed only after `--xai` was passed (pager-bin)
-auth.x.ai	Selecting this opens your browser at auth.x.ai
-#   ^ picker confirmation detail for the optional xAI row (crates/workshop-auth/src/lib.rs)
+auth.x.ai	Enter opens auth.x.ai in your browser
+#   ^ /auth overlay detail for the optional xAI card (crates/workshop-auth/src/lib.rs; last entry, never preselected)
 auth.x.ai	Press Enter again to continue to auth.x.ai
 #   ^ picker confirmation prompt for the same row (crates/workshop-auth/src/lib.rs)
 auth.x.ai	sign in with an xAI account (opens auth.x.ai). Never the default

@@ -1036,6 +1036,11 @@ pub struct AppView {
     pub workshop_turn_stream_entry: Option<crate::scrollback::EntryId>,
     /// Agent whose scrollback the current turn renders into.
     pub workshop_turn_agent: Option<crate::app::agent::AgentId>,
+    /// The user bubble of the current Engine/Adapter turn (dropped when the turn is resent on the
+    /// Kilo fallback).
+    pub workshop_turn_prompt_entry: Option<crate::scrollback::EntryId>,
+    /// A prompt to resend on the shell path once the Kilo fallback activation completes.
+    pub workshop_resend: Option<(crate::app::agent::AgentId, String)>,
     /// Delivery state from the last clipboard copy during auth.
     pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     /// Generation of the current auth copy feedback and its clear timer.
@@ -1580,6 +1585,8 @@ impl AppView {
             workshop_turn_cancel: None,
             workshop_turn_stream_entry: None,
             workshop_turn_agent: None,
+            workshop_turn_prompt_entry: None,
+            workshop_resend: None,
             auth_clipboard_delivery: None,
             auth_clipboard_feedback_generation: 0,
             team_id: None,
@@ -4584,11 +4591,31 @@ impl AppView {
                             } else {
                                 self.tip.as_deref()
                             };
-                            let model_name_base =
-                                self.models.current_model_name().unwrap_or_default();
-                            let model_name = match self.models.reasoning_effort {
-                                Some(eff) => format!("{model_name_base} ({eff})"),
-                                None => model_name_base,
+                            // Workshop: an Engine/Adapter connection names its runtime
+                            // (`OpenCode · Big Pickle`), never the placeholder shell model, and the
+                            // home composer carries the two doors as its only hint.
+                            let workshop_label = self.workshop_connection.composer_label();
+                            let model_name = match workshop_label {
+                                Some(label) => {
+                                    for text in
+                                        ["/model to switch", "/auth to connect subscriptions"]
+                                    {
+                                        flags_vec.push(crate::views::prompt_widget::PromptFlag {
+                                            text,
+                                            color: Some(theme.gray_bright),
+                                            bold: false,
+                                        });
+                                    }
+                                    label
+                                }
+                                None => {
+                                    let model_name_base =
+                                        self.models.current_model_name().unwrap_or_default();
+                                    match self.models.reasoning_effort {
+                                        Some(eff) => format!("{model_name_base} ({eff})"),
+                                        None => model_name_base,
+                                    }
+                                }
                             };
                             let hero_cta = crate::views::announcements::promo_cta(
                                 &self.active_announcements,

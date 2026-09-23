@@ -2,8 +2,10 @@
 
 Workshop is a personal coding-agent runtime built as a thin **overlay** on the public
 [Grok Build](https://github.com/xai-org/grok-build) tree. A user who has never heard of xAI can
-install it, pick a local model, an API key, or an already-installed subscription CLI, and work.
-Login never opens `auth.x.ai` unless the user explicitly chooses the optional, labeled xAI card.
+install it and start typing: the first run lands in the composer with the OpenCode engine's free
+default model active; `/model` switches models (Kilo pool, local servers, connected providers) and
+`/auth` connects an installed subscription CLI or an API key. Login never opens `auth.x.ai` unless
+the user explicitly chooses the optional, labeled xAI card (last on `/auth`).
 
 The authoritative plan is `docs/workshop-production-plan.md` in the project store; the decisions are
 recorded in `docs/workshop/adr/`.
@@ -13,7 +15,7 @@ recorded in `docs/workshop/adr/`.
 | Path | Role |
 |---|---|
 | `crates/codegen/xai-grok-*`, `crates/common/xai-*` | Upstream crates, **never renamed**; a handful carry small patches |
-| `crates/workshop-auth` | Connection picker policy (classes, cards, rails, presence-only CLI detection, text renderer) |
+| `crates/workshop-auth` | `/model` + `/auth` picker policy (rows, rails, xAI card last, text renderer); the TUI overlay is `xai-grok-pager/src/views/connection_picker.rs` |
 | `crates/workshop-gates` | No-xAI gates 1–4 and the picker policy as `cargo test`; PTY smoke of the built binary |
 | `crates/workshop-adapters` | Vendor CLI adapters (Claude/Codex/Cursor) + the OpenCode engine (`opencode serve`) |
 | `crates/workshop-providers`, `-detect`, `-brand`, `-voice` | Provider catalog + credential broker; presence-only CLI detection; welcome hero art; local voice STT |
@@ -30,8 +32,8 @@ recorded in `docs/workshop/adr/`.
 
 ```sh
 cargo build -p xai-grok-pager-bin --bin workshop     # protoc 29.3 required (bin/protoc via dotslash)
-target/debug/workshop                                # TUI; first run opens the connection picker
-target/debug/workshop login                          # the picker as text
+target/debug/workshop                                # TUI; first run lands in the composer (OpenCode · Big Pickle)
+target/debug/workshop login                          # the /model + /auth lists as text
 target/debug/workshop login --xai                    # optional xAI account login only (opens auth.x.ai)
 ```
 
@@ -47,7 +49,7 @@ time (`WORKSHOP_RELEASE_REPO`).
 cargo test -p workshop-gates                          # compiled defaults: issuer, auth methods, endpoints, updater, model
 scripts/no-xai-scan.sh --sources                      # default-path sources + gate:no-theft markers
 scripts/no-xai-scan.sh --binary target/debug/workshop # forbidden-host strings must be reviewed contexts (scripts/no-xai-binary-baseline.txt)
-scripts/no-egress-smoke.sh target/debug/workshop      # zero xAI egress on startup, login, headless, first-run TUI
+scripts/no-egress-smoke.sh target/debug/workshop      # zero xAI egress on startup, login, headless, first-run TUI (+ /model, /auth)
 WORKSHOP_BIN=$PWD/target/debug/workshop cargo test -p workshop-gates --test pty_login_picker -- --include-ignored
 ```
 

@@ -1,101 +1,130 @@
-//! Workshop connection picker (ratatui view over `workshop_auth::PickerState`).
+//! Workshop connection picker overlay (ratatui view over `workshop_auth::PickerState`).
 //!
-//! Layout follows the Blackpen export: a title, two tabs (Models / Subscriptions), a left list
-//! (Models rows grouped by provider, or the Claude / Codex / Cursor rails with a Detecting / Ready /
-//! Sign in pill), and a right detail pane (or the model radios of a Ready rail). The optional xAI
-//! card is last and never preselected; its pane carries the plan's copy verbatim. Nothing here
-//! starts a login: outcomes are decided by the picker state in the dispatcher.
+//! `/model` opens the **Models** view: one line per usable model (`name  provider  badge`), the
+//! active one marked. `/auth` opens the **Subscriptions** view: the Claude / Codex / Cursor rails
+//! with a Detecting / Ready / Sign in pill, then the API-key providers, then the optional xAI card
+//! last. Both are one compact bordered box: list, one to three lines about the highlighted row,
+//! one key line. `Tab` switches views, `Esc` closes. Nothing here starts a login: outcomes are
+//! decided by the picker state in the dispatcher.
+//!
+//! Reusable: `render` draws the whole overlay into any `Rect`; the state it reads is the pure
+//! `PickerState` from `workshop-auth`, so other menus (upstream's `/models`) can host it.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
-use workshop_auth::{ConnectionClass, PickerState, PickerTab, Pill, RowKind};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
+use unicode_width::UnicodeWidthStr;
+use workshop_auth::{ModelsRow, PickerState, PickerTab, Pill, RowKind};
 
 use crate::theme::Theme;
 
-const LEFT_WIDTH: u16 = 44;
+/// Widest the overlay gets; narrower terminals shrink it.
+const MAX_WIDTH: u16 = 100;
+/// Detail slot: one to three lines about the highlighted row.
+const DETAIL_ROWS: u16 = 3;
 
+/// Draw the overlay centered in `area` (inset by `h_margin` on both sides).
 pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState, h_margin: u16) {
-    let area = Rect {
+    let avail = Rect {
         x: area.x + h_margin,
         y: area.y,
         width: area.width.saturating_sub(h_margin * 2),
         height: area.height,
     };
-    if area.width < 20 || area.height < 8 {
-        Paragraph::new("Workshop: terminal too small for the connection picker")
+    if avail.width < 30 || avail.height < 8 {
+        Paragraph::new("Workshop: terminal too small for /model and /auth")
             .style(Style::default().fg(theme.text_primary))
-            .render(area, buf);
+            .render(avail, buf);
         return;
     }
 
-    let [title_area, tabs_area, body_area, status_area, footer_area] = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Length(1),
-        Constraint::Min(4),
-        Constraint::Length(1),
-        Constraint::Length(2),
-    ])
-    .areas(area);
-
-    Paragraph::new(vec![
-        Line::from(Span::styled(
-            "Workshop — connect a model",
-            Style::default()
-                .fg(theme.text_primary)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            "Workshop never signs you in anywhere by default. Pick how it should reach a model.",
-            Style::default().fg(theme.gray_bright),
-        )),
-    ])
-    .render(title_area, buf);
-
-    // Tabs
-    let tab_span = |tab: PickerTab| {
-        let active = picker.tab == tab;
-        let style = if active {
-            Style::default()
-                .fg(theme.text_primary)
-                .bg(theme.bg_highlight)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.gray_bright)
-        };
-        Span::styled(format!(" {} ", tab.title()), style)
+    let entries = list_lines(theme, picker);
+    // Borders (2) + list + separator + detail + key line, capped to the area.
+    let wanted =
+        2 + entries.len() as u16 + 1 + DETAIL_ROWS + 1 + u16::from(picker.status.is_some());
+    let height = wanted.min(avail.height);
+    let width = avail.width.min(MAX_WIDTH);
+    let overlay = Rect {
+        x: avail.x + (avail.width - width) / 2,
+        y: avail.y + (avail.height - height) / 2,
+        width,
+        height,
     };
-    let mut tab_line = vec![
-        tab_span(PickerTab::Models),
-        Span::raw("  "),
-        tab_span(PickerTab::Subscriptions),
-        Span::styled("   Tab switches · r refresh", Style::default().fg(theme.gray_dim)),
-    ];
-    if picker.loading {
-        tab_line.push(Span::styled(
-            "   detecting…",
-            Style::default().fg(theme.gray_bright),
-        ));
-    }
-    Paragraph::new(Line::from(tab_line)).render(tabs_area, buf);
+    Clear.render(overlay, buf);
 
-    let narrow = body_area.width < LEFT_WIDTH + 30;
-    let (left, right) = if narrow {
-        let [l, r] = Layout::vertical([Constraint::Percentage(55), Constraint::Min(3)]).areas(body_area);
-        (l, r)
+    let other = picker.tab.other().title();
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.gray_dim))
+        .title(Line::from(vec![
+            Span::styled(
+                format!(" {} ", picker.tab.title()),
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("· Tab: {other} "),
+                Style::default().fg(theme.gray_dim),
+            ),
+        ]));
+    let inner = block.inner(overlay);
+    block.render(overlay, buf);
+    buf.set_style(inner, Style::default().bg(theme.bg_base));
+    // One column of air between the border and the text.
+    let inner = Rect {
+        x: inner.x + 1,
+        width: inner.width.saturating_sub(2),
+        ..inner
+    };
+
+    let status_rows = u16::from(picker.status.is_some());
+    let [list_area, sep_area, detail_area, status_area, keys_area] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(DETAIL_ROWS.min(inner.height.saturating_sub(3))),
+        Constraint::Length(status_rows),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    // List, scrolled so the highlighted line stays visible.
+    let selected_line = selected_line_index(picker);
+    let visible = list_area.height as usize;
+    let scroll = if visible == 0 || selected_line < visible {
+        0
     } else {
-        let [l, r] =
-            Layout::horizontal([Constraint::Length(LEFT_WIDTH), Constraint::Min(20)]).areas(body_area);
-        (l, r)
+        (selected_line + 1 - visible) as u16
     };
+    Paragraph::new(entries)
+        .scroll((scroll, 0))
+        .render(list_area, buf);
 
-    match picker.tab {
-        PickerTab::Models => render_models_list(left, buf, theme, picker),
-        PickerTab::Subscriptions => render_rails(left, buf, theme, picker),
-    }
-    render_detail(right, buf, theme, picker);
+    let rule: String = "─".repeat(sep_area.width as usize);
+    Paragraph::new(Line::from(Span::styled(
+        rule,
+        Style::default().fg(theme.gray_dim),
+    )))
+    .render(sep_area, buf);
+
+    let detail: Vec<Line> = picker
+        .detail_lines()
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let style = if i == 0 || l.starts_with("(•)") || l.starts_with("( )") {
+                Style::default().fg(theme.text_primary)
+            } else {
+                Style::default().fg(theme.text_secondary)
+            };
+            Line::from(Span::styled(l, style))
+        })
+        .collect();
+    Paragraph::new(detail)
+        .wrap(Wrap { trim: false })
+        .render(detail_area, buf);
 
     if let Some(status) = &picker.status {
         Paragraph::new(Line::from(Span::styled(
@@ -105,18 +134,40 @@ pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState,
         .render(status_area, buf);
     }
 
-    let footer = match picker.tab {
-        PickerTab::Models => "↑↓ move · Enter select/connect · Esc back/close · Tab: Subscriptions",
-        PickerTab::Subscriptions => "↑↓ move · Enter connect/choose model · Esc back/close · Tab: Models",
+    let keys = if picker.key_entry.is_some() {
+        "Enter save · Esc cancel".to_owned()
+    } else {
+        let enter = match picker.tab {
+            PickerTab::Models => "Enter select",
+            PickerTab::Subscriptions => "Enter connect",
+        };
+        let refresh = if picker.loading {
+            " · loading…"
+        } else {
+            " · r refresh"
+        };
+        format!("↑↓ move · {enter} · Tab {other} · Esc close{refresh}")
     };
-    Paragraph::new(vec![
-        Line::from(Span::styled(footer, Style::default().fg(theme.gray_bright))),
-        Line::from(Span::styled(
-            "Connection classes: Direct API · Local · Agent adapter. Subscriptions are never used as API base URLs.",
-            Style::default().fg(theme.gray_dim),
-        )),
-    ])
-    .render(footer_area, buf);
+    Paragraph::new(Line::from(Span::styled(
+        keys,
+        Style::default().fg(theme.gray_bright),
+    )))
+    .render(keys_area, buf);
+}
+
+/// Index of the highlighted line within [`list_lines`].
+fn selected_line_index(picker: &PickerState) -> usize {
+    match picker.tab {
+        PickerTab::Models => picker.models_selected,
+        // Rails, then a blank spacer line, then the connect rows / xAI card.
+        PickerTab::Subscriptions => {
+            if picker.rail_selected < picker.rails.len() || picker.auth_rows.is_empty() {
+                picker.rail_selected
+            } else {
+                picker.rail_selected + 1
+            }
+        }
+    }
 }
 
 fn row_style(theme: &Theme, selected: bool) -> Style {
@@ -130,74 +181,19 @@ fn row_style(theme: &Theme, selected: bool) -> Style {
     }
 }
 
-fn class_style(theme: &Theme, class: ConnectionClass) -> Style {
-    match class {
-        ConnectionClass::Local => Style::default().fg(theme.accent_success),
-        ConnectionClass::DirectApi => Style::default().fg(theme.accent_model),
-        ConnectionClass::AgentAdapter => Style::default().fg(theme.accent_tool),
-        ConnectionClass::OptionalXai => Style::default().fg(theme.warning),
-    }
-}
-
-fn render_models_list(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState) {
-    let block = Block::default()
-        .borders(Borders::RIGHT)
-        .border_style(Style::default().fg(theme.gray_dim));
-    let inner = block.inner(area);
-    block.render(area, buf);
-    // Keep the selected row visible: one header + one row per entry, scrolled to the cursor.
-    let mut lines: Vec<Line> = Vec::new();
-    let mut selected_line = 0usize;
-    let mut last_group: Option<&str> = None;
-    for (i, row) in picker.rows.iter().enumerate() {
-        if last_group != Some(row.group.as_str()) {
-            lines.push(Line::from(Span::styled(
-                row.group.clone(),
-                Style::default()
-                    .fg(theme.gray_bright)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            last_group = Some(row.group.as_str());
-        }
-        let selected = i == picker.models_selected;
-        if selected {
-            selected_line = lines.len();
-        }
-        let marker = if selected { "› " } else { "  " };
-        let mut spans = vec![
-            Span::styled(marker, row_style(theme, selected)),
-            Span::styled(row.title(), row_style(theme, selected)),
-        ];
-        let tag = match &row.kind {
-            RowKind::Catalog { model, locked } => {
-                if *locked {
-                    " locked"
-                } else if model.is_keyless() {
-                    " free · no key"
-                } else if model.is_free() {
-                    " free"
-                } else {
-                    ""
-                }
+fn badge_style(theme: &Theme, row: &ModelsRow) -> Style {
+    match &row.kind {
+        RowKind::XaiOptional => Style::default().fg(theme.warning),
+        RowKind::ConnectProvider { .. } => Style::default().fg(theme.accent_tool),
+        RowKind::Engine(_) => Style::default().fg(theme.accent_success),
+        RowKind::Catalog { model, locked } => {
+            if !*locked && model.is_keyless() {
+                Style::default().fg(theme.accent_success)
+            } else {
+                Style::default().fg(theme.accent_model)
             }
-            RowKind::ConnectProvider { .. } => " connect",
-            RowKind::Engine(m) if m.is_default => " free · default",
-            RowKind::Engine(_) => " free",
-            RowKind::AddLater => "",
-            RowKind::XaiOptional => " optional",
-        };
-        if !tag.is_empty() {
-            spans.push(Span::styled(tag, class_style(theme, row.class)));
         }
-        lines.push(Line::from(spans));
     }
-    let visible = inner.height as usize;
-    let scroll = if visible == 0 || selected_line < visible {
-        0
-    } else {
-        (selected_line + 1 - visible) as u16
-    };
-    Paragraph::new(lines).scroll((scroll, 0)).render(inner, buf);
 }
 
 fn pill_style(theme: &Theme, pill: Pill) -> Style {
@@ -208,91 +204,127 @@ fn pill_style(theme: &Theme, pill: Pill) -> Style {
     }
 }
 
-fn render_rails(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState) {
-    let block = Block::default()
-        .borders(Borders::RIGHT)
-        .border_style(Style::default().fg(theme.gray_dim));
-    let inner = block.inner(area);
-    block.render(area, buf);
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, rail) in picker.rails.iter().enumerate() {
-        let selected = i == picker.rail_selected;
-        let marker = if selected { "› " } else { "  " };
-        lines.push(Line::from(vec![
-            Span::styled(marker, row_style(theme, selected)),
-            Span::styled(
-                format!("{:<8}", rail.rail.display_name()),
-                row_style(theme, selected),
-            ),
-            Span::styled(format!("[{}]", rail.pill.label()), pill_style(theme, rail.pill)),
-        ]));
-        let sub = match rail.empty_copy {
-            Some(copy) => copy.to_owned(),
-            None => format!("{} models", rail.models.len()),
-        };
-        lines.push(Line::from(Span::styled(
-            format!("    {sub}"),
-            Style::default().fg(theme.gray_dim),
-        )));
+fn pad(s: &str, width: usize) -> String {
+    let w = UnicodeWidthStr::width(s);
+    if w > width {
+        let mut out: String = s.chars().take(width.saturating_sub(1)).collect();
+        out.push('…');
+        return out;
     }
-    Paragraph::new(lines).render(inner, buf);
+    format!("{s}{}", " ".repeat(width - w))
 }
 
-fn render_detail(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState) {
-    let inner = Rect {
-        x: area.x + 1,
-        y: area.y,
-        width: area.width.saturating_sub(1),
-        height: area.height,
-    };
-    let mut lines: Vec<Line> = Vec::new();
-    let detail = picker.detail_lines();
-    let (head, rest) = match detail.split_first() {
-        Some((h, r)) => (h.clone(), r),
-        None => (String::new(), &[][..]),
-    };
-    lines.push(Line::from(Span::styled(
-        head,
-        Style::default()
-            .fg(theme.text_primary)
-            .add_modifier(Modifier::BOLD),
-    )));
-    let show_rest = picker.detail_open
-        || picker.key_entry.is_some()
-        || picker.tab == PickerTab::Subscriptions
-        || picker.selected_row().is_some_and(|r| !matches!(r.kind, RowKind::XaiOptional));
-    if show_rest {
-        for l in rest {
-            let style = if l.starts_with("  ") || l.starts_with("(•)") || l.starts_with("( )") {
-                Style::default().fg(theme.command)
+/// `name  provider  badge` for a model / connect / xAI row.
+fn row_line<'a>(
+    theme: &Theme,
+    row: &ModelsRow,
+    selected: bool,
+    active: bool,
+    name_w: usize,
+    prov_w: usize,
+) -> Line<'a> {
+    let base = row_style(theme, selected);
+    let marker = if selected { "› " } else { "  " };
+    let mut spans = vec![
+        Span::styled(marker.to_owned(), base),
+        Span::styled(pad(&row.title(), name_w), base),
+        Span::styled(" ".to_owned(), base),
+        Span::styled(
+            pad(row.provider(), prov_w),
+            if selected {
+                base
             } else {
                 Style::default().fg(theme.text_secondary)
-            };
-            lines.push(Line::from(Span::styled(l.clone(), style)));
-        }
-        if picker.tab == PickerTab::Subscriptions
-            && picker.selected_rail().is_some_and(|r| r.show_connect)
-        {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "[ Connect ]  Enter runs the official CLI login in your terminal",
-                Style::default()
-                    .fg(theme.text_primary)
-                    .add_modifier(Modifier::BOLD),
-            )));
-        }
-    } else if let Some(row) = picker.selected_row() {
-        lines.push(Line::from(Span::styled(
-            row.badge.clone(),
-            Style::default().fg(theme.text_secondary),
-        )));
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Press Enter for details.",
-            Style::default().fg(theme.gray_bright),
-        )));
+            },
+        ),
+        Span::styled(" ".to_owned(), base),
+        Span::styled(row.short_badge().to_owned(), badge_style(theme, row)),
+    ];
+    if active {
+        spans.push(Span::styled(
+            " · active".to_owned(),
+            Style::default()
+                .fg(theme.accent_success)
+                .add_modifier(Modifier::BOLD),
+        ));
     }
-    Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .render(inner, buf);
+    Line::from(spans)
+}
+
+/// Column widths shared by every row line of a view.
+fn columns(rows: &[ModelsRow]) -> (usize, usize) {
+    let name_w = rows
+        .iter()
+        .map(|r| UnicodeWidthStr::width(r.title().as_str()))
+        .max()
+        .unwrap_or(10)
+        .clamp(10, 40);
+    let prov_w = rows
+        .iter()
+        .map(|r| UnicodeWidthStr::width(r.provider()))
+        .max()
+        .unwrap_or(8)
+        .clamp(8, 24);
+    (name_w, prov_w)
+}
+
+fn list_lines<'a>(theme: &Theme, picker: &PickerState) -> Vec<Line<'a>> {
+    let mut lines = Vec::new();
+    match picker.tab {
+        PickerTab::Models => {
+            let (name_w, prov_w) = columns(&picker.rows);
+            for (i, row) in picker.rows.iter().enumerate() {
+                lines.push(row_line(
+                    theme,
+                    row,
+                    i == picker.models_selected,
+                    picker.is_active(row),
+                    name_w,
+                    prov_w,
+                ));
+            }
+            if picker.rows.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "  loading…",
+                    Style::default().fg(theme.gray_bright),
+                )));
+            }
+        }
+        PickerTab::Subscriptions => {
+            for (i, rail) in picker.rails.iter().enumerate() {
+                let selected = i == picker.rail_selected;
+                let base = row_style(theme, selected);
+                let marker = if selected { "› " } else { "  " };
+                let sub = match rail.empty_copy {
+                    Some(copy) => copy.to_owned(),
+                    None if rail.models.is_empty() => String::new(),
+                    None => format!("{} models", rail.models.len()),
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(marker.to_owned(), base),
+                    Span::styled(pad(rail.rail.display_name(), 8), base),
+                    Span::styled(
+                        pad(&format!("[{}]", rail.pill.label()), 12),
+                        pill_style(theme, rail.pill),
+                    ),
+                    Span::styled(sub, Style::default().fg(theme.text_secondary)),
+                ]));
+            }
+            if !picker.auth_rows.is_empty() {
+                lines.push(Line::from(""));
+                let (name_w, prov_w) = columns(&picker.auth_rows);
+                for (i, row) in picker.auth_rows.iter().enumerate() {
+                    lines.push(row_line(
+                        theme,
+                        row,
+                        picker.rails.len() + i == picker.rail_selected,
+                        false,
+                        name_w,
+                        prov_w,
+                    ));
+                }
+            }
+        }
+    }
+    lines
 }

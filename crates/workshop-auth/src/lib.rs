@@ -1,19 +1,19 @@
-//! Workshop connection picker: the only default auth surface.
+//! Workshop connection picker: the `/model` and `/auth` overlays.
 //!
-//! Login, the welcome `l` key, `/login`, `/auth`, `/models`, first run and `workshop login` all open
-//! this picker. It never starts an OAuth flow by itself. The optional xAI card is the single entry
+//! Workshop starts with the OpenCode engine's default free model active, so the picker is never
+//! the first screen. `/model` opens the **Models** view (one line per usable model); `/auth`
+//! (alias `/login`) opens the **Subscriptions** view (the Claude / Codex / Cursor rails with a
+//! Detecting / Ready / Sign in pill, the API-key providers, and the optional xAI card last).
+//! `Tab` switches between the two; `Esc` closes.
+//!
+//! The picker never starts an OAuth flow by itself. The optional xAI card is the single entry
 //! point to the inherited xAI OIDC flow, and only after the user selects it twice.
 //!
-//! Layout follows the Blackpen export (docs/workshop-production-plan.md section 12): two tabs,
-//! **Models** and **Subscriptions**; Subscriptions is a left rail **Claude, Codex, Cursor** in that
-//! order, each with one pill (Detecting / Ready / Sign in); the optional xAI card is the *last*
-//! Models row and is never preselected.
-//!
 //! Data sources: Models rows come from [`workshop_providers`] (local servers, Kilo `:free`,
-//! OpenRouter, Google, NVIDIA, OpenAI, Anthropic, OpenCode Zen, BYOK) plus the OpenCode engine's
-//! free catalog; rail state comes from [`workshop_detect`] (the single detection source). This crate
-//! holds the pure picker policy and the `[model.<key>]` config writer; the host renders the state,
-//! feeds it [`PickerInput`], and executes [`PickerOutcome`]s.
+//! connected providers) plus the OpenCode engine's free catalog; rail state comes from
+//! [`workshop_detect`] (the single detection source). This crate holds the pure picker policy and
+//! the `[model.<key>]` config writer; the host renders the state, feeds it [`PickerInput`], and
+//! executes [`PickerOutcome`]s.
 //!
 //! What this crate does **not** do (gate:no-theft): read any keychain item, any `auth.json`, any
 //! Cursor SDK auth file, or spawn a vendor CLI for a turn.
@@ -80,11 +80,12 @@ impl PickerTab {
 }
 
 pub const XAI_ROW_ID: &str = "xai_optional";
-pub const ADD_LATER_ROW_ID: &str = "add_later";
 /// Copy on the optional xAI card, verbatim from the plan.
 pub const XAI_CARD_COPY: &str = "Uses xAI accounts and auth.x.ai. Not required.";
 /// Provider id of the OpenCode engine rows (free tier reachable only through the genuine client).
 pub const ENGINE_PROVIDER_ID: &str = "opencode-engine";
+/// Provider display name of the OpenCode engine rows and the composer label prefix.
+pub const ENGINE_DISPLAY_NAME: &str = "OpenCode";
 
 /// A free model served through the OpenCode engine (`opencode serve`), mirrored from its catalog.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -109,14 +110,30 @@ impl EngineModel {
             context_limit: Some(200_000),
         }
     }
+
+    /// The model Workshop activates on a first run: the engine's own default from its live
+    /// catalog when one was cached, else the pinned seed. Mirrors OpenCode's default.
+    pub fn first_run_default(catalog: &[EngineModel]) -> Self {
+        catalog
+            .iter()
+            .find(|m| m.is_default)
+            .cloned()
+            .unwrap_or_else(Self::big_pickle_seed)
+    }
+
+    /// Picker row id of this model (`opencode-engine:opencode/<id>`).
+    pub fn row_id(&self) -> String {
+        format!("{ENGINE_PROVIDER_ID}:{}", self.model_ref)
+    }
 }
 
-/// One Models-tab row.
+/// One picker row.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RowKind {
     /// A Direct API / Local catalog row. `locked` means the provider still needs a credential.
     Catalog { model: CatalogModel, locked: bool },
-    /// A provider that has nothing selectable yet: connect it (sign in / paste key / install).
+    /// A provider that has nothing selectable yet: connect it (sign in / paste key). Shown on the
+    /// Subscriptions view below the rails.
     ConnectProvider {
         provider_id: String,
         copy: String,
@@ -124,18 +141,16 @@ pub enum RowKind {
     },
     /// A free model behind the OpenCode engine.
     Engine(EngineModel),
-    /// Keep Workshop offline for now.
-    AddLater,
-    /// The labeled optional xAI card.
+    /// The labeled optional xAI card (Subscriptions view, last).
     XaiOptional,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelsRow {
     pub kind: RowKind,
-    /// Group header (provider display name); rows of one group are contiguous.
+    /// Provider display name; rows of one provider are contiguous.
     pub group: String,
-    /// Badge such as `Free · No sign-in · Shared pool · may log/train`.
+    /// Full badge such as `Free · No sign-in · Shared pool · may log/train` (first detail line).
     pub badge: String,
     pub class: ConnectionClass,
 }
@@ -145,25 +160,49 @@ impl ModelsRow {
         match &self.kind {
             RowKind::Catalog { model, .. } => model.key(),
             RowKind::ConnectProvider { provider_id, .. } => format!("connect:{provider_id}"),
-            RowKind::Engine(m) => format!("{ENGINE_PROVIDER_ID}:{}", m.model_ref),
-            RowKind::AddLater => ADD_LATER_ROW_ID.into(),
+            RowKind::Engine(m) => m.row_id(),
             RowKind::XaiOptional => XAI_ROW_ID.into(),
         }
     }
+    /// Row name: the model name, or the connect action for a provider without a credential.
     pub fn title(&self) -> String {
         match &self.kind {
             RowKind::Catalog { model, .. } => model.display_name.clone(),
             RowKind::ConnectProvider { copy, .. } => copy.clone(),
-            RowKind::Engine(m) => {
-                if m.is_default {
-                    format!("{} (OpenCode default)", m.name)
-                } else {
-                    m.name.clone()
-                }
-            }
-            RowKind::AddLater => "Add a connection later".into(),
+            RowKind::Engine(m) => m.name.clone(),
             RowKind::XaiOptional => "xAI (optional)".into(),
         }
+    }
+    /// Provider column of the row line.
+    pub fn provider(&self) -> &str {
+        &self.group
+    }
+    /// Short badge for the row line: `free` / `free · key` / `key` / `connect` / `API key` /
+    /// `optional`.
+    pub fn short_badge(&self) -> &'static str {
+        match &self.kind {
+            RowKind::Catalog { model, locked } => {
+                if *locked {
+                    "key needed"
+                } else if model.is_keyless() {
+                    "free"
+                } else if model.is_free() {
+                    "free · key"
+                } else {
+                    "key"
+                }
+            }
+            RowKind::Engine(_) => "free",
+            RowKind::ConnectProvider { provider_id, .. } => match provider_id.as_str() {
+                "openrouter" | "opencode" => "connect",
+                _ => "API key",
+            },
+            RowKind::XaiOptional => "optional",
+        }
+    }
+    /// Whether the row belongs to the Models view (selectable model) rather than Subscriptions.
+    pub fn is_model(&self) -> bool {
+        matches!(self.kind, RowKind::Catalog { .. } | RowKind::Engine(_))
     }
     pub fn is_xai(&self) -> bool {
         matches!(self.kind, RowKind::XaiOptional)
@@ -173,16 +212,18 @@ impl ModelsRow {
 /// Everything the host feeds into the picker once its async loaders finish.
 #[derive(Debug, Clone, Default)]
 pub struct PickerSnapshot {
-    /// Local rows first, then hosted providers in manifest order (from `Catalog::picker_groups`).
+    /// Local rows first, then hosted providers in manifest order (from `Catalog::picker_groups`),
+    /// then the engine rows, then the connect rows and the xAI card (see [`models_rows`]).
     pub rows: Vec<ModelsRow>,
     pub rails: Vec<RailState>,
-    /// The plan's first-run default, when nothing is configured yet.
+    /// The plan's first-run default for Direct API connections (kept for the CLI text).
     pub default_selection: Option<DefaultSelection>,
     /// Secret backend name for the review line (`keyring`, `file`, …).
     pub secret_backend: Option<&'static str>,
 }
 
-/// Build the Models rows for a snapshot.
+/// Build every picker row for a snapshot; [`PickerState::apply_snapshot`] splits them into the
+/// Models view (catalog + engine models) and the Subscriptions view (connect rows + xAI card).
 ///
 /// `catalog` already contains detected local rows; `connected(provider_id)` comes from the broker;
 /// `engine_models` is the cached / live engine catalog (empty → the Big Pickle seed row).
@@ -192,6 +233,21 @@ pub fn models_rows(
     engine_models: &[EngineModel],
 ) -> Vec<ModelsRow> {
     let mut rows = Vec::new();
+    // OpenCode free tier first: it is the first-run default. Only through the genuine client, so
+    // it is an engine group, not Direct API.
+    let engine: Vec<EngineModel> = if engine_models.is_empty() {
+        vec![EngineModel::big_pickle_seed()]
+    } else {
+        engine_models.to_vec()
+    };
+    for m in engine {
+        rows.push(ModelsRow {
+            kind: RowKind::Engine(m),
+            group: ENGINE_DISPLAY_NAME.into(),
+            badge: "Free · Agent adapter · official opencode CLI · shared pool".into(),
+            class: ConnectionClass::AgentAdapter,
+        });
+    }
     for group in catalog.picker_groups(&connected) {
         let class = ConnectionClass::from_provider(group.class);
         if group.rows.is_empty() {
@@ -239,29 +295,9 @@ pub fn models_rows(
             });
         }
     }
-    // OpenCode free tier: only through the genuine client, so it is an engine group, not Direct API.
-    let engine: Vec<EngineModel> = if engine_models.is_empty() {
-        vec![EngineModel::big_pickle_seed()]
-    } else {
-        engine_models.to_vec()
-    };
-    for m in engine {
-        rows.push(ModelsRow {
-            kind: RowKind::Engine(m),
-            group: "OpenCode free (engine)".into(),
-            badge: "Free · Agent adapter · official opencode CLI · shared pool".into(),
-            class: ConnectionClass::AgentAdapter,
-        });
-    }
-    rows.push(ModelsRow {
-        kind: RowKind::AddLater,
-        group: "Later".into(),
-        badge: "Nothing is contacted".into(),
-        class: ConnectionClass::Local,
-    });
     rows.push(ModelsRow {
         kind: RowKind::XaiOptional,
-        group: "xAI (optional)".into(),
+        group: "xAI".into(),
         badge: XAI_CARD_COPY.into(),
         class: ConnectionClass::OptionalXai,
     });
@@ -273,7 +309,7 @@ pub fn models_rows(
 pub enum PickerInput {
     Up,
     Down,
-    /// Switch tabs (Tab / Left / Right).
+    /// Switch views (Tab / Left / Right).
     SwitchTab,
     Enter,
     /// Close the detail panel / cancel key entry, or the picker when nothing is open.
@@ -292,7 +328,7 @@ pub enum PickerInput {
 pub enum PickerOutcome {
     /// Redraw only.
     Changed,
-    /// Picker closed (Esc / add later); host returns to the previous view.
+    /// Picker closed (Esc); host returns to the previous view.
     Close,
     /// User explicitly selected the labeled optional xAI card twice: the host may start the
     /// inherited xAI OIDC flow. This is the only outcome that leads to `auth.x.ai`.
@@ -326,13 +362,18 @@ pub struct KeyEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PickerState {
     pub tab: PickerTab,
+    /// Models view: one row per usable model (catalog + engine).
     pub rows: Vec<ModelsRow>,
+    /// Subscriptions view, below the rails: providers to connect and the optional xAI card.
+    pub auth_rows: Vec<ModelsRow>,
     pub rails: Vec<RailState>,
+    /// Selected index into `rows`.
     pub models_selected: usize,
+    /// Selected index on the Subscriptions view: `0..rails.len()` is a rail, then `auth_rows`.
     pub rail_selected: usize,
-    /// Selected model radio on the Subscriptions right pane.
+    /// Selected model radio of a Ready rail.
     pub rail_model_selected: usize,
-    /// Detail panel open for the selected item.
+    /// A Ready rail's model radios are open (↑/↓ move between them).
     pub detail_open: bool,
     /// The user acknowledged the xAI card once; a second Enter starts the flow.
     pub xai_armed: bool,
@@ -341,6 +382,8 @@ pub struct PickerState {
     /// Transient status line (errors, progress).
     pub status: Option<String>,
     pub key_entry: Option<KeyEntry>,
+    /// Row id of the active connection (marked `active`, preselected on the Models view).
+    pub active_id: Option<String>,
     pub default_selection: Option<DefaultSelection>,
     pub secret_backend: Option<&'static str>,
 }
@@ -352,14 +395,12 @@ impl Default for PickerState {
 }
 
 impl PickerState {
-    /// Fresh picker before any loader ran: Models tab, "Add later" + xAI only, rails Detecting.
+    /// Fresh picker before any loader ran: the engine seed row, the connect rows, rails Detecting.
     pub fn new() -> Self {
-        Self {
+        let mut s = Self {
             tab: PickerTab::Models,
-            rows: models_rows(&workshop_providers::Catalog::default(), |_| false, &[])
-                .into_iter()
-                .filter(|r| !matches!(r.kind, RowKind::Engine(_)))
-                .collect(),
+            rows: Vec::new(),
+            auth_rows: Vec::new(),
             rails: Rail::ALL.iter().map(|r| RailState::detecting(*r)).collect(),
             models_selected: 0,
             rail_selected: 0,
@@ -369,40 +410,76 @@ impl PickerState {
             loading: true,
             status: None,
             key_entry: None,
+            active_id: None,
             default_selection: None,
             secret_backend: None,
-        }
+        };
+        s.set_rows(models_rows(
+            &workshop_providers::Catalog::default(),
+            |_| false,
+            &[],
+        ));
+        s
     }
 
-    /// Open directly on a tab (`/auth` → Models, `/models` → Models).
+    /// Open directly on a view (`/model` → Models, `/auth` → Subscriptions).
     pub fn with_tab(mut self, tab: PickerTab) -> Self {
         self.tab = tab;
         self
     }
 
+    /// Mark (and preselect) the row of the active connection.
+    pub fn with_active(mut self, active_id: Option<String>) -> Self {
+        self.active_id = active_id;
+        self.select_active();
+        self
+    }
+
+    fn set_rows(&mut self, all: Vec<ModelsRow>) {
+        let (models, auth): (Vec<_>, Vec<_>) = all.into_iter().partition(ModelsRow::is_model);
+        self.rows = models;
+        self.auth_rows = auth;
+    }
+
+    fn select_active(&mut self) {
+        if let Some(id) = &self.active_id
+            && let Some(idx) = self.rows.iter().position(|r| r.id() == *id)
+        {
+            self.models_selected = idx;
+        }
+    }
+
     /// Replace rows and rails with a finished snapshot. Keeps the selection on the same row id
-    /// when possible and never lands on the xAI card.
+    /// when possible (first load: the active row), and never lands on the xAI card.
     pub fn apply_snapshot(&mut self, snap: PickerSnapshot) {
-        // Keep the selection across a refresh; the first load always lands on the first real row.
-        let prev_id = if self.loading {
-            None
-        } else {
-            self.selected_row().map(ModelsRow::id)
-        };
-        self.rows = snap.rows;
+        let first_load = self.loading;
+        let prev_model = self.selected_row().map(ModelsRow::id);
+        let prev_auth = self.selected_auth_row().map(ModelsRow::id);
+        self.set_rows(snap.rows);
         if !snap.rails.is_empty() {
             self.rails = snap.rails;
         }
         self.default_selection = snap.default_selection;
         self.secret_backend = snap.secret_backend;
         self.loading = false;
-        self.models_selected = prev_id
+        self.models_selected = prev_model
+            .filter(|_| !first_load)
             .and_then(|id| self.rows.iter().position(|r| r.id() == id))
             .unwrap_or(0);
-        if self.selected_row().is_some_and(ModelsRow::is_xai) {
-            self.models_selected = 0;
+        if first_load {
+            self.select_active();
         }
-        self.rail_selected = self.rail_selected.min(self.rails.len().saturating_sub(1));
+        if let Some(id) = prev_auth
+            && let Some(idx) = self.auth_rows.iter().position(|r| r.id() == id)
+        {
+            self.rail_selected = self.rails.len() + idx;
+        }
+        self.rail_selected = self
+            .rail_selected
+            .min(self.subscriptions_len().saturating_sub(1));
+        if self.selected_auth_row().is_some_and(ModelsRow::is_xai) && first_load {
+            self.rail_selected = 0;
+        }
         self.rail_model_selected = 0;
         self.xai_armed = false;
     }
@@ -411,13 +488,31 @@ impl PickerState {
         self.rows.get(self.models_selected)
     }
 
+    /// Number of entries on the Subscriptions view (rails + connect rows + xAI).
+    pub fn subscriptions_len(&self) -> usize {
+        self.rails.len() + self.auth_rows.len()
+    }
+
+    /// The selected rail, when the Subscriptions selection is on one.
     pub fn selected_rail(&self) -> Option<&RailState> {
         self.rails.get(self.rail_selected)
+    }
+
+    /// The selected connect row / xAI card, when the Subscriptions selection is below the rails.
+    pub fn selected_auth_row(&self) -> Option<&ModelsRow> {
+        self.rail_selected
+            .checked_sub(self.rails.len())
+            .and_then(|i| self.auth_rows.get(i))
     }
 
     pub fn selected_rail_model(&self) -> Option<&workshop_detect::ModelRef> {
         self.selected_rail()
             .and_then(|r| r.models.get(self.rail_model_selected))
+    }
+
+    /// Whether `row` is the active connection.
+    pub fn is_active(&self, row: &ModelsRow) -> bool {
+        self.active_id.as_deref() == Some(row.id().as_str())
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
@@ -431,7 +526,6 @@ impl PickerState {
             label: label.to_owned(),
             buffer: String::new(),
         });
-        self.detail_open = true;
     }
 
     pub fn handle(&mut self, input: PickerInput) -> PickerOutcome {
@@ -478,16 +572,12 @@ impl PickerState {
             }
             (PickerTab::Models, PickerInput::Up) => {
                 self.models_selected = self.models_selected.saturating_sub(1);
-                self.detail_open = false;
-                self.xai_armed = false;
                 PickerOutcome::Changed
             }
             (PickerTab::Models, PickerInput::Down) => {
                 if self.models_selected + 1 < self.rows.len() {
                     self.models_selected += 1;
                 }
-                self.detail_open = false;
-                self.xai_armed = false;
                 PickerOutcome::Changed
             }
             (PickerTab::Subscriptions, PickerInput::Up) => {
@@ -498,20 +588,22 @@ impl PickerState {
                     self.rail_model_selected = 0;
                     self.detail_open = false;
                 }
+                self.xai_armed = false;
                 PickerOutcome::Changed
             }
             (PickerTab::Subscriptions, PickerInput::Down) => {
                 let models = self.selected_rail().map(|r| r.models.len()).unwrap_or(0);
                 if self.detail_open && self.rail_model_selected + 1 < models {
                     self.rail_model_selected += 1;
-                } else if !self.detail_open && self.rail_selected + 1 < self.rails.len() {
+                } else if !self.detail_open && self.rail_selected + 1 < self.subscriptions_len() {
                     self.rail_selected += 1;
                     self.rail_model_selected = 0;
                 }
+                self.xai_armed = false;
                 PickerOutcome::Changed
             }
             (_, PickerInput::Back) => {
-                if self.detail_open {
+                if self.detail_open || self.xai_armed {
                     self.detail_open = false;
                     self.xai_armed = false;
                     PickerOutcome::Changed
@@ -519,36 +611,14 @@ impl PickerState {
                     PickerOutcome::Close
                 }
             }
-            (PickerTab::Models, PickerInput::Enter) => {
-                let Some(row) = self.selected_row().cloned() else {
-                    return PickerOutcome::Changed;
-                };
-                match row.kind {
-                    RowKind::AddLater => PickerOutcome::Close,
-                    RowKind::XaiOptional => {
-                        // Two-step: first Enter shows the labeled copy, second Enter starts the flow.
-                        if self.xai_armed {
-                            PickerOutcome::StartOptionalXaiLogin
-                        } else {
-                            self.detail_open = true;
-                            self.xai_armed = true;
-                            PickerOutcome::Changed
-                        }
-                    }
-                    RowKind::Catalog { model, locked } => {
-                        if locked {
-                            PickerOutcome::ConnectProvider(model.provider_id)
-                        } else {
-                            PickerOutcome::SelectCatalog(model)
-                        }
-                    }
-                    RowKind::ConnectProvider { provider_id, .. } => {
-                        PickerOutcome::ConnectProvider(provider_id)
-                    }
-                    RowKind::Engine(m) => PickerOutcome::SelectEngine(m),
-                }
-            }
+            (PickerTab::Models, PickerInput::Enter) => match self.selected_row().cloned() {
+                Some(row) => self.enter_row(row),
+                None => PickerOutcome::Changed,
+            },
             (PickerTab::Subscriptions, PickerInput::Enter) => {
+                if let Some(row) = self.selected_auth_row().cloned() {
+                    return self.enter_row(row);
+                }
                 let Some(rail) = self.selected_rail().cloned() else {
                     return PickerOutcome::Changed;
                 };
@@ -561,19 +631,43 @@ impl PickerState {
                         Some(m) => PickerOutcome::SelectRailModel(rail.rail, m.clone()),
                         None => PickerOutcome::Changed,
                     }
+                } else if rail.show_connect {
+                    PickerOutcome::RailConnect(rail.rail)
                 } else {
-                    self.detail_open = true;
-                    if rail.show_connect {
-                        PickerOutcome::RailConnect(rail.rail)
-                    } else {
-                        PickerOutcome::Changed
-                    }
+                    PickerOutcome::Changed
                 }
             }
         }
     }
 
-    /// Detail lines for the selected item (what will happen, where traffic goes). Never a secret.
+    /// Enter on a model / connect / xAI row (same rules on both views).
+    fn enter_row(&mut self, row: ModelsRow) -> PickerOutcome {
+        match row.kind {
+            RowKind::XaiOptional => {
+                // Two-step: first Enter shows the labeled copy, second Enter starts the flow.
+                if self.xai_armed {
+                    PickerOutcome::StartOptionalXaiLogin
+                } else {
+                    self.xai_armed = true;
+                    PickerOutcome::Changed
+                }
+            }
+            RowKind::Catalog { model, locked } => {
+                if locked {
+                    PickerOutcome::ConnectProvider(model.provider_id)
+                } else {
+                    PickerOutcome::SelectCatalog(model)
+                }
+            }
+            RowKind::ConnectProvider { provider_id, .. } => {
+                PickerOutcome::ConnectProvider(provider_id)
+            }
+            RowKind::Engine(m) => PickerOutcome::SelectEngine(m),
+        }
+    }
+
+    /// One to three lines about the highlighted entry (what happens, where traffic goes).
+    /// Never a secret.
     pub fn detail_lines(&self) -> Vec<String> {
         if let Some(entry) = &self.key_entry {
             let masked = if entry.buffer.is_empty() {
@@ -587,16 +681,20 @@ impl PickerState {
             };
             return vec![entry.label.clone(), masked];
         }
-        match self.tab {
+        let lines = match self.tab {
             PickerTab::Models => self
                 .selected_row()
-                .map(|row| row_detail_lines(row, self.xai_armed, self.default_selection.as_ref()))
+                .map(|row| row_detail_lines(row, self.xai_armed))
                 .unwrap_or_default(),
-            PickerTab::Subscriptions => self
-                .selected_rail()
-                .map(|r| rail_detail_lines(r, self.rail_model_selected))
-                .unwrap_or_default(),
-        }
+            PickerTab::Subscriptions => match self.selected_auth_row() {
+                Some(row) => row_detail_lines(row, self.xai_armed),
+                None => self
+                    .selected_rail()
+                    .map(|r| rail_detail_lines(r, self.rail_model_selected))
+                    .unwrap_or_default(),
+            },
+        };
+        lines.into_iter().take(3).collect()
     }
 }
 
@@ -607,93 +705,64 @@ pub fn config_path() -> PathBuf {
         .join("config.toml")
 }
 
-fn row_detail_lines(
-    row: &ModelsRow,
-    xai_armed: bool,
-    default_selection: Option<&DefaultSelection>,
-) -> Vec<String> {
-    let cfg = config_path().display().to_string();
-    let mut lines = vec![format!("{} · {}", row.title(), row.class.label())];
+fn row_detail_lines(row: &ModelsRow, xai_armed: bool) -> Vec<String> {
+    let mut lines = Vec::new();
     match &row.kind {
         RowKind::Catalog { model, locked } => {
             lines.push(row.badge.clone());
-            lines.push(format!("Endpoint: {}", model.endpoint()));
-            if let Some(note) = &model.note {
-                lines.push(note.clone());
-            }
+            let mut facts = vec![format!("Endpoint: {}", model.endpoint())];
             if let Some(tools) = model.tools {
-                lines.push(format!(
-                    "Tool calling: {}",
+                facts.push(format!(
+                    "tool calling: {}",
                     if tools { "yes" } else { "not advertised" }
                 ));
             }
             if let Some(ctx) = model.context_window {
-                lines.push(format!("Context window: {ctx} tokens"));
+                facts.push(format!("{ctx} tokens"));
             }
-            lines.push(format!(
-                "Catalog source: {} ({})",
-                model.source.name, model.source.as_of
-            ));
+            lines.push(facts.join(" · "));
             if *locked {
-                lines.push(
-                    "This provider needs a credential first — press Enter to connect.".into(),
-                );
-            } else {
-                lines.push(format!(
-                    "Enter writes [model.{}] to {cfg} and makes it the active model. Turns run \
-                     through Workshop's own agent loop; only {} is contacted.",
-                    model.key(),
-                    model.base_url
-                ));
-            }
-            if let Some(DefaultSelection::KiloFree { primary, .. }) = default_selection
-                && model.model_id == *primary
-            {
-                lines.push(
-                    "First-run default: the free community pool (Direct API · Free · shared pool)."
-                        .into(),
-                );
+                lines.push("Needs a credential first — Enter connects the provider.".into());
+            } else if let Some(note) = &model.note {
+                lines.push(note.clone());
             }
         }
         RowKind::ConnectProvider {
             provider_id,
-            copy,
             credential_url,
+            ..
         } => {
-            lines.push(copy.clone());
+            lines.push(row.badge.clone());
             match provider_id.as_str() {
                 "openrouter" => lines.push(
-                    "Enter starts OpenRouter's PKCE sign-in in your browser; Workshop stores the key it issues in your OS keyring."
+                    "Enter starts OpenRouter's sign-in in your browser; the key it issues goes to your OS keyring."
                         .into(),
                 ),
-                _ => lines.push("Enter opens a key prompt; the key goes to your OS keyring, never to config.toml.".into()),
+                _ => lines.push(
+                    "Enter opens a key prompt; the key goes to your OS keyring, never to config.toml."
+                        .into(),
+                ),
             }
             if let Some(url) = credential_url {
                 lines.push(format!("Get a key: {url}"));
             }
         }
-        RowKind::Engine(m) => {
-            lines.push(row.badge.clone());
-            lines.push(format!(
-                "Runs through the OpenCode engine: Workshop starts the official `opencode serve` on \
-                 loopback and drives it over HTTP; opencode.ai is contacted by opencode itself. Model {}{}.",
-                m.model_ref,
-                if m.tool_call { ", tool calling" } else { "" }
-            ));
+        RowKind::Engine(_) => {
             lines.push(
-                "If opencode is missing, Enter installs the pinned version with the vendor's own installer into Workshop's home (no bundled binary)."
+                "Free shared pool via the official opencode CLI, installed on your first message."
                     .into(),
             );
-            lines.push("Shared free pool: prompts may be logged by the upstream provider.".into());
+            lines.push(
+                "Loopback only; opencode.ai is contacted by opencode itself. Prompts may be logged upstream."
+                    .into(),
+            );
         }
-        RowKind::AddLater => lines.push("Workshop stays offline. Nothing is contacted.".into()),
         RowKind::XaiOptional => {
             lines.push(XAI_CARD_COPY.into());
             lines.push(
-                "Selecting this opens your browser at auth.x.ai and stores an xAI session in Workshop's home."
+                "Enter opens auth.x.ai in your browser (the only Workshop path that contacts x.ai)."
                     .into(),
             );
-            lines.push("This is the only Workshop path that contacts x.ai.".into());
             if xai_armed {
                 lines.push("Press Enter again to continue to auth.x.ai, or Esc to go back.".into());
             }
@@ -703,15 +772,7 @@ fn row_detail_lines(
 }
 
 fn rail_detail_lines(rail: &RailState, selected_model: usize) -> Vec<String> {
-    let mut lines = vec![format!(
-        "{} · {} · {}",
-        rail.rail.display_name(),
-        ConnectionClass::AgentAdapter.label(),
-        rail.pill.label()
-    )];
-    if let Some(copy) = rail.empty_copy {
-        lines.push(copy.to_owned());
-    }
+    let mut lines = Vec::new();
     if rail.pill == Pill::Detecting {
         lines.push("Looking for the official CLI on PATH and in the usual install folders…".into());
     } else if !rail.installed {
@@ -721,20 +782,30 @@ fn rail_detail_lines(rail: &RailState, selected_model: usize) -> Vec<String> {
         ));
     } else if !rail.is_ready() {
         lines.push(format!(
-            "Connect runs the official login in your terminal:  {}",
+            "Enter runs the official login in your terminal:  {}",
             workshop_detect::login_argv(rail.rail.vendor()).join(" ")
         ));
     } else {
-        for (i, m) in rail.models.iter().enumerate() {
-            lines.push(format!(
-                "{} {}",
-                if i == selected_model { "(•)" } else { "( )" },
-                m.display()
-            ));
-        }
+        let radios: Vec<String> = rail
+            .models
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                format!(
+                    "{} {}",
+                    if i == selected_model { "(•)" } else { "( )" },
+                    m.display()
+                )
+            })
+            .collect();
+        lines.push(radios.join("  "));
         lines.push(
-            "Enter routes the session through the official CLI in an isolated worktree.".into(),
+            "Enter picks the model; turns run through the official CLI in an isolated worktree."
+                .into(),
         );
+    }
+    if let Some(copy) = rail.empty_copy {
+        lines.push(copy.to_owned());
     }
     lines
 }
@@ -755,29 +826,50 @@ mod tests {
         p
     }
 
-    #[test]
-    fn xai_row_is_last_and_never_preselected() {
-        let p = loaded();
-        assert!(p.rows.last().is_some_and(ModelsRow::is_xai));
-        assert_eq!(p.models_selected, 0);
-        assert!(!p.selected_row().is_some_and(ModelsRow::is_xai));
-        assert_eq!(p.tab, PickerTab::Models);
-        // Fresh (unloaded) state too.
-        let fresh = PickerState::new();
-        assert!(fresh.rows.last().is_some_and(ModelsRow::is_xai));
-        assert!(!fresh.selected_row().is_some_and(ModelsRow::is_xai));
+    fn goto_xai(p: &mut PickerState) {
+        if p.tab != PickerTab::Subscriptions {
+            p.handle(PickerInput::SwitchTab);
+        }
+        for _ in 0..p.subscriptions_len() {
+            p.handle(PickerInput::Down);
+        }
+        assert!(p.selected_auth_row().is_some_and(ModelsRow::is_xai));
     }
 
     #[test]
-    fn rails_are_claude_codex_cursor_in_order_and_start_detecting() {
-        let p = PickerState::new();
+    fn models_view_lists_models_only_and_engine_default_first() {
+        let p = loaded();
+        assert!(p.rows.iter().all(ModelsRow::is_model));
+        assert!(
+            matches!(p.rows.first().map(|r| &r.kind), Some(RowKind::Engine(m)) if m.is_default),
+            "the engine default heads the Models view"
+        );
+        assert!(!p.rows.iter().any(ModelsRow::is_xai));
+        // Fresh (unloaded) state: the seed row is already there for the overlay.
+        let fresh = PickerState::new();
+        assert!(matches!(
+            fresh.rows.first().map(|r| &r.kind),
+            Some(RowKind::Engine(_))
+        ));
+    }
+
+    #[test]
+    fn subscriptions_view_is_rails_then_connect_rows_then_xai_last() {
+        let p = loaded();
         let ids: Vec<_> = p.rails.iter().map(|r| r.rail).collect();
         assert_eq!(ids, vec![Rail::Claude, Rail::Codex, Rail::Cursor]);
         assert!(p.rails.iter().all(|r| r.pill == Pill::Detecting));
+        assert!(p.auth_rows.last().is_some_and(ModelsRow::is_xai));
+        assert!(
+            p.auth_rows.iter().any(|r| matches!(&r.kind, RowKind::ConnectProvider { provider_id, .. } if provider_id == "openrouter")),
+            "openrouter shows a connect row when no key is connected"
+        );
+        assert_eq!(p.subscriptions_len(), 3 + p.auth_rows.len());
+        assert_eq!(p.rail_selected, 0, "never preselects the xAI card");
     }
 
     #[test]
-    fn kilo_free_is_a_selectable_row_and_openrouter_needs_connect() {
+    fn kilo_free_is_a_selectable_model_row() {
         let p = loaded();
         let kilo = p
             .rows
@@ -785,28 +877,39 @@ mod tests {
             .find(|r| matches!(&r.kind, RowKind::Catalog { model, .. } if model.model_id == "kilo-auto/free"))
             .expect("kilo row");
         assert!(matches!(kilo.kind, RowKind::Catalog { locked: false, .. }));
-        assert!(
-            p.rows.iter().any(|r| matches!(&r.kind, RowKind::ConnectProvider { provider_id, .. } if provider_id == "openrouter")),
-            "openrouter shows a connect row when no key is connected"
-        );
-        let engine = p
-            .rows
-            .iter()
-            .find(|r| matches!(r.kind, RowKind::Engine(_)))
-            .expect("engine seed row");
+        assert_eq!(kilo.short_badge(), "free");
+        let engine = p.rows.first().expect("engine seed row");
         assert_eq!(engine.class, ConnectionClass::AgentAdapter);
+        assert_eq!(engine.provider(), "OpenCode");
+        assert_eq!(engine.title(), "Big Pickle");
+    }
+
+    #[test]
+    fn active_row_is_marked_and_preselected() {
+        let active = EngineModel::big_pickle_seed().row_id();
+        let mut p = PickerState::new().with_active(Some(active.clone()));
+        p.handle(PickerInput::Down);
+        p.handle(PickerInput::Down);
+        let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]);
+        p.apply_snapshot(PickerSnapshot {
+            rows,
+            ..PickerSnapshot::default()
+        });
+        assert_eq!(p.selected_row().map(ModelsRow::id), Some(active));
+        assert!(p.selected_row().is_some_and(|r| p.is_active(r)));
     }
 
     #[test]
     fn xai_login_requires_two_explicit_enters_and_disarms_on_move() {
         let mut p = loaded();
-        let last = p.rows.len() - 1;
-        for _ in 0..last {
-            p.handle(PickerInput::Down);
-        }
-        assert!(p.selected_row().is_some_and(ModelsRow::is_xai));
+        goto_xai(&mut p);
         assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
-        assert!(p.detail_open && p.xai_armed);
+        assert!(p.xai_armed);
+        assert!(
+            p.detail_lines()
+                .iter()
+                .any(|l| l.contains("Press Enter again"))
+        );
         p.handle(PickerInput::Up);
         assert!(!p.xai_armed);
         p.handle(PickerInput::Down);
@@ -818,17 +921,34 @@ mod tests {
     }
 
     #[test]
+    fn esc_disarms_xai_before_closing() {
+        let mut p = loaded();
+        goto_xai(&mut p);
+        p.handle(PickerInput::Enter);
+        assert_eq!(p.handle(PickerInput::Back), PickerOutcome::Changed);
+        assert!(!p.xai_armed);
+        assert_eq!(p.handle(PickerInput::Back), PickerOutcome::Close);
+    }
+
+    #[test]
     fn non_xai_rows_never_start_a_login() {
         let mut p = loaded();
         for i in 0..p.rows.len() {
             p.models_selected = i;
+            p.xai_armed = false;
+            let out = p.handle(PickerInput::Enter);
+            assert_ne!(out, PickerOutcome::StartOptionalXaiLogin, "row {i}");
+        }
+        p.handle(PickerInput::SwitchTab);
+        for i in 0..p.subscriptions_len() {
+            p.rail_selected = i;
             p.detail_open = false;
             p.xai_armed = false;
-            if p.rows.get(i).is_some_and(ModelsRow::is_xai) {
+            if p.selected_auth_row().is_some_and(ModelsRow::is_xai) {
                 continue;
             }
             let out = p.handle(PickerInput::Enter);
-            assert_ne!(out, PickerOutcome::StartOptionalXaiLogin, "row {i}");
+            assert_ne!(out, PickerOutcome::StartOptionalXaiLogin, "entry {i}");
         }
     }
 
@@ -838,6 +958,34 @@ mod tests {
         let json = serde_json::to_string(&sel).unwrap();
         assert!(!json.contains("xai") && !json.contains("opencode"));
         assert!(matches!(sel, DefaultSelection::KiloFree { .. }));
+    }
+
+    #[test]
+    fn first_run_default_mirrors_the_engine_catalog() {
+        assert_eq!(
+            EngineModel::first_run_default(&[]),
+            EngineModel::big_pickle_seed()
+        );
+        let live = vec![
+            EngineModel {
+                model_ref: "opencode/other".into(),
+                name: "Other".into(),
+                is_default: false,
+                tool_call: true,
+                context_limit: None,
+            },
+            EngineModel {
+                model_ref: "opencode/new-default".into(),
+                name: "New Default".into(),
+                is_default: true,
+                tool_call: true,
+                context_limit: None,
+            },
+        ];
+        assert_eq!(
+            EngineModel::first_run_default(&live).model_ref,
+            "opencode/new-default"
+        );
     }
 
     #[test]
@@ -861,20 +1009,41 @@ mod tests {
     }
 
     #[test]
-    fn esc_closes_detail_then_picker_and_add_later_closes() {
+    fn connect_row_on_subscriptions_opens_provider_connect() {
         let mut p = loaded();
-        p.handle(PickerInput::Enter);
-        assert!(matches!(
-            p.handle(PickerInput::Back),
-            PickerOutcome::Changed | PickerOutcome::Close
-        ));
-        let mut q = loaded();
-        let idx = q
-            .rows
-            .iter()
-            .position(|r| matches!(r.kind, RowKind::AddLater))
-            .unwrap();
-        q.models_selected = idx;
-        assert_eq!(q.handle(PickerInput::Enter), PickerOutcome::Close);
+        p.handle(PickerInput::SwitchTab);
+        for _ in 0..p.rails.len() {
+            p.handle(PickerInput::Down);
+        }
+        let row = p.selected_auth_row().expect("first connect row").clone();
+        let RowKind::ConnectProvider { provider_id, .. } = &row.kind else {
+            panic!("expected a connect row, got {row:?}");
+        };
+        assert_eq!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::ConnectProvider(provider_id.clone())
+        );
+    }
+
+    #[test]
+    fn detail_is_at_most_three_lines_everywhere() {
+        let mut p = loaded();
+        for i in 0..p.rows.len() {
+            p.models_selected = i;
+            let n = p.detail_lines().len();
+            assert!((1..=3).contains(&n), "row {i}: {n} lines");
+        }
+        p.handle(PickerInput::SwitchTab);
+        for i in 0..p.subscriptions_len() {
+            p.rail_selected = i;
+            let n = p.detail_lines().len();
+            assert!((1..=3).contains(&n), "entry {i}: {n} lines");
+        }
+    }
+
+    #[test]
+    fn esc_closes_the_picker() {
+        let mut p = loaded();
+        assert_eq!(p.handle(PickerInput::Back), PickerOutcome::Close);
     }
 }
