@@ -261,21 +261,19 @@ def image_candidates(root, max_depth=4):
 
 
 SPECIES = {
-    "lion": {"lion", "leo"}, "tiger": {"tiger", "tigris"}, "leopard": {"leopard", "pardus"},
-    "jaguar": {"jaguar", "onca"}, "snow leopard": {"snow leopard", "snowleopard", "uncia"},
+    "lion": {"lion", "lions", "leo"}, "tiger": {"tiger", "tigers", "tigris"}, "leopard": {"leopard", "leopards", "pardus"},
+    "jaguar": {"jaguar", "jaguars", "onca"}, "snow leopard": {"uncia", "snowleopard", "snowleopards"},
 }
 
 
 def species_of(folder):
-    n = re.sub(r"[_\-]+", " ", folder.lower()).strip()
-    n = re.sub(r"^\d+[\s.)]*", "", n)
-    n = re.sub(r"^panthera\s+", "", n)
-    n = re.sub(r"\s*\(.*\)$", "", n).strip()
-    n = n[:-1] if n.endswith("s") and n[:-1] in {a for v in SPECIES.values() for a in v} else n
-    for sp, names in SPECIES.items():
-        if n in names or n.replace(" ", "") in names:
-            return sp
-    return None
+    """The one species a folder name names, by common or Latin name (`lion`, `Panthera leo`,
+    `Panthera_leo_lion`, `03 Snow leopard`); None when it names none or several."""
+    n = re.sub(r"[_\-.()\[\],]+", " ", folder.lower())
+    n = re.sub(r"snow\s+leopards?", "snowleopard", n)
+    words = set(n.split())
+    found = {sp for sp, names in SPECIES.items() if words & names}
+    return found.pop() if len(found) == 1 else None
 
 
 def book_info(p):
