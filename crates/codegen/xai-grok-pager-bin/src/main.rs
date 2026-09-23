@@ -2341,6 +2341,12 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
             }
             Command::Models => {
                 init_tracing_simple("cli");
+                // Workshop: an Engine/Adapter connection lists the models it actually offers;
+                // the shell's placeholder entry is not a model anyone can pick.
+                if let Some(text) = xai_grok_pager::app::workshop::connection_models_text() {
+                    print!("{text}");
+                    return Ok(());
+                }
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 let agent_config = xai_grok_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
@@ -2467,7 +2473,9 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                     && grok_com_config.auth_provider_command.is_none()
                 {
                     let mut picker = workshop_auth::PickerState::new();
-                    picker.apply_snapshot(xai_grok_pager::app::workshop::load_picker_snapshot().await);
+                    picker.apply_snapshot(
+                        xai_grok_pager::app::workshop::refresh_rail_models_snapshot().await,
+                    );
                     print!("{}", workshop_auth::text::cli_login_text(&picker));
                     xai_grok_shell::instrumentation::finalize_and_exit(0);
                 }

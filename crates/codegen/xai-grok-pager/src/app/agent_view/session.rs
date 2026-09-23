@@ -136,6 +136,7 @@ impl AgentView {
             scrollback,
             prompt,
             workshop_model_label: None,
+            workshop_context: None,
             workshop_turn_active: false,
             workshop_retry_prompt: None,
             tip_typing_dismissed: false,

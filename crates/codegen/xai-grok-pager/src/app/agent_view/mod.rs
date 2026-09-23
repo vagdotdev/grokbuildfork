@@ -743,6 +743,10 @@ pub struct AgentView {
     /// Workshop: composer label for an Engine/Adapter connection (`Big Pickle · OpenCode`,
     /// `Claude · {model}`); `None` for Shell (Direct/Local), which shows the shell model name.
     pub(crate) workshop_model_label: Option<String>,
+    /// Workshop: the context meter's numbers for an Engine/Adapter connection — `(used, limit)`:
+    /// the engine's last reported usage and the live model's context window. `None` for Shell
+    /// (the shell's own numbers show). Either side unknown → the meter is hidden, never guessed.
+    pub(crate) workshop_context: Option<(Option<u64>, Option<u64>)>,
     /// Workshop: a streaming Engine/Adapter turn is in flight for this agent. Mirrors the app-level
     /// flag so the per-agent input layer treats Ctrl+C as a cancellable activity (there is no ACP
     /// turn to detect). Cleared when the turn ends.

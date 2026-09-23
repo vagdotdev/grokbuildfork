@@ -57,6 +57,15 @@ pub(super) fn handle_permission_request(
     needs_redraw && is_active
 }
 
+/// Workshop: queue a permission prompt built by the pager itself (the OpenCode engine's asks),
+/// with the same stash/pane/notification bookkeeping as a shell-originated request.
+pub(crate) fn enqueue_permission_for_workshop(
+    perm: xai_acp_lib::AcpArgs<acp::RequestPermissionRequest>,
+    agent: &mut AgentView,
+) -> bool {
+    enqueue_permission(perm, agent)
+}
+
 fn enqueue_permission(
     perm: xai_acp_lib::AcpArgs<acp::RequestPermissionRequest>,
     agent: &mut AgentView,

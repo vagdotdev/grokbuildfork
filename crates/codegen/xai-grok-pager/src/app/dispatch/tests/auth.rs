@@ -806,6 +806,80 @@ fn login_and_auth_never_refresh_catalogs_but_model_and_r_do() {
     assert!(!app.connection_picker.as_ref().unwrap().refresh_pending);
 }
 
+/// A load that leaves a signed-in rail `Loading models…` (nothing cached yet: `/auth`, after a
+/// sign-in) asks the CLIs for their models, once; a `/model` refresh already queued covers it, and
+/// a rail that lists its models needs nothing.
+#[test]
+fn a_loading_rail_after_a_load_queues_one_rail_models_refresh() {
+    use workshop_auth::{PickerSnapshot, PickerTab};
+    use workshop_detect::{Pill, Rail, RailModels, RailState, SubscriptionModels};
+    let rails = |state: RailModels| -> Vec<RailState> {
+        Rail::ALL
+            .iter()
+            .map(|r| RailState {
+                pill: Pill::Ready,
+                installed: true,
+                subscription: state.clone(),
+                ..RailState::detecting(*r)
+            })
+            .collect()
+    };
+    let loaded = |state: RailModels| {
+        Action::TaskComplete(TaskResult::WorkshopPickerLoaded(PickerSnapshot {
+            rails: rails(state),
+            ..PickerSnapshot::default()
+        }))
+    };
+    let mut app = test_app();
+    dispatch(
+        Action::OpenConnectionPicker(PickerTab::Subscriptions),
+        &mut app,
+    );
+    let effects = dispatch(loaded(RailModels::Loading), &mut app);
+    assert!(
+        matches!(effects.as_slice(), [Effect::WorkshopRefreshRailModels]),
+        "got {effects:?}"
+    );
+    let listed = RailModels::Listed {
+        list: SubscriptionModels {
+            rail: Rail::Claude,
+            models: Vec::new(),
+            account: None,
+            documented_aliases: false,
+            fetched_at_secs: 0,
+        },
+        cached: false,
+        error: None,
+    };
+    assert!(dispatch(loaded(listed), &mut app).is_empty());
+    let failed = RailModels::Failed {
+        reason: "timed out".into(),
+    };
+    assert!(
+        dispatch(loaded(failed), &mut app).is_empty(),
+        "a failed rail waits for the user"
+    );
+    // Enter on it ("Couldn't load models — press Enter to retry") asks the CLIs again, and only
+    // them: no hosted-list refresh.
+    let effects = dispatch(
+        Action::ConnectionPicker(workshop_auth::PickerInput::Enter),
+        &mut app,
+    );
+    assert!(
+        matches!(effects.as_slice(), [Effect::WorkshopRefreshRailModels]),
+        "got {effects:?}"
+    );
+
+    // `/model`: the queued live refresh asks the CLIs itself; no second probe.
+    app.connection_picker = None;
+    dispatch(Action::OpenConnectionPicker(PickerTab::Models), &mut app);
+    let effects = dispatch(loaded(RailModels::Loading), &mut app);
+    assert!(
+        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs { .. }]),
+        "got {effects:?}"
+    );
+}
+
 /// The OpenCode engine could not start for a turn: one system line, the Kilo keyless pool becomes
 /// the (shell) connection, the session is switched to it, and the prompt goes out again once the
 /// activation completes.

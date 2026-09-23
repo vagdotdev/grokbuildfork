@@ -1013,6 +1013,15 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                         engine: app.workshop_engine.clone(),
                     }];
                 }
+                // Nothing live is queued (`/auth`, after a sign-in) but a signed-in rail has no
+                // cached list yet: ask its CLI. That snapshot never comes back `Loading`.
+                if !picker.refresh_pending
+                    && picker.rails.iter().any(|r| {
+                        matches!(r.subscription, workshop_detect::RailModels::Loading)
+                    })
+                {
+                    return vec![Effect::WorkshopRefreshRailModels];
+                }
             }
             vec![]
         }
@@ -1252,6 +1261,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => handle_auth_url_ready(app, request_seq, auth_url, external, mode),
         TaskResult::AuthCodeSubmitted { .. } => vec![],
         TaskResult::AuthCancelComplete => vec![],
+        TaskResult::WorkshopModelsReloaded => vec![],
         TaskResult::McpsListLoaded { agent_id, result } => {
             use crate::views::extensions_modal::TabDataState;
             if let Some(agent) = app.agents.get_mut(&agent_id)

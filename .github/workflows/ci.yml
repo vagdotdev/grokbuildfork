@@ -169,7 +169,11 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq strace iproute2 python3
           scripts/no-egress-smoke.sh target/debug/workshop
       - name: gate:no-theft runtime — decoy foreign credentials are never opened (strace)
-        run: scripts/no-theft-fs-audit.sh target/debug/workshop target/no-egress/no-theft-fs-audit.log
+        # Phase 2 runs the subscription model-list probes (workshop-detect `probe` example) against
+        # signed-in fake CLIs: no decoy open, no keychain tool, every documented probe command ran.
+        run: |
+          cargo build -p workshop-detect --example probe
+          scripts/no-theft-fs-audit.sh target/debug/workshop target/no-egress/no-theft-fs-audit.log
       - name: PTY smoke — Login opens the picker, never grok.com
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
@@ -197,6 +201,17 @@ jobs:
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test pty_surface_polish -- --nocapture --include-ignored --test-threads=2
+      - name: PTY gates — engine trust (safety modes, visible tool work, meter, queue, reasoning, identity, resume)
+        # A scripted `opencode serve` (fixtures/fake-engine-serve.py) with the 1.18.31 event shapes:
+        # Plan sends the read-only agent and writes nothing; Normal shows the approval prompt for
+        # `rm -rf tmp` (reject keeps it, `Yes, proceed` posts `once`); Always-approve runs it with no
+        # prompt; Edit/Run rows open to their diff/output; the meter is hidden until the engine
+        # reports usage, then `8.6K / 200K`; queued prompts are separate turns; reasoning is a
+        # collapsed block; "what are you?" answers as Workshop; `--resume`/`-c`/the pickers replay
+        # the engine conversation and an idle launch prints no resume hint.
+        env:
+          WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
+        run: cargo test -p workshop-gates --test engine_trust -- --nocapture --include-ignored --test-threads=2
       - name: PTY smoke — live model lists (hermetic)
         # Zero egress before the user acts (logging proxy: first run, /auth, `workshop login` ask
         # for nothing; /model asks exactly the keyless catalog hosts, never xAI), and /model lists

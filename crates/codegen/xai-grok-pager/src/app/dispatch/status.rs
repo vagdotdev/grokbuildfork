@@ -638,6 +638,9 @@ pub(super) fn handle_context_info_complete(
     nonce: u64,
 ) -> Vec<Effect> {
     let minimal = app.screen_mode.is_minimal();
+    // Workshop: an Engine/Adapter connection shows the live model's context, not the shell
+    // placeholder's snapshot (which meters a model no turn ever reaches).
+    let workshop_lines = crate::app::workshop::context_lines(app);
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         if agent.session.session_id.as_ref() != Some(session_id) {
             return vec![];
@@ -646,6 +649,26 @@ pub(super) fn handle_context_info_complete(
         if let Some(state) = usage_modal_state_mut(agent)
             && state.fetch_nonce != nonce
         {
+            return vec![];
+        }
+        if let Some(lines) = workshop_lines {
+            if let Some(state) = usage_modal_state_mut(agent) {
+                state.context_override = Some(lines);
+                state.context = None;
+                state.context_error = None;
+            } else if minimal {
+                push_and_page_flip(
+                    &mut agent.scrollback,
+                    crate::scrollback::block::RenderBlock::system(
+                        lines
+                            .iter()
+                            .filter(|l| !l.is_empty())
+                            .map(|l| l.trim_start_matches("· "))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    ),
+                );
+            }
             return vec![];
         }
         let model = info.data.model.as_deref().unwrap_or("unknown").to_string();

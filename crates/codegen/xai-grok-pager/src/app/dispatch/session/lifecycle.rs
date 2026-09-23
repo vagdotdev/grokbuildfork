@@ -421,6 +421,11 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
     );
     app.agents.insert(agent_id, agent);
     configure_agent_composer(app, agent_id);
+    // Workshop: a launch or picker resume of an engine conversation lands in this new agent —
+    // never in the hidden home husk behind the welcome screen.
+    if !stay_on_welcome {
+        crate::app::workshop_sessions::apply_pending_resume(app, agent_id);
+    }
     {
         let agent = app.agents.get_mut(&agent_id).unwrap();
         agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
@@ -788,10 +793,12 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
     // Workshop: a new/revealed agent shows the active connection's composer label (`Big Pickle ·
     // OpenCode`, `Claude · {model}`); `None` for Direct/Local (Shell) → the shell model name shows.
     let workshop_label = app.workshop_connection.composer_label();
+    let workshop_context = crate::app::workshop::context_meter(app);
     let Some(agent) = app.agents.get_mut(&agent_id) else {
         return;
     };
     agent.workshop_model_label = workshop_label;
+    agent.workshop_context = workshop_context;
     agent.prompt.set_compact(compact);
     agent.prompt.adopt_slash_mru(slash_mru);
     agent.prompt.adopt_command_tags(command_tags);

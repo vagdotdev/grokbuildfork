@@ -92,11 +92,18 @@ fn move_selection_to(h: &mut PtyHarness, needle: &str) {
 }
 
 /// Rows of the open Models overlay whose provider column is `provider` (`OpenCode`, `Kilo Gateway`):
-/// `name  provider  badge[ · active]` inside the box border.
+/// `name  provider  badge[ · active]` inside the box border. The overlay floats over the
+/// transcript, so only the text between the box's first and last `│` counts — whatever the
+/// transcript shows to the left or right of the box (a timestamp, a tool row) is not the row.
 fn overlay_rows_for(h: &PtyHarness, provider: &str) -> Vec<String> {
     h.screen_contents()
         .lines()
-        .map(|l| l.trim().trim_end_matches('\u{2502}').trim().to_owned())
+        .map(|l| match (l.find('\u{2502}'), l.rfind('\u{2502}')) {
+            (Some(first), Some(last)) if last > first => {
+                l[first + '\u{2502}'.len_utf8()..last].trim().to_owned()
+            }
+            _ => l.trim().to_owned(),
+        })
         .filter(|l| {
             l.contains(provider)
                 && ["free", "free · active", "free · key", "key", "key needed"]

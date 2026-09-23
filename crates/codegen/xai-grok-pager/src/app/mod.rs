@@ -16,6 +16,9 @@ pub mod app_view;
 /// Workshop overlay: connection picker loading and activation.
 pub mod workshop;
 pub mod workshop_engine_state;
+pub mod workshop_permissions;
+pub mod workshop_sessions;
+pub mod workshop_tools;
 pub mod bundle;
 pub(crate) mod cancel_latency;
 pub mod cli;
@@ -818,9 +821,20 @@ pub async fn run(
         }
         session_startup::set_active_local_workspace(lw)?;
     }
-    let intent = args
+    let mut intent = args
         .session_startup_intent()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Workshop: an engine conversation (`--resume ses_…`, or `-c` under an Engine connection)
+    // is Workshop's own record, replayed into a fresh agent that continues the same OpenCode
+    // session; the shell starts a new session underneath as on any launch.
+    let workshop_engine_resume = crate::app::workshop_sessions::startup_resume(
+        args.session_to_resume(),
+        args.resume_most_recent() || args.continue_last_session,
+        &std::env::current_dir().unwrap_or_default(),
+    );
+    if workshop_engine_resume.is_some() {
+        intent = session_startup::SessionStartupIntent::NewAuto;
+    }
     let mut materialize_ctx = session_startup::MaterializeCtx::from_pager_args(&args);
     materialize_ctx.restore_progress_on_stdout =
         std::io::IsTerminal::is_terminal(&std::io::stdout());
@@ -1157,6 +1171,7 @@ pub async fn run(
         bg_update_rx,
         writer_event_rx,
         &mut reader_thread,
+        workshop_engine_resume,
     )
     .await;
     signal_handler::clear_quit_notify();
