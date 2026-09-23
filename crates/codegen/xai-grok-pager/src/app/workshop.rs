@@ -1256,6 +1256,48 @@ const MAX_AUTO_CONTINUES: u32 = 2;
 const AUTO_CONTINUE_PROMPT: &str = "Continue: your last message said what you would do next but \
 ended before doing it. Do it now, then finish every remaining part of my request.";
 
+/// The follow-up sent (never shown, at most once a turn) when a requested file was shown in the
+/// chat instead of written.
+const AUTO_WRITE_PROMPT: &str = "Continue: you showed the file contents in the chat instead of \
+writing them. Write them to the file(s) with your tools, run or test the result if I asked, then \
+finish every remaining part of my request.";
+
+/// The engine's tools that create or change files.
+const FILE_WRITE_TOOLS: [&str; 5] = ["write", "edit", "multiedit", "patch", "apply_patch"];
+
+/// True when the prompt asks for files to be made ("build … todo.py", "write a script that …").
+fn asks_to_write_files(prompt: &str) -> bool {
+    let prompt = prompt.to_lowercase();
+    let words: Vec<&str> = prompt
+        .split(|c: char| c.is_whitespace() || ",;:()[]`'\"!?".contains(c))
+        .map(|w| w.trim_end_matches('.'))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let makes = words.iter().any(|w| {
+        ["create", "write", "build", "make", "generate", "save", "scaffold"]
+            .iter()
+            .any(|v| w.starts_with(v))
+    });
+    let file_name = |w: &str| {
+        w.rsplit_once('.').is_some_and(|(stem, ext)| {
+            stem.len() >= 2 && (1..=5).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        })
+    };
+    let names_a_file = words.iter().any(|w| {
+        file_name(w)
+            || ["file", "script", "app", "program", "module", "project"]
+                .contains(&w.trim_end_matches('s'))
+    });
+    makes && names_a_file
+}
+
+/// True when the turn's closing text ends with a fenced code block.
+fn ends_with_code_block(tail: &str) -> bool {
+    tail.trim_end()
+        .strip_suffix("```")
+        .is_some_and(|body| body.contains("```"))
+}
+
 /// True when the turn's closing text (what the model wrote after its last tool call) announces a
 /// step it never took: it ends on ":" ("…the official installer for Ubuntu:"), or its last
 /// sentence is an "I'll …" / "Let me …" that no tool call followed.
@@ -1452,10 +1494,14 @@ pub async fn run_workshop_turn(
     let mut tool_details: std::collections::HashMap<String, (Option<String>, serde_json::Value)> =
         std::collections::HashMap::new();
     // What the model wrote since its last tool call, and whether the turn failed: a turn that
-    // ends on an announced action is continued (engine, not Plan), at most MAX_AUTO_CONTINUES times.
+    // ends on an announced action, or that pasted a requested file instead of writing it (once),
+    // is continued (engine, not Plan), at most MAX_AUTO_CONTINUES times in all.
     let mut tail = String::new();
     let mut errored = false;
     let mut continues = 0;
+    let asks_for_files = asks_to_write_files(&spec.text);
+    let mut wrote_a_file = false;
+    let mut continued_to_write = false;
     loop {
         let silence = async {
             match first_event_at {
@@ -1495,6 +1541,7 @@ pub async fn run_workshop_turn(
                     first_event_at = None;
                     still_connecting_at = None;
                     tail.clear();
+                    wrote_a_file |= FILE_WRITE_TOOLS.contains(&name.as_str());
                     let _ = tx.send(WorkshopTurnMsg::Tool { id, name, input });
                 }
                 Some(AdapterEvent::ToolDetail { id, title, metadata }) => {
@@ -1535,25 +1582,35 @@ pub async fn run_workshop_turn(
                 }
                 Some(AdapterEvent::Done { .. }) => {}
                 None => {
+                    let pasted = asks_for_files
+                        && !wrote_a_file
+                        && !continued_to_write
+                        && ends_with_code_block(&tail);
                     if let Some(f) = &follow_up
                         && permission == PermissionPolicy::WorkspaceWrite
                         && !aborted_by_us
                         && !errored
                         && continues < MAX_AUTO_CONTINUES
-                        && announces_unfinished_action(&tail)
+                        && (pasted || announces_unfinished_action(&tail))
                     {
                         continues += 1;
+                        continued_to_write |= pasted;
+                        let (why, prompt) = if pasted {
+                            ("the reply showed a requested file in the chat and wrote no file", AUTO_WRITE_PROMPT)
+                        } else {
+                            ("the turn ended on an announced action with no tool call after it", AUTO_CONTINUE_PROMPT)
+                        };
                         let chars: Vec<char> = tail.trim().chars().collect();
                         let ending: String =
                             chars.iter().skip(chars.len().saturating_sub(120)).collect();
                         state::append_log(
                             &engine_log_path(),
                             &format!(
-                                "auto-continue {continues}/{MAX_AUTO_CONTINUES} on {}: the turn ended on an announced action with no tool call after it: {ending:?}",
+                                "auto-continue {continues}/{MAX_AUTO_CONTINUES} on {}: {why}: {ending:?}",
                                 f.session
                             ),
                         );
-                        let mut req = TurnRequest::new(AUTO_CONTINUE_PROMPT);
+                        let mut req = TurnRequest::new(prompt);
                         req.model = Some(f.model_ref.clone());
                         req.permission = permission;
                         match f.engine.prompt(&f.session, req).await {
@@ -1630,7 +1687,36 @@ pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::announces_unfinished_action;
+    use super::{announces_unfinished_action, asks_to_write_files, ends_with_code_block};
+
+    #[test]
+    fn file_requests_are_recognised() {
+        for prompt in [
+            "build a command line todo app in python: todo.py with add, list and done commands, saving the todos in todos.json. test it when you're done",
+            "create add.py with a function add(a, b)",
+            "write a script that renames my photos",
+            "make a small flask app",
+        ] {
+            assert!(asks_to_write_files(prompt), "{prompt:?}");
+        }
+        for prompt in [
+            "hello, who are you?",
+            "show me an example of a python loop",
+            "create a folder on my desktop called iBooks and download two open-source classic books inside of it, and install Ghostty",
+            "what does e.g. mean",
+        ] {
+            assert!(!asks_to_write_files(prompt), "{prompt:?}");
+        }
+    }
+
+    #[test]
+    fn a_closing_fence_is_a_pasted_block() {
+        assert!(ends_with_code_block(
+            "I'll build it.\n\n**todo.py**\n```python\nprint('x')\n```\n"
+        ));
+        assert!(!ends_with_code_block("Wrote todo.py and ran it: 3 passed."));
+        assert!(!ends_with_code_block("```"));
+    }
 
     #[test]
     fn announced_actions_are_unfinished() {

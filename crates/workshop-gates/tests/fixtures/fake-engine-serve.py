@@ -27,6 +27,10 @@ from the real server:
   * "install the tool"                -> ends the turn on "I'll run the installer:" with no tool call;
     a following "Continue: …" prompt runs `echo installed` and answers "Installed the tool.".
   * "keep announcing"                 -> every turn, continued or not, ends on "Let me run it:".
+  * "create todo.py"                  -> pastes the file in a fenced block and writes nothing; a
+    following "Continue: …" prompt writes ./todo.py with a `write` part and answers "Wrote todo.py.".
+  * "create stubborn.py"              -> pastes the file every time, continued or not.
+  * "show me a loop"                  -> answers with a fenced example (no file was asked for).
   * "slow"                            -> waits 3 s before answering (to queue prompts behind it).
   * agent == plan                     -> never a tool part, never a permission ask: text only.
 
@@ -206,6 +210,19 @@ def run_turn(sid, agent, text):
         answer = "Plan: I would create the file, but plan mode is read-only. Ready when you exit plan mode."
     elif "keep announcing" in text_l:
         answer = "Let me run it:"
+    elif "create todo.py" in text_l and continued:
+        path = os.path.join(CWD, "todo.py")
+        content = 'print("todo")\n'
+        with open(path, "w") as f:
+            f.write(content)
+        emit_part(tool_part(sid, mid, "write", next_id("call"), {"filePath": path, "content": content},
+                            "Wrote file successfully.", "todo.py",
+                            {"diagnostics": {}, "filepath": path, "exists": False, "truncated": False}))
+        answer = "Wrote todo.py."
+    elif "create todo.py" in text_l or "create stubborn.py" in text_l:
+        answer = "Here is the file.\n\n```python\nprint(\"todo\")\n```"
+    elif "show me a loop" in text_l:
+        answer = "```python\nfor i in range(3):\n    print(i)\n```"
     elif "install the tool" in text_l:
         if continued:
             call_id = next_id("call")

@@ -779,6 +779,63 @@ fn auto_continue_is_bounded() {
     quit(&mut j);
 }
 
+/// A requested file shown in the chat instead of written is written by one silent continuation
+/// (logged); a code example nobody asked to save is left alone, and a model that keeps pasting is
+/// continued for it only once.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn pasted_file_is_written() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/pasted-file-is-written", &bin, &fx);
+    send_prompt(&mut j, "create todo.py that prints todo");
+    wait_for(&mut j.h, "Wrote todo.py.", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "01-written");
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("Continue"),
+        "the continuation is never shown:\n{screen}"
+    );
+    assert!(j.cwd.path().join("todo.py").exists(), "todo.py is on disk");
+    let prompts = prompts_sent(&fx.log);
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert!(
+        prompts[1].starts_with("Continue: you showed the file contents"),
+        "{prompts:?}"
+    );
+    let log = std::fs::read_to_string(j.workshop_home().join("logs/opencode-engine.log"))
+        .unwrap_or_default();
+    assert!(
+        log.contains("auto-continue 1/2") && log.contains("wrote no file"),
+        "the continuation is logged for workshop doctor:\n{log}"
+    );
+
+    send_prompt(&mut j, "show me a loop");
+    wait_for(&mut j.h, "range(3)", 60);
+    j.h.update(Duration::from_secs(2));
+    assert_eq!(
+        prompts_sent(&fx.log).len(),
+        3,
+        "an example nobody asked to save is not continued"
+    );
+
+    send_prompt(&mut j, "create stubborn.py");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while prompts_sent(&fx.log).len() < 5 && std::time::Instant::now() < deadline {
+        j.h.update(Duration::from_millis(300));
+    }
+    j.h.update(Duration::from_secs(3));
+    snapshot(&j.h, &j.dir, "02-bounded");
+    let prompts = prompts_sent(&fx.log);
+    assert_eq!(
+        prompts.len(),
+        5,
+        "pasting again is continued once: {prompts:?}"
+    );
+    quit(&mut j);
+}
+
 /// `/settings` → "Show thinking blocks" brings the thinking back, as its own block that is never
 /// glued to the answer.
 #[test]
