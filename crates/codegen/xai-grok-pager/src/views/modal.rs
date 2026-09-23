@@ -541,16 +541,6 @@ pub(crate) fn default_palette_entries(
             command: PaletteCommand::SectionHeader("Advanced".into()),
         },
         PaletteEntry {
-            label: "Deep Research".into(),
-            shortcut: "/deep-research".into(),
-            command: PaletteCommand::SlashCommand("/deep-research ".into()),
-        },
-        PaletteEntry {
-            label: "Goal".into(),
-            shortcut: "/goal".into(),
-            command: PaletteCommand::SlashCommand("/goal ".into()),
-        },
-        PaletteEntry {
             label: "Loop".into(),
             shortcut: "/loop".into(),
             command: PaletteCommand::SlashCommand("/loop ".into()),

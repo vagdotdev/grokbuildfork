@@ -2419,7 +2419,7 @@ index 64d0b943..8aec3a3f 100644
          .session
          .session_id
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
-index 347259b3..d1b4f1b3 100644
+index 347259b3..7245eab1 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
 @@ -1622,7 +1622,7 @@ fn trust_folder_continues_session_only_when_embedded_and_persist_denied() {
@@ -2431,22 +2431,29 @@ index 347259b3..d1b4f1b3 100644
          "a session-only grant must show how to persist: {toast}"
      );
  }
-@@ -2032,8 +2032,9 @@ fn gated_worktree_with_none_companions_preserves_stashed_label_and_ref() {
+@@ -2031,31 +2031,48 @@ fn gated_worktree_with_none_companions_preserves_stashed_label_and_ref() {
+     assert!(app.deferred_startup.session.is_none());
      assert!(!app.deferred_startup.worktree);
  }
- /// `/login` from inside a session must move to the welcome screen and stash the agent view for restoration.
+-/// `/login` from inside a session must move to the welcome screen and stash the agent view for restoration.
 -/// The welcome screen is the only view that renders the auth flow / external-provider URL.
 -/// Regression: "external auth provider /login does nothing mid-session".
-+/// The welcome screen is the only view that renders the connection picker and the auth flow.
-+/// Workshop: Login alone opens the picker (no Authenticate); the inherited flow starts only from
-+/// the optional xAI card, which still needs the stashed view and the welcome screen.
++/// `/login` from inside a session opens the connection picker as an overlay over the session and
++/// stashes the agent view for restoration. Workshop: Login alone opens the picker (no
++/// Authenticate); the inherited flow starts only from the optional xAI card, which moves to the
++/// welcome screen (the only view that draws the browser / device-code flow) with the view stashed.
  #[test]
  fn login_mid_session_switches_to_welcome_and_stashes_view() {
      let mut app = test_app_with_agent();
-@@ -2041,12 +2042,23 @@ fn login_mid_session_switches_to_welcome_and_stashes_view() {
+     assert_eq!(app.active_view, ActiveView::Agent(AgentId(0)));
      let effects = dispatch(Action::Login, &mut app);
-     assert_eq!(app.active_view, ActiveView::Welcome);
-     assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
+-    assert_eq!(app.active_view, ActiveView::Welcome);
++    assert_eq!(
++        app.active_view,
++        ActiveView::Agent(AgentId(0)),
++        "the picker is an overlay; the session stays up behind it"
++    );
++    assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
 +    assert!(app.connection_picker.is_some(), "Login opens the picker");
 +    // Opening the picker loads its rows/rails (`WorkshopLoadPicker`) — a data probe, not auth.
 +    assert!(
@@ -2457,7 +2464,8 @@ index 347259b3..d1b4f1b3 100644
 +        "Login alone must not kick off an auth flow, got {effects:?}",
 +    );
 +    let effects = start_login_flow(&mut app);
-+    assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
++    assert_eq!(app.active_view, ActiveView::Welcome, "the xAI flow is drawn by the welcome view");
+     assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
      assert!(matches!(app.auth_state, AuthState::Authenticating { .. }));
      assert!(
          effects
@@ -2467,8 +2475,19 @@ index 347259b3..d1b4f1b3 100644
 +        "the optional xAI card still kicks off the inherited auth flow",
      );
  }
- /// A mid-session `/login` switches to the welcome view to host the auth flow.
-@@ -2074,7 +2086,7 @@ fn auth_complete_strips_reauth_prompt_after_mid_session_login() {
+-/// A mid-session `/login` switches to the welcome view to host the auth flow.
++/// A mid-session xAI sign-in switches to the welcome view to host the auth flow.
+ /// That transition must collapse any expanded announcement so it can't reappear stale if auth completion lands back on a welcome screen.
+ #[test]
+ fn login_mid_session_resets_welcome_announcement_expanded() {
+     let mut app = test_app_with_agent();
+     app.welcome_announcement.expanded = true;
+-    dispatch(Action::Login, &mut app);
++    start_login_flow(&mut app);
+     assert_eq!(app.active_view, ActiveView::Welcome);
+     assert!(
+         !app.welcome_announcement.expanded,
+@@ -2074,7 +2091,7 @@ fn auth_complete_strips_reauth_prompt_after_mid_session_login() {
          .unwrap()
          .scrollback
          .push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
@@ -2477,7 +2496,7 @@ index 347259b3..d1b4f1b3 100644
      let seq = authenticating_seq(&app);
      dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -2115,7 +2127,7 @@ fn auth_complete_retries_stashed_prompt_after_mid_session_login() {
+@@ -2115,7 +2132,7 @@ fn auth_complete_retries_stashed_prompt_after_mid_session_login() {
              chip_elements: Vec::new(),
          });
      }

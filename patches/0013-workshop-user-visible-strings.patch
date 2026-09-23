@@ -8368,7 +8368,7 @@ index d58b7b35..c481e3c8 100644
              session_id: Some("test-session-123".into()),
          }
 diff --git a/crates/codegen/xai-grok-pager/src/notifications/mod.rs b/crates/codegen/xai-grok-pager/src/notifications/mod.rs
-index cd048484..73717677 100644
+index cd048484..012860f0 100644
 --- a/crates/codegen/xai-grok-pager/src/notifications/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/notifications/mod.rs
 @@ -19,7 +19,7 @@ pub use config::{
@@ -8398,15 +8398,19 @@ index cd048484..73717677 100644
              body: "Session ready".into(),
              session_id: None,
          });
-@@ -631,7 +631,7 @@ mod tests {
+@@ -630,9 +630,10 @@ mod tests {
+         let payload = rx
              .try_recv()
              .expect("shutdown escapes must ride the writer queue");
++        let escapes = String::from_utf8_lossy(payload.data()).to_string();
          assert!(
 -            String::from_utf8_lossy(payload.data()).contains("grok"),
-+            String::from_utf8_lossy(payload.data()).contains("Workshop"),
-             "expected the title reset in the queued escape"
+-            "expected the title reset in the queued escape"
++            escapes.contains(title::TITLE_RESTORE),
++            "expected the title restore in the queued escape: {escapes:?}"
          );
          assert!(rx.try_recv().is_err(), "one combined payload expected");
+     }
 diff --git a/crates/codegen/xai-grok-pager/src/notifications/protocol.rs b/crates/codegen/xai-grok-pager/src/notifications/protocol.rs
 index 59e9fec8..cbfd8261 100644
 --- a/crates/codegen/xai-grok-pager/src/notifications/protocol.rs
@@ -9145,7 +9149,7 @@ index ef7c763c..3ccb81f8 100644
          }
      }
 diff --git a/crates/codegen/xai-grok-pager/src/views/modal.rs b/crates/codegen/xai-grok-pager/src/views/modal.rs
-index 8217e5b1..bfbf6158 100644
+index 8217e5b1..4586e691 100644
 --- a/crates/codegen/xai-grok-pager/src/views/modal.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/modal.rs
 @@ -378,17 +378,59 @@ pub(crate) fn default_palette_entries(
@@ -9255,7 +9259,7 @@ index 8217e5b1..bfbf6158 100644
          PaletteEntry {
              label: "Always Approve Mode".into(),
              shortcut: "/always-approve".into(),
-@@ -485,9 +512,73 @@ pub(crate) fn default_palette_entries(
+@@ -485,9 +512,63 @@ pub(crate) fn default_palette_entries(
              command: PaletteCommand::EditPromptExternal,
          },
          PaletteEntry {
@@ -9290,16 +9294,6 @@ index 8217e5b1..bfbf6158 100644
 +            command: PaletteCommand::SectionHeader("Advanced".into()),
 +        },
 +        PaletteEntry {
-+            label: "Deep Research".into(),
-+            shortcut: "/deep-research".into(),
-+            command: PaletteCommand::SlashCommand("/deep-research ".into()),
-+        },
-+        PaletteEntry {
-+            label: "Goal".into(),
-+            shortcut: "/goal".into(),
-+            command: PaletteCommand::SlashCommand("/goal ".into()),
-+        },
-+        PaletteEntry {
 +            label: "Loop".into(),
 +            shortcut: "/loop".into(),
 +            command: PaletteCommand::SlashCommand("/loop ".into()),
@@ -9331,7 +9325,7 @@ index 8217e5b1..bfbf6158 100644
          },
          PaletteEntry {
              label: "Hooks".into(),
-@@ -536,45 +627,6 @@ pub(crate) fn default_palette_entries(
+@@ -536,45 +617,6 @@ pub(crate) fn default_palette_entries(
              shortcut: "/config-agents".into(),
              command: PaletteCommand::OpenAgentsModal,
          },
@@ -9377,7 +9371,7 @@ index 8217e5b1..bfbf6158 100644
      ];
      entries.retain(|entry| {
          if !sharing_enabled
-@@ -1028,11 +1080,11 @@ fn fit_docs_ask_grok_tip(docs_path: &str, width: usize) -> String {
+@@ -1028,11 +1070,11 @@ fn fit_docs_ask_grok_tip(docs_path: &str, width: usize) -> String {
          return String::new();
      }
      let long =
@@ -9391,7 +9385,7 @@ index 8217e5b1..bfbf6158 100644
      if short.width() <= width {
          return short;
      }
-@@ -1520,8 +1572,8 @@ mod doc_picker_tip_tests {
+@@ -1520,8 +1562,8 @@ mod doc_picker_tip_tests {
      #[test]
      fn fit_docs_tip_prefers_path_and_never_overflows() {
          let path = crate::util::display_user_grok_path(DOCS_USER_GUIDE_REL);
@@ -9402,7 +9396,7 @@ index 8217e5b1..bfbf6158 100644
          let path_only = format!("Tip · {path}");
          assert_eq!(fit_docs_ask_grok_tip(&path, long.width()), long);
          assert_eq!(fit_docs_ask_grok_tip(&path, short.width()), short);
-@@ -1562,7 +1614,7 @@ mod doc_picker_tip_tests {
+@@ -1562,7 +1604,7 @@ mod doc_picker_tip_tests {
              all.push('\n');
          }
          assert!(
