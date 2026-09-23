@@ -43,7 +43,7 @@ index 00000000..d02e5d1b
 +    );
 +}
 diff --git a/crates/codegen/xai-grok-update/src/auto_update.rs b/crates/codegen/xai-grok-update/src/auto_update.rs
-index b95cd59e..67c4b553 100644
+index b95cd59e..f8ee24aa 100644
 --- a/crates/codegen/xai-grok-update/src/auto_update.rs
 +++ b/crates/codegen/xai-grok-update/src/auto_update.rs
 @@ -30,8 +30,8 @@ pub enum UpdateRunMode {
@@ -115,6 +115,20 @@ index b95cd59e..67c4b553 100644
          _ => format!("Please reinstall via:\n  {}", manual_install_cmd(channel)),
      }
  }
+@@ -197,11 +203,11 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
+     if status.update_available {
+         if let Some(latest_version) = status.latest_version.as_deref() {
+             println!(
+-                "A new version of Grok Build is available: {} -> {}{}",
++                "A new version of Workshop is available: {} -> {}{}",
+                 status.current_version, latest_version, channel_label
+             );
+         } else {
+-            println!("A new version of Grok Build is available.");
++            println!("A new version of Workshop is available.");
+         }
+         return Ok(());
+     }
 @@ -449,23 +455,17 @@ fn disk_version_for_installer(installer: &str) -> Option<String> {
  }
  
@@ -157,6 +171,33 @@ index b95cd59e..67c4b553 100644
          None => Some("internal"),
      }
  }
+@@ -706,7 +705,7 @@ pub async fn run_update_if_available(
+     let channel_label = format!(" [{}]", update_config.channel);
+     if auto_update {
+         eprintln!(
+-            "A new version of Grok Build is available: {} -> {}{}",
++            "A new version of Workshop is available: {} -> {}{}",
+             current_version, latest_version, channel_label
+         );
+         if interactive {
+@@ -734,7 +733,7 @@ pub async fn run_update_if_available(
+             return Ok(false);
+         }
+         eprintln!(
+-            "A new version of Grok Build is available: {} -> {}{}",
++            "A new version of Workshop is available: {} -> {}{}",
+             current_version, latest_version, channel_label
+         );
+         if interactive {
+@@ -805,7 +804,7 @@ async fn run_update_subcommand(
+             // The atomic install protocol makes mid-download kills safe
+             let status = cmd.status().await?;
+             if !status.success() {
+-                anyhow::bail!("grok update failed with {}", status);
++                anyhow::bail!("workshop update failed with {}", status);
+             }
+             Ok(None)
+         }
 @@ -1242,20 +1241,6 @@ async fn remove_stale_models_cache() {
      }
  }
@@ -459,7 +500,30 @@ index b95cd59e..67c4b553 100644
  
      // Persist installer to config.toml so future runs auto-detect internal.
      let _ = config::update_config(|st| {
-@@ -1686,22 +1799,22 @@ fn relative_symlink_target(target: &std::path::Path, link: &std::path::Path) ->
+@@ -1637,13 +1750,17 @@ async fn regenerate_completions(binary: &std::path::Path, grok_home: &std::path:
+     // Derive $HOME independently: grok_home may be overridden via GROK_HOME env var, so grok_home.parent() isn't necessarily the user's home dir
+     let user_home = xai_dirs::home_dir().unwrap_or_default();
+ 
+-    let completions: &[(&str, std::path::PathBuf)] = &[
+-        ("bash", grok_home.join("completions/bash/grok.bash")),
+-        ("zsh", grok_home.join("completions/zsh/_grok")),
+-        ("fish", user_home.join(".config/fish/completions/grok.fish")),
++    let mut completions: Vec<(&str, std::path::PathBuf)> = vec![
++        ("bash", grok_home.join("completions/bash/workshop.bash")),
++        ("zsh", grok_home.join("completions/zsh/_workshop")),
+     ];
++    // Only a fish user's own config gets a file; nothing is created for a shell they do not use.
++    let fish_config = user_home.join(".config/fish");
++    if fish_config.is_dir() {
++        completions.push(("fish", fish_config.join("completions/workshop.fish")));
++    }
+ 
+-    for (shell, dest) in completions {
++    for (shell, dest) in &completions {
+         if let Some(parent) = dest.parent() {
+             let _ = tokio::fs::create_dir_all(parent).await;
+         }
+@@ -1686,22 +1803,22 @@ fn relative_symlink_target(target: &std::path::Path, link: &std::path::Path) ->
      target.to_path_buf()
  }
  
@@ -493,7 +557,7 @@ index b95cd59e..67c4b553 100644
  }
  
  /// Point every `dest` in `pairs` at its `src` (a symlink on Unix, a copy through
-@@ -2202,9 +2315,9 @@ async fn gh_release_download(tag: &str, pattern: &str, dest: &std::path::Path) -
+@@ -2202,9 +2319,9 @@ async fn gh_release_download(tag: &str, pattern: &str, dest: &std::path::Path) -
      Ok(())
  }
  
@@ -506,7 +570,7 @@ index b95cd59e..67c4b553 100644
  async fn install_gh_release(target: Option<&str>) -> Result<()> {
      let (os, arch) = detect_platform()?;
      let platform = format!("{}-{}", os, arch);
-@@ -2220,60 +2333,62 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
+@@ -2220,60 +2337,62 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
      tokio::fs::create_dir_all(&download_dir).await?;
      tokio::fs::create_dir_all(&bin_dir).await?;
  
@@ -609,7 +673,7 @@ index b95cd59e..67c4b553 100644
  
      // Persist installer to config.toml so future runs auto-detect gh-release.
      let _ = config::update_config(|st| {
-@@ -2284,8 +2399,31 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
+@@ -2284,8 +2403,31 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
      Ok(())
  }
  
@@ -641,7 +705,7 @@ index b95cd59e..67c4b553 100644
  fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<std::path::PathBuf>> {
      if let Ok(token) = std::env::var("NPM_TOKEN") {
          let token = token.trim();
-@@ -2317,6 +2455,7 @@ fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<std::path::Pat
+@@ -2317,6 +2459,7 @@ fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<std::path::Pat
  /// SIGKILL'd by the kernel. macOS (Apple Silicon in particular) can no longer verify the code signature of the mmap'd
  /// executable pages once the backing inode is unlinked.
  #[cfg(target_os = "macos")]
@@ -649,7 +713,7 @@ index b95cd59e..67c4b553 100644
  fn warn_if_other_grok_processes_running() {
      let my_pid = std::process::id().to_string();
      let mut cmd = Command::new("pgrep");
-@@ -2355,70 +2494,9 @@ pub fn install_npm_for_test(
+@@ -2355,70 +2498,9 @@ pub fn install_npm_for_test(
      install_npm(target, channel, npm_registry)
  }
  

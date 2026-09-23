@@ -1161,6 +1161,9 @@ pub struct AppView {
     /// Latest version string from a background update check.
     /// Set when a newer version is detected; rendered as a notification on the welcome screen.
     pub pending_update_version: Option<String>,
+    /// Workshop: set on the first launch after the silent updater installed this version; the
+    /// welcome screen says "Updated to <version>" once.
+    pub workshop_updated_to: Option<String>,
     /// When true, the event loop should exit so the user can relaunch to pick up the downloaded update.
     pub quit_for_update: bool,
     /// Printed to stderr after terminal restore when Welcome yes could not save trust.
@@ -1688,6 +1691,7 @@ impl AppView {
             startup_warnings: Vec::new(),
             is_api_key_auth: false,
             pending_update_version: None,
+            workshop_updated_to: None,
             foreign_resume_launch_generation: 0,
             foreign_resume_launch: None,
             quit_for_update: false,
@@ -4768,6 +4772,7 @@ impl AppView {
                                 pending_hint,
                                 startup_warnings: &self.startup_warnings,
                                 pending_update_version: self.pending_update_version.as_deref(),
+                                workshop_updated_to: self.workshop_updated_to.as_deref(),
                                 foreign_resume_hint: foreign_resume_hint.as_ref(),
                                 session_picker_content_results: self
                                     .session_picker_content_results

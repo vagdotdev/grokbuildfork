@@ -203,11 +203,11 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
     if status.update_available {
         if let Some(latest_version) = status.latest_version.as_deref() {
             println!(
-                "A new version of Grok Build is available: {} -> {}{}",
+                "A new version of Workshop is available: {} -> {}{}",
                 status.current_version, latest_version, channel_label
             );
         } else {
-            println!("A new version of Grok Build is available.");
+            println!("A new version of Workshop is available.");
         }
         return Ok(());
     }
@@ -705,7 +705,7 @@ pub async fn run_update_if_available(
     let channel_label = format!(" [{}]", update_config.channel);
     if auto_update {
         eprintln!(
-            "A new version of Grok Build is available: {} -> {}{}",
+            "A new version of Workshop is available: {} -> {}{}",
             current_version, latest_version, channel_label
         );
         if interactive {
@@ -733,7 +733,7 @@ pub async fn run_update_if_available(
             return Ok(false);
         }
         eprintln!(
-            "A new version of Grok Build is available: {} -> {}{}",
+            "A new version of Workshop is available: {} -> {}{}",
             current_version, latest_version, channel_label
         );
         if interactive {
@@ -804,7 +804,7 @@ async fn run_update_subcommand(
             // The atomic install protocol makes mid-download kills safe
             let status = cmd.status().await?;
             if !status.success() {
-                anyhow::bail!("grok update failed with {}", status);
+                anyhow::bail!("workshop update failed with {}", status);
             }
             Ok(None)
         }
@@ -1750,13 +1750,17 @@ async fn regenerate_completions(binary: &std::path::Path, grok_home: &std::path:
     // Derive $HOME independently: grok_home may be overridden via GROK_HOME env var, so grok_home.parent() isn't necessarily the user's home dir
     let user_home = xai_dirs::home_dir().unwrap_or_default();
 
-    let completions: &[(&str, std::path::PathBuf)] = &[
-        ("bash", grok_home.join("completions/bash/grok.bash")),
-        ("zsh", grok_home.join("completions/zsh/_grok")),
-        ("fish", user_home.join(".config/fish/completions/grok.fish")),
+    let mut completions: Vec<(&str, std::path::PathBuf)> = vec![
+        ("bash", grok_home.join("completions/bash/workshop.bash")),
+        ("zsh", grok_home.join("completions/zsh/_workshop")),
     ];
+    // Only a fish user's own config gets a file; nothing is created for a shell they do not use.
+    let fish_config = user_home.join(".config/fish");
+    if fish_config.is_dir() {
+        completions.push(("fish", fish_config.join("completions/workshop.fish")));
+    }
 
-    for (shell, dest) in completions {
+    for (shell, dest) in &completions {
         if let Some(parent) = dest.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
