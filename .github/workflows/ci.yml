@@ -203,8 +203,10 @@ jobs:
         # `rm -rf tmp` (reject keeps it, `Yes, proceed` posts `once`); Always-approve runs it with no
         # prompt; Edit/Run rows open to their diff/output; the meter is hidden until the engine
         # reports usage, then `8.6K / 200K`; queued prompts are separate turns; no reasoning text
-        # on screen by default (`/settings` → Show thinking blocks brings it back as a block);
-        # "what are you?" / "who made you?" answer as Workshop, never opencode, in Normal and Plan;
+        # on screen by default (`/settings` → Show thinking blocks brings it back as a block) and
+        # no empty reply row; a turn that ends on "I'll run the installer:" is continued silently
+        # (at most twice, logged); "what are you?" / "who made you?" answer as Workshop, never
+        # opencode, in Normal and Plan;
         # a model picked in /model survives the next launch's warm-up; `--resume`/`-c`/the
         # pickers replay the engine conversation and an idle launch prints no resume hint.
         env:

@@ -26,6 +26,10 @@
 //!   their system prompt with Workshop's identity; the instructions file follows).
 //! * `picked_model_survives_the_next_warm_up` — a model picked in `/model` is still the one the
 //!   next launch's turns run on after the engine warm-up reads OpenCode's live default.
+//! * `announced_action_is_carried_out` / `auto_continue_is_bounded` — a turn that ends on an
+//!   announced action with no tool call ("I'll run the installer:") is continued without a word
+//!   on screen and logged; a finished answer never is, and a model that keeps announcing is
+//!   continued at most twice.
 //!
 //! Evidence (text + HTML screenshots) lands in `WORKSHOP_PTY_EVIDENCE_DIR/engine-trust/*`.
 
@@ -546,6 +550,76 @@ fn is_bare_timestamp(line: &str) -> bool {
                 && m.len() == 2
                 && h.chars().chain(m.chars()).all(|c| c.is_ascii_digit())
         })
+}
+
+/// The prompts the fake engine received, in order.
+fn prompts_sent(log: &Path) -> Vec<String> {
+    engine_log(log)
+        .iter()
+        .filter_map(|v| v.get("text").and_then(|t| t.as_str()).map(str::to_owned))
+        .collect()
+}
+
+/// A turn that ends right after announcing an action ("I'll run the installer:") with no tool
+/// call is continued without a word on screen: the action runs, the answer lands in the same
+/// turn, and the engine log records the continuation.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn announced_action_is_carried_out() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/announced-action-is-carried-out", &bin, &fx);
+    send_prompt(&mut j, "download it and install the tool");
+    wait_for(&mut j.h, "Installed the tool.", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "01-carried-out");
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains("echo installed"),
+        "the announced command ran:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Continue"),
+        "the continuation is never shown:\n{screen}"
+    );
+    let prompts = prompts_sent(&fx.log);
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert!(prompts[1].starts_with("Continue:"), "{prompts:?}");
+    let log = std::fs::read_to_string(j.workshop_home().join("logs/opencode-engine.log"))
+        .unwrap_or_default();
+    assert!(
+        log.contains("auto-continue 1/2"),
+        "the continuation is logged for workshop doctor:\n{log}"
+    );
+    quit(&mut j);
+}
+
+/// A finished answer is never continued, and a model that keeps announcing is continued at most
+/// twice before the turn ends.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn auto_continue_is_bounded() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/auto-continue-is-bounded", &bin, &fx);
+    send_prompt(&mut j, "hello");
+    wait_for(&mut j.h, "Echo: hello", 60);
+    send_prompt(&mut j, "keep announcing");
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while prompts_sent(&fx.log).len() < 4 && std::time::Instant::now() < deadline {
+        j.h.update(Duration::from_millis(300));
+    }
+    j.h.update(Duration::from_secs(3));
+    snapshot(&j.h, &j.dir, "01-bounded");
+    let prompts = prompts_sent(&fx.log);
+    assert_eq!(
+        prompts.len(),
+        4,
+        "hello once, keep announcing once plus two continuations: {prompts:?}"
+    );
+    assert_eq!(prompts[0], "hello");
+    assert!(prompts[2].starts_with("Continue:") && prompts[3].starts_with("Continue:"));
+    quit(&mut j);
 }
 
 /// `/settings` → "Show thinking blocks" brings the thinking back, as its own block that is never

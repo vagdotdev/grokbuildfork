@@ -1204,11 +1204,62 @@ fn live_engine_default(models: &[EngineModel]) -> Option<EngineModel> {
         })
 }
 
+/// What a silent continuation needs to prompt the same engine conversation again.
+struct EngineFollowUp {
+    engine: Arc<OpenCodeEngine>,
+    session: String,
+    model_ref: String,
+}
+
+/// How many times one turn is continued after it ended on an action it announced but never took.
+const MAX_AUTO_CONTINUES: u32 = 2;
+
+/// The follow-up sent (never shown) when a turn ends right after announcing an action.
+const AUTO_CONTINUE_PROMPT: &str = "Continue: your last message said what you would do next but \
+ended before doing it. Do it now, then finish every remaining part of my request.";
+
+/// True when the turn's closing text (what the model wrote after its last tool call) announces a
+/// step it never took: it ends on ":" ("…the official installer for Ubuntu:"), or its last
+/// sentence is an "I'll …" / "Let me …" that no tool call followed.
+fn announces_unfinished_action(tail: &str) -> bool {
+    let mut text = tail.trim_end();
+    // A command shown in a fence instead of run: judge the words before the fence.
+    if let Some(body) = text.strip_suffix("```")
+        && let Some(before) = body.rfind("```").and_then(|open| body.get(..open))
+    {
+        text = before.trim_end();
+    }
+    if text.ends_with(':') {
+        return true;
+    }
+    if text.ends_with('?') {
+        return false;
+    }
+    let sentence = text
+        .rsplit(['\n', '.', '!', '?'])
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .unwrap_or_default()
+        .trim_start_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase();
+    let sentence = ["now, ", "now ", "next, ", "next ", "then "]
+        .iter()
+        .find_map(|p| sentence.strip_prefix(p))
+        .unwrap_or(&sentence);
+    let announces = ["i'll ", "i will ", "let me ", "i'm going to ", "i am going to "]
+        .iter()
+        .any(|p| sentence.starts_with(p));
+    let hands_back = ["let me know", "if you", "once you", "when you", "wait"]
+        .iter()
+        .any(|p| sentence.contains(p));
+    announces && !hands_back
+}
+
 async fn build_stream(
     spec: &WorkshopTurnSpec,
     tx: &mpsc::UnboundedSender<WorkshopTurnMsg>,
     permission: PermissionPolicy,
-) -> Result<TurnStream, TurnStartError> {
+) -> Result<(TurnStream, Option<EngineFollowUp>), TurnStartError> {
     match &spec.kind {
         WorkshopTurnKind::Engine {
             slot,
@@ -1253,7 +1304,12 @@ async fn build_stream(
                     "the prompt was refused: {e}"
                 )))
             })?;
-            Ok(TurnStream::Engine(turn))
+            let follow_up = EngineFollowUp {
+                engine,
+                session,
+                model_ref: model.model_ref,
+            };
+            Ok((TurnStream::Engine(turn), Some(follow_up)))
         }
         WorkshopTurnKind::Adapter {
             adapter_id,
@@ -1283,7 +1339,7 @@ async fn build_stream(
             let handle = spawn(&*adapter, &cli, req, &SupervisorOptions::default())
                 .await
                 .map_err(|e| TurnStartError::Other(e.to_string()))?;
-            Ok(TurnStream::Adapter(handle))
+            Ok((TurnStream::Adapter(handle), None))
         }
     }
 }
@@ -1326,7 +1382,7 @@ pub async fn run_workshop_turn(
             return;
         }
     };
-    let mut stream = match built {
+    let (mut stream, follow_up) = match built {
         Ok(s) => s,
         Err(error) => {
             let _ = tx.send(match error {
@@ -1357,6 +1413,11 @@ pub async fn run_workshop_turn(
     // result; hold it so the UI gets one message per finished call.
     let mut tool_details: std::collections::HashMap<String, (Option<String>, serde_json::Value)> =
         std::collections::HashMap::new();
+    // What the model wrote since its last tool call, and whether the turn failed: a turn that
+    // ends on an announced action is continued (engine, not Plan), at most MAX_AUTO_CONTINUES times.
+    let mut tail = String::new();
+    let mut errored = false;
+    let mut continues = 0;
     loop {
         let silence = async {
             match first_event_at {
@@ -1389,11 +1450,13 @@ pub async fn run_workshop_turn(
                 Some(AdapterEvent::TextDelta { text }) => {
                     first_event_at = None;
                     still_connecting_at = None;
+                    tail.push_str(&text);
                     let _ = tx.send(WorkshopTurnMsg::Delta(text));
                 }
                 Some(AdapterEvent::ToolCall { id, name, input }) => {
                     first_event_at = None;
                     still_connecting_at = None;
+                    tail.clear();
                     let _ = tx.send(WorkshopTurnMsg::Tool { id, name, input });
                 }
                 Some(AdapterEvent::ToolDetail { id, title, metadata }) => {
@@ -1414,6 +1477,7 @@ pub async fn run_workshop_turn(
                 Some(AdapterEvent::Error { message }) => {
                     first_event_at = None;
                     still_connecting_at = None;
+                    errored = true;
                     // An abort we asked for (Ctrl-C, or the silence timeout above) is already
                     // reported; the backend's own "run cancelled" would only repeat it.
                     if !(aborted_by_us && message == "run cancelled") {
@@ -1429,7 +1493,43 @@ pub async fn run_workshop_turn(
                     let _ = tx.send(WorkshopTurnMsg::Usage(usage));
                 }
                 Some(AdapterEvent::Done { .. }) => {}
-                None => break,
+                None => {
+                    if let Some(f) = &follow_up
+                        && permission == PermissionPolicy::WorkspaceWrite
+                        && !aborted_by_us
+                        && !errored
+                        && continues < MAX_AUTO_CONTINUES
+                        && announces_unfinished_action(&tail)
+                    {
+                        continues += 1;
+                        let chars: Vec<char> = tail.trim().chars().collect();
+                        let ending: String =
+                            chars.iter().skip(chars.len().saturating_sub(120)).collect();
+                        state::append_log(
+                            &engine_log_path(),
+                            &format!(
+                                "auto-continue {continues}/{MAX_AUTO_CONTINUES} on {}: the turn ended on an announced action with no tool call after it: {ending:?}",
+                                f.session
+                            ),
+                        );
+                        let mut req = TurnRequest::new(AUTO_CONTINUE_PROMPT);
+                        req.model = Some(f.model_ref.clone());
+                        req.permission = permission;
+                        match f.engine.prompt(&f.session, req).await {
+                            Ok(turn) => {
+                                stream = TurnStream::Engine(turn);
+                                tail.clear();
+                                engine_progress(&tx, format!("Waiting for {model_name}\u{2026}"));
+                                continue;
+                            }
+                            Err(e) => state::append_log(
+                                &engine_log_path(),
+                                &format!("auto-continue refused: {e}"),
+                            ),
+                        }
+                    }
+                    break;
+                }
             },
             _ = wait_cancelled(&mut cancel_rx), if !aborted_by_us => {
                 cancelled = true;
@@ -1485,4 +1585,39 @@ pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
             .map(|s| s.to_string()),
     );
     argv
+}
+
+#[cfg(test)]
+mod tests {
+    use super::announces_unfinished_action;
+
+    #[test]
+    fn announced_actions_are_unfinished() {
+        for tail in [
+            "Ubuntu 24.04 doesn't have Ghostty in its repos yet, so I'll use the official community `.deb` installer for Ubuntu:\n",
+            "Books downloaded. I'll run:",
+            "Now I'll install it with apt.",
+            "Let me run the tests.",
+            "Next, I'll create the file",
+            "I'll run this:\n```bash\nsudo apt install ghostty\n```",
+        ] {
+            assert!(announces_unfinished_action(tail), "{tail:?}");
+        }
+    }
+
+    #[test]
+    fn finished_answers_and_questions_are_not() {
+        for tail in [
+            "",
+            "Done.",
+            "Installed Ghostty 1.3.1 and downloaded both books.",
+            "Let me know if you want anything else.",
+            "I'll wait for your go-ahead.",
+            "Should I install it with snap or the .deb?",
+            "I'll install it if you confirm.",
+            "Here are the files:\n- a.epub\n- b.epub",
+        ] {
+            assert!(!announces_unfinished_action(tail), "{tail:?}");
+        }
+    }
 }

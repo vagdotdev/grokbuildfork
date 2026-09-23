@@ -20,6 +20,9 @@ from the real server:
   * "think"                           -> a reasoning part streamed before the answer part (and, on
     "list files", a whitespace-only text part after it and another reasoning part after the tool
     call — the shapes a real model sends).
+  * "install the tool"                -> ends the turn on "I'll run the installer:" with no tool call;
+    a following "Continue: …" prompt runs `echo installed` and answers "Installed the tool.".
+  * "keep announcing"                 -> every turn, continued or not, ends on "Let me run it:".
   * "slow"                            -> waits 3 s before answering (to queue prompts behind it).
   * agent == plan                     -> never a tool part, never a permission ask: text only.
 
@@ -172,6 +175,12 @@ def unified_diff(path, old, new):
 
 def run_turn(sid, agent, text):
     text_l = text.lower()
+    # A continuation carries on the request that came before it.
+    continued = text.startswith("Continue:")
+    if continued:
+        first = next((m["text"] for m in reversed(sessions[sid]["messages"])
+                      if m["role"] == "user" and not m["text"].startswith("Continue:")), "")
+        text_l = first.lower()
     user_mid = next_id("msg")
     broadcast({"type": "message.updated", "properties": {"info": {"id": user_mid, "sessionID": sid, "role": "user", "time": {"created": now_ms()}, "agent": agent}}})
     broadcast({"type": "session.status", "properties": {"sessionID": sid, "status": {"type": "busy"}}})
@@ -190,6 +199,16 @@ def run_turn(sid, agent, text):
         answer = identity_answer(agent, text_l)
     elif agent == "plan":
         answer = "Plan: I would create the file, but plan mode is read-only. Ready when you exit plan mode."
+    elif "keep announcing" in text_l:
+        answer = "Let me run it:"
+    elif "install the tool" in text_l:
+        if continued:
+            call_id = next_id("call")
+            emit_part(tool_part(sid, mid, "bash", call_id, {"command": "echo installed"}, "installed\n",
+                                "echo installed", {"output": "installed\n", "exit": 0, "truncated": False}))
+            answer = "Installed the tool."
+        else:
+            answer = "Downloaded it. I'll run the installer:"
     elif "create hello.txt" in text_l:
         path = os.path.join(CWD, "hello.txt")
         call_id = next_id("call")
