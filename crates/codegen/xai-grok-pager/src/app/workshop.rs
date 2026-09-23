@@ -561,8 +561,66 @@ pub struct ActivationPlan {
 pub fn activate_catalog_model(
     model: &workshop_providers::CatalogModel,
 ) -> Result<ActivationPlan, String> {
+    activate_catalog_model_with(model, |_| {})
+}
+
+/// `$WORKSHOP_HOME/tmp`: the engine's `TMPDIR`, so its scratch files (OpenCode's own temp dir is
+/// `<tmpdir>/opencode`) stay under the Workshop home.
+pub fn engine_scratch_dir() -> PathBuf {
+    workshop_home().join("tmp")
+}
+
+/// Rewrite the engine's scratch paths for the screen: `<$WORKSHOP_HOME/tmp>/opencode` becomes
+/// `~/.workshop/tmp`, so no "opencode" path reaches a tool row. Any other text is returned as is.
+pub fn scrub_scratch_paths(text: &str) -> String {
+    let dir = engine_scratch_dir();
+    let actual = format!("{}/opencode", dir.display());
+    if !text.contains(&actual) {
+        return text.to_owned();
+    }
+    let shown = crate::app::workshop_permissions::shorten_home(&dir.display().to_string());
+    text.replace(&actual, &shown)
+}
+
+/// [`scrub_scratch_paths`] over every string in a JSON value (a tool's input or metadata).
+pub fn scrub_scratch_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => serde_json::Value::String(scrub_scratch_paths(s)),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(scrub_scratch_json).collect())
+        }
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), scrub_scratch_json(v)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Request attempts upstream's sampler makes for the silent pool fallback before a step fails
+/// (`[model.<key>] max_retries`; 15 by default, with a backoff that grows to 30 s — a quarter of
+/// an hour of `Retrying…` offline). Two means one immediate retry on a rebuilt client, about a
+/// second per step. Upstream's turn loop still resubmits a failed step three times (2, 10 and
+/// 30 s apart, `MAX_TRANSIENT_TURN_RETRIES`), so offline the fallback gives up after roughly
+/// 45 s, then the user gets the plain line and the composer is theirs again.
+pub const FALLBACK_MAX_RETRIES: u32 = 2;
+
+/// [`activate_catalog_model`] for the silent pool fallback: the same entry with its retries
+/// capped at [`FALLBACK_MAX_RETRIES`].
+pub fn activate_fallback_model(
+    model: &workshop_providers::CatalogModel,
+) -> Result<ActivationPlan, String> {
+    activate_catalog_model_with(model, |spec| spec.max_retries = Some(FALLBACK_MAX_RETRIES))
+}
+
+fn activate_catalog_model_with(
+    model: &workshop_providers::CatalogModel,
+    adjust: impl FnOnce(&mut workshop_providers::ModelEntrySpec),
+) -> Result<ActivationPlan, String> {
     let broker = default_broker();
-    let spec = resolve_model_entry(model, &broker).map_err(|e| e.to_string())?;
+    let mut spec = resolve_model_entry(model, &broker).map_err(|e| e.to_string())?;
+    adjust(&mut spec);
     let mut env = Vec::new();
     if let CredentialInjection::FromBroker { provider_id, var } = &spec.credential {
         let handle = broker.resolve(provider_id).map_err(|e| e.to_string())?;
@@ -1422,6 +1480,13 @@ async fn start_engine(
         && let Some(askpass) = askpass_server(slot, &ui_tx)
     {
         opts.extra_env = askpass.env();
+    }
+    // The engine's scratch space (OpenCode keeps it at `<tmpdir>/opencode`) lives under the
+    // Workshop home, and the tool rows show it as `~/.workshop/tmp` (see `scrub_scratch_paths`).
+    let scratch = engine_scratch_dir();
+    if std::fs::create_dir_all(&scratch).is_ok() {
+        opts.extra_env
+            .push(("TMPDIR".into(), scratch.into_os_string()));
     }
     opts.permission_handler = Some(engine_permission_handler(ui_tx.clone()));
     opts.question_handler = Some(engine_question_handler(ui_tx));

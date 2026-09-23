@@ -4135,7 +4135,7 @@ fn handle_workshop_turn_msg(
             .filter(|(name, _)| name == "bash")
             .filter_map(|(_, input)| input.get("command").and_then(|c| c.as_str()))
             .last()
-            .map(str::to_owned);
+            .map(crate::app::workshop::scrub_scratch_paths);
         let title = crate::app::workshop_askpass::title_for(command.as_deref(), &prompt);
         if let Some(previous) = app.workshop_password_ask.take() {
             previous.answer(false);

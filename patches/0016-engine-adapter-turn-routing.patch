@@ -1113,7 +1113,7 @@ index 00000000..69653ffb
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_permissions.rs b/crates/codegen/xai-grok-pager/src/app/workshop_permissions.rs
 new file mode 100644
-index 00000000..3276f098
+index 00000000..63741ede
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_permissions.rs
 @@ -0,0 +1,900 @@
@@ -1173,7 +1173,7 @@ index 00000000..3276f098
 +}
 +
 +/// `/home/me/Desktop/*` → `~/Desktop/*`: paths under the user's home read shorter in a prompt.
-+fn shorten_home(path: &str) -> String {
++pub fn shorten_home(path: &str) -> String {
 +    match std::env::var("HOME").ok().filter(|h| !h.is_empty()) {
 +        Some(h) if path == h => "~".to_owned(),
 +        Some(h) if path.starts_with(&format!("{h}/")) => format!("~{}", &path[h.len()..]),
@@ -2564,10 +2564,10 @@ index 00000000..e12673a6
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs b/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs
 new file mode 100644
-index 00000000..c7bbbe0b
+index 00000000..c3852bef
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs
-@@ -0,0 +1,496 @@
+@@ -0,0 +1,505 @@
 +//! Workshop overlay: the engine's tool calls as the pager's own tool rows, with the work inside
 +//! them once the result lands — the diff an edit applied, the output and exit code of a command,
 +//! the text a read returned — so a row can be opened (`Enter`, fold keys) like any ACP tool row.
@@ -2605,6 +2605,7 @@ index 00000000..c7bbbe0b
 +/// read as executing the file.
 +pub fn turn_activity(name: &str, input: &Value) -> crate::acp::tracker::TurnActivity {
 +    use crate::acp::tracker::clamp_activity_subject;
++    let input = &crate::app::workshop::scrub_scratch_json(input);
 +    let subject = summary(input);
 +    let described = |verb: &str| {
 +        if subject.is_empty() {
@@ -2656,6 +2657,7 @@ index 00000000..c7bbbe0b
 +/// The row shown while the call runs: the pager's own verb rows (`◆ Run`, `◆ Edit`,
 +/// `◆ Creating`, `◈ Read`, …) so engine turns read like shell turns.
 +pub fn running_row(name: &str, input: &Value) -> RenderBlock {
++    let input = &crate::app::workshop::scrub_scratch_json(input);
 +    let summary = summary(input);
 +    match name {
 +        "list" => RenderBlock::list_dir(summary),
@@ -2672,6 +2674,13 @@ index 00000000..c7bbbe0b
 +    title: Option<&str>,
 +    metadata: &Value,
 +) -> RenderBlock {
++    // The engine's scratch dir is shown as `~/.workshop/tmp` wherever a path can appear: the
++    // call's input, its title, its output and the metadata (diff headers, file paths).
++    let input = &crate::app::workshop::scrub_scratch_json(input);
++    let metadata = &crate::app::workshop::scrub_scratch_json(metadata);
++    let output = &crate::app::workshop::scrub_scratch_paths(output);
++    let title_owned = title.map(crate::app::workshop::scrub_scratch_paths);
++    let title = title_owned.as_deref();
 +    let summary = summary(input);
 +    let error = (!ok).then(|| {
 +        let first = output.lines().next().unwrap_or("Tool call failed").trim();

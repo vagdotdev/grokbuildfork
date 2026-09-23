@@ -35,6 +35,7 @@ pub fn summary(input: &Value) -> String {
 /// read as executing the file.
 pub fn turn_activity(name: &str, input: &Value) -> crate::acp::tracker::TurnActivity {
     use crate::acp::tracker::clamp_activity_subject;
+    let input = &crate::app::workshop::scrub_scratch_json(input);
     let subject = summary(input);
     let described = |verb: &str| {
         if subject.is_empty() {
@@ -86,6 +87,7 @@ pub fn turn_activity(name: &str, input: &Value) -> crate::acp::tracker::TurnActi
 /// The row shown while the call runs: the pager's own verb rows (`◆ Run`, `◆ Edit`,
 /// `◆ Creating`, `◈ Read`, …) so engine turns read like shell turns.
 pub fn running_row(name: &str, input: &Value) -> RenderBlock {
+    let input = &crate::app::workshop::scrub_scratch_json(input);
     let summary = summary(input);
     match name {
         "list" => RenderBlock::list_dir(summary),
@@ -102,6 +104,13 @@ pub fn finished_row(
     title: Option<&str>,
     metadata: &Value,
 ) -> RenderBlock {
+    // The engine's scratch dir is shown as `~/.workshop/tmp` wherever a path can appear: the
+    // call's input, its title, its output and the metadata (diff headers, file paths).
+    let input = &crate::app::workshop::scrub_scratch_json(input);
+    let metadata = &crate::app::workshop::scrub_scratch_json(metadata);
+    let output = &crate::app::workshop::scrub_scratch_paths(output);
+    let title_owned = title.map(crate::app::workshop::scrub_scratch_paths);
+    let title = title_owned.as_deref();
     let summary = summary(input);
     let error = (!ok).then(|| {
         let first = output.lines().next().unwrap_or("Tool call failed").trim();

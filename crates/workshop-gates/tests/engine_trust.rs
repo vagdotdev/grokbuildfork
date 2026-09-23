@@ -59,6 +59,9 @@
 //!   — the `task` tool's subagent asks from its own child session; the ask is answered like the
 //!   parent's (at once in always-approve, through the approval prompt otherwise), the reply goes
 //!   back to the child session, and the turn ends instead of hanging on a `Run …` row.
+//! * `scratch_paths_never_say_opencode` — the engine's `TMPDIR` is `$WORKSHOP_HOME/tmp` and the
+//!   tool rows show its scratch dir as `~/.workshop/tmp`; a scratch write/read leaves no
+//!   "opencode" on screen.
 //!
 //! Evidence (text + HTML screenshots) lands in `WORKSHOP_PTY_EVIDENCE_DIR/engine-trust/*`.
 
@@ -2200,6 +2203,56 @@ fn sudo_password_is_asked_in_workshop_never_the_model() {
         !screen.contains("Needs your password for:"),
         "the prompt is gone once answered:\n{screen}"
     );
+    quit(&mut j);
+}
+
+/// The engine's scratch dir is Workshop's own and is shown as `~/.workshop/tmp`: a turn that writes
+/// and reads a scratch file where OpenCode keeps its temp dir (`<TMPDIR>/opencode`) leaves no
+/// "opencode" on the screen — the file lands under `$WORKSHOP_HOME/tmp`.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn scratch_paths_never_say_opencode() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/scratch-paths", &bin, &fx);
+    send_prompt(&mut j, "make a scratch note");
+    wait_for(&mut j.h, "Saved a scratch note", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "01-scratch-rows");
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("opencode"),
+        "no \"opencode\" path may reach the screen:\n{screen}"
+    );
+    // The row shows the path under the Workshop home (upstream's edit/read headers expand `~`
+    // to the absolute home, so either spelling is fine; "opencode" is not).
+    assert!(
+        screen.contains("/.workshop/tmp/note.txt"),
+        "the scratch file is shown under the Workshop home:\n{screen}"
+    );
+    let written = j
+        .workshop_home()
+        .join("tmp")
+        .join("opencode")
+        .join("note.txt");
+    assert!(
+        written.is_file(),
+        "the engine's TMPDIR is $WORKSHOP_HOME/tmp, so the note landed there: {}",
+        written.display()
+    );
+    // The rows open like any other: the write row's diff names the same shown path.
+    j.h.inject_keys(b"\t").unwrap();
+    j.h.update(Duration::from_millis(300));
+    select_row(&mut j, "note.txt");
+    j.h.inject_keys(b"\r").unwrap();
+    j.h.update(Duration::from_millis(500));
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("opencode"),
+        "an opened scratch row says nothing of opencode either:\n{screen}"
+    );
+    snapshot(&j.h, &j.dir, "02-scratch-row-opened");
+    j.h.inject_keys(b"\x1b").unwrap();
     quit(&mut j);
 }
 
