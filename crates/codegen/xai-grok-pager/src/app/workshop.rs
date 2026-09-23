@@ -751,12 +751,14 @@ async fn start_engine(
     // Detect an `opencode` on PATH / known dirs / the Workshop tools tree; install the pinned
     // version via the vendor's own script only if absent (never a bundled binary). The download
     // reports its bytes so the first minute is never a static line.
-    let mut install = InstallOptions::default();
-    install.progress = Some(InstallProgress::new({
-        let slot = slot.clone();
-        let tx = tx.clone();
-        move |bytes| engine_phase(&slot, &tx, &install_progress_line(bytes))
-    }));
+    let install = InstallOptions {
+        progress: Some(InstallProgress::new({
+            let slot = slot.clone();
+            let tx = tx.clone();
+            move |bytes| engine_phase(&slot, &tx, &install_progress_line(bytes))
+        })),
+        ..InstallOptions::default()
+    };
     let detect_opts = DetectOptions::default();
     let run_installer = |st: &mut EngineState, log: &Path| {
         st.last_phase = Some("install".into());

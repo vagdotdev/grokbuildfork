@@ -1589,7 +1589,7 @@ mod tests {
         assert_eq!(lines[0], ModelsLine::Header("Recommended"));
         assert!(matches!(lines[1], ModelsLine::Row(r) if r.title() == "Big Pickle"));
         assert!(
-            lines.iter().any(|l| *l == ModelsLine::Header("All models")),
+            lines.contains(&ModelsLine::Header("All models")),
             "{lines:?}"
         );
         // The highlighted row is the active one, at row index 0 under the header.

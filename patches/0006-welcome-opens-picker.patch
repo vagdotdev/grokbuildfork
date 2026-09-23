@@ -123,7 +123,7 @@ index f1602289..62052337 100644
      ChangelogFetched {
          markdown: Option<String>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..38d13617 100644
+index fc9a4553..6e3c2ebe 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -560,7 +560,7 @@ index fc9a4553..38d13617 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4824,6 +5022,23 @@ impl AppView {
+@@ -4824,6 +5022,25 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -568,9 +568,11 @@ index fc9a4553..38d13617 100644
 +                                // stays visible around the box.
 +                                if let Some(picker) = self.connection_picker.as_ref() {
 +                                    let theme = crate::theme::Theme::current();
-+                                    // Leave the composer and its footer visible under the box.
++                                    // Leave the top bar above and the composer with its footer
++                                    // below the box visible (the list scrolls inside).
 +                                    let above_composer = ratatui::layout::Rect {
-+                                        height: view_area.height.saturating_sub(5),
++                                        y: view_area.y + 2,
++                                        height: view_area.height.saturating_sub(7),
 +                                        ..view_area
 +                                    };
 +                                    crate::views::connection_picker::render(
@@ -584,7 +586,7 @@ index fc9a4553..38d13617 100644
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5047,15 @@ impl AppView {
+@@ -4832,13 +5049,15 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
@@ -601,7 +603,7 @@ index fc9a4553..38d13617 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5337,7 @@ impl AppView {
+@@ -5120,6 +5339,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -609,7 +611,7 @@ index fc9a4553..38d13617 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5385,7 @@ impl AppView {
+@@ -5167,7 +5387,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -618,7 +620,7 @@ index fc9a4553..38d13617 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5500,7 @@ impl AppView {
+@@ -5282,6 +5502,7 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
@@ -626,7 +628,7 @@ index fc9a4553..38d13617 100644
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5637,6 +5856,10 @@ impl AppView {
+@@ -5637,6 +5858,10 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -637,7 +639,7 @@ index fc9a4553..38d13617 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5784,6 +6007,54 @@ impl AppView {
+@@ -5784,6 +6009,54 @@ impl AppView {
              ActiveView::Welcome => TickDemand::Slow,
          }
      }
@@ -692,7 +694,7 @@ index fc9a4553..38d13617 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6076,8 @@ impl AppView {
+@@ -5805,7 +6078,8 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -3230,10 +3232,10 @@ index 60fe34f9..14e8431b 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..9bdaa4ce
+index 00000000..fd7b3122
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1215 @@
+@@ -0,0 +1,1217 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -3987,12 +3989,14 @@ index 00000000..9bdaa4ce
 +    // Detect an `opencode` on PATH / known dirs / the Workshop tools tree; install the pinned
 +    // version via the vendor's own script only if absent (never a bundled binary). The download
 +    // reports its bytes so the first minute is never a static line.
-+    let mut install = InstallOptions::default();
-+    install.progress = Some(InstallProgress::new({
-+        let slot = slot.clone();
-+        let tx = tx.clone();
-+        move |bytes| engine_phase(&slot, &tx, &install_progress_line(bytes))
-+    }));
++    let install = InstallOptions {
++        progress: Some(InstallProgress::new({
++            let slot = slot.clone();
++            let tx = tx.clone();
++            move |bytes| engine_phase(&slot, &tx, &install_progress_line(bytes))
++        })),
++        ..InstallOptions::default()
++    };
 +    let detect_opts = DetectOptions::default();
 +    let run_installer = |st: &mut EngineState, log: &Path| {
 +        st.last_phase = Some("install".into());
@@ -4644,7 +4648,7 @@ index 51c3c5f1..aa5c8e13 100644
      fn run_set_default_model_resolves_case_insensitively() {
 diff --git a/crates/codegen/xai-grok-pager/src/views/connection_picker.rs b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
 new file mode 100644
-index 00000000..25b1bcc1
+index 00000000..87f62d44
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
 @@ -0,0 +1,420 @@
@@ -4696,11 +4700,11 @@ index 00000000..25b1bcc1
 +        2 + entries.len() as u16 + 1 + DETAIL_ROWS + 1 + u16::from(picker.status.is_some());
 +    let height = wanted.min(avail.height);
 +    let width = avail.width.min(MAX_WIDTH);
-+    // Anchored under the top bar: a list that shrinks while the user types must not jump around
-+    // the screen the way a centered box would.
++    // Anchored at the top of its area: a list that shrinks while the user types must not jump
++    // around the screen the way a centered box would.
 +    let overlay = Rect {
 +        x: avail.x + (avail.width - width) / 2,
-+        y: avail.y + 2.min(avail.height.saturating_sub(height)),
++        y: avail.y,
 +        width,
 +        height,
 +    };

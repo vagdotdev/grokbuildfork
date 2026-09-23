@@ -46,11 +46,11 @@ pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState,
         2 + entries.len() as u16 + 1 + DETAIL_ROWS + 1 + u16::from(picker.status.is_some());
     let height = wanted.min(avail.height);
     let width = avail.width.min(MAX_WIDTH);
-    // Anchored under the top bar: a list that shrinks while the user types must not jump around
-    // the screen the way a centered box would.
+    // Anchored at the top of its area: a list that shrinks while the user types must not jump
+    // around the screen the way a centered box would.
     let overlay = Rect {
         x: avail.x + (avail.width - width) / 2,
-        y: avail.y + 2.min(avail.height.saturating_sub(height)),
+        y: avail.y,
         width,
         height,
     };

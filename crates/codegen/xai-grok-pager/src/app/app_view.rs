@@ -5026,9 +5026,11 @@ impl AppView {
                                 // stays visible around the box.
                                 if let Some(picker) = self.connection_picker.as_ref() {
                                     let theme = crate::theme::Theme::current();
-                                    // Leave the composer and its footer visible under the box.
+                                    // Leave the top bar above and the composer with its footer
+                                    // below the box visible (the list scrolls inside).
                                     let above_composer = ratatui::layout::Rect {
-                                        height: view_area.height.saturating_sub(5),
+                                        y: view_area.y + 2,
+                                        height: view_area.height.saturating_sub(7),
                                         ..view_area
                                     };
                                     crate::views::connection_picker::render(
