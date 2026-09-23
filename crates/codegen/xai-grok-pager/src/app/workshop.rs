@@ -686,6 +686,13 @@ pub enum WorkshopTurnMsg {
         reason: String,
         text: String,
     },
+    /// `sudo` in one of the engine's commands needs the user's password: the askpass helper is
+    /// waiting on `reply` (`Some(bytes)` = the password, `None` = skipped). The UI shows one
+    /// masked prompt; the bytes go to the helper only. Any turn, any time.
+    PasswordAsk {
+        prompt: String,
+        reply: tokio::sync::oneshot::Sender<Option<Vec<u8>>>,
+    },
     /// The model started answering and then went silent for [`STALL_TIMEOUT`] (no output, no
     /// tool running, no prompt waiting on the user); the engine aborted the turn. `text` is the
     /// prompt to resend: an engine turn goes through the pool fallback, else the user gets
@@ -719,6 +726,9 @@ pub struct EngineSlotInner {
     /// The warm-up's failure, so a turn typed right after it reports that cause at once instead
     /// of silently repeating a 30 s bring-up that just failed. Cleared by the next attempt.
     recent_failure: std::sync::Mutex<Option<(std::time::Instant, String)>>,
+    /// The `sudo` askpass listener (one per process, started with the first engine); `None`
+    /// until then, or when the home could not hold it.
+    askpass: std::sync::Mutex<Option<Arc<crate::app::workshop_askpass::AskpassServer>>>,
 }
 
 pub type EngineSlot = Arc<EngineSlotInner>;
@@ -728,7 +738,20 @@ pub fn new_engine_slot() -> EngineSlot {
         engine: tokio::sync::Mutex::new(None),
         phase: watch::channel(String::new()).0,
         recent_failure: std::sync::Mutex::new(None),
+        askpass: std::sync::Mutex::new(None),
     })
+}
+
+/// The process's askpass listener, started on first use with the live loop's channel.
+fn askpass_server(
+    slot: &EngineSlot,
+    ui_tx: &mpsc::UnboundedSender<WorkshopTurnMsg>,
+) -> Option<Arc<crate::app::workshop_askpass::AskpassServer>> {
+    let mut guard = slot.askpass.lock().ok()?;
+    if guard.is_none() {
+        *guard = crate::app::workshop_askpass::start(ui_tx.clone()).map(Arc::new);
+    }
+    guard.clone()
 }
 
 /// The pager's permission mode as it applies to one Engine/Adapter turn (Shift+Tab cycle,
@@ -1151,6 +1174,11 @@ async fn start_engine(
     // The engine asks before edits and commands; what happens next is the agent's permission
     // mode (Plan/Normal prompt, Auto/Always-approve allow), decided on the UI thread per ask.
     opts.permission = Some(ask_before_edit_and_bash());
+    // `sudo` in the engine's commands asks Workshop for the password (`SUDO_ASKPASS` helper →
+    // this process's socket → one masked prompt), never the model or a terminal it has not got.
+    if let Some(askpass) = askpass_server(slot, &ui_tx) {
+        opts.extra_env = askpass.env();
+    }
     opts.permission_handler = Some(engine_permission_handler(ui_tx));
     // The models answer as Workshop's assistant, not as "opencode".
     opts.config = Some(engine_config(&log));
@@ -1161,6 +1189,7 @@ async fn start_engine(
     opts.startup_timeout = ENGINE_START_TIMEOUT;
     // A model that stops mid-answer is aborted after this and the turn recovers (see `Stalled`).
     opts.idle_timeout = Some(stall_timeout());
+
     match OpenCodeEngine::start(&cli, opts).await {
         Ok(engine) => {
             st.last_phase = Some("ready".into());

@@ -32,9 +32,12 @@ from the real server:
   * "create stubborn.py"              -> pastes the file every time, continued or not.
   * "show me a loop"                  -> answers with a fenced example (no file was asked for).
   * "slow"                            -> waits 3 s before answering (to queue prompts behind it).
+  * "install htop"                    -> permission.asked (bash `sudo touch installed-htop.txt`) and
+    the command really runs (through the `sudo` on PATH, with this server's environment — the
+    askpass gate's stand-in reads SUDO_ASKPASS); the answer reports success or sudo's words.
   * "long command"                    -> permission.asked (bash `sleep 8`), a `running` tool part,
     8 s of silence, the completed part, "Done waiting." (silence while a tool runs is not a stall).
-  * "stall"                           -> starts an answer ("Let me look at that") and then never
+  * "go silent"                       -> starts an answer ("Let me look at that") and then never
     sends another event; the turn only ends when the host aborts it (logged as `aborted`).
   * agent == plan                     -> never a tool part, never a permission ask: text only.
 
@@ -209,7 +212,7 @@ def run_turn(sid, agent, text):
     items = []
     if "slow" in text_l:
         time.sleep(3)
-    if "stall" in text_l:
+    if "go silent" in text_l:
         # The model starts an answer and then nothing more ever arrives (an upstream 504 the
         # engine retries silently): the turn never goes idle until the host aborts it.
         p = part(sid, mid, "text", {"text": "", "time": {"start": now_ms()}})
@@ -289,6 +292,22 @@ def run_turn(sid, agent, text):
                             "Edit applied successfully.", "hello.txt",
                             {"diagnostics": {}, "diff": diff, "filediff": {"file": path, "patch": diff, "additions": 1, "deletions": 1}, "truncated": False}))
         answer = "Changed hi to hello in hello.txt."
+    elif "install htop" in text_l:
+        # A command that needs root: really run through whatever `sudo` is on PATH (the gate's
+        # stand-in), with the environment Workshop gave this server, and report what it said.
+        cmd = "sudo touch installed-htop.txt"
+        call_id = next_id("call")
+        reply = ask_permission(sid, mid, call_id, "bash", [cmd], {"command": cmd}, ["sudo *"])
+        if reply in ("once", "always"):
+            emit_part(tool_part(sid, mid, "bash", call_id, {"command": cmd}, "", cmd, {}, status="running"))
+            run = subprocess.run(["sh", "-c", cmd], cwd=CWD, capture_output=True, text=True)
+            out = (run.stdout + run.stderr).strip() or "(no output)"
+            emit_part(tool_part(sid, mid, "bash", call_id, {"command": cmd}, out, cmd,
+                                {"output": out, "exit": run.returncode, "truncated": False}))
+            answer = "Installed htop." if run.returncode == 0 else "Could not install htop: " + out
+        else:
+            emit_part(tool_part(sid, mid, "bash", call_id, {"command": cmd}, "The user rejected permission to use this specific tool call.", cmd, {}, status="error"))
+            answer = "Understood."
     elif "long command" in text_l:
         # A command that runs longer than any stall ceiling a gate sets: the server is quiet
         # while it runs, and that quiet must not count as a stall.

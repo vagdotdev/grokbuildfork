@@ -45,6 +45,12 @@
 //! * `new_starts_a_fresh_engine_conversation` — `/new` opens a fresh OpenCode session for the next
 //!   prompt (new id, nothing of the old conversation resent, no meter carried over); `-c` still
 //!   resumes the most recent conversation.
+//! * `mid_turn_stall_is_recovered` / `long_tool_run_is_not_a_stall` — a model that goes silent
+//!   mid-answer is aborted at the stall ceiling and the turn recovers (pool fallback, or one plain
+//!   line with Enter to retry); silence while a tool runs is not a stall.
+//! * `sudo_password_is_asked_in_workshop_never_the_model` — `sudo` in an engine command asks in
+//!   Workshop's own masked prompt (SUDO_ASKPASS helper → this process); the password goes to sudo
+//!   only; Esc skips with "Skipped — needs your password" for the model.
 //!
 //! Evidence (text + HTML screenshots) lands in `WORKSHOP_PTY_EVIDENCE_DIR/engine-trust/*`.
 
@@ -97,6 +103,11 @@ exit 2
     std::fs::write(&path, script).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The `sudo` the fake engine's commands find: needs a password through SUDO_ASKPASS, like
+    // the real one without a terminal (see `fixtures/fake-sudo.sh`).
+    let sudo = bin.join("sudo");
+    std::fs::copy(fixtures.join("fake-sudo.sh"), &sudo).unwrap();
+    std::fs::set_permissions(&sudo, std::fs::Permissions::from_mode(0o755)).unwrap();
     log
 }
 
@@ -1477,7 +1488,7 @@ fn mid_turn_stall_is_recovered() {
     env.push(("WORKSHOP_STALL_TIMEOUT_SECS", "5"));
     let mut j = pty_common::spawn("engine-trust/mid-turn-stall", &bin, &env, Some(&fx.bin));
     pty_common::connect_big_pickle(&mut j);
-    send_prompt(&mut j, "stall please");
+    send_prompt(&mut j, "go silent now");
     // The answer began, then nothing more comes.
     wait_for(&mut j.h, "Let me look at that", 60);
     let began = std::time::Instant::now();
@@ -1557,6 +1568,91 @@ fn long_tool_run_is_not_a_stall() {
     assert!(
         !screen.contains("stopped responding"),
         "no stall line for a slow command:\n{screen}"
+    );
+    quit(&mut j);
+}
+
+/// Everything a password could have leaked into: the screen so far, the fake engine's request
+/// log, Workshop's conversation records and the engine log.
+fn password_sinks(j: &Journey, fx: &Fixture, screens: &[String]) -> String {
+    let mut all = screens.join("\n");
+    all.push_str(&std::fs::read_to_string(&fx.log).unwrap_or_default());
+    all.push_str(
+        &std::fs::read_to_string(j.workshop_home().join("logs").join("opencode-engine.log"))
+            .unwrap_or_default(),
+    );
+    if let Ok(entries) = std::fs::read_dir(j.workshop_home().join("engine").join("sessions")) {
+        for entry in entries.flatten() {
+            all.push_str(&std::fs::read_to_string(entry.path()).unwrap_or_default());
+        }
+    }
+    all
+}
+
+/// `sudo` in one of the engine's commands asks Workshop, not a terminal it has not got: one masked
+/// prompt naming the command; the password goes to sudo only (never the screen, the model, the
+/// transcript or the logs); Esc skips and the model reads "Skipped — needs your password".
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve, fake sudo); run with --include-ignored"]
+fn sudo_password_is_asked_in_workshop_never_the_model() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/sudo-askpass", &bin, &fx);
+    let installed = j.cwd.path().join("installed-htop.txt");
+    let mut screens: Vec<String> = Vec::new();
+
+    // 1. The command needs root: the prompt, nothing run yet.
+    send_prompt(&mut j, "install htop");
+    wait_for(
+        &mut j.h,
+        "Needs your password for: sudo touch installed-htop.txt",
+        60,
+    );
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "01-password-prompt");
+    screens.push(j.h.screen_contents());
+    assert!(!installed.exists(), "nothing runs before the password");
+
+    // 2. Typing shows dots, never the characters.
+    j.h.inject_keys(b"hunter2").unwrap();
+    j.h.update(Duration::from_millis(500));
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains("\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"),
+        "seven dots for seven characters:\n{screen}"
+    );
+    snapshot(&j.h, &j.dir, "02-masked-typing");
+    screens.push(screen);
+
+    // 3. Enter: sudo gets it, the command runs, the model hears success.
+    j.h.inject_keys(b"\r").unwrap();
+    wait_for(&mut j.h, "Installed htop.", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "03-command-ran");
+    screens.push(j.h.screen_contents());
+    assert!(installed.exists(), "sudo ran the command with the password");
+    let sinks = password_sinks(&j, &fx, &screens);
+    assert!(
+        !sinks.contains("hunter2"),
+        "the password reached only sudo — not the screen, the engine, the record or the logs"
+    );
+
+    // 4. Esc skips: sudo fails plainly and the model reads why.
+    std::fs::remove_file(&installed).unwrap();
+    send_prompt(&mut j, "install htop again");
+    wait_for(&mut j.h, "Needs your password for:", 60);
+    j.h.inject_keys(b"\x1b").unwrap();
+    wait_for(&mut j.h, "Skipped \u{2014} needs your password", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "04-skipped");
+    let screen = j.h.screen_contents();
+    assert!(
+        !installed.exists() && screen.contains("Could not install htop"),
+        "a skipped password means the command did not run and the model was told:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Needs your password for:"),
+        "the prompt is gone once answered:\n{screen}"
     );
     quit(&mut j);
 }

@@ -170,6 +170,7 @@ pub(crate) fn test_app() -> AppView {
         deferred_startup: Default::default(),
         auth_use_oauth: false,
         connection_picker: None,
+        workshop_password_ask: None,
         workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
         workshop_engine: None,
         workshop_engine_session: None,

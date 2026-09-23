@@ -4094,6 +4094,25 @@ fn handle_workshop_turn_msg(
         app.workshop_engine = Some(engine);
         return (false, vec![]);
     }
+    // `sudo` in one of the engine's commands wants the user's password: one masked prompt,
+    // titled with the command that is running (the turn's shell tool) or sudo's own words.
+    if let M::PasswordAsk { prompt, reply } = msg {
+        let command = app
+            .workshop_turn_tool_inputs
+            .values()
+            .filter(|(name, _)| name == "bash")
+            .filter_map(|(_, input)| input.get("command").and_then(|c| c.as_str()))
+            .last()
+            .map(str::to_owned);
+        let title = crate::app::workshop_askpass::title_for(command.as_deref(), &prompt);
+        if let Some(previous) = app.workshop_password_ask.take() {
+            previous.answer(false);
+        }
+        app.workshop_password_ask = Some(crate::app::workshop_askpass::PendingPassword::new(
+            title, reply,
+        ));
+        return (true, vec![]);
+    }
     let Some(agent_id) = app.workshop_turn_agent else {
         return (false, vec![]);
     };
@@ -4457,6 +4476,8 @@ fn handle_workshop_turn_msg(
         }
         // Handled above (needs the dispatcher).
         M::EngineUnavailable { .. } | M::Stalled { .. } => false,
+        // Handled above (before any agent is needed).
+        M::PasswordAsk { .. } => false,
     };
     (redraw, vec![])
 }

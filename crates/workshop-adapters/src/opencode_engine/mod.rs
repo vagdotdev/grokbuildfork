@@ -109,6 +109,10 @@ pub struct EngineOptions {
     pub workspace: PathBuf,
     /// Environment for the server; `None` = minimal env from this process.
     pub env: Option<BTreeMap<OsString, OsString>>,
+    /// Variables added on top of the allowlisted environment — the host's own (`SUDO_ASKPASS`
+    /// and the socket its askpass helper reports to); every command the engine runs inherits
+    /// them.
+    pub extra_env: Vec<(OsString, OsString)>,
     pub startup_timeout: Duration,
     /// How long a turn may stay silent — after its first output, with no tool running and no
     /// permission waiting on the user — before it is aborted as stalled ([`TurnHandle::stalled`]).
@@ -137,6 +141,7 @@ impl EngineOptions {
         Self {
             workspace: workspace.into(),
             env: None,
+            extra_env: Vec::new(),
             startup_timeout: Duration::from_secs(60),
             idle_timeout: Some(Duration::from_secs(600)),
             cancel_grace: Duration::from_secs(10),
@@ -347,6 +352,9 @@ impl OpenCodeEngine {
                 OsString::from("OPENCODE_CONFIG_CONTENT"),
                 OsString::from(config.to_string()),
             );
+        }
+        for (key, value) in &opts.extra_env {
+            env.insert(key.clone(), value.clone());
         }
 
         let port = pick_free_port().await.map_err(EngineError::Spawn)?;

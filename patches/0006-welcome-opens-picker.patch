@@ -136,7 +136,7 @@ index f1602289..fb4370d2 100644
      ChangelogFetched {
          markdown: Option<String>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..30dd426a 100644
+index fc9a4553..bf4a2993 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -187,7 +187,7 @@ index fc9a4553..30dd426a 100644
      /// The environment gates are process-constant, so one evaluation decides the run.
      pub ssh_wrap_tip_evaluated: bool,
      /// State for the clipboard-image tip, polled opportunistically and only while the terminal is focused.
-@@ -1009,6 +1019,82 @@ pub struct AppView {
+@@ -1009,6 +1019,85 @@ pub struct AppView {
      pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
      /// Whether deferred welcome-screen login should force OAuth.
      pub auth_use_oauth: bool,
@@ -195,6 +195,9 @@ index fc9a4553..30dd426a 100644
 +    /// welcome `l`, `/login`, `/auth`, `/models` and first run all open it. Rendered on the welcome
 +    /// view; keys are routed to it while open.
 +    pub connection_picker: Option<workshop_auth::PickerState>,
++    /// Workshop: a `sudo` password one of the engine's commands is waiting for — the masked
++    /// prompt above the composer owns every key while it is up.
++    pub workshop_password_ask: Option<crate::app::workshop_askpass::PendingPassword>,
 +    /// Workshop: which runtime prompts are routed through (shell loop, OpenCode engine, or a
 +    /// vendor CLI adapter). Set by the picker; `Shell` is the default.
 +    pub workshop_connection: crate::app::workshop::WorkshopConnection,
@@ -270,7 +273,7 @@ index fc9a4553..30dd426a 100644
      /// Delivery state from the last clipboard copy during auth.
      pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
      /// Generation of the current auth copy feedback and its clear timer.
-@@ -1429,11 +1515,14 @@ impl AppView {
+@@ -1429,11 +1518,14 @@ impl AppView {
              pending_effects: Vec::new(),
              pending_editor: None,
              pending_pager_path: None,
@@ -285,11 +288,12 @@ index fc9a4553..30dd426a 100644
              welcome_import_banner_rect: None,
              last_mouse_pos: None,
              last_scroll_pos: None,
-@@ -1543,6 +1632,33 @@ impl AppView {
+@@ -1543,6 +1635,34 @@ impl AppView {
              auth_url_poll_handle: None,
              deferred_startup: Default::default(),
              auth_use_oauth: false,
 +            connection_picker: None,
++            workshop_password_ask: None,
 +            workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
 +            workshop_engine: None,
 +            workshop_engine_slot: crate::app::workshop::new_engine_slot(),
@@ -319,7 +323,7 @@ index fc9a4553..30dd426a 100644
              auth_clipboard_delivery: None,
              auth_clipboard_feedback_generation: 0,
              team_id: None,
-@@ -1709,11 +1825,15 @@ impl AppView {
+@@ -1709,11 +1829,15 @@ impl AppView {
      pub(super) fn consumer_account(&self) -> bool {
          !self.backend_billed && !self.is_api_key_auth && !self.has_external_auth_provider
      }
@@ -338,7 +342,7 @@ index fc9a4553..30dd426a 100644
      }
      /// Draw-time expiry can flip the live-announcement predicate between pushes.
      /// Resync the slash gate only when it diverges from the stored flags (checked per frame, fan-out runs only on change).
-@@ -2404,6 +2524,15 @@ impl AppView {
+@@ -2404,6 +2528,20 @@ impl AppView {
              }
              return InputOutcome::Changed;
          }
@@ -351,10 +355,15 @@ index fc9a4553..30dd426a 100644
 +                picker.key_entry.is_some(),
 +            );
 +        }
++        // Workshop: a `sudo` password prompt owns every key while it is up; the characters go
++        // to the helper's buffer, never to the composer (or its history and drafts).
++        if self.workshop_password_ask.is_some() {
++            return self.handle_workshop_password_input(ev);
++        }
          let zdr_blocked = self.is_zdr_blocked();
          let has_access = self.has_access();
          let welcome_pinned_upgrade_cta = crate::views::announcements::promo_cta(
-@@ -2442,7 +2571,8 @@ impl AppView {
+@@ -2442,7 +2580,8 @@ impl AppView {
                      menu_count: if zdr_blocked {
                          2
                      } else {
@@ -364,7 +373,7 @@ index fc9a4553..30dd426a 100644
                              + if self.welcome_show_changelog_action {
                                  1
                              } else {
-@@ -2483,6 +2613,7 @@ impl AppView {
+@@ -2483,6 +2622,7 @@ impl AppView {
                      welcome_doc_viewer: &mut self.welcome_doc_viewer,
                      changelog_markdown: &self.changelog_markdown,
                      show_changelog_action: self.welcome_show_changelog_action,
@@ -372,7 +381,7 @@ index fc9a4553..30dd426a 100644
                      has_pending_update: self.pending_update_version.is_some(),
                      has_foreign_resume,
                      cwd_has_git_ancestor: self.cwd_has_git_ancestor,
-@@ -3143,8 +3274,10 @@ struct WelcomeInputCtx<'a> {
+@@ -3143,8 +3283,10 @@ struct WelcomeInputCtx<'a> {
      import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
      welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
      changelog_markdown: &'a Option<String>,
@@ -384,10 +393,56 @@ index fc9a4553..30dd426a 100644
      has_pending_update: bool,
      /// A recent foreign session is available to resume when no update is pending.
      has_foreign_resume: bool,
-@@ -3171,6 +3304,73 @@ struct WelcomeInputCtx<'a> {
+@@ -3171,6 +3313,119 @@ struct WelcomeInputCtx<'a> {
      #[cfg(feature = "local-workspace")]
      session_picker_open: bool,
  }
++impl AppView {
++    /// Workshop: keys while a `sudo` password prompt is up. Printable characters and pastes go to
++    /// the prompt's buffer (masked on screen), Backspace edits it, Enter sends it to the helper
++    /// (`sudo` reads it), Esc / Ctrl+C skip. Nothing reaches the composer.
++    fn handle_workshop_password_input(&mut self, ev: &Event) -> InputOutcome {
++        let Some(ask) = self.workshop_password_ask.as_mut() else {
++            return InputOutcome::Unchanged;
++        };
++        match ev {
++            Event::Paste(text) => {
++                ask.push_str(text.trim_end_matches(['\r', '\n']));
++                InputOutcome::Changed
++            }
++            Event::Key(key) if key.kind != KeyEventKind::Release => {
++                if key!('c', CONTROL).matches(key)
++                    || key!('d', CONTROL).matches(key)
++                    || key.code == KeyCode::Esc
++                {
++                    if let Some(ask) = self.workshop_password_ask.take() {
++                        ask.answer(false);
++                    }
++                    return InputOutcome::Changed;
++                }
++                match key.code {
++                    KeyCode::Enter => {
++                        if let Some(ask) = self.workshop_password_ask.take() {
++                            ask.answer(true);
++                        }
++                    }
++                    KeyCode::Backspace => ask.pop_char(),
++                    KeyCode::Char(c)
++                        if !key
++                            .modifiers
++                            .intersects(crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT | crossterm::event::KeyModifiers::SUPER) =>
++                    {
++                        ask.push_char(c)
++                    }
++                    _ => {}
++                }
++                InputOutcome::Changed
++            }
++            _ => InputOutcome::Unchanged,
++        }
++    }
++}
++
 +/// Workshop: the connection picker (`/model`, `/auth`) owns the keyboard while it is open, on
 +/// every view. Every key is consumed here — printable ones filter the Models view — so nothing
 +/// leaks into the composer behind the overlay. It never starts a login on its own; `Enter`
@@ -458,7 +513,7 @@ index fc9a4553..30dd426a 100644
  /// Welcome view input: overlays first, then composer, then the menu.
  fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
      if let Some(modal) = ctx.import_claude_modal.as_mut() {
-@@ -3750,6 +3950,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3750,6 +4005,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                  return dispatch_menu_action(
                      idx,
                      ctx.has_claude_import,
@@ -466,7 +521,7 @@ index fc9a4553..30dd426a 100644
                      ctx.show_changelog_action,
                      ctx.changelog_markdown.as_deref(),
                  );
-@@ -3888,6 +4089,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3888,6 +4144,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                          return dispatch_menu_action(
                              i,
                              ctx.has_claude_import,
@@ -474,7 +529,7 @@ index fc9a4553..30dd426a 100644
                              ctx.show_changelog_action,
                              ctx.changelog_markdown.as_deref(),
                          );
-@@ -4138,39 +4340,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
+@@ -4138,39 +4395,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
      }
  }
  /// Dispatch an action for a welcome menu item by index.
@@ -533,7 +588,7 @@ index fc9a4553..30dd426a 100644
      }
      if index == quit_idx {
          return InputOutcome::Action(Action::Quit);
-@@ -4477,11 +4682,31 @@ impl AppView {
+@@ -4477,11 +4737,31 @@ impl AppView {
                              } else {
                                  self.tip.as_deref()
                              };
@@ -570,7 +625,7 @@ index fc9a4553..30dd426a 100644
                              };
                              let hero_cta = crate::views::announcements::promo_cta(
                                  &self.active_announcements,
-@@ -4495,7 +4720,15 @@ impl AppView {
+@@ -4495,7 +4775,15 @@ impl AppView {
                                          &self.hidden_announcement_ids,
                                      )
                                  })
@@ -587,7 +642,7 @@ index fc9a4553..30dd426a 100644
                              let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                  prompt_focus: if self.welcome_prompt_focused {
                                      WelcomePromptFocus::Focused
-@@ -4508,6 +4741,7 @@ impl AppView {
+@@ -4508,6 +4796,7 @@ impl AppView {
                                  consent_state: &self.consent_state,
                                  consent_hover_link: self.welcome_consent_hover_link,
                                  login_label: self.login_label.as_deref(),
@@ -595,7 +650,7 @@ index fc9a4553..30dd426a 100644
                                  auth_code_input: self.auth_code_input.text(),
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
-@@ -4520,6 +4754,7 @@ impl AppView {
+@@ -4520,6 +4809,7 @@ impl AppView {
                                  team_name: self.team_name.as_deref(),
                                  has_access,
                                  has_claude_import: self.has_claude_import,
@@ -603,7 +658,7 @@ index fc9a4553..30dd426a 100644
                                  mouse_pos: self.last_mouse_pos,
                                  is_zdr_blocked: zdr_blocked_for_draw,
                                  session_picker: self.session_picker_entries.as_deref(),
-@@ -4577,6 +4812,7 @@ impl AppView {
+@@ -4577,6 +4867,7 @@ impl AppView {
                              );
                              self.welcome_menu_rects = result.menu_rects;
                              self.welcome_show_changelog_action = result.changelog_action_present;
@@ -611,7 +666,7 @@ index fc9a4553..30dd426a 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4824,6 +5060,25 @@ impl AppView {
+@@ -4824,6 +5115,42 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -634,14 +689,32 @@ index fc9a4553..30dd426a 100644
 +                                        if compact { 1 } else { 4 },
 +                                    );
 +                                }
++                                // Workshop: a `sudo` password prompt sits right above the
++                                // composer while one of the engine's commands waits for it.
++                                if let Some(ask) = self.workshop_password_ask.as_ref() {
++                                    let theme = crate::theme::Theme::current();
++                                    let above_composer = ratatui::layout::Rect {
++                                        y: view_area.y + 2,
++                                        height: view_area.height.saturating_sub(7),
++                                        ..view_area
++                                    };
++                                    crate::views::workshop_password::render(
++                                        above_composer,
++                                        f.buffer_mut(),
++                                        &theme,
++                                        ask,
++                                        if compact { 1 } else { 4 },
++                                    );
++                                }
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5087,15 @@ impl AppView {
+@@ -4832,13 +5159,16 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
-+                                let picker_open = self.connection_picker.is_some();
++                                let picker_open = self.connection_picker.is_some()
++                                    || self.workshop_password_ask.is_some();
                                  if has_cloud
                                      || self.import_claude_modal.is_some()
                                      || self.tutorial.is_some()
@@ -654,7 +727,7 @@ index fc9a4553..30dd426a 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5377,7 @@ impl AppView {
+@@ -5120,6 +5450,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -662,7 +735,7 @@ index fc9a4553..30dd426a 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5425,7 @@ impl AppView {
+@@ -5167,7 +5498,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -671,7 +744,7 @@ index fc9a4553..30dd426a 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5540,7 @@ impl AppView {
+@@ -5282,6 +5613,7 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
@@ -679,7 +752,7 @@ index fc9a4553..30dd426a 100644
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5637,6 +5896,10 @@ impl AppView {
+@@ -5637,6 +5969,10 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -690,7 +763,7 @@ index fc9a4553..30dd426a 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5784,6 +6047,54 @@ impl AppView {
+@@ -5784,6 +6120,54 @@ impl AppView {
              ActiveView::Welcome => TickDemand::Slow,
          }
      }
@@ -745,7 +818,7 @@ index fc9a4553..30dd426a 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6116,8 @@ impl AppView {
+@@ -5805,7 +6189,8 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -756,14 +829,15 @@ index fc9a4553..30dd426a 100644
              } else {
                  (None, None, None, false, None, false)
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-index 483296d4..5e49d16b 100644
+index 483296d4..263c6398 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-@@ -169,6 +169,33 @@ pub(crate) fn test_app() -> AppView {
+@@ -169,6 +169,34 @@ pub(crate) fn test_app() -> AppView {
          auth_url_poll_handle: None,
          deferred_startup: Default::default(),
          auth_use_oauth: false,
 +        connection_picker: None,
++        workshop_password_ask: None,
 +        workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
 +        workshop_engine: None,
 +        workshop_engine_session: None,
@@ -793,7 +867,7 @@ index 483296d4..5e49d16b 100644
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -210,6 +237,8 @@ pub(crate) fn test_app() -> AppView {
+@@ -210,6 +238,8 @@ pub(crate) fn test_app() -> AppView {
          welcome_menu_index: None,
          welcome_menu_rects: Vec::new(),
          welcome_show_changelog_action: false,
@@ -802,7 +876,7 @@ index 483296d4..5e49d16b 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -278,6 +307,7 @@ pub(crate) fn test_app() -> AppView {
+@@ -278,6 +308,7 @@ pub(crate) fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -810,7 +884,7 @@ index 483296d4..5e49d16b 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -616,6 +646,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
+@@ -616,6 +647,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
      );
  }
  #[test]
@@ -818,7 +892,7 @@ index 483296d4..5e49d16b 100644
  fn needs_animation_gates_prompt_history_tick_delivery() {
      let mut app = test_app_with_agent();
      let id = super::super::agent::AgentId(0);
-@@ -2268,16 +2299,20 @@ fn is_restricted_tier_classification() {
+@@ -2268,16 +2300,20 @@ fn is_restricted_tier_classification() {
      assert!(!is_restricted_tier(Some("X Premium+")));
      assert!(!is_restricted_tier(Some("SomeFutureTier")));
  }
@@ -843,7 +917,7 @@ index 483296d4..5e49d16b 100644
      let meta = xai_grok_login::AuthMeta {
          subscription_tier: Some("SuperGrok".into()),
          ..Default::default()
-@@ -3198,15 +3233,15 @@ fn welcome_ctrl_d_requires_confirmation() {
+@@ -3198,15 +3234,15 @@ fn welcome_ctrl_d_requires_confirmation() {
  #[test]
  fn menu_action_indices_without_changelog() {
      assert!(matches!(
@@ -862,7 +936,7 @@ index 483296d4..5e49d16b 100644
          InputOutcome::Action(Action::Quit)
      ));
  }
-@@ -3214,46 +3249,69 @@ fn menu_action_indices_without_changelog() {
+@@ -3214,46 +3250,69 @@ fn menu_action_indices_without_changelog() {
  fn menu_action_changelog_sits_above_quit() {
      let md = Some("# notes");
      assert!(matches!(
@@ -2463,14 +2537,15 @@ index 2049a2d9..3ec2aebf 100644
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-index bf64193d..034d83ef 100644
+index bf64193d..04b63b60 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-@@ -181,6 +181,33 @@ fn test_app() -> AppView {
+@@ -181,6 +181,34 @@ fn test_app() -> AppView {
          auth_url_poll_handle: None,
          deferred_startup: Default::default(),
          auth_use_oauth: false,
 +        connection_picker: None,
++        workshop_password_ask: None,
 +        workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
 +        workshop_engine: None,
 +        workshop_engine_session: None,
@@ -2500,7 +2575,7 @@ index bf64193d..034d83ef 100644
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -222,6 +249,8 @@ fn test_app() -> AppView {
+@@ -222,6 +250,8 @@ fn test_app() -> AppView {
          welcome_menu_index: None,
          welcome_menu_rects: Vec::new(),
          welcome_show_changelog_action: false,
@@ -2509,7 +2584,7 @@ index bf64193d..034d83ef 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -289,6 +318,7 @@ fn test_app() -> AppView {
+@@ -289,6 +319,7 @@ fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -2517,7 +2592,7 @@ index bf64193d..034d83ef 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -585,6 +615,25 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
+@@ -585,6 +616,25 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
      std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
      sess_dir
  }
@@ -2840,7 +2915,7 @@ index 1c507697..5f4a9b72 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..c8a70e80 100644
+index eda61b3c..a15003e1 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -3168,7 +3243,7 @@ index eda61b3c..c8a70e80 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4077,448 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4077,469 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -3188,6 +3263,25 @@ index eda61b3c..c8a70e80 100644
 +    if let M::EngineWarm { engine } = msg {
 +        app.workshop_engine = Some(engine);
 +        return (false, vec![]);
++    }
++    // `sudo` in one of the engine's commands wants the user's password: one masked prompt,
++    // titled with the command that is running (the turn's shell tool) or sudo's own words.
++    if let M::PasswordAsk { prompt, reply } = msg {
++        let command = app
++            .workshop_turn_tool_inputs
++            .values()
++            .filter(|(name, _)| name == "bash")
++            .filter_map(|(_, input)| input.get("command").and_then(|c| c.as_str()))
++            .last()
++            .map(str::to_owned);
++        let title = crate::app::workshop_askpass::title_for(command.as_deref(), &prompt);
++        if let Some(previous) = app.workshop_password_ask.take() {
++            previous.answer(false);
++        }
++        app.workshop_password_ask = Some(crate::app::workshop_askpass::PendingPassword::new(
++            title, reply,
++        ));
++        return (true, vec![]);
 +    }
 +    let Some(agent_id) = app.workshop_turn_agent else {
 +        return (false, vec![]);
@@ -3552,6 +3646,8 @@ index eda61b3c..c8a70e80 100644
 +        }
 +        // Handled above (needs the dispatcher).
 +        M::EngineUnavailable { .. } | M::Stalled { .. } => false,
++        // Handled above (before any agent is needed).
++        M::PasswordAsk { .. } => false,
 +    };
 +    (redraw, vec![])
 +}
@@ -3618,15 +3714,16 @@ index eda61b3c..c8a70e80 100644
      effs: Vec<super::actions::Effect>,
      tasks: &mut JoinSet<TaskResult>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/mod.rs b/crates/codegen/xai-grok-pager/src/app/mod.rs
-index 60fe34f9..d5845f2c 100644
+index 60fe34f9..c057affc 100644
 --- a/crates/codegen/xai-grok-pager/src/app/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/mod.rs
-@@ -13,6 +13,12 @@ pub mod actions;
+@@ -13,6 +13,13 @@ pub mod actions;
  pub mod agent;
  pub mod agent_view;
  pub mod app_view;
 +/// Workshop overlay: connection picker loading and activation.
 +pub mod workshop;
++pub mod workshop_askpass;
 +pub mod workshop_engine_state;
 +pub mod workshop_permissions;
 +pub mod workshop_sessions;
@@ -3634,7 +3731,7 @@ index 60fe34f9..d5845f2c 100644
  pub mod bundle;
  pub(crate) mod cancel_latency;
  pub mod cli;
-@@ -815,9 +821,20 @@ pub async fn run(
+@@ -815,9 +822,20 @@ pub async fn run(
          }
          session_startup::set_active_local_workspace(lw)?;
      }
@@ -3656,7 +3753,7 @@ index 60fe34f9..d5845f2c 100644
      let mut materialize_ctx = session_startup::MaterializeCtx::from_pager_args(&args);
      materialize_ctx.restore_progress_on_stdout =
          std::io::IsTerminal::is_terminal(&std::io::stdout());
-@@ -1154,6 +1171,7 @@ pub async fn run(
+@@ -1154,6 +1172,7 @@ pub async fn run(
          bg_update_rx,
          writer_event_rx,
          &mut reader_thread,
@@ -3664,7 +3761,7 @@ index 60fe34f9..d5845f2c 100644
      )
      .await;
      signal_handler::clear_quit_notify();
-@@ -1255,9 +1273,9 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
+@@ -1255,9 +1274,9 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
      }
      let _ = writeln!(w, "Resume this session with:");
      if info.minimal {
@@ -3676,7 +3773,7 @@ index 60fe34f9..d5845f2c 100644
      }
  }
  /// Screen-mode relaunch failure fallback (same quit tail as plain resume).
-@@ -1474,6 +1492,11 @@ fn init_terminal(
+@@ -1474,6 +1493,11 @@ fn init_terminal(
          startup_typeahead.extend(event_loop::capture_startup_typeahead(
              std::time::Duration::from_millis(0),
          ));
@@ -3688,7 +3785,7 @@ index 60fe34f9..d5845f2c 100644
          set_terminal_title("");
          if want_minimal && clear_main_screen {
              xai_grok_shell::util::with_locked_stderr(|stderr| {
-@@ -1671,10 +1694,10 @@ pub(crate) fn set_terminal_title(title: &str) {
+@@ -1671,10 +1695,10 @@ pub(crate) fn set_terminal_title(title: &str) {
  fn terminal_title_string(title: &str) -> String {
      let sanitized: String = title.chars().filter(|c| !c.is_control()).collect();
      if sanitized.is_empty() {
@@ -3702,7 +3799,7 @@ index 60fe34f9..d5845f2c 100644
      }
  }
  #[cfg(test)]
-@@ -1724,11 +1747,11 @@ mod tests {
+@@ -1724,11 +1748,11 @@ mod tests {
      fn terminal_title_strips_control_characters() {
          assert_eq!(
              terminal_title_string("evil\x07\x1b]52;c;payload\x07title"),
@@ -3718,7 +3815,7 @@ index 60fe34f9..d5845f2c 100644
      }
      #[test]
      fn hunk_tracker_mode_nothing_set_is_none() {
-@@ -2245,9 +2268,9 @@ mod tests {
+@@ -2245,9 +2269,9 @@ mod tests {
          assert!(!args.no_alt_screen);
      }
      #[test]
@@ -3730,7 +3827,7 @@ index 60fe34f9..d5845f2c 100644
      }
      #[test]
      fn cli_help_output_header() {
-@@ -2257,9 +2280,9 @@ mod tests {
+@@ -2257,9 +2281,9 @@ mod tests {
          assert_eq!(
              first_5,
              vec![
@@ -3742,7 +3839,7 @@ index 60fe34f9..d5845f2c 100644
                  "",
                  "Arguments:",
              ]
-@@ -2305,7 +2328,7 @@ mod tests {
+@@ -2305,7 +2329,7 @@ mod tests {
          print_exit_resume_hint(&bare_exit_info("sess-abc", false), 80, &mut buf);
          assert_eq!(
              String::from_utf8(buf).unwrap(),
@@ -3751,7 +3848,7 @@ index 60fe34f9..d5845f2c 100644
          );
      }
      #[test]
-@@ -2314,7 +2337,7 @@ mod tests {
+@@ -2314,7 +2338,7 @@ mod tests {
          print_exit_resume_hint(&bare_exit_info("sess-abc", true), 80, &mut buf);
          assert_eq!(
              String::from_utf8(buf).unwrap(),
@@ -3760,7 +3857,7 @@ index 60fe34f9..d5845f2c 100644
          );
      }
      #[test]
-@@ -2339,7 +2362,7 @@ mod tests {
+@@ -2339,7 +2363,7 @@ mod tests {
                  "  Pinned the seed; 200 consecutive green runs.\n",
                  "\n",
                  "Resume this session with:\n",
@@ -3769,7 +3866,7 @@ index 60fe34f9..d5845f2c 100644
              )
          );
      }
-@@ -2360,7 +2383,7 @@ mod tests {
+@@ -2360,7 +2384,7 @@ mod tests {
          assert!(out.contains(&format!("\n{}…\n", "t".repeat(19))));
          assert!(out.contains(&format!("\n> {}…\n", "p".repeat(17))));
          assert!(out.contains(&format!("\n  {}…\n", "r".repeat(17))));
@@ -3780,10 +3877,10 @@ index 60fe34f9..d5845f2c 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..916abf2f
+index 00000000..bc6082ef
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,1805 @@
+@@ -0,0 +1,1834 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -4472,6 +4569,13 @@ index 00000000..916abf2f
 +        reason: String,
 +        text: String,
 +    },
++    /// `sudo` in one of the engine's commands needs the user's password: the askpass helper is
++    /// waiting on `reply` (`Some(bytes)` = the password, `None` = skipped). The UI shows one
++    /// masked prompt; the bytes go to the helper only. Any turn, any time.
++    PasswordAsk {
++        prompt: String,
++        reply: tokio::sync::oneshot::Sender<Option<Vec<u8>>>,
++    },
 +    /// The model started answering and then went silent for [`STALL_TIMEOUT`] (no output, no
 +    /// tool running, no prompt waiting on the user); the engine aborted the turn. `text` is the
 +    /// prompt to resend: an engine turn goes through the pool fallback, else the user gets
@@ -4505,6 +4609,9 @@ index 00000000..916abf2f
 +    /// The warm-up's failure, so a turn typed right after it reports that cause at once instead
 +    /// of silently repeating a 30 s bring-up that just failed. Cleared by the next attempt.
 +    recent_failure: std::sync::Mutex<Option<(std::time::Instant, String)>>,
++    /// The `sudo` askpass listener (one per process, started with the first engine); `None`
++    /// until then, or when the home could not hold it.
++    askpass: std::sync::Mutex<Option<Arc<crate::app::workshop_askpass::AskpassServer>>>,
 +}
 +
 +pub type EngineSlot = Arc<EngineSlotInner>;
@@ -4514,7 +4621,20 @@ index 00000000..916abf2f
 +        engine: tokio::sync::Mutex::new(None),
 +        phase: watch::channel(String::new()).0,
 +        recent_failure: std::sync::Mutex::new(None),
++        askpass: std::sync::Mutex::new(None),
 +    })
++}
++
++/// The process's askpass listener, started on first use with the live loop's channel.
++fn askpass_server(
++    slot: &EngineSlot,
++    ui_tx: &mpsc::UnboundedSender<WorkshopTurnMsg>,
++) -> Option<Arc<crate::app::workshop_askpass::AskpassServer>> {
++    let mut guard = slot.askpass.lock().ok()?;
++    if guard.is_none() {
++        *guard = crate::app::workshop_askpass::start(ui_tx.clone()).map(Arc::new);
++    }
++    guard.clone()
 +}
 +
 +/// The pager's permission mode as it applies to one Engine/Adapter turn (Shift+Tab cycle,
@@ -4937,6 +5057,11 @@ index 00000000..916abf2f
 +    // The engine asks before edits and commands; what happens next is the agent's permission
 +    // mode (Plan/Normal prompt, Auto/Always-approve allow), decided on the UI thread per ask.
 +    opts.permission = Some(ask_before_edit_and_bash());
++    // `sudo` in the engine's commands asks Workshop for the password (`SUDO_ASKPASS` helper →
++    // this process's socket → one masked prompt), never the model or a terminal it has not got.
++    if let Some(askpass) = askpass_server(slot, &ui_tx) {
++        opts.extra_env = askpass.env();
++    }
 +    opts.permission_handler = Some(engine_permission_handler(ui_tx));
 +    // The models answer as Workshop's assistant, not as "opencode".
 +    opts.config = Some(engine_config(&log));
@@ -4947,6 +5072,7 @@ index 00000000..916abf2f
 +    opts.startup_timeout = ENGINE_START_TIMEOUT;
 +    // A model that stops mid-answer is aborted after this and the turn recovers (see `Stalled`).
 +    opts.idle_timeout = Some(stall_timeout());
++
 +    match OpenCodeEngine::start(&cli, opts).await {
 +        Ok(engine) => {
 +            st.last_phase = Some("ready".into());
@@ -6209,15 +6335,16 @@ index 00000000..87f62d44
 +    lines
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/views/mod.rs b/crates/codegen/xai-grok-pager/src/views/mod.rs
-index dcbe4033..66b7ae6a 100644
+index dcbe4033..b0a519b1 100644
 --- a/crates/codegen/xai-grok-pager/src/views/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/mod.rs
-@@ -5,6 +5,8 @@ pub mod announcements;
+@@ -5,6 +5,9 @@ pub mod announcements;
  pub mod block_viewer;
  pub mod btw_overlay;
  pub mod completion_dropdown;
 +/// Workshop overlay: connection picker view.
 +pub mod connection_picker;
++pub mod workshop_password;
  pub mod context_bar;
  pub mod credit_bar;
  pub mod dashboard;
