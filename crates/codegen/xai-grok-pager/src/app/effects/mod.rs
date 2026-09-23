@@ -2348,6 +2348,13 @@ pub(crate) fn execute(
                     TaskResult::WorkshopPickerLoaded(snap)
                 });
         }
+        Effect::WorkshopRefreshRailModels => {
+            tasks
+                .spawn(async move {
+                    let snap = crate::app::workshop::refresh_rail_models_snapshot().await;
+                    TaskResult::WorkshopPickerLoaded(snap)
+                });
+        }
         Effect::WorkshopActivateModel {
             request_seq,
             model_id,

@@ -3,12 +3,14 @@
 //! Finds the official vendor CLIs (`claude`, `codex`, `cursor-agent`/`agent`, `opencode`) on
 //! `PATH` and in the known install directories, verifies each binary's identity through its own
 //! `--version` / `--help` output, and asks the CLI's **official status command** whether the user is
-//! signed in.
+//! signed in, then the CLI itself which models that account has ([`models`]).
 //!
 //! Hard rules (see the Workshop production plan, "Agent adapters — spawn, do not steal"):
 //!
-//! * Login state comes only from the vendor's documented status command. This crate never opens
+//! * Login state and model lists come only from the vendor's own CLI. This crate never opens
 //!   another application's credential files, keychain items, or databases.
+//! * One child per vendor at a time, and a `claude` child is never killed mid-run
+//!   ([`process::VendorSlot`]).
 //! * A binary is a vendor CLI only after its identity is verified. An unrelated executable that
 //!   happens to be called `agent` is not Cursor.
 //! * Child processes run with a minimal, credential-free environment ([`env::minimal_env`]).
@@ -27,6 +29,7 @@ pub mod env;
 pub mod identify;
 pub mod locate;
 pub mod model;
+pub mod models;
 pub mod probe;
 pub mod process;
 pub mod status;
@@ -34,5 +37,9 @@ pub mod status;
 pub use identify::{IdentifyError, Identity, identify};
 pub use locate::{Candidate, CandidateSource, DetectConfig, known_dirs, locate};
 pub use model::{ModelRef, Pill, Rail, RailState, Vendor, composer_label, rail_state, rails};
+pub use models::{
+    Account, ModelsCache, ModelsError, RailModels, Refresh, SubscriptionModel, SubscriptionModels,
+    cached_subscription_models, picker_rails, rail_models, rails_models, subscription_models,
+};
 pub use probe::{Probe, Rejected, VendorProbe, probe_all, probe_vendor};
 pub use status::{LoginState, login_argv, status_argv, version_argv};
