@@ -5,6 +5,10 @@
 //! rail ends up Ready. Workshop never reads another app's credential files (the no-theft audit
 //! covers that; here the fake CLI's state lives in its own directory).
 //!
+//! `a_cancelled_chained_sign_in_still_shows_the_installed_cli`: Ctrl+C at the chained vendor
+//! sign-in leaves the CLI installed, so the rail re-detects at once and reads `[Sign in]` — no
+//! Ctrl+R — and its detail names the whole command (`claude auth login`).
+//!
 //! Hermetic (fake installer + fake `claude`). Opt-in via `WORKSHOP_BIN`, `--include-ignored`.
 
 mod pty_common;
@@ -42,7 +46,10 @@ case "$*" in
     if [ -f "$state/logged_in" ]; then echo '{{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty", "email": "user@example.com", "subscriptionType": "max"}}'; exit 0
     else echo '{{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty"}}'; exit 1; fi ;;
   "auth login")
-    touch "$state/login_ran"; touch "$state/logged_in"; echo 'Logged in as user@example.com'; exit 0 ;;
+    touch "$state/login_ran"
+    # `<state>/login_hang`: wait like a real OAuth flow does, until the terminal's Ctrl+C.
+    if [ -f "$state/login_hang" ]; then echo 'Opening browser to sign in...'; sleep 60; fi
+    touch "$state/logged_in"; echo 'Logged in as user@example.com'; exit 0 ;;
 esac
 echo "fake claude: unexpected $*" >&2
 exit 2
@@ -187,4 +194,83 @@ fn a_missing_cli_installs_and_signs_in_on_one_keypress() {
         1,
         "the installer ran exactly once"
     );
+}
+
+/// Ctrl+C at the sign-in that follows the one-keypress install: the CLI is installed and signed
+/// out, and the rail says so at once (`[Sign in]`, its detail naming `claude auth login`) with no
+/// Ctrl+R. The install is not undone and nobody is signed in.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake installer + fake claude); run with --include-ignored"]
+fn a_cancelled_chained_sign_in_still_shows_the_installed_cli() {
+    let Some(bin) = bin_from_env() else { return };
+    let fakes = tempfile::tempdir().expect("tempdir");
+    let bin_dir = fakes.path().join("bin");
+    let state = fakes.path().join("state");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    // The fake `claude auth login` waits like a real OAuth flow, until the terminal's Ctrl+C.
+    std::fs::write(state.join("login_hang"), "1").unwrap();
+    let installer = fake_installer(fakes.path(), &bin_dir, &state);
+    let installer_s = installer.to_string_lossy().to_string();
+    install_fake_opencode_into(&bin_dir, "silent");
+    let mut j = spawn(
+        "rail-install-cancelled-sign-in",
+        &bin,
+        &[("WORKSHOP_RAIL_INSTALLER", installer_s.as_str())],
+        Some(&bin_dir),
+    );
+    connect_big_pickle(&mut j);
+    send_prompt(&mut j, "/auth");
+    wait_for(&mut j.h, "[Install]", 15);
+
+    // Enter: the installer, then straight into the vendor's sign-in, which owns the terminal.
+    j.h.inject_keys(b"\r").unwrap();
+    let started = Instant::now();
+    while !state.join("login_ran").exists() {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the vendor sign-in never ran after the install:\n{}",
+            j.h.screen_contents()
+        );
+        j.h.update(Duration::from_millis(200));
+    }
+    wait_for(&mut j.h, "Opening browser to sign in", 10);
+    snapshot(&j.h, &j.dir, "01-chained-sign-in-owns-the-terminal");
+
+    // Ctrl+C in the (cooked-mode) terminal ends the vendor login only. Back in the picker, the
+    // rail must say what is true now — installed, signed out — without a Ctrl+R.
+    j.h.inject_keys(b"\x03").unwrap();
+    wait_for(&mut j.h, "[Sign in]", 20);
+    j.h.update(Duration::from_millis(800));
+    assert!(
+        j.h.is_running().unwrap_or(false),
+        "Workshop must survive the Ctrl+C that ended the login:\n{}",
+        j.h.screen_contents()
+    );
+    let screen = j.h.screen_contents();
+    let claude_line = screen
+        .lines()
+        .find(|l| l.contains("Claude") && l.contains('['))
+        .unwrap_or_default();
+    assert!(
+        claude_line.contains("[Sign in]") && !claude_line.contains("[Install]"),
+        "the installed CLI's rail re-detects to Sign in on its own: {claude_line}\n{screen}"
+    );
+    assert!(
+        screen.contains("in your terminal:  claude auth login"),
+        "the detail names the whole login command, binary included:\n{screen}"
+    );
+    assert!(
+        screen.contains("Codex   [Install]") && screen.contains("Cursor  [Install]"),
+        "the CLIs that are still missing keep their one Install action:\n{screen}"
+    );
+    assert!(
+        !state.join("logged_in").exists(),
+        "a cancelled sign-in signs nobody in"
+    );
+    assert!(
+        bin_dir.join("claude").exists(),
+        "the install stays; only the sign-in was cancelled"
+    );
+    snapshot(&j.h, &j.dir, "02-sign-in-after-cancel-no-ctrl-r");
 }

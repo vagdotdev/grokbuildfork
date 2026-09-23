@@ -1873,7 +1873,7 @@ index 89c36b27..ae9d42f9 100644
          Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
          Action::CopyAuthUrl => {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
-index b00317f2..83c2e937 100644
+index b00317f2..e860c02c 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 @@ -281,7 +281,7 @@ pub(super) fn maybe_show_x11_primary_paste_hint(
@@ -1885,7 +1885,7 @@ index b00317f2..83c2e937 100644
  /// Every other failure (`TextRead`, `TargetInsertion`, `AlreadyReported`) is a real dead end and must keep toasting.
  pub(super) fn wrap_host_image_request_eligible(completion: ClipboardPasteCompletion) -> bool {
      matches!(
-@@ -999,6 +999,108 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -999,6 +999,123 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              }
              vec![]
          }
@@ -1971,6 +1971,21 @@ index b00317f2..83c2e937 100644
 +                // would otherwise hold ↑/↓ until the tab is switched away and back.
 +                picker.detail_open = false;
 +                if exit == InteractiveExit::Interrupted {
++                    // A sign-in chained onto the one-keypress install: the rail still reads
++                    // `[Install]` although the CLI is on PATH now, so re-detect (it becomes
++                    // `[Sign in]`). A cancelled sign-in on an installed CLI changes nothing.
++                    let just_installed = picker
++                        .rails
++                        .iter()
++                        .any(|r| r.rail == rail && !r.installed);
++                    if just_installed {
++                        picker.set_status(format!(
++                            "{} installed \u{b7} sign-in cancelled (Ctrl+C); re-detecting\u{2026}",
++                            rail.display_name()
++                        ));
++                        picker.loading = true;
++                        return vec![Effect::WorkshopLoadPicker];
++                    }
 +                    picker.set_status(format!(
 +                        "{} sign-in cancelled (Ctrl+C); nothing changed.",
 +                        rail.display_name()
@@ -1994,7 +2009,7 @@ index b00317f2..83c2e937 100644
          TaskResult::ChangelogFetched { markdown, entries } => {
              app.changelog_markdown = markdown;
              app.changelog_bullets =
-@@ -1172,6 +1274,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1172,6 +1289,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              } = &app.auth_state
                  && *current_seq == request_seq
              {
@@ -2006,7 +2021,7 @@ index b00317f2..83c2e937 100644
                  app.auth_state = AuthState::Pending { error: Some(error) };
                  app.auth_code_input.reset();
              }
-@@ -1185,6 +1292,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1185,6 +1307,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
          } => handle_auth_url_ready(app, request_seq, auth_url, external, mode),
          TaskResult::AuthCodeSubmitted { .. } => vec![],
          TaskResult::AuthCancelComplete => vec![],
