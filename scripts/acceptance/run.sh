@@ -41,7 +41,10 @@ STEPS="$HERE/tasks/$TASK.steps"
 [ -f "$STEPS" ] || { echo "no steps file for $TASK" >&2; exit 2; }
 [ -x "$BIN" ] || { echo "no workshop binary at $BIN" >&2; exit 2; }
 RUN_ID="$(basename "$OUT")"
-SESSION="acc-$RUN_ID"
+# Unique per output folder: runs of the same task in parallel result trees (one per model, say) must
+# never share a tmux server or a HOME.
+RUN_KEY="$RUN_ID-$(printf %s "$OUT" | sha1sum | cut -c1-6)"
+SESSION="acc-$RUN_KEY"
 # One tmux server per run: tmux 3.5a has segfaulted with several sessions on one server.
 T=(tmux -L "$SESSION")
 FFMPEG="${ACC_FFMPEG:-/opt/rec/bin/ffmpeg}"
@@ -53,7 +56,7 @@ RUN_USER="$(directive user)"; RUN_USER="${RUN_USER:-${ACC_USER:-sam}}"
 PASSWORD="$(directive password)"
 TURN_TIMEOUT="$(directive timeout)"; TURN_TIMEOUT="${TURN_TIMEOUT:-900}"
 STALL="$(directive stall)"; STALL="${STALL:-120}"
-if [ "$RUN_USER" = "$(id -un)" ]; then UHOME="$OUT/home"; AS=(); else UHOME="/home/acc/$RUN_ID"; AS=(sudo -n -u "$RUN_USER"); fi
+if [ "$RUN_USER" = "$(id -un)" ]; then UHOME="$OUT/home"; AS=(); else UHOME="/home/acc/$RUN_KEY"; AS=(sudo -n -u "$RUN_USER"); fi
 
 sudo rm -rf "$OUT/home"; rm -rf "$OUT"/{live-screen.txt,events.jsonl,driver.log,cast-wall-sync.txt,prompts.log,prompts,snaps,probes,verify.*}
 mkdir -p "$OUT/snaps" "$OUT/probes"
