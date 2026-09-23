@@ -350,12 +350,16 @@ index daaf550f..60bcca32 100644
      {
          let Some(mut target) =
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
-index a80f3faf..43b3a91b 100644
+index a80f3faf..278cc0e0 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
-@@ -421,6 +421,11 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
+@@ -420,7 +420,15 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
+         scrollback,
      );
      app.agents.insert(agent_id, agent);
++    // Workshop: a new session is a new engine conversation (`/new` must not remember the last
++    // one); the composer below then shows no meter until this conversation's first turn.
++    crate::app::workshop_sessions::begin_fresh_conversation(app);
      configure_agent_composer(app, agent_id);
 +    // Workshop: a launch or picker resume of an engine conversation lands in this new agent —
 +    // never in the hidden home husk behind the welcome screen.
@@ -365,7 +369,7 @@ index a80f3faf..43b3a91b 100644
      {
          let agent = app.agents.get_mut(&agent_id).unwrap();
          agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
-@@ -674,7 +679,7 @@ pub(in crate::app::dispatch) fn dispatch_trust_folder(app: &mut AppView) -> Vec<
+@@ -674,7 +682,7 @@ pub(in crate::app::dispatch) fn dispatch_trust_folder(app: &mut AppView) -> Vec<
          TrustGateOutcome::Finish => finish_trust(app),
          TrustGateOutcome::FinishSessionLocal => {
              app.show_toast(
@@ -374,7 +378,7 @@ index a80f3faf..43b3a91b 100644
              );
              finish_trust(app)
          }
-@@ -785,9 +790,15 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
+@@ -785,9 +793,15 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
      let announcements = app.active_announcements.clone();
      let restricted = app.tier_restricted_commands.clone();
      let plugins_visible = !app.appearance.disable_plugins;
@@ -1543,10 +1547,10 @@ index 00000000..3276f098
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs b/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs
 new file mode 100644
-index 00000000..b953733b
+index 00000000..e12673a6
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs
-@@ -0,0 +1,528 @@
+@@ -0,0 +1,539 @@
 +//! Workshop overlay: engine conversations on disk, so they can be resumed.
 +//!
 +//! An Engine (OpenCode) turn never enters the shell's session store — the shell session behind
@@ -1943,6 +1947,17 @@ index 00000000..b953733b
 +    )));
 +    // Land at the end of the conversation, following new output like a fresh session.
 +    agent.scrollback.enable_follow_mode();
++}
++
++/// A new session (`/new`, a new worktree session, the agent behind a loaded conversation) is a new
++/// conversation on the engine too: the next turn opens a fresh OpenCode session instead of
++/// continuing the last one, the context meter starts over, and nothing queued for the old
++/// conversation carries across. The old conversation stays in the record store, so `workshop -c`
++/// and the resume picker still find it. A pending resume is applied after this, on top.
++pub fn begin_fresh_conversation(app: &mut AppView) {
++    app.workshop_engine_session = None;
++    app.workshop_context_used = None;
++    app.workshop_turn_queue.clear();
 +}
 +
 +/// Bind a just-created agent to the engine conversation a launch or the picker asked to resume:

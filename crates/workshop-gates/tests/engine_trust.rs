@@ -35,6 +35,16 @@
 //!   announced action with no tool call ("I'll run the installer:") is continued without a word
 //!   on screen and logged; a finished answer never is, and a model that keeps announcing is
 //!   continued at most twice.
+//! * `engine_starts_at_launch_not_on_enter` — the engine is installed (fresh home, stub installer)
+//!   and started the moment the composer opens, before a key is pressed and with nothing on
+//!   screen; a returning home starts it at launch too; Enter then reuses that server.
+//! * `first_run_starts_in_always_approve_and_a_pick_persists` — with no mode chosen anywhere the
+//!   composer opens in always-approve (`Big Pickle · always-approve`, a command runs unprompted);
+//!   Shift+Tab reaches the asking mode, the pick is written to the config and the next launch
+//!   opens in it.
+//! * `new_starts_a_fresh_engine_conversation` — `/new` opens a fresh OpenCode session for the next
+//!   prompt (new id, nothing of the old conversation resent, no meter carried over); `-c` still
+//!   resumes the most recent conversation.
 //!
 //! Evidence (text + HTML screenshots) lands in `WORKSHOP_PTY_EVIDENCE_DIR/engine-trust/*`.
 
@@ -480,9 +490,10 @@ fn edit_row_expands_to_diff() {
     // Expanded by default (the collapsed-edit-blocks setting is off): the diff is inline, with
     // the engine's removed and added lines.
     // Rendered as `1  hi` (removed) / `1  hello` (added); colours carry the sign, NO_COLOR here.
+    // The block's accent rail (`┃`, flashed for 400 ms after a tool finishes) may still stand.
     let numbered = |want: &str| {
         screen.lines().any(|l| {
-            let words: Vec<&str> = l.split_whitespace().collect();
+            let words: Vec<&str> = l.split_whitespace().filter(|w| *w != "\u{2503}").collect();
             words == ["1", want]
         })
     };
@@ -1233,6 +1244,473 @@ fn engine_answers_as_workshop() {
         "nothing is written into the user's project"
     );
     quit(&mut j);
+}
+
+/// Unix seconds at which each `opencode serve` the fake ran came up (its first log line).
+fn engine_starts(log: &Path) -> Vec<f64> {
+    engine_log(log)
+        .iter()
+        .filter(|v| v.get("started").is_some())
+        .filter_map(|v| v.get("time").and_then(|t| t.as_f64()))
+        .collect()
+}
+
+/// Poll until the fake engine has started `n` times (without touching the keyboard); returns the
+/// `n`th start's unix seconds.
+fn wait_for_engine_start(
+    h: &mut xai_grok_pager_pty_harness::PtyHarness,
+    log: &Path,
+    n: usize,
+    secs: u64,
+) -> f64 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    loop {
+        let starts = engine_starts(log);
+        if let Some(at) = n.checked_sub(1).and_then(|i| starts.get(i)) {
+            return *at;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the engine did not start (start #{n}) within {secs}s of launch; starts so far: {starts:?}\nscreen:\n{}",
+            h.screen_contents()
+        );
+        h.update(Duration::from_millis(200));
+    }
+}
+
+fn unix_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+/// The engine is brought up at launch, silently — never on Enter. A fresh home installs it (the
+/// vendor installer stubbed by a `curl` that "downloads" a script placing the fake engine where
+/// the real one lands) and starts `opencode serve` before a single key is pressed; a returning
+/// home starts it before a single key is pressed and installs nothing; in both cases the first
+/// answer arrives within seconds of Enter, with no bring-up line first.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve, stub installer); run with --include-ignored"]
+fn engine_starts_at_launch_not_on_enter() {
+    let Some(bin) = bin_from_env() else { return };
+    let fakes = tempfile::tempdir().expect("fakes dir");
+    // The fake engine lives *off* PATH so a fresh home has to "install" it.
+    let engine_dir = fakes.path().join("engine");
+    let log = install_fake_engine(&engine_dir);
+    let path_dir = fakes.path().join("bin");
+    std::fs::create_dir_all(&path_dir).unwrap();
+    let curl_log = fakes.path().join("curl-calls.log");
+    let curl = format!(
+        r#"#!/bin/sh
+# The vendor installer, stubbed: record the call, then print the script `bash -s` runs. It puts
+# the fake engine exactly where the real installer would (`$HOME/.opencode/bin/opencode`, HOME
+# being Workshop's tools tree for the installer process).
+python3 -c 'import time; print(time.time())' >> '{curl_log}'
+case "$*" in
+  *opencode.ai/install*) ;;
+  *) echo "stub curl: unexpected $*" >&2; exit 2 ;;
+esac
+cat <<'EOS'
+mkdir -p "$HOME/.opencode/bin" && cp '{engine}' "$HOME/.opencode/bin/opencode" && chmod 755 "$HOME/.opencode/bin/opencode"
+EOS
+"#,
+        curl_log = curl_log.display(),
+        engine = engine_dir.join("opencode").display(),
+    );
+    std::fs::write(path_dir.join("curl"), curl).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            path_dir.join("curl"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    let curl_calls = |log: &Path| -> Vec<f64> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.trim().parse::<f64>().ok())
+            .collect()
+    };
+
+    let home = tempfile::tempdir().expect("home");
+    let cwd = tempfile::tempdir().expect("cwd");
+    std::process::Command::new("git")
+        .args(["init", "-q", "."])
+        .current_dir(cwd.path())
+        .status()
+        .unwrap();
+    let dir = pty_common::evidence_dir("engine-trust/engine-starts-at-launch");
+    let spawn = || {
+        let inherited = std::env::var("PATH").unwrap_or_default();
+        let path_s = format!("{}:{inherited}", path_dir.display());
+        let home_s = home.path().to_string_lossy().to_string();
+        let wh_s = home.path().join(".workshop").to_string_lossy().to_string();
+        let mut env: Vec<(&str, &str)> = vec![
+            ("HOME", home_s.as_str()),
+            ("WORKSHOP_HOME", wh_s.as_str()),
+            ("PATH", path_s.as_str()),
+            ("TERM", "xterm-256color"),
+            ("NO_COLOR", "1"),
+            ("GROK_DISABLE_AUTOUPDATER", "1"),
+        ];
+        env.extend_from_slice(OFFLINE);
+        let mut h = xai_grok_pager_pty_harness::PtyHarness::new_inherited_env(
+            &bin,
+            45,
+            140,
+            &[],
+            &env,
+            Some(cwd.path()),
+        )
+        .expect("spawn workshop in pty");
+        h.set_respond_to_queries(true);
+        h
+    };
+    let no_plumbing = |screen: &str, when: &str| {
+        for text in [
+            "Installing",
+            "Starting the OpenCode engine",
+            "Thinking",
+            "opencode serve",
+            "Waiting for",
+        ] {
+            assert!(
+                !screen.contains(text),
+                "{when}: the engine bring-up must not show on screen ({text:?}):\n{screen}"
+            );
+        }
+    };
+    let installed = home
+        .path()
+        .join(".workshop/tools/opencode/.opencode/bin/opencode");
+
+    // 1. Fresh home: the installer runs and the server starts before anything is typed.
+    let launched = unix_now();
+    let mut h = spawn();
+    wait_for(&mut h, FIRST_RUN_LABEL, 45);
+    let started = wait_for_engine_start(&mut h, &log, 1, 60);
+    assert!(
+        started >= launched,
+        "the start belongs to this launch ({started} < {launched})"
+    );
+    let calls = curl_calls(&curl_log);
+    assert_eq!(
+        calls.len(),
+        1,
+        "the vendor installer ran exactly once, at launch: {calls:?}"
+    );
+    assert!(installed.is_file(), "installed into Workshop's tools tree");
+    h.update(Duration::from_millis(600));
+    let screen = h.screen_contents();
+    no_plumbing(&screen, "fresh launch, engine up, nothing typed");
+    assert!(
+        screen.contains(FIRST_RUN_LABEL) && !screen.contains("connect a model"),
+        "the composer was live throughout:\n{screen}"
+    );
+    snapshot(&h, &dir, "01-fresh-launch-engine-up-silently");
+    // The first message: the answer, within seconds of Enter, from the server that started at
+    // launch (still exactly one start).
+    h.inject_keys(b"ping").unwrap();
+    h.update(Duration::from_millis(300));
+    let enter = std::time::Instant::now();
+    h.inject_keys(b"\r").unwrap();
+    wait_for(&mut h, "Echo: ping", 30);
+    let first_answer = enter.elapsed();
+    h.update(Duration::from_millis(400));
+    snapshot(&h, &dir, "02-fresh-launch-first-answer");
+    assert_eq!(
+        engine_starts(&log).len(),
+        1,
+        "Enter reused the server started at launch, it started none"
+    );
+    assert!(
+        first_answer < Duration::from_secs(10),
+        "the first answer waited on no bring-up: {first_answer:?}"
+    );
+    let (fresh_up, fresh_answer) = (started - launched, first_answer.as_secs_f64());
+    eprintln!(
+        "fresh home: launch\u{2192}engine up {fresh_up:.2}s (install + start), Enter\u{2192}answer {fresh_answer:.2}s"
+    );
+    h.inject_keys(b"\x03").unwrap();
+    h.update(Duration::from_millis(400));
+    h.inject_keys(b"\x03").unwrap();
+    let _ = h.wait_exit_code(Duration::from_secs(10));
+
+    // 2. Returning home: the server starts at launch again, nothing is installed, and the first
+    //    message is answered at once.
+    let launched = unix_now();
+    let mut h = spawn();
+    wait_for(&mut h, FIRST_RUN_LABEL, 45);
+    let started = wait_for_engine_start(&mut h, &log, 2, 60);
+    assert!(
+        started >= launched,
+        "the second start belongs to the second launch"
+    );
+    assert_eq!(
+        curl_calls(&curl_log).len(),
+        1,
+        "a returning launch installs nothing"
+    );
+    h.update(Duration::from_millis(600));
+    no_plumbing(
+        &h.screen_contents(),
+        "returning launch, engine up, nothing typed",
+    );
+    snapshot(&h, &dir, "03-returning-launch-engine-up-silently");
+    h.inject_keys(b"ping").unwrap();
+    h.update(Duration::from_millis(300));
+    let enter = std::time::Instant::now();
+    h.inject_keys(b"\r").unwrap();
+    wait_for(&mut h, "Echo: ping", 30);
+    let first_answer = enter.elapsed();
+    h.update(Duration::from_millis(400));
+    snapshot(&h, &dir, "04-returning-launch-first-answer");
+    assert_eq!(engine_starts(&log).len(), 2, "one server per launch");
+    assert!(
+        first_answer < Duration::from_secs(10),
+        "the first answer waited on no bring-up: {first_answer:?}"
+    );
+    let (again_up, again_answer) = (started - launched, first_answer.as_secs_f64());
+    eprintln!(
+        "returning home: launch\u{2192}engine up {again_up:.2}s, Enter\u{2192}answer {again_answer:.2}s"
+    );
+    std::fs::write(
+        dir.join("timings.txt"),
+        format!(
+            "fresh home: engine up {fresh_up:.2}s after launch (stub install + start); first answer {fresh_answer:.2}s after Enter\nreturning home: engine up {again_up:.2}s after launch; first answer {again_answer:.2}s after Enter\n"
+        ),
+    )
+    .unwrap();
+    h.inject_keys(b"\x03").unwrap();
+    h.update(Duration::from_millis(400));
+    h.inject_keys(b"\x03").unwrap();
+    let _ = h.wait_exit_code(Duration::from_secs(10));
+    eprintln!("evidence: {}", dir.display());
+}
+
+/// Workshop starts in always-approve when nothing chose a mode: a fresh home's composer reads
+/// `Big Pickle · always-approve` and a command runs with no prompt; one Shift+Tab reaches the
+/// asking mode, the pick lands in the home's config, and the next launch opens in it (a command
+/// prompts again). A home whose config already names a mode keeps it.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn first_run_starts_in_always_approve_and_a_pick_persists() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/always-approve-default", &bin, &fx);
+    wait_for(&mut j.h, "Big Pickle \u{b7} always-approve", 10);
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "01-fresh-home-always-approve");
+    std::fs::create_dir_all(j.cwd.path().join("tmp")).unwrap();
+    std::fs::write(j.cwd.path().join("tmp/junk"), "x").unwrap();
+    send_prompt(&mut j, "rm -rf tmp");
+    wait_for_without(&mut j, "Removed tmp.", &["Run this command?"], 60);
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "02-default-runs-without-prompt");
+    assert!(
+        !j.cwd.path().join("tmp").exists(),
+        "always-approve is in force: the command ran"
+    );
+    assert_eq!(
+        permission_replies(&fx.log),
+        vec!["once"],
+        "the engine's ask was answered for the user"
+    );
+
+    // One Shift+Tab: the asking mode, and the pick is written to the home's config.
+    set_mode(&mut j, "normal");
+    let config_path = j.workshop_home().join("config.toml");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline
+        && !std::fs::read_to_string(&config_path)
+            .unwrap_or_default()
+            .contains("permission_mode = \"ask\"")
+    {
+        j.h.update(Duration::from_millis(200));
+    }
+    let config = std::fs::read_to_string(&config_path).unwrap_or_default();
+    assert!(
+        config.contains("permission_mode = \"ask\""),
+        "the mode pick persists as an explicit choice:\n{config}"
+    );
+    snapshot(&j.h, &j.dir, "03-shift-tab-to-asking-mode");
+    quit(&mut j);
+
+    // Next launch on the same home: the asking mode — the same command now prompts.
+    let mut j = pty_common::spawn_in(
+        "engine-trust/always-approve-default",
+        &bin,
+        OFFLINE,
+        Some(&fx.bin),
+        j.home,
+    );
+    pty_common::connect_big_pickle(&mut j);
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains(FIRST_RUN_LABEL) && !screen.contains("always-approve"),
+        "the picked (asking) mode is what the next launch opens in:\n{screen}"
+    );
+    std::fs::create_dir_all(j.cwd.path().join("tmp")).unwrap();
+    std::fs::write(j.cwd.path().join("tmp/junk"), "x").unwrap();
+    send_prompt(&mut j, "rm -rf tmp");
+    wait_for(&mut j.h, "Run this command?", 60);
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "04-relaunch-in-asking-mode-prompts");
+    j.h.inject_keys(b"3").unwrap(); // No
+    wait_for(&mut j.h, "tmp was left alone", 30);
+    assert!(j.cwd.path().join("tmp").exists());
+    assert_eq!(permission_replies(&fx.log), vec!["once", "reject"]);
+    quit(&mut j);
+}
+
+/// Sessions the fake engine was asked to open (`POST /session`), in order.
+fn sessions_created(log: &Path) -> Vec<String> {
+    engine_log(log)
+        .iter()
+        .filter_map(|v| v.get("created").and_then(|s| s.as_str()).map(str::to_owned))
+        .collect()
+}
+
+/// `(session, prompt text)` for every prompt the fake engine received, in order.
+fn prompts_by_session(log: &Path) -> Vec<(String, String)> {
+    engine_log(log)
+        .iter()
+        .filter_map(|v| {
+            Some((
+                v.get("session")?.as_str()?.to_owned(),
+                v.get("text")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+/// `/new` is a new conversation on the engine: the next prompt opens a fresh OpenCode session
+/// (a new id; the old session is never written to again, and nothing of it is sent along), while
+/// `workshop -c` still resumes the most recent conversation.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn new_starts_a_fresh_engine_conversation() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/new-starts-fresh-conversation", &bin, &fx);
+    send_prompt(&mut j, "remember the word pelican");
+    wait_for(&mut j.h, "Echo: remember the word pelican", 60);
+    j.h.update(Duration::from_millis(400));
+    let first = prompts_by_session(&fx.log);
+    assert_eq!(first.len(), 1, "{first:?}");
+    let old = first.first().map(|(s, _)| s.clone()).unwrap_or_default();
+    assert_eq!(sessions_created(&fx.log), vec![old.clone()]);
+    // The record store keys conversations by second; keep the two turns apart.
+    j.h.update(Duration::from_millis(1200));
+
+    // `/new`: an empty conversation — the transcript is gone, the meter is gone.
+    send_prompt(&mut j, "/new");
+    wait_gone(&mut j, "Echo: remember the word pelican", 15);
+    j.h.update(Duration::from_millis(600));
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("8.6K / 200K"),
+        "the context meter starts over with the new conversation:\n{screen}"
+    );
+    snapshot(&j.h, &j.dir, "01-after-new");
+
+    // The next prompt goes to a fresh session: a new id, and the old one receives nothing more.
+    send_prompt(&mut j, "and now?");
+    wait_for(&mut j.h, "Echo: and now?", 60);
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "02-first-turn-of-new-conversation");
+    let created = sessions_created(&fx.log);
+    assert_eq!(
+        created.len(),
+        2,
+        "a second OpenCode session was opened: {created:?}"
+    );
+    let new = created.get(1).cloned().unwrap_or_default();
+    assert_ne!(new, old, "the new conversation has its own session id");
+    assert_eq!(
+        prompts_by_session(&fx.log),
+        vec![
+            (old.clone(), "remember the word pelican".to_owned()),
+            (new.clone(), "and now?".to_owned()),
+        ],
+        "each prompt went to its own session; nothing of the old conversation was resent"
+    );
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("pelican"),
+        "the old conversation is not shown in the new one:\n{screen}"
+    );
+    let after = quit(&mut j);
+    assert!(
+        after.contains(&format!("workshop --resume {new}")),
+        "the quit hint names the new conversation:\n{after}"
+    );
+
+    // `-c` on the same folder resumes the most recent conversation — the new one.
+    let mut h = {
+        let inherited = std::env::var("PATH").unwrap_or_default();
+        let path_s = format!("{}:{inherited}", fx.bin.display());
+        let home_s = j.home.path().to_string_lossy().to_string();
+        let wh_s = j.workshop_home().to_string_lossy().to_string();
+        let mut env: Vec<(&str, &str)> = vec![
+            ("HOME", home_s.as_str()),
+            ("WORKSHOP_HOME", wh_s.as_str()),
+            ("PATH", path_s.as_str()),
+            ("TERM", "xterm-256color"),
+            ("NO_COLOR", "1"),
+            ("GROK_DISABLE_AUTOUPDATER", "1"),
+        ];
+        env.extend_from_slice(OFFLINE);
+        let mut h = xai_grok_pager_pty_harness::PtyHarness::new_inherited_env(
+            &bin,
+            45,
+            140,
+            &["-c"],
+            &env,
+            Some(j.cwd.path()),
+        )
+        .expect("spawn workshop -c in pty");
+        h.set_respond_to_queries(true);
+        h
+    };
+    wait_for(&mut h, "Echo: and now?", 45);
+    wait_for(&mut h, "Resumed", 10);
+    h.update(Duration::from_millis(400));
+    let screen = h.screen_contents();
+    std::fs::write(
+        j.dir.join("03-continue-resumes-new-conversation.txt"),
+        &screen,
+    )
+    .unwrap();
+    std::fs::write(
+        j.dir.join("03-continue-resumes-new-conversation.html"),
+        h.screen_html(),
+    )
+    .unwrap();
+    assert!(
+        !screen.contains("pelican"),
+        "-c resumes the newest conversation, not the one before /new:\n{screen}"
+    );
+    // A turn on the resumed conversation never touches the session from before `/new`. (This
+    // launch's fake server has no memory of the earlier process's sessions, so Workshop opens a
+    // replacement session for it — with the real engine, which persists sessions, it is `new`.)
+    h.inject_keys(b"still here?").unwrap();
+    h.update(Duration::from_millis(300));
+    h.inject_keys(b"\r").unwrap();
+    wait_for(&mut h, "Echo: still here?", 60);
+    let last = prompts_by_session(&fx.log).pop().unwrap_or_default();
+    assert_eq!(last.1, "still here?");
+    assert_ne!(
+        last.0, old,
+        "the resumed turn must not continue the conversation from before /new"
+    );
+    h.inject_keys(b"\x03").unwrap();
+    h.update(Duration::from_millis(400));
+    h.inject_keys(b"\x03").unwrap();
+    let _ = h.wait_exit_code(Duration::from_secs(10));
 }
 
 /// The same promises against the real `opencode` (keyless Big Pickle, network): the proof run

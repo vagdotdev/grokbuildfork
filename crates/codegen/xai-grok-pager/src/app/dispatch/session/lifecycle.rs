@@ -420,6 +420,9 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
         scrollback,
     );
     app.agents.insert(agent_id, agent);
+    // Workshop: a new session is a new engine conversation (`/new` must not remember the last
+    // one); the composer below then shows no meter until this conversation's first turn.
+    crate::app::workshop_sessions::begin_fresh_conversation(app);
     configure_agent_composer(app, agent_id);
     // Workshop: a launch or picker resume of an engine conversation lands in this new agent —
     // never in the hidden home husk behind the welcome screen.
