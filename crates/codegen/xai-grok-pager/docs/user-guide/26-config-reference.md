@@ -599,6 +599,7 @@ User-level configuration lives in `$WORKSHOP_HOME/config.toml` (default `~/.work
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
 | `voice.api_base` | `string` | `yes` | `user` | HTTPS API root for speech-to-text. Unset inherits `[endpoints].xai_api_base_url`. |
+| `voice.auto_download` | `boolean` | `yes` | `user` | Fetch the voice helper and this machine's speech model in the background (after the first reply, or half a minute into a later launch) so `/voice` is ready when first pressed. Default true. `WORKSHOP_VOICE_AUTO=0` also turns it off; a `/voice` press still fetches on request. |
 | `voice.language` | `string` | `yes` | `user` | Preferred STT language catalog code or `auto`. |
 | `voice.sample_rate` | `number` | `yes` | `user` | STT capture rate in Hz. |
 

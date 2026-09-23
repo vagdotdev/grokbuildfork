@@ -1,8 +1,31 @@
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
-index d9583697..94c1260d 100644
+index d9583697..5d6d4c84 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
-@@ -1314,13 +1314,21 @@ impl AgentView {
+@@ -741,7 +741,9 @@ impl AgentView {
+             } else {
+                 None
+             },
+-            placeholder_when_focused: false,
++            // Workshop: the empty composer reads its invitation whenever nothing is running; a
++            // turn in flight leaves it blank until the turn ends.
++            placeholder_when_focused: !self.stoppable_activity_running(),
+             placeholder_override: if let Some(ph) = self
+                 .prompt_input_mode
+                 .placeholder_override(self.multiline_mode)
+@@ -1058,7 +1060,10 @@ impl AgentView {
+         };
+         let turn_status_parked = if dock_covers_cues { false } else { parked };
+         let wake_display_state = self.wake_display_state();
+-        let display_state = wake_display_state.unwrap_or(&self.session.state);
++        // Workshop: an Engine/Adapter turn shows the same turn-status row a shell turn does.
++        let display_state = wake_display_state
++            .or_else(|| self.workshop_display_state())
++            .unwrap_or(&self.session.state);
+         let send_now_gap = self.send_now_awaiting_current() && display_state.is_idle();
+         let status_state = if send_now_gap {
+             crate::app::agent::AgentState::TurnRunning
+@@ -1314,13 +1319,21 @@ impl AgentView {
                  Line::from(Span::styled(label, mode_style)),
              );
          }
@@ -31,7 +54,7 @@ index d9583697..94c1260d 100644
          if let Some(ctx_line) = context_bar::context_bar_line_for_session(
              ctx_used,
              ctx_total,
-@@ -2252,18 +2260,26 @@ impl AgentView {
+@@ -2252,18 +2265,26 @@ impl AgentView {
                  dot,
                  Style::default().fg(dot_color).bg(bg),
              );
@@ -64,7 +87,7 @@ index d9583697..94c1260d 100644
              let stop_fg = if self.hit_voice_stop_button.hovered {
                  theme.accent_error
              } else {
-@@ -2338,9 +2354,13 @@ impl AgentView {
+@@ -2338,9 +2359,13 @@ impl AgentView {
          let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
          let usage_warning = usage_warning_text.as_deref();
          let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
@@ -1142,15 +1165,16 @@ index 96ddc4b0..4deabb04 100644
          (
              TerminalContext {
 diff --git a/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs b/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
-index 5cc76928..a89d37f4 100644
+index 5cc76928..a6c3a8a1 100644
 --- a/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
 +++ b/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
-@@ -5,11 +5,11 @@ use crate::diagnostics::{
+@@ -5,11 +5,12 @@ use crate::diagnostics::{
  };
  use crate::host::{DisplayServer, HostOs};
  
 -const LIVE_TUI_PROBE_CTA: &str = "Some checks only run in Grok. Start Grok and run /doctor.";
-+const LIVE_TUI_PROBE_CTA: &str = "Some checks only run in Workshop. Start Workshop and run /doctor.";
++const LIVE_TUI_PROBE_CTA: &str =
++    "Some checks only run in Workshop. Start Workshop and run /doctor.";
  
  pub(super) fn format(report: &DiagnosticReport) -> String {
      let facts = &report.facts;
@@ -1159,7 +1183,7 @@ index 5cc76928..a89d37f4 100644
  
      fact(&mut out, "terminal", &facts.terminal.to_string());
      match &facts.xtversion {
-@@ -126,8 +126,10 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
+@@ -126,8 +127,10 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
      };
      fact(&mut out, "status", status);
  
@@ -1171,7 +1195,7 @@ index 5cc76928..a89d37f4 100644
          match voice {
              VoiceFacts::Device { name, detail } => {
                  fact(&mut out, "microphone", &format!("{name} ({detail})"));
-@@ -137,6 +139,70 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
+@@ -137,6 +140,79 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
              }
          }
      }
@@ -1192,7 +1216,10 @@ index 5cc76928..a89d37f4 100644
 +                "engine",
 +                &format!(
 +                    "not installed ({})",
-+                    engine.engine_error.as_deref().unwrap_or("voice-engine missing")
++                    engine
++                        .engine_error
++                        .as_deref()
++                        .unwrap_or("voice-engine missing")
 +                ),
 +            ),
 +        }
@@ -1211,26 +1238,32 @@ index 5cc76928..a89d37f4 100644
 +    }
 +
 +    if let Some(engine) = &facts.engine {
-+        out.push_str("\nOpenCode engine\n");
++        out.push_str("\nOpenCode (free models)\n");
 +        fact(&mut out, "connection", &engine.connection);
 +        match (&engine.binary, &engine.version) {
 +            (Some(path), Some(version)) => fact(&mut out, "binary", &format!("{path} ({version})")),
-+            (Some(path), None) => {
-+                fact(&mut out, "binary", &format!("{path} ({})", engine.binary_status))
-+            }
++            (Some(path), None) => fact(
++                &mut out,
++                "binary",
++                &format!("{path} ({})", engine.binary_status),
++            ),
 +            (None, _) => fact(&mut out, "binary", &engine.binary_status),
 +        }
 +        if let Some(flag) = &engine.quarantined {
 +            fact(
 +                &mut out,
 +                "quarantine",
-+                &format!("{flag} — macOS Gatekeeper blocks this binary; Workshop clears it on the next start"),
++                &format!(
++                    "{flag} — macOS Gatekeeper blocks this binary; Workshop clears it on the next start"
++                ),
 +            );
 +        }
 +        match (&engine.last_phase, engine.last_start_unix) {
-+            (Some(phase), Some(at)) => {
-+                fact(&mut out, "last start", &format!("reached `{phase}` ({})", unix_to_utc(at)))
-+            }
++            (Some(phase), Some(at)) => fact(
++                &mut out,
++                "last start",
++                &format!("reached `{phase}` ({})", unix_to_utc(at)),
++            ),
 +            (Some(phase), None) => fact(&mut out, "last start", &format!("reached `{phase}`")),
 +            _ => fact(&mut out, "last start", "never"),
 +        }
@@ -1242,7 +1275,7 @@ index 5cc76928..a89d37f4 100644
  
      if !report.findings.is_empty() {
          out.push_str("\nFindings\n");
-@@ -244,6 +310,13 @@ fn format_newline(newline: &NewlineFact) -> String {
+@@ -244,6 +320,13 @@ fn format_newline(newline: &NewlineFact) -> String {
      format!("Alt+Enter ({detail})")
  }
  
@@ -1685,10 +1718,10 @@ index be26f22a..0e3f9cfe 100644
  # `audio` = "microphone capture is compiled in". It's enabled on every OS for
  # production builds: macOS/Windows link `cpal`; Linux shells out to a system
 diff --git a/crates/codegen/xai-grok-voice/src/config.rs b/crates/codegen/xai-grok-voice/src/config.rs
-index 8a7f7fb4..fd01a500 100644
+index 8a7f7fb4..130d6772 100644
 --- a/crates/codegen/xai-grok-voice/src/config.rs
 +++ b/crates/codegen/xai-grok-voice/src/config.rs
-@@ -5,12 +5,33 @@ use crate::error::VoiceError;
+@@ -5,12 +5,36 @@ use crate::error::VoiceError;
  /// Default STT capture rate (Hz). Shared with the `__mic-capture` helper's argv default so parent and child agree when `--rate` is omitted.
  pub const DEFAULT_SAMPLE_RATE: u32 = 16_000;
  
@@ -1721,11 +1754,14 @@ index 8a7f7fb4..fd01a500 100644
 +    pub model: Option<String>,
 +    /// Workshop overlay: path of the `voice-engine` helper; unset = beside the running binary.
 +    pub engine_path: Option<String>,
++    /// Workshop overlay: fetch the helper and this machine's speech model in the background so
++    /// `/voice` is ready when first pressed (default on; `WORKSHOP_VOICE_AUTO=0` also turns it off).
++    pub auto_download: bool,
 +    /// HTTPS API root (or bare host) for `provider = "xai"`. Empty for a normal launch.
      /// Bases may end in `/v1` or `/xai/v1`; the default STT path de-duplicates a leading `v1/` so both become `…/v1/stt`.
      pub api_base: String,
      pub stt_ws_path: String,
-@@ -30,7 +51,11 @@ pub struct VoiceConfig {
+@@ -30,7 +54,12 @@ pub struct VoiceConfig {
  impl Default for VoiceConfig {
      fn default() -> Self {
          Self {
@@ -1733,12 +1769,13 @@ index 8a7f7fb4..fd01a500 100644
 +            provider: VoiceProvider::Local,
 +            model: None,
 +            engine_path: None,
++            auto_download: true,
 +            // No hosted endpoint by default (gate:no-xai): the xAI provider requires an explicit base.
 +            api_base: String::new(),
              stt_ws_path: "/v1/stt".into(),
              language: "en".into(),
              sample_rate: DEFAULT_SAMPLE_RATE,
-@@ -48,7 +73,8 @@ impl VoiceConfig {
+@@ -48,7 +77,8 @@ impl VoiceConfig {
          ws_url(&self.api_base, &self.stt_ws_path)
      }
  
@@ -1748,7 +1785,7 @@ index 8a7f7fb4..fd01a500 100644
      ///
      /// `resolved_endpoints_base` carries the caller's env/CLI overrides; it ranks below the raw table so config keeps beating env (shell precedence).
      pub fn from_config_table(root: &toml::Table, resolved_endpoints_base: Option<&str>) -> Self {
-@@ -57,22 +83,26 @@ impl VoiceConfig {
+@@ -57,22 +87,26 @@ impl VoiceConfig {
              .and_then(|t| toml::Value::Table(t.clone()).try_into().ok())
              .unwrap_or_default();
  
@@ -1788,7 +1825,7 @@ index 8a7f7fb4..fd01a500 100644
          cfg
      }
  }
-@@ -92,6 +122,13 @@ fn strip_scheme<'a>(s: &'a str, scheme: &str) -> Option<&'a str> {
+@@ -92,6 +126,13 @@ fn strip_scheme<'a>(s: &'a str, scheme: &str) -> Option<&'a str> {
  fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
      let base = api_base.trim().trim_end_matches('/');
      let path = path.trim().trim_start_matches('/');
@@ -1802,7 +1839,7 @@ index 8a7f7fb4..fd01a500 100644
      if strip_scheme(base, "http://").is_some() || strip_scheme(base, "ws://").is_some() {
          return Err(VoiceError::Config(format!(
              "insecure voice api_base {api_base:?}: voice requires a TLS endpoint \
-@@ -114,42 +151,59 @@ fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
+@@ -114,42 +155,59 @@ fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
  mod tests {
      use super::*;
  
@@ -1882,7 +1919,7 @@ index 8a7f7fb4..fd01a500 100644
              "wss://proxy.example.com/xai/v1/stt"
          );
      }
-@@ -162,24 +216,23 @@ mod tests {
+@@ -162,24 +220,23 @@ mod tests {
              "HTTP://localhost:8080",
              "Ws://localhost:8080",
          ] {
@@ -1912,7 +1949,7 @@ index 8a7f7fb4..fd01a500 100644
          assert_eq!(cfg.api_base, "https://proxy.example.com/xai/v1");
          assert_eq!(
              cfg.stt_ws_url().unwrap(),
-@@ -188,12 +241,30 @@ xai_api_base_url = "https://proxy.example.com/xai/v1"
+@@ -188,12 +245,30 @@ xai_api_base_url = "https://proxy.example.com/xai/v1"
      }
  
      #[test]
@@ -1944,7 +1981,7 @@ index 8a7f7fb4..fd01a500 100644
  api_base = "  "
  language = "fr"
  "#,
-@@ -205,31 +276,30 @@ language = "fr"
+@@ -205,31 +280,30 @@ language = "fr"
      }
  
      #[test]
@@ -1986,7 +2023,7 @@ index 8a7f7fb4..fd01a500 100644
      }
  
      /// config.toml beats the env/CLI fallback, matching the shell's endpoints precedence.
-@@ -239,6 +309,8 @@ api_base = "  "
+@@ -239,6 +313,8 @@ api_base = "  "
              r#"
  [endpoints]
  xai_api_base_url = "https://config.example.com"
@@ -1995,7 +2032,7 @@ index 8a7f7fb4..fd01a500 100644
  "#,
          )
          .unwrap();
-@@ -253,19 +325,20 @@ xai_api_base_url = "https://config.example.com"
+@@ -253,19 +329,20 @@ xai_api_base_url = "https://config.example.com"
  [endpoints]
  xai_api_base_url = "https://proxy.example.com/xai/v1"
  [voice]
@@ -2020,12 +2057,13 @@ index 8a7f7fb4..fd01a500 100644
          let table: toml::Table = toml::from_str(
              r#"
  [voice]
-@@ -273,11 +346,18 @@ enabled = false
+@@ -273,12 +350,25 @@ enabled = false
  client_identifier = "spoofed"
  user_agent = "malicious/9.9"
  language = "es"
 +model = "small"
 +engine_path = "/opt/workshop/voice-engine"
++auto_download = false
  "#,
          )
          .unwrap();
@@ -2036,9 +2074,15 @@ index 8a7f7fb4..fd01a500 100644
 +            cfg.engine_path.as_deref(),
 +            Some("/opt/workshop/voice-engine")
 +        );
++        assert!(!cfg.auto_download);
          assert!(cfg.client_identifier.is_empty());
          assert!(cfg.user_agent.is_empty());
++        assert!(
++            VoiceConfig::default().auto_download,
++            "voice gets ready in the background unless turned off"
++        );
      }
+ }
 diff --git a/crates/codegen/xai-grok-voice/src/event.rs b/crates/codegen/xai-grok-voice/src/event.rs
 index 1f795284..68735fa5 100644
 --- a/crates/codegen/xai-grok-voice/src/event.rs

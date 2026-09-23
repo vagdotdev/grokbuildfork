@@ -46,20 +46,28 @@ cd your-project
 workshop
 ```
 
-You land in the composer. The footer names the active connection, **OpenCode · Big Pickle**: the
-OpenCode engine's free default model, no sign-in, no key. Type a sentence and press `Enter`.
+You land in the composer. The footer names the active model, **Big Pickle**: OpenCode's free
+default, no sign-in, no key. Type a sentence and press `Enter`.
 
-The OpenCode engine (the official `opencode` CLI) is installed on your first launch and started in
-the background every time Workshop opens, so it is usually ready by the time you press `Enter`; a
-message sent before it is ready simply waits for it. The install (about a minute on a slow
-connection) reaches only opencode.ai, the vendor's installer; every later message answers within
-seconds.
+OpenCode's official `opencode` CLI is installed on your first launch and started in the background
+every time Workshop opens, so it is usually ready by the time you press `Enter`; a message sent
+before it is ready simply waits for it — the status row reads `First-time setup, 12 MB downloaded…`
+while it does. The install (about a minute on a slow connection) reaches only opencode.ai, the
+vendor's installer; every later message answers within seconds. While a message is being
+worked on, the status row above the composer shows what is happening — `Waiting for response…`,
+`Thinking…`, `Run sudo apt install ghostty` with that command's own seconds — plus the turn's total
+time and `[stop]` (or `Ctrl+C`) to cancel; the turn closes with `Worked for 2m31s`. If the free
+model cannot be reached, Workshop quietly answers through another free model and the footer names
+the model that answered; only if that fails too do you see `Couldn't reach Big Pickle — Enter to
+retry · /model to switch`.
 
 Two commands are all you need to know on day one:
 
-- **`/model`** lists the models you can use right now: the engine's free models, the Kilo free
-  pool, any API-key provider you connected, and local servers (Ollama, LM Studio, llama.cpp / vLLM).
-  Type to filter; `Ctrl+A` shows the non-chat models (classifiers, routers) hidden by default.
+- **`/model`** lists the models you can use right now: OpenCode's free models, then each coding
+  subscription whose CLI is installed (Claude, Codex, Cursor) with its models — or a `Sign in` row
+  when the CLI is not signed in yet — then any API-key provider you connected, and local servers
+  (Ollama, LM Studio, llama.cpp / vLLM). Type to filter; `Ctrl+A` shows the non-chat models
+  (classifiers, routers) hidden by default.
 - **`/auth`** connects more: the Claude / Codex / Cursor subscription CLIs (installed and signed in
   with their own official login), API keys for OpenRouter, Google AI Studio, NVIDIA, OpenAI and
   Anthropic (kept in your OS keyring), and — last, optional and labeled — an xAI account.

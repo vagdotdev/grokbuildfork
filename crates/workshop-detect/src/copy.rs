@@ -3,8 +3,9 @@
 
 use crate::model::Rail;
 
-pub const INSTALL_CLAUDE: &str = "Install Claude Code, then sign in";
-pub const INSTALL_CODEX: &str = "Install Codex, then sign in";
+pub const INSTALL_CLAUDE: &str = "Enter installs Claude Code, then signs you in";
+pub const INSTALL_CODEX: &str = "Enter installs Codex, then signs you in";
+pub const INSTALL_CURSOR: &str = "Enter installs the Cursor Agent CLI, then signs you in";
 pub const SIGN_IN_CLAUDE: &str = "Sign in to see Claude models";
 pub const SIGN_IN_CODEX: &str = "Sign in to see Codex models";
 pub const SIGN_IN_CURSOR: &str = "Sign in to see Cursor models";
@@ -63,12 +64,10 @@ pub fn empty_rail_copy(
             }
         }
         Rail::Cursor => {
+            // With or without the desktop app, the Agent CLI is one official install away.
+            let _ = app_present;
             if !installed {
-                if app_present {
-                    CURSOR_APP_WITHOUT_CLI
-                } else {
-                    CURSOR_DESKTOP_ONLY
-                }
+                INSTALL_CURSOR
             } else if !ready {
                 SIGN_IN_CURSOR
             } else {
@@ -117,13 +116,14 @@ mod tests {
             empty_rail_copy(Rail::Cursor, true, false, false),
             SIGN_IN_CURSOR
         );
+        // The Agent CLI is one official install away, desktop app or not.
         assert_eq!(
             empty_rail_copy(Rail::Cursor, false, false, false),
-            CURSOR_DESKTOP_ONLY
+            INSTALL_CURSOR
         );
         assert_eq!(
             empty_rail_copy(Rail::Cursor, false, false, true),
-            CURSOR_APP_WITHOUT_CLI
+            INSTALL_CURSOR
         );
         for rail in Rail::ALL {
             assert_eq!(empty_rail_copy(rail, true, true, true), NO_MODELS);

@@ -5,7 +5,8 @@ use crate::diagnostics::{
 };
 use crate::host::{DisplayServer, HostOs};
 
-const LIVE_TUI_PROBE_CTA: &str = "Some checks only run in Workshop. Start Workshop and run /doctor.";
+const LIVE_TUI_PROBE_CTA: &str =
+    "Some checks only run in Workshop. Start Workshop and run /doctor.";
 
 pub(super) fn format(report: &DiagnosticReport) -> String {
     let facts = &report.facts;
@@ -156,7 +157,10 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
                 "engine",
                 &format!(
                     "not installed ({})",
-                    engine.engine_error.as_deref().unwrap_or("voice-engine missing")
+                    engine
+                        .engine_error
+                        .as_deref()
+                        .unwrap_or("voice-engine missing")
                 ),
             ),
         }
@@ -175,26 +179,32 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
     }
 
     if let Some(engine) = &facts.engine {
-        out.push_str("\nOpenCode engine\n");
+        out.push_str("\nOpenCode (free models)\n");
         fact(&mut out, "connection", &engine.connection);
         match (&engine.binary, &engine.version) {
             (Some(path), Some(version)) => fact(&mut out, "binary", &format!("{path} ({version})")),
-            (Some(path), None) => {
-                fact(&mut out, "binary", &format!("{path} ({})", engine.binary_status))
-            }
+            (Some(path), None) => fact(
+                &mut out,
+                "binary",
+                &format!("{path} ({})", engine.binary_status),
+            ),
             (None, _) => fact(&mut out, "binary", &engine.binary_status),
         }
         if let Some(flag) = &engine.quarantined {
             fact(
                 &mut out,
                 "quarantine",
-                &format!("{flag} — macOS Gatekeeper blocks this binary; Workshop clears it on the next start"),
+                &format!(
+                    "{flag} — macOS Gatekeeper blocks this binary; Workshop clears it on the next start"
+                ),
             );
         }
         match (&engine.last_phase, engine.last_start_unix) {
-            (Some(phase), Some(at)) => {
-                fact(&mut out, "last start", &format!("reached `{phase}` ({})", unix_to_utc(at)))
-            }
+            (Some(phase), Some(at)) => fact(
+                &mut out,
+                "last start",
+                &format!("reached `{phase}` ({})", unix_to_utc(at)),
+            ),
             (Some(phase), None) => fact(&mut out, "last start", &format!("reached `{phase}`")),
             _ => fact(&mut out, "last start", "never"),
         }

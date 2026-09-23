@@ -43,7 +43,7 @@ pub(crate) fn workshop_feedback_notice(
         });
     format!(
         "Thanks — saved to {saved} (nothing is sent anywhere). To reach the maintainer, open this prefilled issue: {}",
-        workshop_brand::feedback_issue_url(text)
+        workshop_brand::feedback_issue_url(text, xai_grok_version::full_version())
     )
 }
 

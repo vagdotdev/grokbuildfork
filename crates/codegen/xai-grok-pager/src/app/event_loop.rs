@@ -1457,6 +1457,14 @@ pub(crate) async fn run(
     }
     app.voice_config.client_identifier = crate::client_identity::HEADLESS_CLIENT_TYPE.to_string();
     app.voice_config.user_agent = crate::client_identity::client_user_agent();
+    // Workshop: on a returning launch voice gets ready in the background half a minute in (a
+    // first run waits for its first reply, see `handle_workshop_turn_msg`).
+    if !needs_interactive_login {
+        post_render_effects.extend(crate::app::workshop::maybe_start_voice_prefetch(
+            &mut app,
+            std::time::Duration::from_secs(30),
+        ));
+    }
     app.zdr_access_enabled = xai_grok_shell::util::config::resolve_zdr_access_enabled(
         requirements.as_ref(),
         user_config.as_ref(),
@@ -2044,6 +2052,22 @@ pub(crate) async fn run(
             &mut status_line_refresh_at,
         ) {
             break;
+        }
+        // Workshop: a default install ships no voice helper or model; they arrive in the
+        // background. A press before both are here says how far along that is (and asks for the
+        // setup if it is not running) instead of starting a pipeline that would fail.
+        if matches!(app.voice_state, VoiceState::ColdStart { .. })
+            && app.voice_cmd_tx.is_none()
+            && app.voice_config.provider == xai_grok_voice::VoiceProvider::Local
+            && let Some((line, setup)) = crate::app::workshop::voice_getting_ready(&mut app)
+        {
+            app.voice_state = VoiceState::Idle;
+            app.voice_ui_active = false;
+            app.show_toast(&line);
+            if process_effects(setup, &mut tasks, &mut app, &progress_tx) {
+                break;
+            }
+            presenter.request_presentation(&mut app, terminal, false);
         }
         if let VoiceState::ColdStart { hold, target } = app.voice_state {
             if app.voice_cmd_tx.is_none() && app.voice_can_start_pipeline() {
@@ -4095,37 +4119,41 @@ fn handle_workshop_turn_msg(
 ) -> (bool, Vec<super::actions::Effect>) {
     use crate::app::workshop::WorkshopTurnMsg as M;
     use crate::scrollback::block::RenderBlock;
+    use crate::scrollback::blocks::SessionEvent;
 
     // The engine warm-up reports before any turn (and any agent) exists.
     if let M::EngineWarm { engine } = msg {
         app.workshop_engine = Some(engine);
         return (false, vec![]);
     }
+    // `sudo` in one of the engine's commands wants the user's password: one masked prompt,
+    // titled with the command that is running (the turn's shell tool) or sudo's own words.
+    if let M::PasswordAsk { prompt, reply } = msg {
+        let command = app
+            .workshop_turn_tool_inputs
+            .values()
+            .filter(|(name, _)| name == "bash")
+            .filter_map(|(_, input)| input.get("command").and_then(|c| c.as_str()))
+            .last()
+            .map(str::to_owned);
+        let title = crate::app::workshop_askpass::title_for(command.as_deref(), &prompt);
+        if let Some(previous) = app.workshop_password_ask.take() {
+            previous.answer(false);
+        }
+        app.workshop_password_ask = Some(crate::app::workshop_askpass::PendingPassword::new(
+            title, reply,
+        ));
+        return (true, vec![]);
+    }
     let Some(agent_id) = app.workshop_turn_agent else {
         return (false, vec![]);
     };
-    // Bring-up status is transient: the first real output, a fallback, or the end of the turn
-    // removes it.
-    let clears_progress = match &msg {
-        // A whitespace-only part is not output yet (see the `Delta` arm).
-        M::Delta(text) => !text.trim().is_empty(),
-        // Hidden thinking (the default) draws nothing, so the waiting line stays up through it.
-        M::Thinking(_) => crate::appearance::cache::load_show_thinking_blocks(),
-        M::Tool { .. }
-        | M::PermissionAsk { .. }
-        | M::QuestionAsk { .. }
-        | M::Error(_)
-        | M::EngineUnavailable { .. }
-        | M::Done { .. } => true,
-        _ => false,
-    };
-    if clears_progress {
-        app.workshop_turn_progress = None;
-        if let Some(id) = app.workshop_turn_progress_entry.take()
-            && let Some(agent) = app.agents.get_mut(&agent_id)
-        {
-            agent.scrollback.remove_entry(id);
-        }
+    // A stall ends the turn on a failure line or the fallback resend, never on `Worked for …`.
+    if matches!(
+        msg,
+        M::Error(_) | M::EngineUnavailable { .. } | M::Stalled { .. }
+    ) {
+        app.workshop_turn_errored = true;
     }
     // Reasoning is its own (collapsed) block: the first answer text, tool call, or the end of
     // the turn closes it, so thinking is never printed as part of the answer.
@@ -4151,13 +4179,56 @@ fn handle_workshop_turn_msg(
         );
         return (true, effects);
     }
+    if let M::Stalled {
+        model,
+        text,
+        engine,
+    } = msg
+    {
+        // A model that stopped mid-answer: an engine turn is resent through the pool fallback
+        // (the same seam a failed bring-up uses); with no pool to fall back to — or on a CLI
+        // rail — the user gets one plain line and Enter retries.
+        let reason = format!("{model} stopped responding");
+        if engine && crate::app::workshop::kilo_fallback_model().is_some() {
+            let effects = dispatch::dispatch(
+                Action::WorkshopEngineUnavailable {
+                    agent_id,
+                    reason,
+                    text,
+                },
+                app,
+            );
+            return (true, effects);
+        }
+        if let Some(agent) = app.agents.get_mut(&agent_id) {
+            agent
+                .scrollback
+                .push_block(RenderBlock::system_error(crate::app::workshop::stall_line(&model)));
+            agent.workshop_retry_prompt = Some(text);
+        }
+        return (true, vec![]);
+    }
     let redraw = match msg {
         M::EngineWarm { .. } => false,
         M::Progress(text) => {
-            // One animated line, repainted in place by `AppView::tick` (spinner, elapsed
-            // seconds, the cancel hint) until the first real output replaces it.
-            app.workshop_turn_progress = Some(text);
-            app.repaint_workshop_progress()
+            // The bring-up's phase for the turn-status row: the plain wait for the model, or the
+            // first-time download as a described step (`First-time setup, 12 MB downloaded…`,
+            // one phase whose byte count refines its description). A tool call underway keeps
+            // its own activity.
+            if app.workshop_turn_running.is_empty() {
+                let activity = if text == crate::app::workshop::THINKING {
+                    crate::acp::tracker::TurnActivity::Waiting(
+                        crate::acp::tracker::WaitingReason::Model,
+                    )
+                } else {
+                    crate::acp::tracker::TurnActivity::ToolRunning {
+                        title: crate::app::workshop::FIRST_TIME_SETUP.to_owned(),
+                        description: Some(text),
+                    }
+                };
+                app.set_workshop_turn_activity(activity);
+            }
+            true
         }
         M::QuestionAsk { request, reply } => {
             // OpenCode's `question` tool opens Grok Build's own question view; the answers (or the
@@ -4217,7 +4288,14 @@ fn handle_workshop_turn_msg(
             false
         }
         M::EngineDefaultResolved { model } => {
-            // OpenCode's live default replaces the pinned seed the first run activated.
+            // OpenCode's live default replaces the pinned seed the first run activated; a picked
+            // effort level stays while the model still offers it.
+            let model = match &app.workshop_connection {
+                crate::app::workshop::WorkshopConnection::Engine { model: current } => {
+                    model.carrying_effort_from(current)
+                }
+                _ => model,
+            };
             let conn = crate::app::workshop::WorkshopConnection::Engine { model };
             crate::app::workshop::save_active_connection(&conn);
             app.workshop_connection = conn;
@@ -4258,6 +4336,7 @@ fn handle_workshop_turn_msg(
                     }
                 }
             }
+            app.set_workshop_turn_activity(crate::acp::tracker::TurnActivity::Responding);
             true
         }
         M::Thinking(text) => {
@@ -4282,6 +4361,7 @@ fn handle_workshop_turn_msg(
                 };
                 agent.scrollback.push_chunk_to_thinking(id, &text);
             }
+            app.set_workshop_turn_activity(crate::acp::tracker::TurnActivity::Thinking);
             true
         }
         M::Tool { id, name, input } => {
@@ -4291,14 +4371,19 @@ fn handle_workshop_turn_msg(
             {
                 agent.scrollback.finish_running(id);
             }
+            // The turn-status row reads `Run <command>` with the call's own timer while it runs,
+            // as it does for a shell turn's tool, so a long command never looks frozen.
+            let activity = crate::app::workshop_tools::turn_activity(&name, &input);
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 let entry = agent
                     .scrollback
                     .push_block(crate::app::workshop_tools::running_row(&name, &input));
                 agent.scrollback.set_entry_running(entry, true);
-                app.workshop_turn_tools.insert(id, entry);
+                app.workshop_turn_tools.insert(id.clone(), entry);
                 app.workshop_turn_tool_inputs.insert(entry, (name, input));
             }
+            app.workshop_turn_running.push((id, activity));
+            app.sync_workshop_tool_activity();
             true
         }
         M::ToolResult {
@@ -4310,6 +4395,9 @@ fn handle_workshop_turn_msg(
         } => {
             // The result lands on the row that announced the call: the row becomes the pager's
             // Edit block with the diff, or Run block with output + exit code, and stops running.
+            // The status row goes back to the wait for the model (or the newest call still running).
+            app.workshop_turn_running.retain(|(call, _)| call != &id);
+            app.sync_workshop_tool_activity();
             let Some(entry) = app.workshop_turn_tools.remove(&id) else {
                 return (false, vec![]);
             };
@@ -4401,9 +4489,9 @@ fn handle_workshop_turn_msg(
             app.workshop_turn_queue.push_back(text);
             false
         }
-        M::Error(message) => {
-            // Red, and actionable: Enter on the empty composer resends the prompt that failed.
-            let line = crate::app::workshop::actionable_error_line(&message);
+        M::Error(line) => {
+            // Red, plain, and actionable: Enter on the empty composer resends the prompt that
+            // failed (the technical cause is in the log, never on screen).
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 agent.scrollback.push_block(RenderBlock::system_error(line));
                 agent.workshop_retry_prompt = app.workshop_last_prompt.clone();
@@ -4461,31 +4549,56 @@ fn handle_workshop_turn_msg(
                 app.workshop_turn_tool_inputs.clear();
                 app.workshop_turn_decided_calls.clear();
                 dispatch::drain_workshop_permission_queue(agent);
+                // The turn ends the way a shell turn does: the pager's own marker (`Worked for
+                // 2m31s`, `Turn cancelled by user in 10s.`); a failed turn already showed its
+                // red failure line.
+                let elapsed = agent.workshop_turn_started_at.map(|t| t.elapsed());
+                agent.workshop_turn_activity = None;
+                agent.workshop_turn_started_at = None;
+                agent.workshop_turn_cancelling = false;
                 if cancelled {
-                    agent
-                        .scrollback
-                        .push_block(RenderBlock::system("Turn cancelled."));
+                    agent.scrollback.push_block(RenderBlock::session_event(
+                        SessionEvent::TurnCancelled {
+                            elapsed,
+                            cause: crate::scrollback::blocks::CancelledBy::User,
+                        },
+                    ));
+                } else if !app.workshop_turn_errored {
+                    agent.scrollback.push_block(RenderBlock::session_event(
+                        SessionEvent::TurnCompleted { elapsed },
+                    ));
                 }
             }
             app.workshop_turn_active = false;
             app.workshop_turn_cancel = None;
             app.workshop_turn_agent = None;
             app.workshop_turn_prompt_entry = None;
-            app.workshop_turn_started = None;
+            app.workshop_turn_running.clear();
             // A model that answered only this turn (it could see its images) hands the composer
             // back to the picked model.
             crate::app::workshop::sync_agent_views(app);
+            // The first reply of a first run is when voice starts getting ready in the background
+            // (no-op once started, off, or already in place).
+            let mut effects = crate::app::workshop::maybe_start_voice_prefetch(
+                app,
+                std::time::Duration::ZERO,
+            );
             // Prompts typed during the turn go out now, one turn each, oldest first. A cancel
             // drops them: the user stopped the conversation, not just this answer.
             if cancelled {
                 app.workshop_turn_queue.clear();
-                return (true, vec![]);
+                return (true, effects);
             }
-            let effects = dispatch::dispatch(Action::WorkshopNextQueuedPrompt { agent_id }, app);
+            effects.extend(dispatch::dispatch(
+                Action::WorkshopNextQueuedPrompt { agent_id },
+                app,
+            ));
             return (true, effects);
         }
         // Handled above (needs the dispatcher).
-        M::EngineUnavailable { .. } => false,
+        M::EngineUnavailable { .. } | M::Stalled { .. } => false,
+        // Handled above (before any agent is needed).
+        M::PasswordAsk { .. } => false,
     };
     (redraw, vec![])
 }

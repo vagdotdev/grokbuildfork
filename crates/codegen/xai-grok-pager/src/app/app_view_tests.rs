@@ -170,6 +170,7 @@ pub(crate) fn test_app() -> AppView {
         deferred_startup: Default::default(),
         auth_use_oauth: false,
         connection_picker: None,
+        workshop_password_ask: None,
         workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
         workshop_engine: None,
         workshop_engine_session: None,
@@ -189,12 +190,12 @@ pub(crate) fn test_app() -> AppView {
         workshop_turn_record: Vec::new(),
         workshop_turn_prompt_text: None,
         workshop_resend: None,
+        workshop_fallback: None,
+        workshop_first_launch: false,
         workshop_engine_slot: crate::app::workshop::new_engine_slot(),
         workshop_engine_warm_started: false,
-        workshop_turn_progress_entry: None,
-        workshop_turn_progress: None,
-        workshop_turn_started: None,
-        workshop_progress_tick: 0,
+        workshop_turn_running: Vec::new(),
+        workshop_turn_errored: false,
         workshop_last_prompt: None,
         auth_clipboard_delivery: None,
         auth_clipboard_feedback_generation: 0,
@@ -309,6 +310,8 @@ pub(crate) fn test_app() -> AppView {
         pending_editor: None,
         pending_pager_path: None,
         pending_workshop_login: None,
+        workshop_rail_install: None,
+        workshop_voice_prefetch: None,
         pending_pager_ansi: false,
         minimal_state: crate::minimal_api::MinimalState::default(),
         reconnect_pending: false,
@@ -2309,9 +2312,15 @@ fn voice_not_in_tier_restricted_commands() {
 fn is_voice_tier_restricted_only_for_the_xai_provider() {
     let mut app = test_app();
     app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
-    assert!(!app.is_voice_tier_restricted(), "local provider: no tier gate");
+    assert!(
+        !app.is_voice_tier_restricted(),
+        "local provider: no tier gate"
+    );
     app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
-    assert!(app.is_voice_tier_restricted(), "xAI provider on a free tier is gated");
+    assert!(
+        app.is_voice_tier_restricted(),
+        "xAI provider on a free tier is gated"
+    );
     let mut app = test_app();
     app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
     let meta = xai_grok_login::AuthMeta {

@@ -106,6 +106,8 @@ pub enum Pill {
     Detecting,
     Ready,
     SignIn,
+    /// The official CLI is not installed: Enter runs the vendor's installer, then its sign-in.
+    Install,
 }
 
 impl Pill {
@@ -114,6 +116,7 @@ impl Pill {
             Pill::Detecting => "Detecting",
             Pill::Ready => "Ready",
             Pill::SignIn => "Sign in",
+            Pill::Install => "Install",
         }
     }
 }
@@ -212,7 +215,8 @@ pub fn composer_label(rail: Rail, model: &ModelRef) -> String {
 ///
 /// Rules, matching the export:
 /// * pill is Ready only when a verified binary is installed **and** the official status command
-///   reports signed in; anything else (not installed, signed out, unknown) is Sign in;
+///   reports signed in; installed but signed out (or unknown) is Sign in; not installed is
+///   Install (Enter runs the vendor's official installer, then its sign-in);
 /// * models are shown only on a Ready rail, and only as its CLI listed them: a Ready rail that is
 ///   still loading or failed to load shows that copy, never placeholder rows;
 /// * Connect shows when the rail is not ready, or when its CLI listed no models (except Cursor).
@@ -241,7 +245,13 @@ pub fn rail_state(rail: Rail, probe: &VendorProbe, models: RailModels) -> RailSt
 
     RailState {
         rail,
-        pill: if ready { Pill::Ready } else { Pill::SignIn },
+        pill: if ready {
+            Pill::Ready
+        } else if installed {
+            Pill::SignIn
+        } else {
+            Pill::Install
+        },
         installed,
         models: rows,
         empty_copy,
@@ -280,6 +290,7 @@ mod tests {
         assert_eq!(Pill::Detecting.label(), "Detecting");
         assert_eq!(Pill::Ready.label(), "Ready");
         assert_eq!(Pill::SignIn.label(), "Sign in");
+        assert_eq!(Pill::Install.label(), "Install");
     }
 
     #[test]

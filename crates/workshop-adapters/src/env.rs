@@ -42,6 +42,9 @@ const PASSTHROUGH: &[&str] = &[
     "CODEX_HOME",
     "OPENCODE_CONFIG",
     "OPENCODE_CONFIG_DIR",
+    // The user's own sudo askpass helper (a program path, not a credential): a command that
+    // needs a password reaches it, as it does in Grok Build's shell tool.
+    "SUDO_ASKPASS",
 ];
 
 /// Fixed values that make CLI output machine-friendly.
@@ -142,6 +145,7 @@ mod tests {
                 ("GITHUB_TOKEN", "ghp"),
                 ("RANDOM_THING", "x"),
                 ("CODEX_HOME", "/home/u/.codex"),
+                ("SUDO_ASKPASS", "/usr/bin/ssh-askpass"),
             ]),
             &[],
         )
@@ -149,7 +153,15 @@ mod tests {
         let keys: Vec<&str> = env.keys().map(|k| k.to_str().unwrap()).collect();
         assert_eq!(
             keys,
-            vec!["CI", "CODEX_HOME", "HOME", "NO_COLOR", "PATH", "TERM"]
+            vec![
+                "CI",
+                "CODEX_HOME",
+                "HOME",
+                "NO_COLOR",
+                "PATH",
+                "SUDO_ASKPASS",
+                "TERM"
+            ]
         );
     }
 

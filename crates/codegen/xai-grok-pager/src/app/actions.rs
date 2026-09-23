@@ -1824,6 +1824,21 @@ pub enum Effect {
     },
     /// Workshop: OpenRouter PKCE sign-in (browser + loopback callback), then save the key.
     WorkshopOpenRouterSignIn,
+    /// Workshop: run a vendor CLI's official installer (the user pressed Enter on an `Install`
+    /// rail); its latest output line lands in `progress` for the picker's status line.
+    WorkshopInstallRail {
+        rail: workshop_detect::Rail,
+        progress: std::sync::Arc<std::sync::Mutex<String>>,
+    },
+    /// Workshop: fetch the voice helper and this machine's speech model in the background (after
+    /// `delay`), reporting into `shared` for `/voice`'s `Voice is getting ready — 62%`.
+    WorkshopVoicePrefetch {
+        shared: workshop_voice::prefetch::Shared,
+        delay: std::time::Duration,
+        home: std::path::PathBuf,
+        voice_dir: std::path::PathBuf,
+        tier: Option<String>,
+    },
     /// Submit a manually-pasted auth code (ext request).
     SubmitAuthCode { request_seq: u64, code: String },
     /// Fetch MCP server list from the shell (x.ai/mcp/list).
@@ -2717,6 +2732,14 @@ pub enum TaskResult {
         provider_id: String,
         result: Result<&'static str, String>,
     },
+    /// Workshop: a vendor CLI's official installer finished (`Ok`) or failed with a plain reason
+    /// that names the log.
+    WorkshopRailInstallDone {
+        rail: workshop_detect::Rail,
+        result: Result<(), String>,
+    },
+    /// Workshop: the background voice setup ended (its outcome is in the shared status).
+    WorkshopVoicePrefetchDone,
     /// Workshop: the terminal login command exited; the rails must be re-probed unless the user
     /// cancelled it (Ctrl+C), which leaves them as they were.
     WorkshopLoginTerminalDone {

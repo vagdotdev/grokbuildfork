@@ -97,6 +97,35 @@ pub fn spawn_in(
     extra_path: Option<&Path>,
     home: tempfile::TempDir,
 ) -> Journey {
+    spawn_in_with_args(journey, bin, &[], extra_env, extra_path, home)
+}
+
+/// [`spawn`] with command-line arguments for the binary (`--yolo`).
+pub fn spawn_with_args(
+    journey: &str,
+    bin: &Path,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+    extra_path: Option<&Path>,
+) -> Journey {
+    spawn_in_with_args(
+        journey,
+        bin,
+        args,
+        extra_env,
+        extra_path,
+        tempfile::tempdir().expect("tempdir"),
+    )
+}
+
+pub fn spawn_in_with_args(
+    journey: &str,
+    bin: &Path,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+    extra_path: Option<&Path>,
+    home: tempfile::TempDir,
+) -> Journey {
     let cwd = tempfile::tempdir().expect("tempdir");
     std::process::Command::new("git")
         .args(["init", "-q", "."])
@@ -121,7 +150,7 @@ pub fn spawn_in(
         ("GROK_DISABLE_AUTOUPDATER", "1"),
     ];
     env.extend_from_slice(extra_env);
-    let mut h = PtyHarness::new_inherited_env(bin, 45, 140, &[], &env, Some(cwd.path()))
+    let mut h = PtyHarness::new_inherited_env(bin, 45, 140, args, &env, Some(cwd.path()))
         .expect("spawn workshop in pty");
     h.set_respond_to_queries(true);
     Journey { h, dir, home, cwd }
@@ -155,16 +184,149 @@ pub fn install_fake_opencode_into(bin: &Path, mode: &str) {
     std::fs::write(bin.join("mode"), mode).unwrap();
 }
 
-/// First run (type and go): the composer is up with the OpenCode engine active; no picker.
+/// A fake `opencode` whose `serve` answers: the shared stand-in
+/// `tests/fixtures/fake-opencode-serve-turn.py` serves the adapter crate's captured
+/// `/config/providers` (eight free models, some with effort variants) and replays its captured
+/// turn; every `prompt_async` body is appended to `record` as one JSON line. Returns the
+/// directory to prepend to `PATH`.
+pub fn fake_opencode_answering(record: &Path) -> tempfile::TempDir {
+    let turn = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../workshop-adapters/tests/fixtures/opencode_serve_turn.jsonl");
+    fake_opencode_answering_with(record, &turn, 0.01)
+}
+
+/// [`fake_opencode_answering`] replaying the given turn (JSON lines of `opencode serve` events)
+/// with `pace` seconds between events, so a gate can watch the transcript mid-turn.
+pub fn fake_opencode_answering_with(record: &Path, turn: &Path, pace: f64) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let adapter_fixtures =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../workshop-adapters/tests/fixtures");
+    let script = format!(
+        r#"#!/bin/sh
+case "$1" in
+  --version) echo '1.18.31'; exit 0 ;;
+  --help) printf 'Commands:\n  opencode run [message..]     run opencode with a message\n' >&2; exit 0 ;;
+esac
+if [ "$*" = "auth list" ]; then
+  printf '%s\n' '┌  Credentials ~/.local/share/opencode/auth.json' '│' '└  0 credentials'; exit 0
+fi
+if [ "$1" = "serve" ]; then
+  exec python3 '{serve}' --port "$5" --providers '{providers}' --turn '{turn}' --record '{record}' --pace {pace}
+fi
+echo "fake opencode: unexpected $*" >&2
+exit 2
+"#,
+        serve = fixtures.join("fake-opencode-serve-turn.py").display(),
+        providers = adapter_fixtures
+            .join("opencode_serve_providers.json")
+            .display(),
+        turn = turn.display(),
+        record = record.display(),
+    );
+    let path = dir.path().join("opencode");
+    std::fs::write(&path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    dir
+}
+
+/// First run (type and go): the composer is up with OpenCode's default model, `Big Pickle`, named
+/// in its footer (the model only, no provider); no picker.
 pub fn connect_big_pickle(j: &mut Journey) {
     wait_for(&mut j.h, "\u{276f}", 45);
-    wait_for(&mut j.h, "OpenCode", 30);
+    wait_for(&mut j.h, "Big Pickle", 30);
     j.h.update(Duration::from_millis(1200));
     let screen = j.h.screen_contents();
     assert!(
         !screen.contains("connect a model"),
         "a fresh HOME lands in the composer, not a picker:\n{screen}"
     );
+    assert!(
+        !screen.contains("OpenCode \u{b7} Big Pickle"),
+        "the composer names the model only, not `OpenCode · Big Pickle`:\n{screen}"
+    );
+}
+
+/// Test hook read by the binary: the silent fallback's base URL (see `workshop::KILO_BASE_URL_ENV`).
+pub const KILO_BASE_URL_ENV: &str = "WORKSHOP_KILO_BASE_URL";
+
+/// Words a first-time user must never read on screen: runtime and fallback plumbing.
+pub const PLUMBING_WORDS: [&str; 6] = [
+    "engine",
+    "Kilo",
+    "fallback",
+    "OpenCode unavailable",
+    "Starting the",
+    "Installing the",
+];
+
+/// The pager's own turn-status row while nothing has come back yet: `⠧ Waiting for response… 3s …
+/// 5s [stop]` — the same row a shell turn shows, with no plumbing beside it.
+pub const WAITING_ROW: &str = "Waiting for response";
+
+/// While the turn waits, the turn-status row reads [`WAITING_ROW`] with no plumbing beside it.
+/// Polls until that row shows or `outcome` (the answer, the failure line) has already landed — a
+/// failure faster than a frame may skip the waiting row altogether.
+pub fn expect_thinking_line(j: &mut Journey, outcome: &str, secs: u64) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    loop {
+        let screen = j.h.screen_contents();
+        if screen.contains(WAITING_ROW) {
+            assert_no_plumbing(&j.h, "while waiting for the model");
+            return;
+        }
+        if screen.contains(outcome) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "neither the waiting line nor {outcome:?} after {secs}s:\n{screen}"
+        );
+        j.h.update(Duration::from_millis(50));
+    }
+}
+
+/// Fail when the screen shows any [`PLUMBING_WORDS`] entry.
+pub fn assert_no_plumbing(h: &PtyHarness, step: &str) {
+    let screen = h.screen_contents();
+    for word in PLUMBING_WORDS {
+        assert!(
+            !screen.contains(word),
+            "{step}: {word:?} is plumbing a user must never read:\n{screen}"
+        );
+    }
+}
+
+/// A loopback OpenAI-compatible endpoint that refuses every request (HTTP 400): the silent
+/// fallback's provider for the failure gates. Returns the child (killed on drop) and its base URL
+/// for `WORKSHOP_KILO_BASE_URL`.
+#[allow(clippy::disallowed_methods)] // short-lived loopback fixture, killed by KillOnDrop below
+pub fn refusing_api() -> (KillOnDrop, String) {
+    use std::io::BufRead;
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-refusing-api.py");
+    let mut child = std::process::Command::new("python3")
+        .arg(script)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn fake-refusing-api.py");
+    let mut url = String::new();
+    std::io::BufReader::new(child.stdout.take().expect("stdout"))
+        .read_line(&mut url)
+        .expect("fake api prints its url");
+    (KillOnDrop(child), url.trim().to_owned())
+}
+
+pub struct KillOnDrop(pub std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 /// Type `text` into the composer and press Enter.

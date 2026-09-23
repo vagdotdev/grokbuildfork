@@ -7,6 +7,8 @@
 //! - [`store`]: the shared model directory, verification, and a resumable, retrying download;
 //! - [`tier`]: silent per-machine model selection (Apple Silicon → turbo, else probe and step down);
 //! - [`engine`]: the warm `voice-engine` helper process and its framed protocol;
+//! - [`helper`]: fetching that helper from the release mirror when a default install has none;
+//! - [`prefetch`]: the background setup (helper, then model) and its `Voice is getting ready` status;
 //! - [`session`]: one `/voice` press end to end — resolve, self-heal, start, step down, open;
 //! - [`doctor`]: the `/doctor` Voice facts.
 //!
@@ -16,7 +18,9 @@
 
 pub mod doctor;
 pub mod engine;
+pub mod helper;
 pub mod manifest;
+pub mod prefetch;
 pub mod protocol;
 pub mod session;
 pub mod store;

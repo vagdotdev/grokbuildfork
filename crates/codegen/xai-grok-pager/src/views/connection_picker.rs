@@ -216,9 +216,11 @@ fn row_style(theme: &Theme, selected: bool) -> Style {
 
 fn badge_style(theme: &Theme, row: &ModelsRow) -> Style {
     match &row.kind {
-        RowKind::XaiOptional => Style::default().fg(theme.warning),
+        RowKind::XaiOptional | RowKind::RailSignIn(_) => Style::default().fg(theme.warning),
+        RowKind::RailNote(..) => Style::default().fg(theme.gray_bright),
         RowKind::ConnectProvider { .. } => Style::default().fg(theme.accent_tool),
         RowKind::Engine(_) => Style::default().fg(theme.accent_success),
+        RowKind::RailModel { .. } => Style::default().fg(theme.accent_model),
         RowKind::Catalog { model, locked } => {
             if !*locked && model.is_keyless() {
                 Style::default().fg(theme.accent_success)
@@ -234,6 +236,7 @@ fn pill_style(theme: &Theme, pill: Pill) -> Style {
         Pill::Detecting => Style::default().fg(theme.gray_bright),
         Pill::Ready => Style::default().fg(theme.accent_success),
         Pill::SignIn => Style::default().fg(theme.warning),
+        Pill::Install => Style::default().fg(theme.accent_tool),
     }
 }
 
@@ -367,7 +370,10 @@ fn list_lines<'a>(theme: &Theme, picker: &PickerState) -> Vec<Line<'a>> {
                 )));
             } else if visible.is_empty() {
                 lines.push(Line::from(Span::styled(
-                    format!("  no model matches \u{201c}{}\u{201d}", picker.filter.trim()),
+                    format!(
+                        "  no model matches \u{201c}{}\u{201d}",
+                        picker.filter.trim()
+                    ),
                     Style::default().fg(theme.gray_bright),
                 )));
             }

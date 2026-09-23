@@ -1,11 +1,13 @@
 //! Live end-to-end turns through the real TUI (milestones C/D/E user journeys), opt-in because
 //! they need the network and/or an installed `opencode`:
 //!
-//! * `WORKSHOP_LIVE_KILO=1`   — P2a: cold start → `/model` → Kilo "Free Models Router" (`:free`,
-//!   keyless) → a prompt whose answer needs a file-write tool call → the file exists on disk.
-//! * `WORKSHOP_LIVE_OPENCODE=1` — P2b: cold start lands on "OpenCode · Big Pickle" (type-and-go,
-//!   no picker; the launch installs/starts the OpenCode engine, `opencode serve`, in the
-//!   background) → the first message → a tool call → the file exists on disk.
+//! * `WORKSHOP_LIVE_KILO=1`   — P2a: cold start with an `opencode` that cannot start → the first
+//!   message is answered silently through the live keyless pool (the fallback the user never sees
+//!   named) → a file-write tool call → the file exists on disk; the composer names the answering
+//!   model only.
+//! * `WORKSHOP_LIVE_OPENCODE=1` — P2b: cold start lands on "Big Pickle" (type-and-go, no picker;
+//!   the launch installs/starts `opencode serve` in the background) → the first message → a tool
+//!   call → the file exists on disk.
 //!
 //! Both need `WORKSHOP_BIN` (the built `workshop` binary) and `--include-ignored`. When `strace` is
 //! on `PATH` the TUI runs under `strace -f -e trace=network`, so the evidence directory also holds
@@ -47,24 +49,6 @@ fn wait_for(h: &mut PtyHarness, text: &str, secs: u64) {
             h.screen_contents()
         );
     }
-}
-
-/// Press Down until the `›`-marked (selected) row contains `needle`.
-fn move_selection_to(h: &mut PtyHarness, needle: &str) {
-    for _ in 0..60 {
-        if h.screen_contents()
-            .lines()
-            .any(|l| l.contains('\u{203a}') && l.contains(needle))
-        {
-            return;
-        }
-        h.inject_keys(b"\x1b[B").unwrap();
-        h.update(Duration::from_millis(80));
-    }
-    panic!(
-        "never reached a selected row containing {needle:?}\nscreen:\n{}",
-        h.screen_contents()
-    );
 }
 
 struct Journey {
@@ -149,10 +133,10 @@ fn which(name: &str) -> Option<PathBuf> {
     })
 }
 
-/// The type-and-go first run: the composer is up with the OpenCode default active.
-const FIRST_RUN_LABEL: &str = "OpenCode \u{b7} Big Pickle";
-/// Frame text of the two overlays (the title carries the other view's Tab hint).
-const MODELS_OVERLAY: &str = "Tab: Subscriptions";
+/// The type-and-go first run: the composer is up with the OpenCode default active, named by the
+/// model only.
+const FIRST_RUN_LABEL: &str = "Big Pickle";
+/// Frame text of the Subscriptions overlay (the title carries the Models view's Tab hint).
 const SUBSCRIPTIONS_OVERLAY: &str = "Tab: Models";
 
 /// Type a slash command into the composer and submit it.
@@ -160,33 +144,6 @@ fn slash(h: &mut PtyHarness, cmd: &str) {
     h.inject_keys(cmd.as_bytes()).unwrap();
     h.update(Duration::from_millis(400));
     h.inject_keys(b"\r").unwrap();
-}
-
-/// Wait for the first-run composer, open `/model`, pick `row`, and wait for the overlay to hand
-/// the session back with `ready_text` in the composer.
-fn pick_model_row(j: &mut Journey, row: &str, ready_text: &str) {
-    wait_for(&mut j.h, FIRST_RUN_LABEL, 45);
-    snapshot(&j.h, &j.dir, "00-first-run-composer");
-    slash(&mut j.h, "/model");
-    wait_for(&mut j.h, MODELS_OVERLAY, 15);
-    move_selection_to(&mut j.h, row);
-    snapshot(&j.h, &j.dir, "01-model-overlay-row-selected");
-    j.h.inject_keys(b"\r").unwrap();
-    // The overlay closes once the shell has the model (Direct API: config.toml written + models
-    // reloaded; engine: placeholder session established).
-    if let Err(e) =
-        j.h.wait_for_text_absent(MODELS_OVERLAY, Duration::from_secs(120))
-    {
-        panic!(
-            "overlay never closed after selecting {row:?}: {e}\nscreen:\n{}",
-            j.h.screen_contents()
-        );
-    }
-    if !ready_text.is_empty() {
-        wait_for(&mut j.h, ready_text, 30);
-    }
-    j.h.update(Duration::from_millis(1500));
-    snapshot(&j.h, &j.dir, "02-home-connected");
 }
 
 /// Type a prompt that needs a write tool call and wait for the file to land on disk.
@@ -339,24 +296,54 @@ fn bin_from_env() -> Option<PathBuf> {
     b
 }
 
-/// P2a: Kilo `:free` (Direct API, keyless) → real tool call through Workshop's own agent loop.
+/// P2a: `opencode` cannot start → the live keyless pool answers silently, tool call included.
 #[test]
 #[ignore = "live: needs network + WORKSHOP_BIN; run with WORKSHOP_LIVE_KILO=1 --include-ignored"]
-fn kilo_free_router_turn_with_tool_call() {
+fn opencode_start_failure_falls_back_to_the_live_free_pool_with_tool_call() {
     if std::env::var_os("WORKSHOP_LIVE_KILO").is_none() {
         eprintln!("WORKSHOP_LIVE_KILO not set; skipping");
         return;
     }
     let Some(bin) = bin_from_env() else { return };
-    let mut j = spawn("kilo", &bin, &[], None);
-    pick_model_row(&mut j, "Free Models Router", "Free Models Router");
-    let screen = j.h.screen_contents();
-    assert!(
-        !screen.contains("auth.x.ai") && !screen.contains("grok.com"),
-        "connected home shows an xAI path:\n{screen}"
-    );
+    // An `opencode` that identifies itself and then dies on `serve`: the OpenCode model cannot
+    // start, so the first message goes through the fallback without a word about it.
+    let fakes = tempfile::tempdir().expect("fakes dir");
+    let fake_bin = fakes.path().join("bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let fake = fake_bin.join("opencode");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\ncase \"$1\" in\n  --version) echo 1.18.31; exit 0 ;;\n  --help) echo 'opencode run [message..]  run opencode with a message' >&2; exit 0 ;;\nesac\necho 'dyld: Library not loaded: @rpath/libfake.dylib (fault injected)' >&2\nexit 1\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut j = spawn("kilo", &bin, &[], Some(&fake_bin));
+    wait_for(&mut j.h, FIRST_RUN_LABEL, 45);
+    snapshot(&j.h, &j.dir, "00-first-run-composer");
     let text = run_write_turn(&mut j, 180);
     assert!(text.contains(FILE_CONTENT), "file content: {text:?}");
+    let screen = j.h.screen_contents();
+    for word in [
+        "Kilo",
+        "fallback",
+        "engine",
+        "Couldn't reach",
+        "auth.x.ai",
+        "grok.com",
+    ] {
+        assert!(
+            !screen.contains(word),
+            "{word:?} must never be shown; the answer just arrives:\n{screen}"
+        );
+    }
+    assert!(
+        !screen.contains(FIRST_RUN_LABEL),
+        "the composer now names the model that answered, not the one that could not start:\n{screen}"
+    );
     let strace = assert_no_forbidden_egress(&j.dir);
     if !strace.is_empty() {
         assert!(
@@ -366,8 +353,9 @@ fn kilo_free_router_turn_with_tool_call() {
     }
     finish(
         j,
-        "Kilo Free Models Router (:free) via Workshop's own agent loop. Expected hosts in strace.log: \
-         api.kilo.ai only (plus loopback local-server probes and the OS keyring socket).\n",
+        "OpenCode start forced to fail → silent fallback to the live keyless pool via Workshop's own \
+         agent loop. Expected hosts in strace.log: api.kilo.ai only (plus loopback local-server \
+         probes and the OS keyring socket).\n",
     );
 }
 
@@ -413,8 +401,8 @@ fn opencode_big_pickle_turn_with_tool_call() {
 // Hermetic: fake `claude` / `codex` / `cursor-agent` shell scripts (identity, login status, and a
 // turn that replays the adapter crate's own success fixture) stand in for the real CLIs, so no
 // network and no real account are needed. Proves: rails show Ready when the fake reports logged in;
-// selecting a model routes a turn through the adapter and renders it with the `Claude · {model}`
-// label; cancel works; and a logged-out fake shows Sign in, where Connect launches the vendor's
+// selecting a model routes a turn through the adapter and renders it with the model's name as
+// the composer label (model only, no rail prefix); cancel works; and a logged-out fake shows Sign in, where Connect launches the vendor's
 // documented login command in the terminal.
 
 struct FakeVendor {
@@ -597,7 +585,7 @@ fn open_subscriptions(j: &mut Journey) {
 }
 
 /// P3 (logged in): rails show Ready; selecting a Claude model routes a turn through the adapter and
-/// renders it; the composer is labeled `Claude · …`; Ctrl+C cancels a turn.
+/// renders it; the composer names the model (`Claude Opus`, no rail prefix); Ctrl+C cancels a turn.
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake CLIs, no network); run with --include-ignored"]
 fn rails_ready_adapter_turn_renders_and_cancels() {
@@ -621,8 +609,8 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
     wait_for(&mut j.h, "Opus (1M context)", 10);
     snapshot(&j.h, &j.dir, "02-claude-rail-detail");
     j.h.inject_keys(b"\r").unwrap();
-    // The anonymous session activates (async); the overlay closes and the agent composer is
-    // labeled for the adapter connection (`Claude · …`).
+    // The anonymous session activates (async); the overlay closes and the agent composer names
+    // the selected model only (no `Claude ·` prefix, no runtime).
     if let Err(e) =
         j.h.wait_for_text_absent(SUBSCRIPTIONS_OVERLAY, Duration::from_secs(120))
     {
@@ -631,7 +619,31 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
             j.h.screen_contents()
         );
     }
-    wait_for(&mut j.h, "Claude \u{00b7} Default", 30);
+    // The composer border names the picked model only — the CLI's own label for its default —
+    // never a `Claude ·` prefix or a runtime name.
+    let started = Instant::now();
+    loop {
+        let footer =
+            j.h.screen_contents()
+                .lines()
+                .rev()
+                .find(|l| l.contains('\u{256f}'))
+                .map(str::to_owned)
+                .unwrap_or_default();
+        if footer.contains("Default (recommended)") {
+            assert!(
+                !footer.contains("Claude \u{00b7}"),
+                "the composer label is the model only: {footer}"
+            );
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the composer never named the picked Claude model:\n{}",
+            j.h.screen_contents()
+        );
+        j.h.update(Duration::from_millis(200));
+    }
     snapshot(&j.h, &j.dir, "03-connected-claude");
 
     // A turn routes through the adapter (RunHandle spawns the fake `claude`), which replays the

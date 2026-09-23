@@ -1,7 +1,8 @@
 //! Surface polish gates on the built `workshop` binary (v0.2.2): the welcome card is one product
 //! name and an invitation to type; `/model` is an overlay with type-to-filter whose keys never
-//! leak into the composer; the waiting line animates, counts seconds and names the cancel key;
-//! the terminal title follows the session topic and is restored on exit.
+//! leak into the composer; while a turn waits the pager's own turn-status row (spinner, `Waiting
+//! for response…`, timers, `[stop]`) shows, as for a shell turn; the terminal title follows the
+//! session topic and is restored on exit.
 //!
 //! Opt-in: set `WORKSHOP_BIN` to the built binary and run with `--include-ignored`. Hermetic: the
 //! engine is the fake `opencode` fixture (`silent` serve on loopback), no network.
@@ -88,56 +89,57 @@ fn model_picker_filters_as_you_type_and_swallows_stray_keys() {
 
     send_prompt(&mut j, "/model");
     wait_for(&mut j.h, "Tab: Subscriptions", 15);
-    wait_for(&mut j.h, "Kilo", 15);
+    wait_for(&mut j.h, "OpenCode", 15);
     j.h.update(Duration::from_millis(500));
     let screen = j.h.screen_contents();
     snapshot(&j.h, &j.dir, "02-model-overlay");
     assert!(
-        screen.contains("Recommended") && screen.contains("All models"),
-        "the list is grouped:\n{screen}"
+        screen.contains("OpenCode") && screen.contains("Big Pickle"),
+        "OpenCode's models lead the list under a quiet group label:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Kilo") && !screen.contains("engine"),
+        "Kilo Gateway is never listed and nothing names the engine:\n{screen}"
     );
     assert!(
         screen.contains("type to filter"),
         "the search line invites typing:\n{screen}"
     );
     assert!(
-        screen.contains("Ctrl+A show"),
-        "non-chat models are hidden behind show-all:\n{screen}"
-    );
-    assert!(
         screen.contains('\u{276f}'),
         "the overlay leaves the composer visible behind it:\n{screen}"
     );
 
-    // Bug 7: `qwen` used to close the picker on `q` and leave `wen` in the prompt.
-    j.h.inject_keys(b"qwen").unwrap();
+    // Bug 7: typing used to close the picker on the first letter and leave the rest in the prompt.
+    j.h.inject_keys(b"pickle").unwrap();
     j.h.update(Duration::from_millis(600));
     let screen = j.h.screen_contents();
-    snapshot(&j.h, &j.dir, "03-model-filter-qwen");
+    snapshot(&j.h, &j.dir, "03-model-filter-pickle");
     assert!(
         screen.contains("Tab: Subscriptions"),
         "typing filters instead of closing:\n{screen}"
     );
     assert!(
-        screen.contains("qwen"),
+        screen.contains("pickle"),
         "the filter text is shown:\n{screen}"
     );
-    // Model rows sit inside the box (they end with its border); the composer footer does not.
+    // Model rows sit inside the box (they end with its border) and carry the group's badge; the
+    // detail lines and the composer footer do not.
     let rows: Vec<&str> = screen
         .lines()
-        .filter(|l| {
-            l.trim_end().ends_with('\u{2502}')
-                && (l.contains("Kilo Gateway") || l.contains("OpenCode "))
-        })
+        .filter(|l| l.trim_end().ends_with('\u{2502}') && l.contains("OpenCode free"))
         .collect();
     assert!(
-        !rows.is_empty() && rows.iter().all(|r| r.to_ascii_lowercase().contains("qwen")),
+        !rows.is_empty()
+            && rows
+                .iter()
+                .all(|r| r.to_ascii_lowercase().contains("pickle")),
         "only matching rows remain: {rows:?}"
     );
     assert!(
         !screen
             .lines()
-            .any(|l| l.contains("\u{276f} wen") || l.contains("\u{276f} qwen")),
+            .any(|l| l.contains("\u{276f} ickle") || l.contains("\u{276f} pickle")),
         "nothing leaked into the composer:\n{screen}"
     );
 
@@ -164,18 +166,18 @@ fn model_picker_filters_as_you_type_and_swallows_stray_keys() {
     assert!(
         screen
             .lines()
-            .any(|l| l.trim_start().starts_with("\u{2502} \u{276f}") && !l.contains("wen")),
+            .any(|l| l.trim_start().starts_with("\u{2502} \u{276f}") && !l.contains("ickle")),
         "the composer is empty after the picker closes:\n{screen}"
     );
     assert!(
-        screen.contains("OpenCode \u{b7} Big Pickle"),
-        "the session behind the overlay is still there:\n{screen}"
+        screen.contains("Big Pickle") && !screen.contains("OpenCode \u{b7} Big Pickle"),
+        "the session behind the overlay is still there, labeled with the model only:\n{screen}"
     );
 }
 
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); run with --include-ignored"]
-fn waiting_line_animates_counts_seconds_and_names_the_cancel_key() {
+fn status_row_animates_counts_seconds_and_offers_stop() {
     let Some(bin) = bin_from_env() else { return };
     if std::process::Command::new("python3")
         .arg("--version")
@@ -189,18 +191,21 @@ fn waiting_line_animates_counts_seconds_and_names_the_cancel_key() {
     let mut j = spawn("surface-waiting", &bin, &[], Some(fake.path()));
     connect_big_pickle(&mut j);
     send_prompt(&mut j, "add a test for multiply");
-    wait_for(&mut j.h, "Waiting for Big Pickle", 40);
-    wait_for(&mut j.h, "Ctrl+C to cancel", 5);
-    // The mark in front of the line moves.
-    let waiting_line = |h: &xai_grok_pager_pty_harness::PtyHarness| {
+    // The pager's own turn-status row, exactly as a shell turn shows it: spinner, `Waiting for
+    // response…`, the phase and turn timers, `[stop]` — for every phase behind the first
+    // answer, and never a runtime name.
+    wait_for(&mut j.h, WAITING_ROW, 40);
+    wait_for(&mut j.h, "[stop]", 5);
+    assert_no_plumbing(&j.h, "status row");
+    let status_row = |h: &xai_grok_pager_pty_harness::PtyHarness| {
         h.screen_contents()
             .lines()
-            .find(|l| l.contains("Waiting for Big Pickle") || l.contains("Still connecting"))
+            .find(|l| l.contains(WAITING_ROW))
             .map(|l| l.trim().to_owned())
     };
     let mut marks = std::collections::BTreeSet::new();
     for _ in 0..12 {
-        if let Some(line) = waiting_line(&j.h)
+        if let Some(line) = status_row(&j.h)
             && let Some(mark) = line.chars().next()
         {
             marks.insert(mark);
@@ -208,31 +213,41 @@ fn waiting_line_animates_counts_seconds_and_names_the_cancel_key() {
         j.h.update(Duration::from_millis(150));
     }
     assert!(marks.len() >= 2, "the spinner animates, saw {marks:?}");
-    // Elapsed seconds appear after 3 s.
+    // The timers count: `Waiting for response… 3.4s … 3.4s [stop]`.
     j.h.update(Duration::from_millis(3200));
-    let line = waiting_line(&j.h).expect("waiting line");
+    let line = status_row(&j.h).expect("status row");
     snapshot(&j.h, &j.dir, "05-waiting-elapsed");
+    let seconds: Vec<&str> = line
+        .split_whitespace()
+        .filter(|w| w.ends_with('s') && w.trim_end_matches('s').parse::<f64>().is_ok())
+        .collect();
     assert!(
-        line.contains("s \u{b7} Ctrl+C to cancel") || line.contains("s · Ctrl+C to cancel"),
-        "elapsed seconds precede the cancel hint: {line}"
+        seconds.len() >= 2 && line.ends_with("[stop]"),
+        "the row carries the phase and turn timers and the stop button: {line}"
     );
-    // At 10 s the line says the wait is the connection's.
-    wait_for(&mut j.h, "Still connecting to Big Pickle", 15);
-    snapshot(&j.h, &j.dir, "06-still-connecting");
+    // Ten seconds in it is still the same calm row — no phase names, no runtime words.
+    j.h.update(Duration::from_millis(7000));
+    let line = status_row(&j.h).expect("status row");
+    assert!(
+        line.starts_with(|c: char| !c.is_ascii()) && line.contains(WAITING_ROW),
+        "{line}"
+    );
+    assert_no_plumbing(&j.h, "ten seconds in");
+    snapshot(&j.h, &j.dir, "06-still-waiting");
     // The title follows the topic (the first prompt) while the turn runs.
     let seen = titles(j.h.raw_output());
     assert!(
         seen.iter().any(|t| t.contains("add a test for multiply")),
         "the terminal title names the session topic: {seen:?}"
     );
-    // Ctrl+C twice cancels; the waiting line goes away.
+    // Ctrl+C twice cancels; the pager's own marker closes the turn and the row goes away.
     j.h.inject_keys(b"\x03").unwrap();
     j.h.update(Duration::from_millis(300));
     j.h.inject_keys(b"\x03").unwrap();
-    wait_for(&mut j.h, "Turn cancelled", 10);
+    wait_for(&mut j.h, "Turn cancelled by user in", 10);
     assert!(
-        !j.h.screen_contents().contains("Ctrl+C to cancel"),
-        "the waiting line is removed once the turn ends:\n{}",
+        !j.h.screen_contents().contains("[stop]") && !j.h.screen_contents().contains(WAITING_ROW),
+        "the status row is gone once the turn ends:\n{}",
         j.h.screen_contents()
     );
 

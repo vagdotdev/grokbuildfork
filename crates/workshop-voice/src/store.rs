@@ -162,6 +162,16 @@ impl ModelStore {
     /// Writes `<file>.partial`, resumes it with a `Range` request when the server allows,
     /// verifies size and SHA-256, then renames into place. A verified file is never rewritten.
     pub async fn ensure(&self, progress: &ProgressFn<'_>) -> Result<PathBuf, Error> {
+        self.ensure_from(&self.lock.download_urls(), progress).await
+    }
+
+    /// [`Self::ensure`] downloading from the given sources only (attempts rotate through them):
+    /// the background prefetch passes the release mirror alone, so its egress is one host.
+    pub async fn ensure_from(
+        &self,
+        urls: &[String],
+        progress: &ProgressFn<'_>,
+    ) -> Result<PathBuf, Error> {
         let store = self.clone();
         let status = tokio::task::spawn_blocking(move || store.status_cached())
             .await
@@ -173,11 +183,15 @@ impl ModelStore {
             tracing::warn!(status = %status.describe(), "voice model failed verification; replacing it");
             self.remove_bad_model();
         }
+        if urls.is_empty() {
+            return Err(Error::Download(
+                "no source to download the voice model from".into(),
+            ));
+        }
         tokio::fs::create_dir_all(&self.dir)
             .await
             .map_err(|e| Error::Model(format!("create {}: {e}", self.dir.display())))?;
 
-        let urls = self.lock.download_urls();
         let client = xai_grok_extra_ca::build_reqwest_client(|b| {
             b.connect_timeout(Duration::from_secs(20))
                 .user_agent(concat!("workshop-voice/", env!("CARGO_PKG_VERSION")))

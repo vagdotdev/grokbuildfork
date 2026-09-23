@@ -455,7 +455,7 @@ fn picker_xai_is_optional_last_and_explicit() {
         ModelsRow, PickerInput, PickerOutcome, PickerSnapshot, PickerState, PickerTab, models_rows,
     };
     let mut p = PickerState::new();
-    let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]);
+    let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[], &[]);
     p.apply_snapshot(PickerSnapshot {
         rows,
         rails: Vec::new(),

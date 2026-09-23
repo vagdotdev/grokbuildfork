@@ -225,9 +225,9 @@ fn impostor_agent_is_not_cursor() {
     assert!(probe.cursor.binary.is_none());
     assert_eq!(probe.cursor.login, None);
     let rails = rails(&probe, |_| RailModels::Loading);
-    assert_eq!(rails[2].pill, Pill::SignIn);
+    assert_eq!(rails[2].pill, Pill::Install, "not installed offers Install");
     assert!(!rails[2].installed);
-    assert_eq!(rails[2].empty_copy, Some(copy::CURSOR_DESKTOP_ONLY));
+    assert_eq!(rails[2].empty_copy, Some(copy::INSTALL_CURSOR));
 }
 
 #[test]
@@ -241,7 +241,8 @@ fn cursor_app_without_cli_gets_install_agent_copy() {
     assert!(probe.cursor.app_present);
     assert!(probe.cursor.binary.is_none());
     let rails = rails(&probe, |_| RailModels::Loading);
-    assert_eq!(rails[2].empty_copy, Some(copy::CURSOR_APP_WITHOUT_CLI));
+    assert_eq!(rails[2].empty_copy, Some(copy::INSTALL_CURSOR));
+    assert_eq!(rails[2].pill, Pill::Install);
     assert!(rails[2].show_connect);
 }
 
@@ -255,6 +256,10 @@ fn wrong_claude_binary_means_not_installed() {
     let rails = rails(&probe, |_| RailModels::Loading);
     assert_eq!(rails[0].empty_copy, Some(copy::INSTALL_CLAUDE));
     assert_eq!(rails[1].empty_copy, Some(copy::INSTALL_CODEX));
+    assert_eq!(
+        (rails[0].pill, rails[1].pill),
+        (Pill::Install, Pill::Install)
+    );
     assert!(rails[0].show_connect && rails[1].show_connect);
 }
 

@@ -12,10 +12,10 @@ index a06a65ab..982e38c1 100644
  pub(crate) use routing::task_view_by_session_id;
  use routing::{
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
-index f968c838..693af166 100644
+index f968c838..af1f7d97 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
-@@ -740,6 +740,19 @@ pub struct AgentView {
+@@ -740,6 +740,30 @@ pub struct AgentView {
      pub(crate) session_binding_epoch: u32,
      pub scrollback: ScrollbackState,
      pub prompt: PromptWidget,
@@ -30,6 +30,17 @@ index f968c838..693af166 100644
 +    /// flag so the per-agent input layer treats Ctrl+C as a cancellable activity (there is no ACP
 +    /// turn to detect). Cleared when the turn ends.
 +    pub(crate) workshop_turn_active: bool,
++    /// Workshop: what the running Engine/Adapter turn is doing, for the pager's own turn-status
++    /// row (`Waiting for response…`, `Thinking…`, `Responding…`, `Run <command>` with its phase
++    /// timer): the event loop sets it from the turn's stream, the way the ACP tracker does for a
++    /// shell turn.
++    pub(crate) workshop_turn_activity: Option<crate::acp::tracker::TurnActivity>,
++    /// Workshop: when the running Engine/Adapter turn was sent — the status row's turn timer and
++    /// the `Worked for …` marker at its end.
++    pub(crate) workshop_turn_started_at: Option<Instant>,
++    /// Workshop: Ctrl+C / `[stop]` asked the running Engine/Adapter turn to end; the status row
++    /// reads `Cancelling…` until it does.
++    pub(crate) workshop_turn_cancelling: bool,
 +    /// Workshop: the prompt whose Engine/Adapter turn failed; Enter on an empty composer resends it.
 +    pub(crate) workshop_retry_prompt: Option<String>,
      /// Sticky: once the user types in the prompt, hide the tip for the session.
@@ -56,21 +67,24 @@ index 13962908..3cccf270 100644
                      // Skip while editing a queued row (edit-mode Enter is handled earlier for non-empty; empty must stay a no-op)
                      // That Enter must only insert the newline, not fire a queued follow-up
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
-index ae3b381c..4e7fc471 100644
+index ae3b381c..89810676 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
-@@ -135,6 +135,10 @@ impl AgentView {
+@@ -135,6 +135,13 @@ impl AgentView {
              session_binding_epoch: 0,
              scrollback,
              prompt,
 +            workshop_model_label: None,
 +            workshop_context: None,
 +            workshop_turn_active: false,
++            workshop_turn_activity: None,
++            workshop_turn_started_at: None,
++            workshop_turn_cancelling: false,
 +            workshop_retry_prompt: None,
              tip_typing_dismissed: false,
              todo: TodoPane::new(),
              tasks: TasksPane::new(),
-@@ -874,6 +878,7 @@ impl AgentView {
+@@ -874,6 +881,7 @@ impl AgentView {
          self.session.state.is_turn_running()
              || self.session.state.is_compact_running()
              || (self.wake_turn_active() && !self.wake_turn_cancelling())
@@ -78,6 +92,48 @@ index ae3b381c..4e7fc471 100644
      }
      /// Whether a local or wake cancel is still in flight.
      pub(crate) fn any_cancel_pending(&self) -> bool {
+@@ -907,6 +915,19 @@ impl AgentView {
+             }
+         })
+     }
++    /// Workshop: an Engine/Adapter turn runs outside the ACP session (its state stays idle), so
++    /// the turn-status row is shown from this state instead — running, or cancelling after
++    /// Ctrl+C — exactly as a shell turn would show it.
++    pub(crate) fn workshop_display_state(&self) -> Option<&'static crate::app::agent::AgentState> {
++        if !self.workshop_turn_active || !self.session.state.is_idle() {
++            return None;
++        }
++        Some(if self.workshop_turn_cancelling {
++            &crate::app::agent::AgentState::TurnCancelling
++        } else {
++            &crate::app::agent::AgentState::TurnRunning
++        })
++    }
+     /// Finalize a reconnect-reload window and, iff the running prompt is adoptable, adopt it. Returns whether the window finalized.
+     /// Adoption is gated by [`Self::should_adopt_running_prompt`] and ordered AFTER finalize.
+     /// The finalize side effects (force-idle and window resolve) then run even when adoption is skipped for a non-adoptable running id.
+@@ -1038,6 +1059,10 @@ impl AgentView {
+     }
+     /// Effective turn elapsed time, excluding time spent in question views (accumulated pauses plus the currently open one, on both clocks).
+     pub fn turn_elapsed(&self) -> Option<std::time::Duration> {
++        // Workshop: an Engine/Adapter turn keeps its own clock (no ACP prompt, no pauses).
++        if self.workshop_turn_active {
++            return self.workshop_turn_started_at.map(|t| t.elapsed());
++        }
+         let instant_elapsed = self.turn_started_at?.elapsed();
+         let now_ms = chrono::Utc::now().timestamp_millis();
+         let mut instant_paused = self.turn_paused_duration;
+@@ -1069,6 +1094,10 @@ impl AgentView {
+     ) -> Option<crate::acp::tracker::TurnActivity> {
+         use crate::acp::tracker::{TurnActivity, WaitingReason};
+         use crate::app::agent::AgentState;
++        // Workshop: an Engine/Adapter turn reports its activity through the event loop.
++        if self.workshop_turn_active {
++            return self.workshop_turn_activity.clone();
++        }
+         if let Some(activity) = self.session.turn_activity() {
+             return Some(activity);
+         }
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs
 index b04f0f9c..86049684 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs
@@ -107,7 +163,7 @@ index 59bf6734..4f85ad00 100644
      if agent.permission_queue.is_empty() {
          return;
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-index a4d77733..4fdbe677 100644
+index a4d77733..3a86d3a5 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 @@ -82,6 +82,7 @@ pub(super) fn collect_live_doctor_report_for_terminal(
@@ -118,7 +174,7 @@ index a4d77733..4fdbe677 100644
      Some(report)
  }
  
-@@ -614,6 +615,156 @@ pub(super) fn dispatch_send_prompt_inner(
+@@ -614,6 +615,167 @@ pub(super) fn dispatch_send_prompt_inner(
      dispatch_send_prompt_submission(app, text, None, consume_input, literal, is_follow_up)
  }
  
@@ -202,8 +258,8 @@ index a4d77733..4fdbe677 100644
 +    app.workshop_turn_active = true;
 +    app.workshop_turn_agent = Some(id);
 +    app.workshop_turn_stream_entry = None;
-+    app.workshop_turn_progress = None;
-+    app.workshop_turn_started = Some(std::time::Instant::now());
++    app.workshop_turn_running.clear();
++    app.workshop_turn_errored = false;
 +    app.workshop_last_prompt = Some(text.clone());
 +    app.workshop_turn_thinking_entry = None;
 +    app.workshop_turn_tools.clear();
@@ -219,6 +275,17 @@ index a4d77733..4fdbe677 100644
 +        app.workshop_turn_prompt_entry = Some(entry);
 +        agent.prompt.set_text("");
 +        agent.workshop_turn_active = true;
++        // The pager's own turn-status row runs from here: the wait for the model, its timers,
++        // `[stop]` — the same row a shell turn shows.
++        agent.workshop_turn_activity = Some(crate::acp::tracker::TurnActivity::Waiting(
++            crate::acp::tracker::WaitingReason::Model,
++        ));
++        agent.workshop_turn_started_at = Some(std::time::Instant::now());
++        agent.workshop_turn_cancelling = false;
++        // A fresh phase clock: the row's first frame counts from this send, not from whatever
++        // the previous turn ended on.
++        agent.last_activity = None;
++        agent.activity_started_at = None;
 +        agent.workshop_retry_prompt = None;
 +        // The terminal title follows the session topic: Engine/Adapter turns never reach the
 +        // shell's auto-titling, so the first prompt names the session.
@@ -275,7 +342,7 @@ index a4d77733..4fdbe677 100644
  pub(super) fn dispatch_send_prompt_submission(
      app: &mut AppView,
      text: String,
-@@ -689,6 +840,16 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -689,6 +851,20 @@ pub(super) fn dispatch_send_prompt_submission(
          text
      };
  
@@ -283,7 +350,11 @@ index a4d77733..4fdbe677 100644
 +    // does not use the shell's ACP session — route the turn through workshop-adapters and stream it
 +    // into the scrollback. Pure slash commands already returned above; only real prompt text
 +    // reaches here. Direct/Local (`Shell`) connections fall through to the ACP path unchanged.
-+    if routes_off_acp_path(&app.workshop_connection, literal, &text) {
++    // While the silent fallback carries the session, prompts stay on the shell (ACP) path: the
++    // fallback model is the shell's active model.
++    if routes_off_acp_path(&app.workshop_connection, literal, &text)
++        && app.workshop_fallback.is_none()
++    {
 +        let mut effects = prelude;
 +        effects.extend(dispatch_workshop_turn(app, id, text));
 +        return effects;
@@ -292,7 +363,7 @@ index a4d77733..4fdbe677 100644
      // Capture app-level fields before the mut-borrow on `agent`.
      let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
      let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
-@@ -701,6 +862,7 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -701,6 +877,7 @@ pub(super) fn dispatch_send_prompt_submission(
      let login_method_id_from_app = app.login_method_id.as_ref().map(|id| id.0.to_string());
      let leader_mode = app.leader_mode;
      let screen_mode_is_minimal = app.screen_mode.is_minimal();
@@ -300,7 +371,7 @@ index a4d77733..4fdbe677 100644
      let Some(agent) = app.agents.get_mut(&id) else {
          return prelude;
      };
-@@ -1029,6 +1191,23 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -1029,6 +1206,23 @@ pub(super) fn dispatch_send_prompt_submission(
                  return effects;
              }
              CommandResult::QueueCommand(cmd_text) => {
@@ -324,6 +395,65 @@ index a4d77733..4fdbe677 100644
                  agent.session.enqueue_command(cmd_text);
              }
              CommandResult::InjectSkill {
+@@ -1413,7 +1607,23 @@ pub(super) fn handle_prompt_response(
+     // The leader's `running_prompt_id` broadcast can arrive before this `PromptResponse`
+     // Take any stashed adoption now; it is applied after `finish_turn` clears `current_prompt_id` below
+     let pending_adoption = app.pending_running_adoptions.remove(&agent_id);
++    // Workshop: while the silent fallback carries the session, a failed turn is reported as the
++    // one plain line (the technical cause goes to the log) and ends the fallback, so Enter retries
++    // from the top: the user's own model first, the fallback behind it.
++    let fallback_failure = if result.is_err() && app.workshop_fallback.take().is_some() {
++        Some((
++            crate::app::workshop::failure_line(&app.workshop_model_name()),
++            app.workshop_last_prompt.clone(),
++        ))
++    } else {
++        None
++    };
++    // With the fallback over, the composer names the user's own model again.
++    let restored_label = fallback_failure.as_ref().map(|_| app.workshop_label());
+     if let Some(agent) = app.agents.get_mut(&agent_id) {
++        if let Some(label) = restored_label {
++            agent.workshop_model_label = label;
++        }
+         // Discard PromptResponses that don't belong to the currently active prompt
+         // They belong to a turn the user rewound, or to a queued prompt that never became the running turn
+         // Without the `Err` fallback, a queued prompt's RPC error has no id to gate on and is misattributed to the running turn
+@@ -1642,6 +1852,17 @@ pub(super) fn handle_prompt_response(
+         // Insert the session event message (skip TurnCompleted for bash-mode, which has no agent turn)
+         let event = match (&result, was_cancelling) {
+             (Ok(_), false) if agent.bash_turn => None,
++            (Err(err), _) if fallback_failure.is_some() => {
++                crate::app::workshop::log_failure_cause(err);
++                // The wire error banner the retry handler already pushed for this turn (`Bad
++                // request (400): …`) is the cause, and the cause belongs in the log.
++                super::auth::strip_trailing_auth_error_blocks(agent);
++                if let Some((line, retry)) = fallback_failure.clone() {
++                    agent.scrollback.push_block(RenderBlock::system_error(line));
++                    agent.workshop_retry_prompt = retry;
++                }
++                None
++            }
+             (Err(_), _) if dedicated_ux_shown => None,
+             // `err` is already banner-formatted by `format_acp_error` at the producer, the single formatting owner
+             // Don't re-format here
+@@ -1682,9 +1903,13 @@ pub(super) fn handle_prompt_response(
+                 };
+                 Some((NotificationEventKind::TurnComplete, body))
+             }
+-            (Err(err), _) if !dedicated_ux_shown => {
+-                Some((NotificationEventKind::AgentError, format!("Error: {err}")))
+-            }
++            (Err(err), _) if !dedicated_ux_shown => Some((
++                NotificationEventKind::AgentError,
++                match &fallback_failure {
++                    Some((line, _)) => line.clone(),
++                    None => format!("Error: {err}"),
++                },
++            )),
+             _ => None,
+         };
+ 
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/foreign.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/foreign.rs
 index daaf550f..60bcca32 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/foreign.rs
@@ -350,7 +480,7 @@ index daaf550f..60bcca32 100644
      {
          let Some(mut target) =
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
-index a80f3faf..278cc0e0 100644
+index a80f3faf..6eb31bcc 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
 @@ -420,7 +420,15 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
@@ -384,7 +514,7 @@ index a80f3faf..278cc0e0 100644
      let plugins_visible = !app.appearance.disable_plugins;
 +    // Workshop: a new/revealed agent shows the active connection's composer label (`Big Pickle ·
 +    // OpenCode`, `Claude · {model}`); `None` for Direct/Local (Shell) → the shell model name shows.
-+    let workshop_label = app.workshop_connection.composer_label();
++    let workshop_label = app.workshop_label();
 +    let workshop_context = crate::app::workshop::context_meter(app);
      let Some(agent) = app.agents.get_mut(&agent_id) else {
          return;
@@ -495,10 +625,10 @@ index f2985d30..b9ce17d2 100644
 +    assert!(app.workshop_turn_stream_entry.is_none());
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs
-index 40625217..e04fb559 100644
+index 40625217..6b47c26a 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs
-@@ -55,6 +55,14 @@ pub(super) fn apply_cancel_subagents_preference_global(app: &mut AppView, stop:
+@@ -55,6 +55,21 @@ pub(super) fn apply_cancel_subagents_preference_global(app: &mut AppView, stop:
  }
  
  pub(super) fn dispatch_cancel_turn(app: &mut AppView) -> Vec<Effect> {
@@ -508,11 +638,353 @@ index 40625217..e04fb559 100644
 +        if let Some(cancel) = &app.workshop_turn_cancel {
 +            let _ = cancel.send(true);
 +        }
++        // The turn-status row reads `Cancelling…` until the turn reports its end.
++        if let Some(agent) = app
++            .workshop_turn_agent
++            .and_then(|id| app.agents.get_mut(&id))
++        {
++            agent.workshop_turn_cancelling = true;
++        }
 +        return vec![];
 +    }
      let ActiveView::Agent(id) = app.active_view else {
          return vec![];
      };
+diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_askpass.rs b/crates/codegen/xai-grok-pager/src/app/workshop_askpass.rs
+new file mode 100644
+index 00000000..93eb17fc
+--- /dev/null
++++ b/crates/codegen/xai-grok-pager/src/app/workshop_askpass.rs
+@@ -0,0 +1,329 @@
++//! Workshop: `sudo` passwords for the engine's commands, the way Grok Build handles them.
++//!
++//! Grok Build's own shell tool runs commands with a null stdin and no PTY
++//! (`xai-grok-tools/src/computer/local/terminal.rs`, the `.stdin(xai_tty_utils::null_stdio())`
++//! spawns), so `sudo` there cannot ask on a terminal either; its one accommodation is the user's
++//! `SUDO_ASKPASS`: when that is set, the persistent shell gets `alias sudo='sudo -A'`
++//! (`computer/local/shell_state.rs::sudo_alias_injection`, `static_shell.rs`) and sudo runs that
++//! helper. Grok Build ships no helper and no password prompt of its own; without one, sudo fails
++//! with "a terminal is required to read the password".
++//!
++//! The engine's commands are in the same position (no tty; with `SUDO_ASKPASS` set, sudo runs the
++//! helper on its own — no alias needed). Workshop mirrors upstream: a user's `SUDO_ASKPASS` passes
++//! through untouched. Only when there is none does Workshop stand in as the helper: it points the
++//! engine at a one-line script that runs `workshop askpass <prompt>`; that process connects to a
++//! Unix socket this process listens on, the UI shows one masked prompt in the permission prompt's
++//! style ("Needs your password for: sudo …"), and the answer travels socket → helper stdout →
++//! sudo. Nothing else sees it: not the model, not the transcript, not the logs, not the disk. Esc
++//! skips: the helper exits non-zero with "Skipped — needs your password" on stderr, which is what
++//! sudo's caller — the model — reads.
++
++use std::io::{BufRead, BufReader, Write};
++use std::path::{Path, PathBuf};
++
++use tokio::sync::{mpsc, oneshot};
++
++use super::workshop::WorkshopTurnMsg;
++
++/// What the helper prints on stderr when the user skips (Esc) or Workshop is gone; `sudo` adds
++/// its own "no password was provided" and the command fails plainly.
++pub const SKIPPED: &str = "Skipped \u{2014} needs your password";
++
++/// The engine-side environment: the helper `sudo` runs and the socket it reaches Workshop on.
++pub const HELPER_ENV: &str = "SUDO_ASKPASS";
++pub const SOCKET_ENV: &str = "WORKSHOP_ASKPASS_SOCK";
++
++/// A password `sudo` is waiting for. Lives on `AppView` while the prompt is up; the typed bytes
++/// are wiped when the answer goes out or the prompt is dropped.
++pub struct PendingPassword {
++    /// `sudo …` — the command that needs it, when the running tool call is a shell command;
++    /// else sudo's own prompt text.
++    pub title: String,
++    typed: Vec<u8>,
++    reply: Option<oneshot::Sender<Option<Vec<u8>>>>,
++}
++
++impl PendingPassword {
++    pub fn new(title: String, reply: oneshot::Sender<Option<Vec<u8>>>) -> Self {
++        Self {
++            title,
++            typed: Vec::new(),
++            reply: Some(reply),
++        }
++    }
++
++    /// Characters typed so far (for the masked field's width only).
++    pub fn typed_len(&self) -> usize {
++        String::from_utf8_lossy(&self.typed).chars().count()
++    }
++
++    pub fn push_char(&mut self, c: char) {
++        let mut buf = [0u8; 4];
++        self.typed
++            .extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
++    }
++
++    pub fn push_str(&mut self, s: &str) {
++        self.typed.extend_from_slice(s.as_bytes());
++    }
++
++    pub fn pop_char(&mut self) {
++        let s = String::from_utf8_lossy(&self.typed).into_owned();
++        let mut chars = s.chars();
++        chars.next_back();
++        let kept: String = chars.collect();
++        wipe(&mut self.typed);
++        self.typed = kept.into_bytes();
++    }
++
++    /// Send the password to the helper (`sudo` reads it), or `None` to skip.
++    pub fn answer(mut self, send: bool) {
++        let secret = std::mem::take(&mut self.typed);
++        if let Some(reply) = self.reply.take() {
++            let _ = reply.send(send.then_some(secret));
++        }
++    }
++}
++
++impl Drop for PendingPassword {
++    fn drop(&mut self) {
++        wipe(&mut self.typed);
++    }
++}
++
++fn wipe(bytes: &mut Vec<u8>) {
++    for b in bytes.iter_mut() {
++        *b = 0;
++    }
++    bytes.clear();
++}
++
++/// The listening side, one per process: the socket the helpers connect to and the helper
++/// script `sudo` runs. Both live under `$WORKSHOP_HOME`, never in the user's project.
++pub struct AskpassServer {
++    pub socket: PathBuf,
++    pub helper: PathBuf,
++}
++
++impl AskpassServer {
++    /// Environment for the engine (and so for every command it runs).
++    pub fn env(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
++        vec![
++            (HELPER_ENV.into(), self.helper.clone().into_os_string()),
++            (SOCKET_ENV.into(), self.socket.clone().into_os_string()),
++        ]
++    }
++}
++
++/// Bind the socket, write the helper script, and serve asks on `ui_tx` for the life of the
++/// process. `None` (logged) when the home cannot hold them — `sudo` then fails as it does today.
++pub fn start(ui_tx: mpsc::UnboundedSender<WorkshopTurnMsg>) -> Option<AskpassServer> {
++    let home = super::workshop::workshop_home();
++    let run_dir = home.join("run");
++    let bin_dir = home.join("bin");
++    if let Err(e) =
++        std::fs::create_dir_all(&run_dir).and_then(|_| std::fs::create_dir_all(&bin_dir))
++    {
++        tracing::warn!(error = %e, "askpass: cannot create $WORKSHOP_HOME/run or bin");
++        return None;
++    }
++    private_dir(&run_dir);
++    let socket = run_dir.join(format!("askpass-{}.sock", std::process::id()));
++    let _ = std::fs::remove_file(&socket);
++    let listener = match tokio::net::UnixListener::bind(&socket) {
++        Ok(l) => l,
++        Err(e) => {
++            tracing::warn!(error = %e, path = %socket.display(), "askpass: cannot bind the socket");
++            return None;
++        }
++    };
++    let helper = bin_dir.join("askpass");
++    let exe = match std::env::current_exe() {
++        Ok(p) => p,
++        Err(e) => {
++            tracing::warn!(error = %e, "askpass: current_exe unknown");
++            return None;
++        }
++    };
++    let script = format!(
++        "#!/bin/sh\n# Workshop's sudo askpass helper: asks in the Workshop window, prints the answer for sudo.\nexec '{}' askpass \"$@\"\n",
++        exe.display().to_string().replace('\'', "'\\''")
++    );
++    if let Err(e) = std::fs::write(&helper, script) {
++        tracing::warn!(error = %e, "askpass: cannot write the helper script");
++        return None;
++    }
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::PermissionsExt;
++        let _ = std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755));
++    }
++    tokio::spawn(serve(listener, ui_tx));
++    Some(AskpassServer { socket, helper })
++}
++
++#[cfg(unix)]
++fn private_dir(dir: &Path) {
++    use std::os::unix::fs::PermissionsExt;
++    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
++}
++#[cfg(not(unix))]
++fn private_dir(_dir: &Path) {}
++
++async fn serve(listener: tokio::net::UnixListener, ui_tx: mpsc::UnboundedSender<WorkshopTurnMsg>) {
++    loop {
++        let Ok((stream, _)) = listener.accept().await else {
++            return;
++        };
++        let ui_tx = ui_tx.clone();
++        tokio::spawn(async move {
++            if let Err(e) = handle(stream, ui_tx).await {
++                tracing::debug!(error = %e, "askpass: helper connection ended");
++            }
++        });
++    }
++}
++
++async fn handle(
++    stream: tokio::net::UnixStream,
++    ui_tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
++) -> std::io::Result<()> {
++    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
++    let (reader, mut writer) = stream.into_split();
++    let mut line = String::new();
++    tokio::io::BufReader::new(reader)
++        .take(4096)
++        .read_line(&mut line)
++        .await?;
++    let request: serde_json::Value = serde_json::from_str(line.trim()).unwrap_or_default();
++    let prompt = request
++        .get("prompt")
++        .and_then(|p| p.as_str())
++        .unwrap_or("[sudo] password:")
++        .trim()
++        .to_owned();
++    let (reply_tx, reply_rx) = oneshot::channel();
++    if ui_tx
++        .send(WorkshopTurnMsg::PasswordAsk {
++            prompt,
++            reply: reply_tx,
++        })
++        .is_err()
++    {
++        writer.write_all(b"{\"skipped\":true}\n").await?;
++        return Ok(());
++    }
++    let answer = reply_rx.await.ok().flatten();
++    match answer {
++        Some(mut secret) => {
++            // One JSON line; the helper prints the string and exits. Wiped right after.
++            let json = serde_json::json!({ "password": String::from_utf8_lossy(&secret) });
++            let mut out = json.to_string().into_bytes();
++            out.push(b'\n');
++            let written = writer.write_all(&out).await;
++            wipe(&mut secret);
++            wipe(&mut out);
++            written?;
++        }
++        None => writer.write_all(b"{\"skipped\":true}\n").await?,
++    }
++    writer.shutdown().await
++}
++
++/// `workshop askpass <prompt>` — the process `sudo` runs. Returns the exit code.
++pub fn maybe_run_helper() -> Option<i32> {
++    let argv: Vec<String> = std::env::args().collect();
++    if argv.get(1).map(String::as_str) != Some("askpass") {
++        return None;
++    }
++    let prompt = argv.get(2).cloned().unwrap_or_default();
++    Some(helper_main(&prompt))
++}
++
++fn helper_main(prompt: &str) -> i32 {
++    let Some(socket) = std::env::var_os(SOCKET_ENV) else {
++        eprintln!("{SKIPPED}");
++        return 1;
++    };
++    let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&socket) else {
++        eprintln!("{SKIPPED}");
++        return 1;
++    };
++    let request = serde_json::json!({ "prompt": prompt }).to_string();
++    if stream.write_all(format!("{request}\n").as_bytes()).is_err() {
++        eprintln!("{SKIPPED}");
++        return 1;
++    }
++    let mut line = String::new();
++    if BufReader::new(&mut stream).read_line(&mut line).is_err() {
++        eprintln!("{SKIPPED}");
++        return 1;
++    }
++    let reply: serde_json::Value = serde_json::from_str(line.trim()).unwrap_or_default();
++    match reply.get("password").and_then(|p| p.as_str()) {
++        Some(password) => {
++            let mut stdout = std::io::stdout().lock();
++            let _ = stdout.write_all(password.as_bytes());
++            let _ = stdout.write_all(b"\n");
++            let _ = stdout.flush();
++            0
++        }
++        None => {
++            eprintln!("{SKIPPED}");
++            1
++        }
++    }
++}
++
++/// The prompt's title: the shell command that needs the password when the turn's running tool
++/// is one, else sudo's own prompt text.
++pub fn title_for(command: Option<&str>, sudo_prompt: &str) -> String {
++    match command {
++        Some(cmd) if !cmd.trim().is_empty() => {
++            let one_line = cmd.split_whitespace().collect::<Vec<_>>().join(" ");
++            format!("Needs your password for: {one_line}")
++        }
++        _ => {
++            let prompt = sudo_prompt.trim().trim_end_matches(':').trim();
++            if prompt.is_empty() {
++                "Needs your password for: sudo".to_owned()
++            } else {
++                format!("Needs your password: {prompt}")
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn title_names_the_command_or_sudos_prompt() {
++        assert_eq!(
++            title_for(Some("sudo apt install  htop"), "[sudo] password for me: "),
++            "Needs your password for: sudo apt install htop"
++        );
++        assert_eq!(
++            title_for(None, "[sudo] password for me: "),
++            "Needs your password: [sudo] password for me"
++        );
++        assert_eq!(title_for(None, ""), "Needs your password for: sudo");
++    }
++
++    #[test]
++    fn typed_bytes_are_wiped_on_answer_and_drop() {
++        let (tx, rx) = oneshot::channel();
++        let mut pending = PendingPassword::new("t".into(), tx);
++        pending.push_str("hunter2");
++        pending.pop_char();
++        assert_eq!(pending.typed_len(), 6);
++        pending.answer(true);
++        let secret = rx.blocking_recv().unwrap().unwrap();
++        assert_eq!(secret, b"hunter");
++        let (tx, rx) = oneshot::channel();
++        let pending = PendingPassword::new("t".into(), tx);
++        pending.answer(false);
++        assert_eq!(rx.blocking_recv().unwrap(), None);
++    }
++}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_engine_state.rs b/crates/codegen/xai-grok-pager/src/app/workshop_engine_state.rs
 new file mode 100644
 index 00000000..69653ffb
@@ -2092,10 +2564,10 @@ index 00000000..e12673a6
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs b/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs
 new file mode 100644
-index 00000000..aeee3b77
+index 00000000..c7bbbe0b
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs
-@@ -0,0 +1,360 @@
+@@ -0,0 +1,496 @@
 +//! Workshop overlay: the engine's tool calls as the pager's own tool rows, with the work inside
 +//! them once the result lands — the diff an edit applied, the output and exit code of a command,
 +//! the text a read returned — so a row can be opened (`Enter`, fold keys) like any ACP tool row.
@@ -2123,6 +2595,62 @@ index 00000000..aeee3b77
 +/// The row's one-line summary: the path, command, pattern or URL of the call.
 +pub fn summary(input: &Value) -> String {
 +    crate::app::workshop::summarize_tool_input(input)
++}
++
++/// The turn-status row's activity while the call runs, in the shape the ACP tracker reports for a
++/// shell turn's tool. A command is the title and the model's `description` (when it gave one) is
++/// preferred by the row, as upstream does: `Install Ghostty… 42s`, else `Run sudo apt install …`.
++/// The web tools use the tracker's `Web search:` / `Fetch:` titles. File tools carry a description
++/// in the transcript row's own words (`Writing hello.txt…`, `Reading …`), since `Run <path>` would
++/// read as executing the file.
++pub fn turn_activity(name: &str, input: &Value) -> crate::acp::tracker::TurnActivity {
++    use crate::acp::tracker::clamp_activity_subject;
++    let subject = summary(input);
++    let described = |verb: &str| {
++        if subject.is_empty() {
++            None
++        } else {
++            Some(clamp_activity_subject(&format!("{verb} {subject}")))
++        }
++    };
++    let (title, description) = match name {
++        "bash" | "shell" | "execute" | "run_terminal_command" | "run_terminal_cmd" => (
++            if subject.is_empty() {
++                name.to_owned()
++            } else {
++                subject.clone()
++            },
++            str_of(input, "description")
++                .map(str::trim)
++                .filter(|d| !d.is_empty())
++                .map(clamp_activity_subject),
++        ),
++        "websearch" | "web_search" => (
++            format!(
++                "Web search: {}",
++                str_of(input, "query").unwrap_or(subject.as_str())
++            ),
++            None,
++        ),
++        "webfetch" | "web_fetch" | "fetch" => (
++            format!(
++                "Fetch: {}",
++                str_of(input, "url").unwrap_or(subject.as_str())
++            ),
++            None,
++        ),
++        "write" => (subject.clone(), described("Writing")),
++        "edit" | "patch" | "apply_patch" | "search_replace" | "strreplace" => {
++            (subject.clone(), described("Editing"))
++        }
++        "read" | "read_file" => (subject.clone(), described("Reading")),
++        "list" | "ls" | "list_dir" => (subject.clone(), described("Listing")),
++        "glob" | "grep" | "search" => (subject.clone(), described("Searching")),
++        "todowrite" | "todoread" => (name.to_owned(), Some("Updating the plan".to_owned())),
++        _ if subject.is_empty() => (name.to_owned(), None),
++        _ => (subject.clone(), None),
++    };
++    crate::acp::tracker::TurnActivity::ToolRunning { title, description }
 +}
 +
 +/// The row shown while the call runs: the pager's own verb rows (`◆ Run`, `◆ Edit`,
@@ -2360,6 +2888,86 @@ index 00000000..aeee3b77
 +    }
 +
 +    #[test]
++    fn turn_activity_is_the_trackers_tool_shape() {
++        use crate::acp::tracker::TurnActivity;
++        // A command is the title (the row reads `Run <command>`); a description, when the model
++        // gave one, is what the row prefers (`{description}…`).
++        assert_eq!(
++            turn_activity(
++                "bash",
++                &json!({"command": "sudo apt install ghostty", "description": "Install Ghostty"})
++            ),
++            TurnActivity::ToolRunning {
++                title: "sudo apt install ghostty".into(),
++                description: Some("Install Ghostty".into()),
++            }
++        );
++        assert_eq!(
++            turn_activity("bash", &json!({"command": "ls", "description": "  "})),
++            TurnActivity::ToolRunning {
++                title: "ls".into(),
++                description: None,
++            }
++        );
++        // File tools describe the step in the row's own words (never `Run <path>`); the web tools
++        // use the tracker's `Web search:` / `Fetch:` forms.
++        assert_eq!(
++            turn_activity(
++                "write",
++                &json!({"filePath": "/w/hello.txt", "content": "hi"})
++            ),
++            TurnActivity::ToolRunning {
++                title: "/w/hello.txt".into(),
++                description: Some("Writing /w/hello.txt".into()),
++            }
++        );
++        assert_eq!(
++            turn_activity("read", &json!({"filePath": "/w/a.rs"})),
++            TurnActivity::ToolRunning {
++                title: "/w/a.rs".into(),
++                description: Some("Reading /w/a.rs".into()),
++            }
++        );
++        assert_eq!(
++            turn_activity("grep", &json!({"pattern": "TODO"})),
++            TurnActivity::ToolRunning {
++                title: "TODO".into(),
++                description: Some("Searching TODO".into()),
++            }
++        );
++        assert_eq!(
++            turn_activity("websearch", &json!({"query": "ghostty ubuntu"})),
++            TurnActivity::ToolRunning {
++                title: "Web search: ghostty ubuntu".into(),
++                description: None,
++            }
++        );
++        assert_eq!(
++            turn_activity("webfetch", &json!({"url": "https://example.org"})),
++            TurnActivity::ToolRunning {
++                title: "Fetch: https://example.org".into(),
++                description: None,
++            }
++        );
++        // A tool with nothing to name falls back to its name; a long description is clamped the
++        // way the tracker clamps its own.
++        assert_eq!(
++            turn_activity("task", &json!({})),
++            TurnActivity::ToolRunning {
++                title: "task".into(),
++                description: None,
++            }
++        );
++        let TurnActivity::ToolRunning { description, .. } = turn_activity(
++            "bash",
++            &json!({"command": "true", "description": "x".repeat(80)}),
++        ) else {
++            panic!("tool activity");
++        };
++        assert_eq!(description.map(|d| d.chars().count()), Some(40));
++    }
++
++    #[test]
 +    fn edit_row_carries_the_diff_and_bash_row_the_output_and_exit() {
 +        let edit = finished_row(
 +            "edit",
@@ -2569,3 +3177,122 @@ index b7846cb9..e29aa255 100644
      if let Some(error) = &state.context_error {
          return vec![muted_line(
              theme,
+diff --git a/crates/codegen/xai-grok-pager/src/views/workshop_password.rs b/crates/codegen/xai-grok-pager/src/views/workshop_password.rs
+new file mode 100644
+index 00000000..8ef02b65
+--- /dev/null
++++ b/crates/codegen/xai-grok-pager/src/views/workshop_password.rs
+@@ -0,0 +1,113 @@
++//! Workshop: the one masked prompt for a `sudo` password (see `app::workshop_askpass`), drawn in
++//! the style of the permission prompt (`views::permission_view`): the raised card background, the
++//! accent bar on the left, a bold title, a `❯` input row with the block caret, and the key hints.
++//! The typed characters are never drawn; the input shows one dot per character.
++
++use ratatui::buffer::Buffer;
++use ratatui::layout::Rect;
++use ratatui::style::{Modifier, Style};
++use ratatui::text::{Line, Span};
++
++use crate::app::workshop_askpass::PendingPassword;
++use crate::theme::Theme;
++
++/// One blank row, the title, the input row, the key line, one blank row.
++pub const HEIGHT: u16 = 5;
++
++/// Draw the card across the bottom of `area` (right above the composer).
++pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, ask: &PendingPassword) {
++    if area.width < 24 || area.height < HEIGHT {
++        return;
++    }
++    let card = Rect {
++        x: area.x,
++        y: area.y + area.height - HEIGHT,
++        width: area.width,
++        height: HEIGHT,
++    };
++    buf.set_style(card, Style::default().bg(theme.bg_light));
++    let accent = Style::default().fg(theme.accent_user);
++    for row in card.y..card.y + card.height {
++        if let Some(cell) = buf.cell_mut((card.x, row)) {
++            cell.set_symbol(crate::glyphs::accent_bar());
++            cell.set_style(accent);
++        }
++    }
++    let content_x = card.x + 3;
++    let content_width = card.width.saturating_sub(5);
++
++    let title = fit(&ask.title, content_width as usize);
++    buf.set_line(
++        content_x,
++        card.y + 1,
++        &Line::from(Span::styled(
++            title,
++            Style::default()
++                .fg(theme.text_primary)
++                .add_modifier(Modifier::BOLD),
++        )),
++        content_width,
++    );
++
++    // `❯ ••••••█`: the permission prompt's input row, with dots for the characters.
++    buf.set_span(content_x, card.y + 2, &Span::styled("\u{276f} ", accent), 2);
++    let window = content_width.saturating_sub(3) as usize;
++    let dots = ask.typed_len().min(window);
++    let text_style = Style::default().fg(theme.text_primary);
++    for col in 0..dots {
++        buf.set_span(
++            content_x + 2 + col as u16,
++            card.y + 2,
++            &Span::styled("\u{2022}", text_style),
++            1,
++        );
++    }
++    let caret_style = if theme.is_bandless() {
++        theme.block_cursor_over(theme.bg_light)
++    } else {
++        Style::default().fg(theme.bg_light).bg(theme.accent_user)
++    };
++    if dots < window {
++        buf.set_span(
++            content_x + 2 + dots as u16,
++            card.y + 2,
++            &Span::styled(" ", caret_style),
++            1,
++        );
++    }
++
++    let dim = Style::default()
++        .fg(theme.text_secondary)
++        .add_modifier(Modifier::DIM);
++    let sep = Span::styled("  \u{00b7}  ", dim);
++    let hints = Line::from(vec![
++        Span::styled("Enter", accent),
++        Span::styled(" send to sudo", dim),
++        sep.clone(),
++        Span::styled("Esc", accent),
++        Span::styled(" skip", dim),
++        sep,
++        Span::styled(
++            "only sudo sees it \u{2014} never the model, transcript or logs",
++            dim,
++        ),
++    ]);
++    buf.set_line(content_x, card.y + 3, &hints, content_width);
++}
++
++/// Cut `text` to `width` columns with an ellipsis, keeping the start (the command's verb).
++fn fit(text: &str, width: usize) -> String {
++    use unicode_width::UnicodeWidthChar;
++    let mut out = String::new();
++    let mut used = 0;
++    for c in text.chars() {
++        let w = c.width().unwrap_or(1);
++        if used + w > width.saturating_sub(1) {
++            out.push('\u{2026}');
++            return out;
++        }
++        out.push(c);
++        used += w;
++    }
++    out
++}

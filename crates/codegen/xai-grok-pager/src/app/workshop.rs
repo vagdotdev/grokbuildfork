@@ -54,16 +54,23 @@ pub enum WorkshopConnection {
 }
 
 impl WorkshopConnection {
-    /// Composer label: `OpenCode · {model}` for the engine, `Claude · {model}` for rails.
+    /// Composer label in upstream's format, `<model> (<effort>)`: `Big Pickle`,
+    /// `Ling 3.0 Flash Fin Free (high)`, `Claude Sonnet` — the effort only when the model has
+    /// levels and one is picked, never a provider or runtime name. The mode (`· plan`,
+    /// `· always-approve`) is appended by the composer's own mode flags, as upstream does.
     pub fn composer_label(&self) -> Option<String> {
         match self {
             Self::Shell => None,
-            Self::Engine { model } => Some(format!(
-                "{} · {}",
-                workshop_auth::ENGINE_DISPLAY_NAME,
-                model.name
-            )),
-            Self::Adapter { rail, model } => Some(workshop_detect::composer_label(*rail, model)),
+            Self::Engine { model } => Some(model.display()),
+            Self::Adapter { model, .. } => Some(model.display().to_owned()),
+        }
+    }
+    /// The model name for the failure line (`Couldn't reach {model}`); `Shell` has none.
+    pub fn model_name(&self) -> Option<String> {
+        match self {
+            Self::Shell => None,
+            Self::Engine { model } => Some(model.name.clone()),
+            Self::Adapter { model, .. } => Some(model.display().to_owned()),
         }
     }
     pub fn is_shell(&self) -> bool {
@@ -160,10 +167,11 @@ pub fn context_lines(app: &crate::app::app_view::AppView) -> Option<Vec<String>>
     Some(lines)
 }
 
-/// Stamp every agent with the active connection's composer label and context meter numbers
-/// (after a connection change, a resolved live default, or a new usage report).
+/// Stamp every agent with the active connection's composer label (the answering model's while
+/// the silent fallback carries the session) and context meter numbers (after a connection
+/// change, a resolved live default, or a new usage report).
 pub fn sync_agent_views(app: &mut crate::app::app_view::AppView) {
-    let label = app.workshop_connection.composer_label();
+    let label = app.workshop_label();
     let context = context_meter(app);
     for agent in app.agents.values_mut() {
         agent.workshop_model_label = label.clone();
@@ -223,15 +231,28 @@ pub fn first_run_connection() -> WorkshopConnection {
     }
 }
 
-/// The keyless Direct API row Workshop falls back to when the OpenCode engine cannot start
-/// (offline, installer failed): the Kilo community pool.
+/// Test hook: point the silent fallback at a loopback OpenAI-compatible server instead of the
+/// Kilo Gateway (the PTY gate proves the fallback without network).
+pub const KILO_BASE_URL_ENV: &str = "WORKSHOP_KILO_BASE_URL";
+
+/// The keyless Direct API model Workshop silently falls back to when the OpenCode model cannot
+/// start or answer: the first *concrete* model of the Kilo community pool's default chain (not
+/// the auto-router, so the composer can name the model that actually answered). Never listed on
+/// `/model`; the user only ever sees the model name.
 pub fn kilo_fallback_model() -> Option<workshop_providers::CatalogModel> {
-    Catalog::builtin()
-        .get(&format!(
-            "kilo:{}",
-            workshop_providers::KILO_DEFAULT_CHAIN[0]
-        ))
-        .cloned()
+    let catalog = Catalog::builtin();
+    let mut model = workshop_providers::KILO_DEFAULT_CHAIN
+        .iter()
+        .filter_map(|id| catalog.get(&format!("kilo:{id}")))
+        .find(|m| workshop_auth::is_chat_model_name(&m.model_id) && !m.model_id.contains("auto"))
+        .cloned()?;
+    if let Some(base) = std::env::var(KILO_BASE_URL_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    {
+        model.base_url = base.trim().trim_end_matches('/').to_owned();
+    }
+    Some(model)
 }
 
 /// The credential broker over the OS keyring with the owner-only file fallback under the home.
@@ -314,6 +335,8 @@ pub async fn refresh_engine_catalog(engine: &OpenCodeEngine) -> Result<Vec<Engin
             is_default: m.is_default,
             tool_call: m.tool_call,
             context_limit: m.context_limit,
+            variants: m.variants.clone(),
+            effort: None,
             image_input: m.image_input,
         })
         .collect();
@@ -363,7 +386,14 @@ pub async fn refresh_picker_snapshot(
         RefreshOptions::default()
     };
     let cache_dir = catalog_cache_dir();
-    let hosted = live_catalogs::refresh(&cache_dir, opts);
+    let manifests = listed_refresh_providers(&default_broker());
+    let hosted = async {
+        if manifests.is_empty() {
+            live_catalogs::load_cached(&cache_dir)
+        } else {
+            live_catalogs::refresh_with(&cache_dir, &manifests, opts).await
+        }
+    };
     let engine_result = async {
         match engine {
             Some(engine) => refresh_engine_catalog(&engine).await.err(),
@@ -383,13 +413,29 @@ pub async fn refresh_picker_snapshot(
     snap
 }
 
+/// The hosted providers whose model list is worth fetching: never a hidden one, and an API-key
+/// provider only once its key is configured (an unconnected provider has no row to show).
+fn listed_refresh_providers(
+    broker: &CredentialBroker,
+) -> Vec<workshop_providers::ProviderManifest> {
+    live_catalogs::REFRESH_PROVIDERS
+        .iter()
+        .filter(|id| !workshop_auth::is_hidden_provider(id))
+        .filter(|id| {
+            workshop_providers::manifest(id)
+                .is_some_and(|m| !m.requires_credential() || broker.is_connected(id))
+        })
+        .filter_map(|id| workshop_providers::manifest(id))
+        .collect()
+}
+
 async fn build_picker_snapshot(
     hosted: Option<HostedCatalogs>,
     engine_error: Option<String>,
     rail_models: workshop_detect::Refresh,
 ) -> PickerSnapshot {
     let local = workshop_providers::probe_all_local_servers(Duration::from_millis(600)).await;
-    let rails = tokio::task::spawn_blocking(move || {
+    let rails: Vec<workshop_detect::RailState> = tokio::task::spawn_blocking(move || {
         let cache = workshop_detect::ModelsCache::new(catalog_cache_dir());
         workshop_detect::picker_rails(
             &workshop_detect::DetectConfig::default(),
@@ -423,7 +469,7 @@ async fn build_picker_snapshot(
     let broker = default_broker();
     let secret_backend = broker.secret_backend();
     let engine = cached_engine_models();
-    let rows = models_rows(&catalog, |id| broker.is_connected(id), &engine);
+    let rows = models_rows(&catalog, |id| broker.is_connected(id), &engine, &rails);
     let default_selection = Some(select_default(&local, true));
     let mut catalog_status = vec![engine_catalog_status(&engine, engine_error)];
     catalog_status.extend(hosted_status);
@@ -577,7 +623,8 @@ pub async fn openrouter_sign_in() -> Result<&'static str, String> {
     if webbrowser::open(&url).is_err() {
         tracing::warn!("could not open a browser for OpenRouter sign-in; url: {url}");
     }
-    let client = workshop_providers::oauth::openrouter::exchange_client().map_err(|e| e.to_string())?;
+    let client =
+        workshop_providers::oauth::openrouter::exchange_client().map_err(|e| e.to_string())?;
     let key = signin
         .complete_loopback(&client, Duration::from_secs(300))
         .await
@@ -612,14 +659,22 @@ impl TurnStream {
             Self::Adapter(r) => r.session_id(),
         }
     }
+    /// The engine ended this turn at its idle ceiling (set before its final `Error` arrives).
+    pub fn stalled(&self) -> bool {
+        match self {
+            Self::Engine(t) => t.stalled(),
+            Self::Adapter(_) => false,
+        }
+    }
 }
 
 /// What the UI thread learns as a turn streams. Mapped to scrollback `RenderBlock`s by the event
 /// loop's Workshop `select!` arm (kept UI-agnostic so `workshop-adapters` never depends on the pager).
 #[derive(Debug)]
 pub enum WorkshopTurnMsg {
-    /// One line of bring-up status ("Installing the OpenCode engine…"); replaces the previous
-    /// progress line, and the first real event clears it. Never silent while the user waits.
+    /// The bring-up's phase for the pager's turn-status row: [`THINKING`] for the plain wait for
+    /// the model, or the first-time download progress ([`install_progress_line`]). Never a word
+    /// about what runs underneath.
     Progress(String),
     /// The OpenCode engine started (lazily, on the first turn); cache it and the session so later
     /// turns reuse the same `opencode serve` and conversation. Engine turns only.
@@ -634,7 +689,9 @@ pub enum WorkshopTurnMsg {
     EngineWarm { engine: Arc<OpenCodeEngine> },
     /// The engine's live catalog names a different default than the pinned seed the first run
     /// activated: the connection follows OpenCode's default (composer label, persisted file).
-    EngineDefaultResolved { model: EngineModel },
+    EngineDefaultResolved {
+        model: EngineModel,
+    },
     Delta(String),
     /// A chunk of the model's reasoning: rendered as the pager's collapsed thinking block, never
     /// as part of the answer.
@@ -682,13 +739,31 @@ pub enum WorkshopTurnMsg {
     /// A message the user typed while declining a permission ("No, and tell Workshop what to do
     /// differently"): sent as the next turn once this one ends.
     FollowUp(String),
+    /// The plain failure line (`Couldn't reach <model> — …`); the cause is already in the log.
     Error(String),
-    /// The OpenCode engine could not be started for this turn (offline, installer failed, no
-    /// verified `opencode`). `text` is the prompt that never ran; the UI falls back to the Kilo
-    /// keyless pool and resends it. Followed by `Done`.
+    /// OpenCode's model could not start or answer this turn (offline, installer failed, no
+    /// verified `opencode`, the prompt refused, nothing back before the first-event ceiling).
+    /// `text` is the prompt that never ran; the UI silently resends it through the keyless pool.
+    /// Followed by `Done`.
     EngineUnavailable {
         reason: String,
         text: String,
+    },
+    /// `sudo` in one of the engine's commands needs the user's password: the askpass helper is
+    /// waiting on `reply` (`Some(bytes)` = the password, `None` = skipped). The UI shows one
+    /// masked prompt; the bytes go to the helper only. Any turn, any time.
+    PasswordAsk {
+        prompt: String,
+        reply: tokio::sync::oneshot::Sender<Option<Vec<u8>>>,
+    },
+    /// The model started answering and then went silent for [`STALL_TIMEOUT`] (no output, no
+    /// tool running, no prompt waiting on the user); the engine aborted the turn. `text` is the
+    /// prompt to resend: an engine turn goes through the pool fallback, else the user gets
+    /// [`stall_line`] with Enter to retry. Followed by `Done`.
+    Stalled {
+        model: String,
+        text: String,
+        engine: bool,
     },
     /// The turn ended; `session_id` is persisted per workspace for resume.
     Done {
@@ -699,8 +774,10 @@ pub enum WorkshopTurnMsg {
 
 /// Why a turn could not start.
 enum TurnStartError {
-    /// `opencode` could not be detected, installed, or started.
+    /// `opencode` could not be detected, installed or started, or would not take the prompt: the
+    /// silent fallback answers instead.
     EngineUnavailable(String),
+    /// A vendor CLI turn could not start: the plain failure line.
     Other(String),
 }
 
@@ -714,6 +791,9 @@ pub struct EngineSlotInner {
     /// The warm-up's failure, so a turn typed right after it reports that cause at once instead
     /// of silently repeating a 30 s bring-up that just failed. Cleared by the next attempt.
     recent_failure: std::sync::Mutex<Option<(std::time::Instant, String)>>,
+    /// The `sudo` askpass listener (one per process, started with the first engine); `None`
+    /// until then, or when the home could not hold it.
+    askpass: std::sync::Mutex<Option<Arc<crate::app::workshop_askpass::AskpassServer>>>,
 }
 
 pub type EngineSlot = Arc<EngineSlotInner>;
@@ -723,7 +803,20 @@ pub fn new_engine_slot() -> EngineSlot {
         engine: tokio::sync::Mutex::new(None),
         phase: watch::channel(String::new()).0,
         recent_failure: std::sync::Mutex::new(None),
+        askpass: std::sync::Mutex::new(None),
     })
+}
+
+/// The process's askpass listener, started on first use with the live loop's channel.
+fn askpass_server(
+    slot: &EngineSlot,
+    ui_tx: &mpsc::UnboundedSender<WorkshopTurnMsg>,
+) -> Option<Arc<crate::app::workshop_askpass::AskpassServer>> {
+    let mut guard = slot.askpass.lock().ok()?;
+    if guard.is_none() {
+        *guard = crate::app::workshop_askpass::start(ui_tx.clone()).map(Arc::new);
+    }
+    guard.clone()
 }
 
 /// The pager's permission mode as it applies to one Engine/Adapter turn (Shift+Tab cycle,
@@ -753,41 +846,46 @@ const RECENT_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 /// Hard ceiling on a turn's silence before its first event: past this the engine is up but the
 /// model never answered, and the user gets the cause plus a way out instead of a spinner.
 pub const FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
-/// Hard ceiling on `opencode serve` binding its port and passing its health check.
-pub const ENGINE_START_TIMEOUT: Duration = Duration::from_secs(30);
-/// A model that has not sent anything back after this long is said to still be connecting: the
-/// waiting line changes so the user knows the wait is the network's, not a hang.
-pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// The waiting line shows its elapsed seconds only once the wait is long enough to feel like one.
-pub const ELAPSED_AFTER: Duration = Duration::from_secs(3);
-/// Frames of the animated mark in front of the waiting line.
-pub const WAIT_SPINNER: [char; 10] = [
-    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
-    '\u{2807}', '\u{280F}',
-];
+/// Mid-turn ceiling: once the model has started answering, this long without any output, tool
+/// activity or permission traffic means it stopped (an upstream 504 the engine retries silently,
+/// a dropped stream). The engine aborts the turn and Workshop recovers. `WORKSHOP_STALL_TIMEOUT_SECS`
+/// overrides it (gates run it in seconds).
+pub const STALL_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// The one line a user sees while a turn has produced nothing yet: an animated mark, the phase
-/// ("Installing…", "Waiting for Big Pickle…"), the elapsed seconds after [`ELAPSED_AFTER`], and
-/// how to stop waiting. Repainted every tick by the UI so the mark moves and the seconds count.
-pub fn waiting_line(text: &str, elapsed: Duration, frame: usize) -> String {
-    let mark = WAIT_SPINNER
-        .get(frame % WAIT_SPINNER.len())
-        .copied()
-        .unwrap_or(' ');
-    let mut line = format!("{mark} {text}");
-    if elapsed >= ELAPSED_AFTER {
-        line.push_str(&format!(" \u{b7} {}s", elapsed.as_secs()));
-    }
-    line.push_str(" \u{b7} Ctrl+C to cancel");
-    line
+/// [`STALL_TIMEOUT`], or the `WORKSHOP_STALL_TIMEOUT_SECS` override.
+pub fn stall_timeout() -> Duration {
+    std::env::var("WORKSHOP_STALL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(STALL_TIMEOUT)
 }
 
-/// The install phase with byte progress, once the vendor script has started writing.
+/// The one line shown when a model stopped mid-answer and no fallback could take over.
+pub fn stall_line(model: &str) -> String {
+    format!("{model} stopped responding \u{2014} Enter to retry \u{b7} /model to switch")
+}
+/// Hard ceiling on `opencode serve` binding its port and passing its health check.
+pub const ENGINE_START_TIMEOUT: Duration = Duration::from_secs(30);
+/// The bring-up's "nothing to add" progress: the turn-status row shows the pager's own wait for
+/// the model (`Waiting for response…`) — whatever happens behind it (installing, starting,
+/// connecting). No plumbing words, ever.
+pub const THINKING: &str = "Thinking\u{2026}";
+/// The one described step of a first run, for the turn-status row (`First-time setup, 12 MB
+/// downloaded…` with its own timer): the row's phase identity while the byte count refines it.
+pub const FIRST_TIME_SETUP: &str = "first-time setup";
+
+/// The first-run download, once the vendor script has started writing: the honest byte count so a
+/// minute-long first message never looks hung (the status row adds the spinner and the seconds).
 pub fn install_progress_line(bytes: u64) -> String {
-    format!(
-        "Installing the OpenCode engine (first time only)\u{2026} {} downloaded",
-        format_bytes(bytes)
-    )
+    format!("First-time setup, {} downloaded", format_bytes(bytes))
+}
+
+/// The one failure line a user sees when a model could not be reached or did not answer (after
+/// the silent fallback, if any, failed too): plain, no runtime names, and the two ways out.
+pub fn failure_line(model: &str) -> String {
+    format!("Couldn't reach {model} \u{2014} Enter to retry \u{b7} /model to switch")
 }
 
 /// Which backend a submitted prompt should run on.
@@ -848,20 +946,102 @@ pub fn has_resumable_sessions(cwd: &Path) -> bool {
     use xai_grok_shell::session::persistence::{
         RecentSessionSelection, local_summaries_for_cwd_sync,
     };
-    let with_messages = local_summaries_for_cwd_sync(
-        &cwd.to_string_lossy(),
-        RecentSessionSelection::Interactive,
-    )
-    .map(|list| {
-        list.iter()
-            .any(|s| s.num_messages > 0 || s.num_chat_messages > 0)
-    })
-    .unwrap_or(false);
+    let with_messages =
+        local_summaries_for_cwd_sync(&cwd.to_string_lossy(), RecentSessionSelection::Interactive)
+            .map(|list| {
+                list.iter()
+                    .any(|s| s.num_messages > 0 || s.num_chat_messages > 0)
+            })
+            .unwrap_or(false);
     with_messages
         || load_resume_id("opencode", cwd).is_some()
         || workshop_detect::Rail::ALL
             .iter()
             .any(|rail| load_resume_id(rail.vendor().id(), cwd).is_some())
+}
+
+/// Start the background voice setup (the `voice-engine` helper, then this machine's speech model,
+/// from the release mirror only) unless it is off (`voice.auto_download`, `WORKSHOP_VOICE_AUTO=0`),
+/// voice is disabled, already running this process, or already in place. `delay` holds it back
+/// on a returning launch so the first half minute is the user's.
+pub fn maybe_start_voice_prefetch(
+    app: &mut crate::app::app_view::AppView,
+    delay: Duration,
+) -> Vec<crate::app::actions::Effect> {
+    if !workshop_voice::prefetch::auto_enabled(app.voice_config.auto_download) {
+        return vec![];
+    }
+    start_voice_prefetch(app, delay)
+}
+
+/// The setup itself, regardless of the automatic-download flag (a `/voice` press asked for it).
+fn start_voice_prefetch(
+    app: &mut crate::app::app_view::AppView,
+    delay: Duration,
+) -> Vec<crate::app::actions::Effect> {
+    if app.workshop_voice_prefetch.is_some()
+        || !app.voice_mode_enabled
+        || !xai_grok_voice::AUDIO_SUPPORTED
+    {
+        return vec![];
+    }
+    let voice_dir = workshop_voice::store::default_dir();
+    let engine_override = app.voice_config.engine_path.as_deref().map(Path::new);
+    if workshop_voice::prefetch::is_ready(
+        &voice_dir,
+        app.voice_config.model.as_deref(),
+        engine_override,
+    ) {
+        return vec![];
+    }
+    let shared = workshop_voice::prefetch::shared();
+    app.workshop_voice_prefetch = Some(shared.clone());
+    vec![crate::app::actions::Effect::WorkshopVoicePrefetch {
+        shared,
+        delay,
+        home: workshop_home(),
+        voice_dir,
+        tier: app.voice_config.model.clone(),
+    }]
+}
+
+/// `/voice` while voice is not ready: the one line to show instead of starting the microphone
+/// (`Voice is getting ready — 62%`), plus the setup to start if it is not running (a failed
+/// attempt is tried again). `None` when the helper and the model are in place.
+pub fn voice_getting_ready(
+    app: &mut crate::app::app_view::AppView,
+) -> Option<(String, Vec<crate::app::actions::Effect>)> {
+    use workshop_voice::prefetch::Phase;
+    let voice_dir = workshop_voice::store::default_dir();
+    let engine_override = app.voice_config.engine_path.as_deref().map(Path::new);
+    if workshop_voice::prefetch::is_ready(
+        &voice_dir,
+        app.voice_config.model.as_deref(),
+        engine_override,
+    ) {
+        return None;
+    }
+    let status = app
+        .workshop_voice_prefetch
+        .as_ref()
+        .and_then(|s| s.lock().ok().map(|s| s.clone()));
+    match status {
+        Some(status) if !matches!(status.phase, Phase::Failed(_) | Phase::Ready) => {
+            Some((status.line(), vec![]))
+        }
+        _ => {
+            // Not started (or turned off for the background), done but something is missing
+            // again, or failed: the press asked for voice, so one try now.
+            app.workshop_voice_prefetch = None;
+            let effects = start_voice_prefetch(app, Duration::ZERO);
+            let line = if effects.is_empty() {
+                "Voice isn't set up on this machine \u{2014} /doctor shows why".to_owned()
+            } else {
+                workshop_voice::prefetch::Status::default().line()
+            };
+            Some((line, effects))
+        }
+    }
 }
 
 /// Persist the session id for `(backend, workspace)` so the next turn resumes the conversation.
@@ -1015,28 +1195,12 @@ pub fn session_topic(prompt: &str) -> String {
     topic
 }
 
-/// The ways out appended to every failure line: retry the same prompt, switch model, diagnose.
-pub const ERROR_WAYS_OUT: &str = "Enter retries · /model switches model · /doctor checks the setup";
-
-/// The one line a user sees when the engine path fails after the engine is up: the cause, the
-/// ways out, and where the details went. (A failure *before* the engine is up goes through the
-/// Kilo fallback instead — see `TurnStartError::EngineUnavailable`.)
-pub fn engine_failure_line(cause: &str) -> String {
-    format!(
-        "OpenCode engine: {cause} — {ERROR_WAYS_OUT}; log: {}",
-        engine_log_path().display()
-    )
-}
-
-/// A backend error as the user sees it: the message (one line) with the ways out, unless the
-/// message already carries them (engine failure lines do).
-pub fn actionable_error_line(message: &str) -> String {
-    let message = message.trim();
-    if message.contains(ERROR_WAYS_OUT) {
-        message.to_owned()
-    } else {
-        format!("{message} — {ERROR_WAYS_OUT}")
-    }
+/// Record a turn failure's technical cause where `workshop doctor` and the log can show it; the
+/// user sees [`failure_line`] only.
+pub fn log_failure_cause(cause: &str) {
+    let cause = cause.split_whitespace().collect::<Vec<_>>().join(" ");
+    tracing::warn!("workshop turn failed: {cause}");
+    state::append_log(&engine_log_path(), &format!("turn failed: {cause}"));
 }
 
 /// `$WORKSHOP_HOME/logs/opencode-engine.log`, the `opencode serve` stdout/stderr capture.
@@ -1096,11 +1260,6 @@ fn write_engine_instructions(log: &Path) -> Option<PathBuf> {
         return None;
     }
     Some(path)
-}
-
-/// The waiting line's text while `model` works and nothing new is on screen.
-fn waiting_for(model: &str) -> String {
-    format!("Waiting for {model}\u{2026}")
 }
 
 fn engine_progress(tx: &mpsc::UnboundedSender<WorkshopTurnMsg>, text: impl Into<String>) {
@@ -1167,7 +1326,7 @@ async fn start_engine(
         {
             // Our own install no longer runs (a quarantine flag from an older Workshop, a
             // half-written binary): clear the flag and re-check, else reinstall over it.
-            engine_phase(slot, &tx, "Repairing the OpenCode engine install…");
+            engine_phase(slot, &tx, THINKING);
             state::append_log(
                 &log,
                 &format!("repair: `{}` failed verification: {reason}", path.display()),
@@ -1196,15 +1355,14 @@ async fn start_engine(
             return Err(engine_fail(
                 &mut st,
                 &home,
-                format!("`{}` is not a usable OpenCode binary ({reason})", path.display()),
+                format!(
+                    "`{}` is not a usable OpenCode binary ({reason})",
+                    path.display()
+                ),
             ));
         }
         Detection::NotInstalled => {
-            engine_phase(
-                slot,
-                &tx,
-                "Installing the OpenCode engine (first time only, about a minute)…",
-            );
+            engine_phase(slot, &tx, THINKING);
             run_installer(&mut st, &log);
             match install_opencode(&install).await {
                 Ok(cli) => cli,
@@ -1219,25 +1377,35 @@ async fn start_engine(
     st.version = Some(cli.version.clone());
     st.last_phase = Some("start".into());
     st.save(&home);
-    engine_phase(
-        slot,
-        &tx,
-        &format!("Starting the OpenCode engine ({})…", cli.version),
-    );
+    engine_phase(slot, &tx, THINKING);
 
     let mut opts = EngineOptions::new(workspace);
     // The engine asks before edits and commands; what happens next is the agent's permission
     // mode (Plan/Normal prompt, Auto/Always-approve allow), decided on the UI thread per ask.
     opts.permission = Some(ask_before_edit_and_bash());
+    // `sudo` in the engine's commands has no terminal to ask on. Grok Build's shell tool defers
+    // to the user's own `SUDO_ASKPASS` helper when one is set; so does the engine (the variable
+    // passes through). With none, Workshop is the helper: `SUDO_ASKPASS` → this process's socket
+    // → one masked prompt, never the model.
+    if std::env::var_os(crate::app::workshop_askpass::HELPER_ENV).is_none_or(|v| v.is_empty())
+        && let Some(askpass) = askpass_server(slot, &ui_tx)
+    {
+        opts.extra_env = askpass.env();
+    }
     opts.permission_handler = Some(engine_permission_handler(ui_tx.clone()));
     opts.question_handler = Some(engine_question_handler(ui_tx));
     // The models answer as Workshop's assistant, not as "opencode".
     opts.config = Some(engine_config(&log));
     let sink_path = log.clone();
-    opts.log_sink = Some(Arc::new(move |line: &str| state::append_log(&sink_path, line)));
+    opts.log_sink = Some(Arc::new(move |line: &str| {
+        state::append_log(&sink_path, line)
+    }));
     // `opencode serve` is up in a couple of seconds on any laptop; a server that has not bound
     // its port after this long is broken, and the user should hear so instead of waiting.
     opts.startup_timeout = ENGINE_START_TIMEOUT;
+    // A model that stops mid-answer is aborted after this and the turn recovers (see `Stalled`).
+    opts.idle_timeout = Some(stall_timeout());
+
     match OpenCodeEngine::start(&cli, opts).await {
         Ok(engine) => {
             st.last_phase = Some("ready".into());
@@ -1268,7 +1436,7 @@ async fn acquire_engine(
             engine_progress(
                 tx,
                 if current.is_empty() {
-                    "Starting the OpenCode engine…".to_owned()
+                    THINKING.to_owned()
                 } else {
                     current
                 },
@@ -1537,7 +1705,9 @@ async fn build_stream(
             if model.is_default
                 && let Some(live) = live_engine_default(&cached_engine_models())
             {
-                if live.model_ref != model.model_ref {
+                // The user's picked effort level survives the swap while the model offers it.
+                let live = live.carrying_effort_from(&model);
+                if live.model_ref != model.model_ref || live.effort != model.effort {
                     let _ = tx.send(WorkshopTurnMsg::EngineDefaultResolved {
                         model: live.clone(),
                     });
@@ -1569,13 +1739,13 @@ async fn build_stream(
                 });
                 model = vision;
             }
-            engine_progress(tx, waiting_for(&model.name));
+            engine_progress(tx, THINKING);
+            // A model that is up but will not take the prompt cannot answer either: the silent
+            // fallback answers instead (the cause is logged by the fallback dispatch).
             let session = match session {
                 Some(s) if engine.session_exists(s).await.unwrap_or(false) => s.clone(),
                 _ => engine.create_session(Some("Workshop")).await.map_err(|e| {
-                    TurnStartError::Other(engine_failure_line(&format!(
-                        "could not open a session: {e}"
-                    )))
+                    TurnStartError::EngineUnavailable(format!("could not open a session: {e}"))
                 })?,
             };
             let _ = tx.send(WorkshopTurnMsg::EngineReady {
@@ -1584,12 +1754,12 @@ async fn build_stream(
             });
             let mut req = TurnRequest::new(spec.text.clone());
             req.model = Some(model.model_ref.clone());
+            // The picked effort level reaches OpenCode as the prompt's `variant`.
+            req.variant = model.effort.clone();
             req.permission = permission;
             req.files = spec.images.clone();
             let turn = engine.prompt(&session, req).await.map_err(|e| {
-                TurnStartError::Other(engine_failure_line(&format!(
-                    "the prompt was refused: {e}"
-                )))
+                TurnStartError::EngineUnavailable(format!("the prompt was refused: {e}"))
             })?;
             // The live catalog knows what the model can see even when the saved pick predates it.
             let image_input = sees(&model);
@@ -1610,15 +1780,15 @@ async fn build_stream(
             let cli = match detect(&*adapter, &DetectOptions::default()).await {
                 Detection::Installed(cli) => cli,
                 Detection::Unverified { reason, .. } => {
-                    return Err(TurnStartError::Other(format!(
-                        "{} could not be verified: {reason}",
-                        adapter.id()
+                    log_failure_cause(&format!("{} could not be verified: {reason}", adapter.id()));
+                    return Err(TurnStartError::Other(failure_line(
+                        model.as_deref().unwrap_or(&adapter.id().to_string()),
                     )));
                 }
                 Detection::NotInstalled => {
-                    return Err(TurnStartError::Other(format!(
-                        "{} is not installed",
-                        adapter.id()
+                    log_failure_cause(&format!("{} is not installed", adapter.id()));
+                    return Err(TurnStartError::Other(failure_line(
+                        model.as_deref().unwrap_or(&adapter.id().to_string()),
                     )));
                 }
             };
@@ -1628,7 +1798,12 @@ async fn build_stream(
             req.permission = permission;
             let handle = spawn(&*adapter, &cli, req, &SupervisorOptions::default())
                 .await
-                .map_err(|e| TurnStartError::Other(e.to_string()))?;
+                .map_err(|e| {
+                    log_failure_cause(&e.to_string());
+                    TurnStartError::Other(failure_line(
+                        model.as_deref().unwrap_or(&adapter.id().to_string()),
+                    ))
+                })?;
             Ok((TurnStream::Adapter(handle), None))
         }
     }
@@ -1663,6 +1838,9 @@ pub async fn run_workshop_turn(
             cancelled,
         });
     };
+    // The waiting line is up from the first moment on every backend (the engine bring-up refines
+    // it with its own phases) and stays under the latest block until the turn ends.
+    engine_progress(&tx, THINKING);
     // Ctrl-C must work while the engine is still installing or starting, not only once events
     // flow: race the bring-up against the cancel signal.
     let built = tokio::select! {
@@ -1691,14 +1869,11 @@ pub async fn run_workshop_turn(
         WorkshopTurnKind::Engine { model, .. } => model.name.clone(),
         WorkshopTurnKind::Adapter { adapter_id, .. } => adapter_id.to_string(),
     };
+    let is_engine = matches!(spec.kind, WorkshopTurnKind::Engine { .. });
     let mut cancelled = false;
     let mut aborted_by_us = false;
     let mut first_event_at: Option<tokio::time::Instant> =
         Some(tokio::time::Instant::now() + FIRST_EVENT_TIMEOUT);
-    // Ten seconds without a first byte is long enough to tell the user the wait is the
-    // connection's; the hard ceiling above still ends the turn with the cause.
-    let mut still_connecting_at: Option<tokio::time::Instant> =
-        Some(tokio::time::Instant::now() + CONNECT_TIMEOUT);
     // The backend's detail for a tool call (title, exit code, diff) arrives right before its
     // result; hold it so the UI gets one message per finished call.
     let mut tool_details: std::collections::HashMap<String, (Option<String>, serde_json::Value)> =
@@ -1708,6 +1883,7 @@ pub async fn run_workshop_turn(
     // is continued (engine, not Plan), at most MAX_AUTO_CONTINUES times in all.
     let mut tail = String::new();
     let mut errored = false;
+    let mut stalled = false;
     let mut continues = 0;
     let asks_for_files = asks_to_write_files(&spec.text);
     let mut wrote_a_file = false;
@@ -1728,37 +1904,36 @@ pub async fn run_workshop_turn(
                 None => std::future::pending::<()>().await,
             }
         };
-        let still_connecting = async {
-            match still_connecting_at {
-                Some(at) => tokio::time::sleep_until(at).await,
-                None => std::future::pending::<()>().await,
-            }
-        };
         tokio::select! {
-            _ = still_connecting => {
-                still_connecting_at = None;
-                engine_progress(&tx, format!("Still connecting to {model_name}\u{2026} nothing back yet"));
-            }
             _ = silence => {
-                // The engine accepted the prompt but nothing came back: stop waiting, say why.
+                // The model accepted the prompt but nothing came back: stop waiting. OpenCode's
+                // model cannot answer, so the silent fallback answers instead; a vendor CLI gets
+                // the plain failure line.
                 stream.cancel();
-                let _ = tx.send(WorkshopTurnMsg::Error(engine_failure_line(&format!(
-                    "no answer from {model_name} after {} s",
-                    FIRST_EVENT_TIMEOUT.as_secs()
-                ))));
                 first_event_at = None;
                 aborted_by_us = true;
+                let cause = format!(
+                    "no answer from {model_name} after {} s",
+                    FIRST_EVENT_TIMEOUT.as_secs()
+                );
+                if is_engine {
+                    let _ = tx.send(WorkshopTurnMsg::EngineUnavailable {
+                        reason: cause,
+                        text: spec.text.clone(),
+                    });
+                    break;
+                }
+                log_failure_cause(&cause);
+                let _ = tx.send(WorkshopTurnMsg::Error(failure_line(&model_name)));
             }
             ev = stream.next_event() => match ev {
                 Some(AdapterEvent::TextDelta { text }) => {
                     first_event_at = None;
-                    still_connecting_at = None;
                     tail.push_str(&text);
                     let _ = tx.send(WorkshopTurnMsg::Delta(text));
                 }
                 Some(AdapterEvent::ToolCall { id, name, input }) => {
                     first_event_at = None;
-                    still_connecting_at = None;
                     tail.clear();
                     wrote_a_file |= FILE_WRITE_TOOLS.contains(&name.as_str());
                     if reads_an_image(&name, &input) {
@@ -1784,7 +1959,7 @@ pub async fn run_workshop_turn(
                     });
                     // The model is at work again (thinking, hidden by default, or writing): the
                     // waiting line says so until its next output.
-                    engine_progress(&tx, waiting_for(&model_name));
+                    engine_progress(&tx, THINKING);
                     if opened_an_image
                         && !switched
                         && vision_switch.is_none()
@@ -1805,22 +1980,41 @@ pub async fn run_workshop_turn(
                     }
                 }
                 Some(AdapterEvent::Error { message }) => {
+                    let nothing_yet = first_event_at.is_some();
                     first_event_at = None;
-                    still_connecting_at = None;
                     // The stop that hands the turn to a vision model is not a failure.
                     if vision_switch.is_some() {
                         continue;
                     }
                     errored = true;
-                    // An abort we asked for (Ctrl-C, or the silence timeout above) is already
-                    // reported; the backend's own "run cancelled" would only repeat it.
-                    if !(aborted_by_us && message == "run cancelled") {
-                        let _ = tx.send(WorkshopTurnMsg::Error(message));
+                    if stream.stalled() {
+                        // The engine's idle ceiling ended the turn: reported as `Stalled` below,
+                        // with the recovery, not as a bare error.
+                        stalled = true;
+                        state::append_log(
+                            &engine_log_path(),
+                            &format!("stall: {model_name} stopped responding ({message}); recovering"),
+                        );
+                    } else if !(aborted_by_us && message == "run cancelled") {
+                        // An abort we asked for (Ctrl-C, or the silence timeout above) is already
+                        // reported; the backend's own "run cancelled" would only repeat it.
+                        // OpenCode's model failing before a word came back cannot answer: the
+                        // silent fallback answers instead. After output started, or on a vendor
+                        // CLI, the plain failure line.
+                        if is_engine && nothing_yet {
+                            stream.cancel();
+                            let _ = tx.send(WorkshopTurnMsg::EngineUnavailable {
+                                reason: message,
+                                text: spec.text.clone(),
+                            });
+                            break;
+                        }
+                        log_failure_cause(&message);
+                        let _ = tx.send(WorkshopTurnMsg::Error(failure_line(&model_name)));
                     }
                 }
                 Some(AdapterEvent::Thinking { text }) => {
                     first_event_at = None;
-                    still_connecting_at = None;
                     let _ = tx.send(WorkshopTurnMsg::Thinking(text));
                 }
                 Some(AdapterEvent::Usage(usage)) => {
@@ -1871,17 +2065,15 @@ pub async fn run_workshop_turn(
                                 tail.clear();
                                 model_name = vision.name.clone();
                                 let _ = tx.send(WorkshopTurnMsg::Answering { model: vision });
-                                engine_progress(&tx, waiting_for(&model_name));
+                                engine_progress(&tx, THINKING);
                                 continue;
                             }
                             Err(e) => {
-                                state::append_log(
-                                    &engine_log_path(),
-                                    &format!("vision: the hand-over was refused: {e}"),
-                                );
-                                let _ = tx.send(WorkshopTurnMsg::Error(engine_failure_line(
-                                    &format!("{} could not take over the images: {e}", vision.name),
-                                )));
+                                log_failure_cause(&format!(
+                                    "vision: {} could not take over the images: {e}",
+                                    vision.model_ref
+                                ));
+                                let _ = tx.send(WorkshopTurnMsg::Error(failure_line(&vision.name)));
                             }
                         }
                     }
@@ -1920,7 +2112,7 @@ pub async fn run_workshop_turn(
                             Ok(turn) => {
                                 stream = TurnStream::Engine(turn);
                                 tail.clear();
-                                engine_progress(&tx, waiting_for(&model_name));
+                                engine_progress(&tx, THINKING);
                                 continue;
                             }
                             Err(e) => state::append_log(
@@ -1941,6 +2133,13 @@ pub async fn run_workshop_turn(
     }
 
     let session_id = stream.session_id();
+    if stalled && !cancelled {
+        let _ = tx.send(WorkshopTurnMsg::Stalled {
+            model: model_name.clone(),
+            text: spec.text.clone(),
+            engine: matches!(spec.kind, WorkshopTurnKind::Engine { .. }),
+        });
+    }
     let _ = tx.send(WorkshopTurnMsg::Done {
         session_id,
         cancelled,
@@ -1969,6 +2168,94 @@ pub fn rail_adapter_id(rail: workshop_detect::Rail) -> AdapterId {
     }
 }
 
+/// A vendor CLI installer the user started from an `Install` rail, while it runs: one at a time,
+/// its latest output line shared with the runner task for the picker's status line.
+#[derive(Debug, Clone)]
+pub struct RailInstall {
+    pub rail: workshop_detect::Rail,
+    pub started: std::time::Instant,
+    pub progress: Arc<std::sync::Mutex<String>>,
+}
+
+impl RailInstall {
+    pub fn new(rail: workshop_detect::Rail) -> Self {
+        Self {
+            rail,
+            started: std::time::Instant::now(),
+            progress: Arc::new(std::sync::Mutex::new(String::new())),
+        }
+    }
+
+    /// `Installing Claude Code… 12s · <latest installer line>` — one line, no plumbing.
+    pub fn status_line(&self) -> String {
+        let name = self.rail.vendor().display_name();
+        let secs = self.started.elapsed().as_secs();
+        let latest = self
+            .progress
+            .lock()
+            .map(|l| l.clone())
+            .unwrap_or_default();
+        let latest: String = latest.chars().take(60).collect();
+        match (secs >= 3, latest.is_empty()) {
+            (false, true) => format!("Installing {name}\u{2026}"),
+            (true, true) => format!("Installing {name}\u{2026} {secs}s"),
+            (false, false) => format!("Installing {name}\u{2026} \u{b7} {latest}"),
+            (true, false) => format!("Installing {name}\u{2026} {secs}s \u{b7} {latest}"),
+        }
+    }
+}
+
+/// Run `rail`'s official installer to completion (blocking; the effect runs it on the blocking
+/// pool), streaming its lines into `progress` and appending them to
+/// `<workshop home>/logs/install-<vendor>.log`. `Err` is the plain reason for the status line;
+/// it names the log, never the command's internals.
+pub fn run_rail_installer(
+    rail: workshop_detect::Rail,
+    progress: Arc<std::sync::Mutex<String>>,
+) -> Result<(), String> {
+    use std::io::Write as _;
+    use workshop_detect::install::InstallOutcome;
+    let vendor = rail.vendor();
+    let command = workshop_detect::install_command(vendor)
+        .ok_or_else(|| format!("{} has no installer to run", vendor.display_name()))?;
+    let log_path = workshop_detect::install_log_path(&workshop_home(), vendor);
+    if let Some(dir) = log_path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("could not open {}: {e}", log_path.display()))?;
+    let _ = writeln!(log, "$ {command}");
+    tracing::info!(vendor = vendor.id(), log = %log_path.display(), "workshop: running the official installer");
+    let outcome = workshop_detect::run_installer(
+        &command,
+        workshop_detect::install::INSTALL_TIMEOUT,
+        |line| {
+            let _ = writeln!(log, "{line}");
+            if let Ok(mut p) = progress.lock() {
+                *p = line.to_owned();
+            }
+        },
+    )?;
+    let _ = writeln!(log, "[workshop] {outcome:?}");
+    match outcome {
+        InstallOutcome::Installed => Ok(()),
+        InstallOutcome::Failed { status } => Err(format!(
+            "the installer exited with {} (details: {})",
+            status
+                .map(|c| format!("status {c}"))
+                .unwrap_or_else(|| "a signal".to_owned()),
+            log_path.display()
+        )),
+        InstallOutcome::Hung => Err(format!(
+            "the installer stopped responding (details: {})",
+            log_path.display()
+        )),
+    }
+}
+
 /// The official CLI login command for a rail, to run attached to the user's terminal.
 pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
     let vendor = rail.vendor();
@@ -1978,7 +2265,14 @@ pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
         .binary
         .as_ref()
         .map(|b| b.path.to_string_lossy().to_string())
-        .unwrap_or_else(|| vendor.binary_names().first().copied().unwrap_or("").to_owned());
+        .unwrap_or_else(|| {
+            vendor
+                .binary_names()
+                .first()
+                .copied()
+                .unwrap_or("")
+                .to_owned()
+        });
     let mut argv = vec![bin];
     argv.extend(
         workshop_detect::login_argv(vendor)

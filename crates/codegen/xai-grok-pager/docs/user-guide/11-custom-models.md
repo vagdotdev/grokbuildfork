@@ -6,7 +6,7 @@ Workshop connects to custom model endpoints for alternative providers, self-host
 
 ## Default Models
 
-By default, Workshop runs on the OpenCode engine's free default model; `/model` lists every model you can use (the free pools, connected API-key providers, local servers) and needs no configuration. The `[model.*]` entries below add your own endpoints.
+By default, Workshop runs on OpenCode's free default model; `/model` lists every model you can use (the free pools, connected API-key providers, local servers) and needs no configuration. The `[model.*]` entries below add your own endpoints.
 
 List all available models:
 

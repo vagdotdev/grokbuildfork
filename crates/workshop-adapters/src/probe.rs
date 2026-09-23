@@ -42,26 +42,43 @@ pub async fn run_probe(
     timeout: Duration,
 ) -> Result<ProbeOutput, ProbeError> {
     let name = program.display().to_string();
-    let mut cmd = tokio::process::Command::new(program);
-    cmd.args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    if let Some(cwd) = cwd {
-        cmd.current_dir(cwd);
-    }
-    crate::env::apply(&mut cmd, env);
+    let build = || {
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
+        crate::env::apply(&mut cmd, env);
+        cmd
+    };
 
     // Own process group, enrolled so session teardown can reap it. `group`
-    // must outlive the child.
-    let (mut child, group) =
-        xai_tty_utils::global_process_scope()
-            .spawn(cmd)
-            .map_err(|source| ProbeError::Spawn {
-                program: name.clone(),
-                source,
-            })?;
+    // must outlive the child. A binary that was written a moment ago (an
+    // installer that just finished, a fixture another thread is still
+    // closing) can refuse to exec with ETXTBSY for a few milliseconds; that is
+    // transient, so try again briefly before reporting it.
+    let mut attempt = 0u32;
+    let (mut child, group) = loop {
+        match xai_tty_utils::global_process_scope().spawn(build()) {
+            Ok(spawned) => break spawned,
+            Err(source)
+                if source.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 5 =>
+            {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(20 * u64::from(attempt))).await;
+            }
+            Err(source) => {
+                return Err(ProbeError::Spawn {
+                    program: name.clone(),
+                    source,
+                });
+            }
+        }
+    };
     let mut stdout = child.stdout.take().expect("piped stdout");
     let mut stderr = child.stderr.take().expect("piped stderr");
 
@@ -130,5 +147,38 @@ mod tests {
             "~/x/auth.json 0 credentials"
         );
         assert_eq!(strip_ansi("plain"), "plain");
+    }
+
+    /// A script still open for writing cannot be exec'd (`ETXTBSY`); the probe retries briefly
+    /// instead of reporting the transient state, so a binary an installer just finished writing
+    /// (or a fixture another test thread is still closing) probes fine.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_briefly_busy_executable_is_retried() {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("busy.sh");
+        // The writer that created the script has not closed it yet (gate:no-theft keeps this
+        // crate to creating files, never opening existing ones).
+        let mut writer = std::fs::File::create(&script).unwrap();
+        writer.write_all(b"#!/bin/sh\necho ok\n").unwrap();
+        writer.flush().unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            drop(writer);
+        });
+        let out = run_probe(
+            &script,
+            &[],
+            &BTreeMap::new(),
+            None,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("the probe waits out ETXTBSY");
+        assert_eq!(out.stdout.trim(), "ok");
+        release.await.unwrap();
     }
 }

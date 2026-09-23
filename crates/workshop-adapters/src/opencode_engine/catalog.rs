@@ -26,9 +26,34 @@ pub struct FreeModel {
     pub release_date: Option<String>,
     /// OpenCode's own current default for this provider.
     pub is_default: bool,
+    /// The model's effort / reasoning variants as OpenCode names them (`low`, `medium`,
+    /// `high`, …), lowest effort first; empty when the model has none. A variant is sent back
+    /// with a prompt as OpenCode's `variant` field.
+    #[serde(default)]
+    pub variants: Vec<String>,
     /// The model can see images.
     #[serde(default)]
     pub image_input: bool,
+}
+
+/// Effort names in ascending order; anything OpenCode names differently sorts after, alphabetically.
+const EFFORT_ORDER: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// The keys of a model's `variants` object, lowest effort first.
+pub fn variant_names(model: &Value) -> Vec<String> {
+    let mut names: Vec<String> = model
+        .get("variants")
+        .and_then(Value::as_object)
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default();
+    let rank = |name: &str| {
+        EFFORT_ORDER
+            .iter()
+            .position(|e| e.eq_ignore_ascii_case(name))
+            .unwrap_or(EFFORT_ORDER.len())
+    };
+    names.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.cmp(b)));
+    names
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -144,6 +169,7 @@ pub fn parse_free_catalog(providers: &Value, opencode_version: &str) -> FreeCata
                     .and_then(Value::as_str)
                     .map(str::to_string),
                 is_default: default_id.as_deref() == Some(id.as_str()),
+                variants: variant_names(&m),
                 image_input: reads_images(&m),
                 id,
             }
@@ -209,6 +235,46 @@ mod tests {
         assert_eq!(bp.output_limit, Some(32000));
         assert!(cat.models[1].tool_call, "legacy tool_call field honoured");
         assert_eq!(cat.default_or_first().unwrap().id, "big-pickle");
+        assert!(bp.variants.is_empty(), "Big Pickle has no effort variants");
+    }
+
+    #[test]
+    fn effort_variants_are_read_lowest_first_and_only_when_present() {
+        let providers = json!({
+            "default": {"opencode": "big-pickle"},
+            "providers": [{"id": "opencode", "models": {
+                "big-pickle": {"id": "big-pickle", "name": "Big Pickle", "variants": {},
+                    "cost": {"input": 0, "output": 0, "cache": {"read": 0, "write": 0}}},
+                "ling": {"id": "ling", "name": "Ling Free",
+                    "variants": {"high": {"reasoningEffort": "high"}, "low": {"reasoningEffort": "low"},
+                                 "medium": {"reasoningEffort": "medium"}, "turbo": {}},
+                    "cost": {"input": 0, "output": 0, "cache": {"read": 0, "write": 0}}}
+            }}]
+        });
+        let cat = parse_free_catalog(&providers, "1.18.31");
+        let ling = cat.models.iter().find(|m| m.id == "ling").unwrap();
+        assert_eq!(ling.variants, ["low", "medium", "high", "turbo"]);
+        assert!(
+            cat.models
+                .iter()
+                .find(|m| m.id == "big-pickle")
+                .unwrap()
+                .variants
+                .is_empty()
+        );
+        // The real fixture: the free list's variant-bearing models and their levels.
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/opencode_serve_providers.json"
+        ))
+        .unwrap();
+        let cat = parse_free_catalog(&fixture, "1.18.31");
+        let ling = cat
+            .models
+            .iter()
+            .find(|m| m.id == "ling-3.0-flash-fin-free")
+            .unwrap();
+        assert_eq!(ling.variants, ["low", "medium", "high"]);
+        assert!(cat.default_or_first().unwrap().variants.is_empty());
     }
 
     /// Captured from a live 1.18.31 `opencode serve`: Big Pickle is text-only, the Muse and MiMo

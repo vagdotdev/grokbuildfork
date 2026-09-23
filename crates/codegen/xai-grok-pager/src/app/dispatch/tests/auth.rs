@@ -634,7 +634,12 @@ fn first_run_lands_in_the_composer_with_the_engine_default_and_no_picker() {
     assert!(model.is_default, "the engine's own default model is active");
     assert_eq!(
         app.workshop_connection.composer_label().as_deref(),
-        Some("OpenCode · Big Pickle")
+        Some("Big Pickle"),
+        "the composer names the model only"
+    );
+    assert!(
+        app.workshop_first_launch,
+        "the first launch carries the doors hint"
     );
     assert_eq!(effects.len(), 1, "exactly the activation, got {effects:?}");
     assert!(
@@ -696,7 +701,12 @@ fn model_and_auth_open_their_views_and_switch_while_open() {
         "the active engine model is the highlighted row"
     );
     let cached = || workshop_auth::PickerSnapshot {
-        rows: workshop_auth::models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[]),
+        rows: workshop_auth::models_rows(
+            &workshop_providers::Catalog::builtin(),
+            |_| false,
+            &[],
+            &[],
+        ),
         ..workshop_auth::PickerSnapshot::default()
     };
     let effects = dispatch(
@@ -704,10 +714,13 @@ fn model_and_auth_open_their_views_and_switch_while_open() {
         &mut app,
     );
     assert!(
-        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs {
-            force: false,
-            engine: None
-        }]),
+        matches!(
+            effects.as_slice(),
+            [Effect::WorkshopRefreshCatalogs {
+                force: false,
+                engine: None
+            }]
+        ),
         "the cached load starts the live refresh, got {effects:?}"
     );
     let picker = app.connection_picker.as_ref().expect("picker open");
@@ -734,10 +747,10 @@ fn model_and_auth_open_their_views_and_switch_while_open() {
         PickerTab::Models
     );
     assert!(
-        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs {
-            force: false,
-            ..
-        }]),
+        matches!(
+            effects.as_slice(),
+            [Effect::WorkshopRefreshCatalogs { force: false, .. }]
+        ),
         "got {effects:?}"
     );
 }
@@ -758,14 +771,20 @@ fn login_and_auth_never_refresh_catalogs_but_model_and_r_do() {
     app.auth_methods.clear();
     app.login_method_id = None;
     let effects = dispatch(Action::Login, &mut app);
-    assert!(no_refresh(&effects), "Login fetches nothing, got {effects:?}");
+    assert!(
+        no_refresh(&effects),
+        "Login fetches nothing, got {effects:?}"
+    );
     assert!(!app.connection_picker.as_ref().unwrap().refresh_pending);
     // `/auth` while the picker is open: still nothing.
     let effects = dispatch(
         Action::OpenConnectionPicker(PickerTab::Subscriptions),
         &mut app,
     );
-    assert!(no_refresh(&effects), "/auth fetches nothing, got {effects:?}");
+    assert!(
+        no_refresh(&effects),
+        "/auth fetches nothing, got {effects:?}"
+    );
     app.connection_picker = None;
     let effects = dispatch(
         Action::OpenConnectionPicker(PickerTab::Subscriptions),
@@ -778,10 +797,13 @@ fn login_and_auth_never_refresh_catalogs_but_model_and_r_do() {
     // `r` in the picker: a forced refresh (plus the reload it ends with).
     let effects = dispatch(Action::ConnectionPicker(PickerInput::Refresh), &mut app);
     assert!(
-        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs {
-            force: true,
-            engine: None
-        }]),
+        matches!(
+            effects.as_slice(),
+            [Effect::WorkshopRefreshCatalogs {
+                force: true,
+                engine: None
+            }]
+        ),
         "got {effects:?}"
     );
     let picker = app.connection_picker.as_ref().unwrap();
@@ -880,11 +902,12 @@ fn a_loading_rail_after_a_load_queues_one_rail_models_refresh() {
     );
 }
 
-/// The OpenCode engine could not start for a turn: one system line, the Kilo keyless pool becomes
-/// the (shell) connection, the session is switched to it, and the prompt goes out again once the
-/// activation completes.
+/// The OpenCode model could not start: Workshop falls back *silently*. The keyless pool's model is
+/// activated as the shell's, the connection the user has stays what it is (the next launch tries
+/// it again), the composer names the model that will answer, and the prompt goes out again once
+/// the activation completes — with no notice, no "Kilo", no "fallback".
 #[test]
-fn engine_unavailable_falls_back_to_kilo_and_resends_the_prompt() {
+fn engine_unavailable_falls_back_silently_and_resends_the_prompt() {
     use crate::scrollback::block::RenderBlock;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
@@ -898,6 +921,16 @@ fn engine_unavailable_falls_back_to_kilo_and_resends_the_prompt() {
         .push_block(RenderBlock::user_prompt("hello"));
     app.workshop_turn_prompt_entry = Some(entry);
     app.workshop_turn_agent = Some(id);
+    let system_blocks = |app: &AppView| -> Vec<String> {
+        let agent = test_agent(app, id);
+        (0..agent.scrollback.len())
+            .filter_map(|i| agent.scrollback.entry(i))
+            .filter_map(|e| match &e.block {
+                RenderBlock::System(b) => Some(b.text.clone()),
+                _ => None,
+            })
+            .collect()
+    };
 
     let effects = dispatch(
         Action::WorkshopEngineUnavailable {
@@ -909,13 +942,18 @@ fn engine_unavailable_falls_back_to_kilo_and_resends_the_prompt() {
     );
 
     assert!(
-        app.workshop_connection.is_shell(),
-        "Kilo is a Direct API (shell) connection"
+        app.workshop_connection.is_engine(),
+        "the user's connection is untouched; only this process routes through the fallback"
     );
-    // The notice is held back until the resend has painted the prompt, so it lands under it.
+    assert_eq!(
+        app.workshop_fallback.as_deref(),
+        Some("Nemotron 3 Super"),
+        "the composer names the answering model, plainly"
+    );
+    assert_eq!(app.workshop_label().as_deref(), Some("Nemotron 3 Super"));
     assert!(
         test_agent(&app, id).scrollback.index_of_id(entry).is_none(),
-        "the engine attempt's bubble is dropped; the resend paints it once"
+        "the first attempt's bubble is dropped; the resend paints it once"
     );
     assert!(
         matches!(
@@ -923,27 +961,22 @@ fn engine_unavailable_falls_back_to_kilo_and_resends_the_prompt() {
             [Effect::WorkshopActivateModel { session: Some((sid, _)), model_id, .. }]
                 if *sid == id && model_id.starts_with("kilo")
         ),
-        "switches the open session to the Kilo model, got {effects:?}"
+        "switches the open session to the fallback model, got {effects:?}"
     );
     assert_eq!(
-        app.workshop_resend.as_ref().map(|(_, t, _)| t.as_str()),
+        app.workshop_resend.as_ref().map(|(_, t)| t.as_str()),
         Some("hello")
     );
-    let notice = app
-        .workshop_resend
-        .as_ref()
-        .map(|(_, _, n)| n.clone())
-        .unwrap_or_default();
     assert!(
-        notice.starts_with("OpenCode unavailable (installer failed: offline)")
-            && notice.contains("Kilo"),
-        "one-line notice: {notice:?}"
+        system_blocks(&app).is_empty(),
+        "nothing is said about the switch: {:?}",
+        system_blocks(&app)
     );
     let AuthState::Authenticating { request_seq, .. } = app.auth_state else {
         panic!("activation in flight, got {:?}", app.auth_state);
     };
 
-    let effects = dispatch(
+    dispatch(
         Action::TaskComplete(TaskResult::AuthComplete {
             request_seq,
             meta: None,
@@ -951,33 +984,19 @@ fn engine_unavailable_falls_back_to_kilo_and_resends_the_prompt() {
         &mut app,
     );
     assert!(app.workshop_resend.is_none(), "the resend was consumed");
-    assert!(
-        last_system_text(&app, id).starts_with("OpenCode unavailable"),
-        "the notice is rendered with the resent prompt: {:?}",
-        last_system_text(&app, id)
-    );
+    let said = system_blocks(&app).join("\n").to_ascii_lowercase();
+    for word in ["kilo", "fallback", "engine", "unavailable", "opencode"] {
+        assert!(
+            !said.contains(word),
+            "no plumbing on screen ({word:?}): {said}"
+        );
+    }
     assert_eq!(app.active_view, ActiveView::Agent(id));
-    let agent = test_agent(&app, id);
     assert!(
-        agent.session.pending_prompts.is_empty() && !agent.session.state.is_idle(),
-        "the prompt was drained into a new turn"
+        test_agent(&app, id).workshop_model_label.as_deref() == Some("Nemotron 3 Super"),
+        "the composer label is the answering model: {:?}",
+        test_agent(&app, id).workshop_model_label
     );
-    assert!(
-        effects.iter().any(|e| matches!(
-            e,
-            Effect::SendPromptBlocks { .. } | Effect::SendPrompt { .. }
-        )),
-        "the prompt goes out on the shell path, got {effects:?}"
-    );
-    let bubbles = (0..agent.scrollback.len())
-        .filter(|i| {
-            matches!(
-                agent.scrollback.get(*i).map(|e| &e.block),
-                Some(RenderBlock::UserPrompt(_))
-            )
-        })
-        .count();
-    assert_eq!(bubbles, 1, "the prompt shows exactly once");
 }
 
 /// Enter on a non-xAI card (Local, OpenAI, …) opens setup details and never emits `Authenticate`.
@@ -1036,7 +1055,10 @@ fn picker_xai_card_requires_two_enters_and_sets_opt_in() {
         assert!(*force_interactive);
         assert_eq!(method_id.0.as_ref(), "grok.com");
     }
-    assert!(app.connection_picker.is_none(), "picker closes when the flow starts");
+    assert!(
+        app.connection_picker.is_none(),
+        "picker closes when the flow starts"
+    );
 }
 
 /// Picker on the Subscriptions view (`/auth`) with every rail signed out (Connect shown), Claude

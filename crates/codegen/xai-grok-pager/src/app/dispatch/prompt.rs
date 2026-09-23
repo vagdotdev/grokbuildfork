@@ -695,8 +695,8 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
     app.workshop_turn_active = true;
     app.workshop_turn_agent = Some(id);
     app.workshop_turn_stream_entry = None;
-    app.workshop_turn_progress = None;
-    app.workshop_turn_started = Some(std::time::Instant::now());
+    app.workshop_turn_running.clear();
+    app.workshop_turn_errored = false;
     app.workshop_last_prompt = Some(text.clone());
     app.workshop_turn_thinking_entry = None;
     app.workshop_turn_tools.clear();
@@ -712,6 +712,17 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
         app.workshop_turn_prompt_entry = Some(entry);
         agent.prompt.set_text("");
         agent.workshop_turn_active = true;
+        // The pager's own turn-status row runs from here: the wait for the model, its timers,
+        // `[stop]` — the same row a shell turn shows.
+        agent.workshop_turn_activity = Some(crate::acp::tracker::TurnActivity::Waiting(
+            crate::acp::tracker::WaitingReason::Model,
+        ));
+        agent.workshop_turn_started_at = Some(std::time::Instant::now());
+        agent.workshop_turn_cancelling = false;
+        // A fresh phase clock: the row's first frame counts from this send, not from whatever
+        // the previous turn ended on.
+        agent.last_activity = None;
+        agent.activity_started_at = None;
         agent.workshop_retry_prompt = None;
         // The terminal title follows the session topic: Engine/Adapter turns never reach the
         // shell's auto-titling, so the first prompt names the session.
@@ -844,7 +855,11 @@ pub(super) fn dispatch_send_prompt_submission(
     // does not use the shell's ACP session — route the turn through workshop-adapters and stream it
     // into the scrollback. Pure slash commands already returned above; only real prompt text
     // reaches here. Direct/Local (`Shell`) connections fall through to the ACP path unchanged.
-    if routes_off_acp_path(&app.workshop_connection, literal, &text) {
+    // While the silent fallback carries the session, prompts stay on the shell (ACP) path: the
+    // fallback model is the shell's active model.
+    if routes_off_acp_path(&app.workshop_connection, literal, &text)
+        && app.workshop_fallback.is_none()
+    {
         let mut effects = prelude;
         effects.extend(dispatch_workshop_turn(app, id, text));
         return effects;
@@ -1592,7 +1607,23 @@ pub(super) fn handle_prompt_response(
     // The leader's `running_prompt_id` broadcast can arrive before this `PromptResponse`
     // Take any stashed adoption now; it is applied after `finish_turn` clears `current_prompt_id` below
     let pending_adoption = app.pending_running_adoptions.remove(&agent_id);
+    // Workshop: while the silent fallback carries the session, a failed turn is reported as the
+    // one plain line (the technical cause goes to the log) and ends the fallback, so Enter retries
+    // from the top: the user's own model first, the fallback behind it.
+    let fallback_failure = if result.is_err() && app.workshop_fallback.take().is_some() {
+        Some((
+            crate::app::workshop::failure_line(&app.workshop_model_name()),
+            app.workshop_last_prompt.clone(),
+        ))
+    } else {
+        None
+    };
+    // With the fallback over, the composer names the user's own model again.
+    let restored_label = fallback_failure.as_ref().map(|_| app.workshop_label());
     if let Some(agent) = app.agents.get_mut(&agent_id) {
+        if let Some(label) = restored_label {
+            agent.workshop_model_label = label;
+        }
         // Discard PromptResponses that don't belong to the currently active prompt
         // They belong to a turn the user rewound, or to a queued prompt that never became the running turn
         // Without the `Err` fallback, a queued prompt's RPC error has no id to gate on and is misattributed to the running turn
@@ -1821,6 +1852,17 @@ pub(super) fn handle_prompt_response(
         // Insert the session event message (skip TurnCompleted for bash-mode, which has no agent turn)
         let event = match (&result, was_cancelling) {
             (Ok(_), false) if agent.bash_turn => None,
+            (Err(err), _) if fallback_failure.is_some() => {
+                crate::app::workshop::log_failure_cause(err);
+                // The wire error banner the retry handler already pushed for this turn (`Bad
+                // request (400): …`) is the cause, and the cause belongs in the log.
+                super::auth::strip_trailing_auth_error_blocks(agent);
+                if let Some((line, retry)) = fallback_failure.clone() {
+                    agent.scrollback.push_block(RenderBlock::system_error(line));
+                    agent.workshop_retry_prompt = retry;
+                }
+                None
+            }
             (Err(_), _) if dedicated_ux_shown => None,
             // `err` is already banner-formatted by `format_acp_error` at the producer, the single formatting owner
             // Don't re-format here
@@ -1861,9 +1903,13 @@ pub(super) fn handle_prompt_response(
                 };
                 Some((NotificationEventKind::TurnComplete, body))
             }
-            (Err(err), _) if !dedicated_ux_shown => {
-                Some((NotificationEventKind::AgentError, format!("Error: {err}")))
-            }
+            (Err(err), _) if !dedicated_ux_shown => Some((
+                NotificationEventKind::AgentError,
+                match &fallback_failure {
+                    Some((line, _)) => line.clone(),
+                    None => format!("Error: {err}"),
+                },
+            )),
             _ => None,
         };
 
