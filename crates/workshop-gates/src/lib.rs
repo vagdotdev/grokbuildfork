@@ -50,6 +50,8 @@ pub fn url_is_loopback(url: &str) -> bool {
 /// (gate:no-theft). Kept here so the source scan and the CI script share one list.
 pub const THEFT_MARKERS: &[&str] = &[
     "Claude Code-credentials",
+    ".claude/.credentials",
+    "find-generic-password",
     ".codex/auth.json",
     ".cursor/sdk/auth.json",
     "share/opencode/auth.json",

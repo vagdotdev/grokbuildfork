@@ -136,7 +136,7 @@ PY
   # gate `scannable_source`), so a test fixture may still name a forbidden string as *input* to
   # prove it is dropped (e.g. workshop-adapters env test: ANTHROPIC_BASE_URL=127.0.0.1:3456). The
   # gates crate and `*test*.rs` files are excluded outright.
-  local theft_re='Claude Code-credentials|\.codex/auth\.json|\.cursor/sdk/auth\.json|share/opencode/auth\.json|opencode-with-claude|127\.0\.0\.1:3456|provider_autodock'
+  local theft_re='Claude Code-credentials|\.claude/\.credentials|find-generic-password|\.codex/auth\.json|\.cursor/sdk/auth\.json|share/opencode/auth\.json|opencode-with-claude|127\.0\.0\.1:3456|provider_autodock'
   local hits
   hits="$(scannable_rs_lines | grep -En "$theft_re" || true)"
   if [ -n "$hits" ]; then
