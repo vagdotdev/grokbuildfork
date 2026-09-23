@@ -479,7 +479,7 @@ main() {
 
   # The archive is the one download a default install makes; its progress bar (on a terminal)
   # takes the line under this one.
-  say "Downloading Workshop $version…"
+  say "Downloading Workshop ${version}…"
   fetch "$url" "$tmp/$asset"
   begin "Verifying"
   actual=$(sha256_of "$tmp/$asset")
