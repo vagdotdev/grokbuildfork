@@ -1,5 +1,5 @@
 diff --git a/crates/codegen/xai-grok-pager-bin/src/main.rs b/crates/codegen/xai-grok-pager-bin/src/main.rs
-index aa448be7..e24d03e5 100644
+index aa448be7..e2b2b824 100644
 --- a/crates/codegen/xai-grok-pager-bin/src/main.rs
 +++ b/crates/codegen/xai-grok-pager-bin/src/main.rs
 @@ -261,7 +261,7 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
@@ -116,7 +116,7 @@ index aa448be7..e24d03e5 100644
          xai_grok_version::display_version_with_commit(
              xai_grok_version::full_version(),
              channel_label,
-@@ -2022,7 +2023,24 @@ fn dispatch_doctor_if_requested(args: &PagerArgs) -> bool {
+@@ -2022,7 +2023,79 @@ fn dispatch_doctor_if_requested(args: &PagerArgs) -> bool {
      }
      true
  }
@@ -134,6 +134,61 @@ index aa448be7..e24d03e5 100644
 +            std::env::remove_var(cell.env_var());
 +        }
 +    }
++    workshop_env_aliases();
++}
++
++/// Environment variables Workshop owns outright; they are never mirrored onto a `GROK_*` name.
++const WORKSHOP_NATIVE_ENV: &[&str] = &[
++    "WORKSHOP_HOME",
++    "WORKSHOP_VERSION",
++    "WORKSHOP_CHANNEL",
++    "WORKSHOP_RELEASE_REPO",
++    "WORKSHOP_MANIFEST_URL",
++    "WORKSHOP_DOWNLOAD_BASE",
++    "WORKSHOP_ENABLE_AUTOUPDATE",
++    "WORKSHOP_HERO_ART",
++    "WORKSHOP_BIN",
++    "WORKSHOP_PTY_EVIDENCE_DIR",
++];
++
++/// `WORKSHOP_<X>` is the documented spelling of every `GROK_<X>` switch the inherited code reads
++/// (`WORKSHOP_AGENT_DASHBOARD=0`, `WORKSHOP_SANDBOX=strict`, `WORKSHOP_DISABLE_AUTOUPDATER=1`, …).
++/// Each set `WORKSHOP_<X>` is mirrored onto the unset `GROK_<X>` so the readers stay untouched,
++/// and the clap-bound switches (`--sandbox`, `agent serve --secret`) are mirrored the other way
++/// so their old names keep working as hidden aliases. Workshop-native names (`WORKSHOP_HOME`, credentials) are skipped.
++fn workshop_env_aliases() {
++    let mirrored: Vec<(String, std::ffi::OsString)> = std::env::vars_os()
++        .filter_map(|(key, value)| {
++            let key = key.to_str()?;
++            let rest = key.strip_prefix("WORKSHOP_")?;
++            if rest.is_empty()
++                || WORKSHOP_NATIVE_ENV.contains(&key)
++                || key.starts_with("WORKSHOP_VOICE")
++                || key.ends_with("_API_KEY")
++            {
++                return None;
++            }
++            Some((format!("GROK_{rest}"), value))
++        })
++        .collect();
++    // SAFETY: still single-threaded (called from `isolate_from_grok_build_env` at the top of `main`).
++    unsafe {
++        for (grok_name, value) in mirrored {
++            if std::env::var_os(&grok_name).is_none() {
++                std::env::set_var(&grok_name, value);
++            }
++        }
++        for (old, new) in [
++            ("GROK_SANDBOX", "WORKSHOP_SANDBOX"),
++            ("GROK_AGENT_SECRET", "WORKSHOP_AGENT_SECRET"),
++        ] {
++            if let Some(value) = std::env::var_os(old)
++                && std::env::var_os(new).is_none()
++            {
++                std::env::set_var(new, value);
++            }
++        }
++    }
 +}
 +
  fn main() {
@@ -141,7 +196,7 @@ index aa448be7..e24d03e5 100644
      xai_grok_version::set_full_version(env!("VERSION_WITH_COMMIT"));
      xai_grok_telemetry::startup::mark_process_start();
      if let Some(code) = xai_grok_pager::app::mermaid_worker::maybe_run_render_subprocess() {
-@@ -2054,16 +2072,16 @@ fn main() {
+@@ -2054,16 +2127,16 @@ fn main() {
          xai_grok_shell::agent::external_otel_pin::strip_conflicting_process_env();
      }
      let args = configure_process_env(args).unwrap_or_else(|err| {
@@ -161,7 +216,7 @@ index aa448be7..e24d03e5 100644
               to fix the managed requirements."
          );
          std::process::exit(2);
-@@ -2107,7 +2125,7 @@ fn main() {
+@@ -2107,7 +2180,7 @@ fn main() {
      builder.worker_threads(workers.get()).enable_all();
      let runtime =
          xai_tty_utils::runtime::build_with_blocking_pool(&mut builder).unwrap_or_else(|e| {
@@ -170,7 +225,7 @@ index aa448be7..e24d03e5 100644
              shutdown_and_flush_telemetry(1);
          });
      let result = run_and_shutdown(runtime, async_main(args), RUNTIME_SHUTDOWN_GRACE);
-@@ -2373,6 +2391,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2373,6 +2446,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
              }
              Command::Login {
                  legacy: _,
@@ -178,7 +233,7 @@ index aa448be7..e24d03e5 100644
                  oauth,
                  device_auth,
                  devbox,
-@@ -2381,8 +2400,27 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2381,8 +2455,27 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                  let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                  let config = xai_grok_shell::config::load_agent_config_disk_only()
                      .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
@@ -207,7 +262,7 @@ index aa448be7..e24d03e5 100644
                      config.login_device_flow,
                      config.endpoints.proxy_url(),
                      oauth,
-@@ -2440,7 +2478,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2440,7 +2533,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
              None,
          );
          if let Some(warning) = launch_yolo.blocked_warning {
@@ -216,7 +271,7 @@ index aa448be7..e24d03e5 100644
          }
          let json_schema = args
              .json_schema
-@@ -2524,7 +2562,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
+@@ -2524,7 +2617,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
              if finish_update_on_exit(adopted, &update_config).await {
                  eprintln!("Update installed. Run `grok` to start.");
              } else {
@@ -225,7 +280,7 @@ index aa448be7..e24d03e5 100644
              }
              Ok(())
          }
-@@ -2609,6 +2647,14 @@ fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
+@@ -2609,6 +2702,14 @@ fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
      if no_auto_update_flag {
          return false;
      }
@@ -240,7 +295,7 @@ index aa448be7..e24d03e5 100644
      !std::env::var_os("GROK_DISABLE_AUTOUPDATER")
          .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
  }
-@@ -2699,7 +2745,7 @@ async fn run_update_command(
+@@ -2699,7 +2800,7 @@ async fn run_update_command(
          );
      }
      let telemetry_cfg = xai_grok_shell::config::load_agent_config_disk_only()
@@ -249,7 +304,7 @@ index aa448be7..e24d03e5 100644
          .ok();
      if let Some(agent_cfg) = telemetry_cfg {
          let auth_manager =
-@@ -2726,7 +2772,7 @@ async fn run_update_command(
+@@ -2726,7 +2827,7 @@ async fn run_update_command(
      result?;
      Ok(())
  }
@@ -258,7 +313,7 @@ index aa448be7..e24d03e5 100644
  /// to relaunch onto the new binary. Best-effort and non-fatal: discovery/connect/control failures are logged and
  /// skipped.
  #[tracing::instrument(level = "debug", skip_all)]
-@@ -2886,7 +2932,7 @@ mod tests {
+@@ -2886,7 +2987,7 @@ mod tests {
          );
          assert_eq!(
              resolve_worker_override("100000", cores).notice().unwrap(),
@@ -267,7 +322,7 @@ index aa448be7..e24d03e5 100644
          );
      }
      #[test]
-@@ -2899,7 +2945,7 @@ mod tests {
+@@ -2899,7 +3000,7 @@ mod tests {
          }
          assert_eq!(
              resolve_worker_override("abc", cores).notice().unwrap(),
@@ -276,7 +331,7 @@ index aa448be7..e24d03e5 100644
          );
      }
      #[test]
-@@ -2913,7 +2959,7 @@ mod tests {
+@@ -2913,7 +3014,7 @@ mod tests {
              let mut output = Vec::new();
              write_version(&mut output, label).unwrap();
              let output = String::from_utf8(output).unwrap();
@@ -285,7 +340,7 @@ index aa448be7..e24d03e5 100644
              assert!(output.contains(env!("VERSION_WITH_COMMIT")));
              assert!(output.ends_with(expected_suffix), "{output:?}");
          }
-@@ -3080,30 +3126,37 @@ mod tests {
+@@ -3080,30 +3181,37 @@ mod tests {
      }
      #[cfg(unix)]
      #[test]

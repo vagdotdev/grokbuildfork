@@ -97,7 +97,7 @@ txt=re.sub(r'\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b[=>]
 flat=''.join(txt.split())
 ok=True
 for needle in ["OpenCode · Big Pickle","/model to switch","/auth to connect subscriptions",
-               "Tab: Subscriptions","Kilo","Tab: Models","Claude","Codex","Cursor","[Sign in]","xAI (optional)",
+               "Tab: Subscriptions","Kilo","Tab: Models","Claude","Codex","Cursor","[Sign in]","xAI — Sign in","optional",
                "cached list from 2026-09-21"]:
     if ''.join(needle.split()) not in flat:
         print("VIOLATION: TUI first run did not show %r" % needle); ok=False
