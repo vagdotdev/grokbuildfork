@@ -824,10 +824,10 @@ index 8ffcc224..613c4739 100644
  ## Reopen this tutorial
  
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
-index ab27a76d..cadfba82 100644
+index ab27a76d..8bd1debd 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
-@@ -1,99 +1,90 @@
+@@ -1,99 +1,92 @@
  # Getting Started
  
 -Grok Build is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
@@ -928,9 +928,11 @@ index ab27a76d..cadfba82 100644
 +OpenCode engine's free default model, no sign-in, no key. Type a sentence and press `Enter`.
  
 -If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
-+The first message installs the OpenCode engine (the official `opencode` CLI, about a minute, with
-+progress shown) and starts it; every later message answers within seconds. Nothing is downloaded
-+until you send that first message.
++The OpenCode engine (the official `opencode` CLI) is installed on your first launch and started in
++the background every time Workshop opens, so it is usually ready by the time you press `Enter`; a
++message sent before it is ready simply waits for it. The install (about a minute on a slow
++connection) reaches only opencode.ai, the vendor's installer; every later message answers within
++seconds.
  
 -```bash
 -export XAI_API_KEY="xai-..."
@@ -976,7 +978,7 @@ index ab27a76d..cadfba82 100644
  
  ### File References
  
-@@ -105,7 +96,8 @@ Use `@` in your prompt to attach files:
+@@ -105,7 +98,8 @@ Use `@` in your prompt to attach files:
  @src/                     # Browse a directory
  ```
  
@@ -986,13 +988,16 @@ index ab27a76d..cadfba82 100644
  
  ```
  @!.github                 # Search hidden files
-@@ -114,10 +106,11 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore`
+@@ -114,10 +108,14 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore`
  
  ### Permissions
  
 -By default, Grok asks for permission before executing shell commands or editing files. You can approve individually or toggle always-approve mode:
-+`Shift+Tab` cycles the session mode: **Normal** asks before risky commands and edits, **Plan**
-+explores read-only and presents a plan first, **Always-approve** skips the prompts. You can also:
++Workshop starts in **Always-approve**: commands and edits run without prompts, and the composer
++border says so (`Big Pickle · always-approve`). `Shift+Tab` cycles the session mode: **Normal**
++asks before risky commands and edits, **Plan** explores read-only and presents a plan first,
++**Always-approve** skips the prompts. The mode you pick is remembered for later launches. You can
++also:
  
  - Press `Ctrl+O` to toggle always-approve mode
 -- Use the `--yolo` flag at launch: `grok --yolo`
@@ -1000,7 +1005,7 @@ index ab27a76d..cadfba82 100644
  - Type `/always-approve` in the prompt to toggle the mode
  
  ---
-@@ -126,27 +119,31 @@ By default, Grok asks for permission before executing shell commands or editing
+@@ -126,27 +124,31 @@ By default, Grok asks for permission before executing shell commands or editing
  
  ### Sessions
  
@@ -1038,7 +1043,7 @@ index ab27a76d..cadfba82 100644
  
  | Tool | Description |
  |------|-------------|
-@@ -159,14 +156,17 @@ Grok has built-in tools for:
+@@ -159,14 +161,17 @@ Grok has built-in tools for:
  | `spawn_subagent` | Spawn parallel subagent sessions |
  | `memory_search` | Search cross-session memory |
  
@@ -1059,7 +1064,7 @@ index ab27a76d..cadfba82 100644
  /compact                          # Compress conversation history
  /always-approve                   # Toggle always-approve mode
  /new                              # Start a new session
-@@ -180,54 +180,50 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
+@@ -180,54 +185,50 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
  
  ```bash
  # Launch the interactive TUI and submit an initial prompt as the first turn
@@ -1129,7 +1134,7 @@ index ab27a76d..cadfba82 100644
  ```
  
  Output formats:
-@@ -241,22 +237,24 @@ Output formats:
+@@ -241,22 +242,24 @@ Output formats:
  Example CI/CD usage:
  
  ```bash
@@ -1158,7 +1163,7 @@ index ab27a76d..cadfba82 100644
  
  ---
  
-@@ -264,7 +262,7 @@ Deeper files take precedence. Grok also reads `CLAUDE.md` files for compatibilit
+@@ -264,7 +267,7 @@ Deeper files take precedence. Grok also reads `CLAUDE.md` files for compatibilit
  
  | Document | What You Will Learn |
  |----------|-------------------|
@@ -1168,10 +1173,10 @@ index ab27a76d..cadfba82 100644
  | [Slash Commands](04-slash-commands.md) | All available `/` commands |
  | [Configuration](05-configuration.md) | config.toml, pager.toml, environment variables |
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md b/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
-index 5e321a67..ba1fa6b9 100644
+index 5e321a67..33a295d0 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
-@@ -1,368 +1,90 @@
+@@ -1,368 +1,92 @@
  # Authentication
  
 -Grok supports several authentication methods, including interactive browser login, enterprise single sign-on (SSO), and headless CI/CD runners.
@@ -1545,8 +1550,10 @@ index 5e321a67..ba1fa6b9 100644
 -or `user.email` — see [ZDR and this stream](24-monitoring-usage.md#zdr-and-this-stream).
 -
 -See [Monitoring Usage](24-monitoring-usage.md#related-settings) and [Configuration](05-configuration.md#telemetry).
-+- Nothing is fetched on launch. The first message installs and starts the OpenCode engine; `/model`
-+  fetches the keyless catalogs (Kilo, OpenRouter, NVIDIA) when you open it.
++- On launch, only the OpenCode engine is brought up: a first run fetches the vendor's installer
++  from opencode.ai and starts the engine on this machine; later launches just start it. Nothing
++  is sent to a model before your first message; `/model` fetches the keyless catalogs (Kilo,
++  OpenRouter, NVIDIA) when you open it.
 +- Free pools are shared services: prompts sent through them may be logged by the operator. The
 +  row's detail line says so.
 +- Telemetry is off and no analytics token is baked in. Auto-update is off unless you opt in with
