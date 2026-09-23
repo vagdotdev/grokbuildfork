@@ -380,6 +380,10 @@ pub(super) fn dispatch_connection_picker(
             picker.set_status("Refreshing…");
             dispatch_refresh_catalogs(app, true)
         }
+        PickerOutcome::RetryRailModels => {
+            picker.set_status("Asking the CLI for its models again…");
+            vec![Effect::WorkshopRefreshRailModels]
+        }
         PickerOutcome::Close => {
             // Before any connection is configured the welcome screen stays on the (auth-pending)
             // home, never on a browser.
