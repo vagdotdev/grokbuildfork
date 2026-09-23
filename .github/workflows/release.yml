@@ -278,6 +278,9 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           GGML_NATIVE: "OFF"
+          # cargo runs from the repo root, so upstream's .cargo/config.toml (Neoverse V2) applies to
+          # the helper's Rust code too; v0.2.2's first build had SVE in it.
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C target-cpu=generic"
         run: |
           if [[ "$TARGET" == x86_64-* ]]; then
             export GGML_SSE42=ON GGML_AVX=ON GGML_AVX2=ON GGML_BMI2=ON GGML_FMA=ON GGML_F16C=ON
