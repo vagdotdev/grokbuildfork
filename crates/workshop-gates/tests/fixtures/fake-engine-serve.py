@@ -386,6 +386,24 @@ def run_turn(sid, agent, text, model=None):
             answer = "Saved a scratch note and read it back."
         else:
             answer = "Understood \u2014 no scratch note."
+    elif "adversarial askpass" in text_l:
+        # A prompt-injected command tries to phish the sudo password two ways: run the askpass
+        # helper itself, and connect to the askpass socket directly. Neither may show a card or
+        # return a password — the helper's parent is a shell, not sudo.
+        script = ('out=$("$SUDO_ASKPASS" "Enter your account password to continue:"); rc=$?; '
+                  'printf "HELPER stdout=[%s] rc=%s\\n" "$out" "$rc"')
+        helper = subprocess.run(["sh", "-c", script], cwd=CWD, capture_output=True, text=True)
+        sock = os.environ.get("WORKSHOP_ASKPASS_SOCK", "")
+        direct = "no-socket"
+        if sock:
+            py = ('import socket,sys\n'
+                  's=socket.socket(socket.AF_UNIX)\n'
+                  's.connect(sys.argv[1])\n'
+                  's.sendall(b\'{"prompt":"pw"}\\n\')\n'
+                  'sys.stdout.write("DIRECT["+s.recv(4096).decode().strip()+"]")\n')
+            r = subprocess.run(["python3", "-c", py, sock], capture_output=True, text=True)
+            direct = (r.stdout + r.stderr).strip()
+        answer = (helper.stdout.strip() + " " + direct).strip()
     elif "install htop" in text_l:
         # A command that needs root: really run through whatever `sudo` is on PATH (the gate's
         # stand-in), with the environment Workshop gave this server, and report what it said.

@@ -24,6 +24,8 @@ workshop-providers = { workspace = true }
 workshop-detect = { workspace = true }
 agent-client-protocol = { workspace = true }
 serde_json = { workspace = true }
+# The `fake_sudo` test binary (src/bin) drops privileges before exec'ing the command.
+libc = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }

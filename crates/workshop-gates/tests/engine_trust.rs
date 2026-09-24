@@ -125,12 +125,41 @@ exit 2
     std::fs::write(&path, script).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // The `sudo` the fake engine's commands find: needs a password through SUDO_ASKPASS, like
-    // the real one without a terminal (see `fixtures/fake-sudo.sh`).
+    // The `sudo` the fake engine's commands find: a real binary (so the helper's "parent is real
+    // sudo" check is meaningful — a shell-script fake would have exe `/bin/sh`), which needs a
+    // password through SUDO_ASKPASS like real sudo without a terminal. The sudo gate makes it
+    // setuid-root so it runs as effective root, named `sudo`.
     let sudo = bin.join("sudo");
-    std::fs::copy(fixtures.join("fake-sudo.sh"), &sudo).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_fake_sudo"), &sudo).unwrap();
     std::fs::set_permissions(&sudo, std::fs::Permissions::from_mode(0o755)).unwrap();
     log
+}
+
+/// Make `path` setuid-root via passwordless sudo; `false` when that is unavailable (the caller
+/// skips). Real sudo is setuid-root; the helper's authentication requires an effective-root parent,
+/// so the fake sudo must be too.
+fn make_setuid_root(path: &Path) -> bool {
+    let ok = |args: &[&str]| {
+        matches!(
+            std::process::Command::new("sudo").args(args).arg(path).status(),
+            Ok(s) if s.success()
+        )
+    };
+    ok(&["-n", "chown", "root:root"]) && ok(&["-n", "chmod", "u+s"])
+}
+
+/// Revert [`make_setuid_root`] so the test user's tempdir can be cleaned up. Best-effort.
+struct SetuidRevert(PathBuf);
+impl Drop for SetuidRevert {
+    fn drop(&mut self) {
+        // SAFETY: getuid/getgid take no arguments.
+        let owner = unsafe { format!("{}:{}", libc::getuid(), libc::getgid()) };
+        let run = |args: &[&str]| {
+            let _ = std::process::Command::new("sudo").args(args).arg(&self.0).status();
+        };
+        run(&["-n", "chmod", "0755"]);
+        run(&["-n", "chown", &owner]);
+    }
 }
 
 /// What the fake engine was asked (prompt_async bodies) and told (permission replies).
@@ -2146,6 +2175,14 @@ fn password_sinks(j: &Journey, fx: &Fixture, screens: &[String]) -> String {
 fn sudo_password_is_asked_in_workshop_never_the_model() {
     let Some(bin) = bin_from_env() else { return };
     let fx = fixture();
+    // The helper only answers a real sudo (effective-root, named `sudo`); make the fake sudo so.
+    // Needs passwordless sudo — skip where it is unavailable (CI has it).
+    let fake_sudo = fx.bin.join("sudo");
+    if !make_setuid_root(&fake_sudo) {
+        eprintln!("skipping: needs passwordless sudo to make the fake sudo setuid-root");
+        return;
+    }
+    let _revert = SetuidRevert(fake_sudo);
     // No DISPLAY (as over SSH, on a fresh account, or in CI): sudo cannot reach an askpass helper
     // on its own, so this exercises Workshop's `sudo -A` shim rather than the X11 fallback. Empty
     // rather than merely unset so a desktop runner cannot let sudo use DISPLAY behind the test.
@@ -2268,6 +2305,48 @@ fn scratch_paths_never_say_opencode() {
     );
     snapshot(&j.h, &j.dir, "02-scratch-row-opened");
     j.h.inject_keys(b"\x1b").unwrap();
+    quit(&mut j);
+}
+
+/// A prompt-injected command must not be able to phish the sudo password: invoking `$SUDO_ASKPASS`
+/// itself, or connecting to the askpass socket directly, shows no card and returns no password —
+/// the helper's parent is a shell, not sudo, so the request fails closed both helper-side and
+/// server-side (SO_PEERCRED). No setuid sudo is needed: the point is that a non-sudo caller is
+/// refused.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn direct_askpass_invocation_is_refused_no_card_no_password() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/sudo-askpass-adversarial", &bin, &fx);
+
+    send_prompt(&mut j, "run adversarial askpass");
+    wait_for(&mut j.h, "HELPER stdout=", 60);
+    j.h.update(Duration::from_millis(500));
+    snapshot(&j.h, &j.dir, "01-adversarial-refused");
+    let screen = j.h.screen_contents();
+
+    // No card was ever shown to the user.
+    assert!(
+        !screen.contains("Needs your password"),
+        "a direct askpass call must not raise the password card:\n{screen}"
+    );
+    // The helper returned no password and failed (empty stdout, non-zero exit).
+    assert!(
+        screen.contains("stdout=[]") && screen.contains("rc=1"),
+        "the direct $SUDO_ASKPASS call got no password:\n{screen}"
+    );
+    // The direct socket client was refused (skipped), never handed a password.
+    assert!(
+        screen.contains("skipped") && !screen.contains("password\":"),
+        "a direct socket client is refused, never handed a password:\n{screen}"
+    );
+    // Belt and suspenders: the real password never appears anywhere.
+    let sinks = password_sinks(&j, &fx, std::slice::from_ref(&screen));
+    assert!(
+        !sinks.contains("hunter2"),
+        "no password is ever produced for an unauthenticated caller"
+    );
     quit(&mut j);
 }
 
