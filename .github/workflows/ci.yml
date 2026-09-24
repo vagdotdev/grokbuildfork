@@ -262,6 +262,14 @@ jobs:
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test engine_trust -- --nocapture --include-ignored --test-threads=2
+      - name: PTY gates — the welcome hero donut spins in its own cells and stops at the first prompt
+        # On a focused colour terminal the hero box's ASCII donut turns at the slow tick, every
+        # picture a frame of its loop, repaints landing only in the logo's rows; the first message
+        # takes the welcome view away and the binary goes quiet. `NO_COLOR` and
+        # `[ui] hero_animation = false` show the resting frame (frame 0) and paint nothing.
+        env:
+          WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
+        run: cargo test -p workshop-gates --test pty_hero_donut -- --nocapture --include-ignored --test-threads=1
       - name: PTY gates — updater (newer only, marker-only config write, always-approve survives)
         # A loopback release channel: a version behind the running one installs nothing and writes
         # nothing; a newer one is downloaded, verified and linked while the composer stays usable

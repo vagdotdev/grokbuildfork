@@ -3862,20 +3862,30 @@ mod tests {
         }
     }
 
-    /// Rows of the painted buffer that hold braille logo art.
+    /// Rows of the logo art painted in the buffer: the donut tier whose resting frame's lit cells
+    /// all match at some position (the full tier first, then the compact one); 0 when neither is there.
     fn painted_logo_rows(buf: &Buffer) -> u16 {
+        use workshop_brand::donut::{self, Size};
         let area = buf.area;
-        (area.top()..area.bottom())
-            .filter(|&y| {
-                (area.left()..area.right()).any(|x| {
-                    buf.cell((x, y))
-                        .map(|c| c.symbol())
-                        .unwrap_or("")
-                        .chars()
-                        .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c))
+        let painted = |size: Size| {
+            let frame = donut::frame(size, 0);
+            let matches_at = |x0: u16, y0: u16| {
+                (0..size.rows()).all(|r| {
+                    (0..size.cols()).all(|c| match frame.level(r, c) {
+                        None => true,
+                        Some(_) => buf
+                            .cell((x0 + c as u16, y0 + r as u16))
+                            .is_some_and(|cell| cell.symbol() == frame.glyph(r, c).to_string()),
+                    })
                 })
-            })
-            .count() as u16
+            };
+            (area.top()..area.bottom())
+                .any(|y0| (area.left()..area.right()).any(|x0| matches_at(x0, y0)))
+        };
+        [Size::Full, Size::Compact]
+            .into_iter()
+            .find(|&size| painted(size))
+            .map_or(0, |size| size.rows() as u16)
     }
 
     /// End to end: a draft that steps the logo tier down paints the compact art, not the full art clipped into fewer rows.

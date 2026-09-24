@@ -8323,7 +8323,7 @@ index dcbe4033..b0a519b1 100644
  pub mod credit_bar;
  pub mod dashboard;
 diff --git a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
-index b828a780..43d1cd60 100644
+index b828a780..bb154c97 100644
 --- a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
 @@ -35,7 +35,7 @@ pub(crate) mod workspace_mode;
@@ -8666,7 +8666,49 @@ index b828a780..43d1cd60 100644
  
          let tall = WelcomeLayout::compute(input(Some(13)));
          assert_eq!(tall.logo_tier, LogoTier::Compact);
-@@ -3816,7 +3892,7 @@ mod tests {
+@@ -3786,20 +3862,30 @@ mod tests {
+         }
+     }
+ 
+-    /// Rows of the painted buffer that hold braille logo art.
++    /// Rows of the logo art painted in the buffer: the donut tier whose resting frame's lit cells
++    /// all match at some position (the full tier first, then the compact one); 0 when neither is there.
+     fn painted_logo_rows(buf: &Buffer) -> u16 {
++        use workshop_brand::donut::{self, Size};
+         let area = buf.area;
+-        (area.top()..area.bottom())
+-            .filter(|&y| {
+-                (area.left()..area.right()).any(|x| {
+-                    buf.cell((x, y))
+-                        .map(|c| c.symbol())
+-                        .unwrap_or("")
+-                        .chars()
+-                        .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c))
++        let painted = |size: Size| {
++            let frame = donut::frame(size, 0);
++            let matches_at = |x0: u16, y0: u16| {
++                (0..size.rows()).all(|r| {
++                    (0..size.cols()).all(|c| match frame.level(r, c) {
++                        None => true,
++                        Some(_) => buf
++                            .cell((x0 + c as u16, y0 + r as u16))
++                            .is_some_and(|cell| cell.symbol() == frame.glyph(r, c).to_string()),
++                    })
+                 })
+-            })
+-            .count() as u16
++            };
++            (area.top()..area.bottom())
++                .any(|y0| (area.left()..area.right()).any(|x0| matches_at(x0, y0)))
++        };
++        [Size::Full, Size::Compact]
++            .into_iter()
++            .find(|&size| painted(size))
++            .map_or(0, |size| size.rows() as u16)
+     }
+ 
+     /// End to end: a draft that steps the logo tier down paints the compact art, not the full art clipped into fewer rows.
+@@ -3816,7 +3902,7 @@ mod tests {
  
          let mut buf = Buffer::empty(area);
          let _ = render_welcome(area, &mut buf, &params, &mut prompt, &mut picker);
@@ -8675,7 +8717,7 @@ index b828a780..43d1cd60 100644
  
          prompt.set_text(&["line"; 30].join("\n"));
          let mut buf = Buffer::empty(area);
-@@ -4096,8 +4172,12 @@ mod tests {
+@@ -4096,8 +4182,12 @@ mod tests {
              ..Default::default()
          };
          assert!(
@@ -8690,7 +8732,7 @@ index b828a780..43d1cd60 100644
              "clamped slot must keep the box within the area"
          );
      }
-@@ -4584,7 +4664,8 @@ the usual channels. "
+@@ -4584,7 +4674,8 @@ the usual channels. "
              hero_box::min_content_height(
                  &short_input,
                  short_expanded.hero_info.height,

@@ -68,9 +68,17 @@ index f879c80c..826ca764 100644
          assert!(text.contains("ABCD-EFGH"), "device code: {text:?}");
          assert!(
 diff --git a/crates/codegen/xai-grok-pager-minimal/src/welcome.rs b/crates/codegen/xai-grok-pager-minimal/src/welcome.rs
-index 34aa8f96..bdb1620d 100644
+index 34aa8f96..8e45f895 100644
 --- a/crates/codegen/xai-grok-pager-minimal/src/welcome.rs
 +++ b/crates/codegen/xai-grok-pager-minimal/src/welcome.rs
+@@ -1,6 +1,6 @@
+ //! Minimal skips the full-screen welcome view entirely, so the start of a session is otherwise invisible: you land straight at the prompt.
+ //! To make a fresh session obvious (and on `/new` / `Ctrl+N`), this commits a compact, rounded card once into native scrollback.
+-//! The card holds the braille logo, the version, the cwd, the model, and a one-line hint.
++//! The card holds the logo, the version, the cwd, the model, and a one-line hint.
+ //! It mirrors the full-TUI hero box's style (rounded dim border and logo) without its menu and onboarding.
+ //!
+ //! It is printed via [`xai_ratatui_inline::Terminal::insert_before`], the same one-shot mechanism the commit pipeline uses.
 @@ -61,7 +61,7 @@ pub fn maybe_commit_welcome(app: &mut AppView, terminal: &mut PagerTerminal) {
      let mut info: Vec<Line<'static>> = Vec::new();
      info.push(Line::from(vec![
