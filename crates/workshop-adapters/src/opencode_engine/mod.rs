@@ -625,7 +625,7 @@ impl OpenCodeEngine {
         };
         let agent = match req.permission {
             PermissionPolicy::ReadOnly => "plan",
-            PermissionPolicy::WorkspaceWrite => "build",
+            PermissionPolicy::WorkspaceWrite | PermissionPolicy::AlwaysApprove => "build",
         };
 
         // Subscribe before prompting so no event of this turn is missed; the

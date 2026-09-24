@@ -35,6 +35,7 @@ use serde_json::Value;
 
 use crate::adapter::Terminal;
 use crate::event::{AdapterEvent, Usage};
+pub use crate::event::{QuestionChoice, QuestionPrompt};
 use crate::vendors::json;
 
 /// A permission the agent asked for during a turn.
@@ -75,29 +76,9 @@ impl PermissionRequest {
     }
 }
 
-/// One choice of a [`QuestionPrompt`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct QuestionChoice {
-    pub label: String,
-    #[serde(default)]
-    pub description: String,
-}
-
-/// One question of a [`QuestionRequest`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct QuestionPrompt {
-    pub question: String,
-    #[serde(default)]
-    pub header: String,
-    #[serde(default)]
-    pub options: Vec<QuestionChoice>,
-    /// More than one choice may be picked.
-    #[serde(default)]
-    pub multiple: bool,
-}
-
 /// The agent asked the user something (OpenCode's `question` tool, 1.18.31 `question.asked`):
-/// answered with one list of chosen labels (or typed text) per question, or rejected.
+/// answered with one list of chosen labels (or typed text) per question, or rejected. The
+/// vendor CLI adapters raise the same request from their [`AdapterEvent::Question`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct QuestionRequest {
     pub id: String,

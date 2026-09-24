@@ -28,8 +28,8 @@ use workshop_adapters::opencode_engine::{
 use crate::app::workshop_engine_state::{self as state, EngineState};
 use workshop_adapters::supervisor::{RunHandle, SupervisorOptions, spawn};
 use workshop_adapters::{
-    AdapterEvent, AdapterId, DetectOptions, Detection, PermissionPolicy, RunRequest, Usage,
-    detect,
+    AdapterEvent, AdapterId, AskReply, DetectOptions, Detection, PermissionPolicy, Replier,
+    RunRequest, Usage, detect, question_answers_prompt,
 };
 use workshop_auth::{ENGINE_PROVIDER_ID, EngineModel, PickerSnapshot, models_rows};
 use workshop_providers::catalog::live::{self as live_catalogs, HostedCatalogs};
@@ -745,6 +745,56 @@ impl TurnStream {
             Self::Adapter(_) => false,
         }
     }
+    /// Answers the asks a vendor CLI raises on its control channel; the engine's asks reply
+    /// through its own permission and question hooks instead.
+    pub fn replier(&self) -> Option<Replier> {
+        match self {
+            Self::Engine(_) => None,
+            Self::Adapter(r) => Some(r.replier()),
+        }
+    }
+}
+
+/// What the model is told when the user declines an ask on a vendor CLI's channel.
+const DECLINED_ACTION: &str = "The user declined this action.";
+const DECLINED_QUESTION: &str = "The user declined to answer.";
+
+/// A vendor CLI's ask as the approval card takes it: `bash` with its command, `edit` with its
+/// file, anything else by its tool name.
+fn adapter_permission_request(
+    id: &str,
+    session_id: Option<String>,
+    tool: &str,
+    input: &serde_json::Value,
+) -> PermissionRequest {
+    let kind = match tool {
+        "write" => "edit",
+        other => other,
+    };
+    let metadata = match kind {
+        "bash" => serde_json::json!({ "command": input.get("command") }),
+        "edit" => serde_json::json!({ "filepath": input.get("filePath") }),
+        _ => input.clone(),
+    };
+    PermissionRequest {
+        id: id.to_string(),
+        session_id: session_id.unwrap_or_default(),
+        kind: kind.to_string(),
+        title: summarize_tool_input(input),
+        patterns: Vec::new(),
+        call_id: Some(id.to_string()),
+        metadata,
+        always: Vec::new(),
+    }
+}
+
+/// How one of a vendor CLI's asks ended, back in the turn loop.
+enum AskOutcome {
+    /// Answered (or declined) on the CLI's channel; nothing more to do.
+    Done,
+    /// The user answered a question the CLI's run cannot take: resume the session with this
+    /// prompt once the run ends.
+    Resume(String),
 }
 
 /// What the UI thread learns as a turn streams. Mapped to scrollback `RenderBlock`s by the event
@@ -792,15 +842,17 @@ pub enum WorkshopTurnMsg {
         title: Option<String>,
         metadata: serde_json::Value,
     },
-    /// The engine asks before an edit or a command (its `ask` policy): the UI thread decides
-    /// from the agent's live permission mode — auto-approve modes answer at once, Normal and Plan
-    /// show the approval prompt — and sends the answer on `reply`. Dropping `reply` is a reject.
+    /// The engine asks before an edit or a command (its `ask` policy), or a vendor CLI asks on
+    /// its control channel: the UI thread decides from the agent's live permission mode —
+    /// auto-approve modes answer at once, Normal and Plan show the approval prompt — and sends
+    /// the answer on `reply`. Dropping `reply` is a reject.
     PermissionAsk {
         request: PermissionRequest,
         reply: oneshot::Sender<PermissionReply>,
     },
-    /// The agent asks the user something (OpenCode's `question` tool): the UI thread opens Grok
-    /// Build's question view and sends the answers (or `None`, declined) on `reply`.
+    /// The agent asks the user something (OpenCode's `question` tool, Cursor's
+    /// `askQuestionToolCall`, Claude Code's `AskUserQuestion`): the UI thread opens Grok Build's
+    /// question view and sends the answers (or `None`, declined) on `reply`.
     QuestionAsk {
         request: QuestionRequest,
         reply: oneshot::Sender<QuestionAnswers>,
@@ -1004,7 +1056,9 @@ pub struct WorkshopTurnSpec {
     pub images: Vec<PromptFile>,
     /// The agent's permission mode when the prompt was sent. Engine: Plan → the read-only
     /// `plan` agent, everything else → `build` with the engine asking before edits/commands.
-    /// Vendor CLIs: AlwaysApprove → `WorkspaceWrite`, else their read-only default.
+    /// Vendor CLIs: Plan → their plan mode, Normal → their write-capable mode with the asks
+    /// they can raise answered from the approval card, Auto / always-approve → their
+    /// run-everything mode.
     pub mode: WorkshopPermissionMode,
 }
 
@@ -1925,24 +1979,27 @@ async fn build_stream(
 /// a `cancel` signal (Esc / Ctrl-C → abort/kill). Runs as a detached task; the UI thread owns the
 /// receiver and renders. Never touches the ACP path.
 pub async fn run_workshop_turn(
-    spec: WorkshopTurnSpec,
+    mut spec: WorkshopTurnSpec,
     tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
     mut cancel_rx: watch::Receiver<bool>,
 ) {
-    // The agent's mode is real on the engine: Plan runs OpenCode's read-only `plan` agent (it
-    // cannot edit files or run destructive commands); every other mode runs `build`, where the
-    // server asks before each edit/command and the UI answers per its mode (Normal prompts,
-    // Auto/Always-approve allow). The vendor CLIs keep their own read-only default until
-    // always-approve is on, as before.
+    // The agent's mode is real on every backend. Plan is the one read-only mode: OpenCode's
+    // `plan` agent, the CLIs' plan modes. Normal is the write-capable mode that asks: the
+    // engine's `build` agent with the server asking before each edit/command, the CLIs' own
+    // write mode (`acceptEdits`, allowlist, `workspace-write`) with whatever they can ask about
+    // arriving on their control channel — the UI answers every ask per its live mode with the
+    // approval card. Auto and always-approve approve everything: `build` with every ask
+    // allowed, the CLIs' run-everything modes.
     let permission = match (&spec.kind, spec.mode) {
-        (WorkshopTurnKind::Engine { .. }, WorkshopPermissionMode::Plan) => {
-            PermissionPolicy::ReadOnly
-        }
-        (WorkshopTurnKind::Engine { .. }, _) => PermissionPolicy::WorkspaceWrite,
-        (WorkshopTurnKind::Adapter { .. }, WorkshopPermissionMode::AlwaysApprove) => {
+        (_, WorkshopPermissionMode::Plan) => PermissionPolicy::ReadOnly,
+        (WorkshopTurnKind::Engine { .. }, _)
+        | (WorkshopTurnKind::Adapter { .. }, WorkshopPermissionMode::Normal) => {
             PermissionPolicy::WorkspaceWrite
         }
-        (WorkshopTurnKind::Adapter { .. }, _) => PermissionPolicy::ReadOnly,
+        (
+            WorkshopTurnKind::Adapter { .. },
+            WorkshopPermissionMode::Auto | WorkshopPermissionMode::AlwaysApprove,
+        ) => PermissionPolicy::AlwaysApprove,
     };
     let finish = |tx: &mpsc::UnboundedSender<WorkshopTurnMsg>, cancelled: bool| {
         let _ = tx.send(WorkshopTurnMsg::Done {
@@ -2009,6 +2066,15 @@ pub async fn run_workshop_turn(
     // A model that cannot see and downloads images hands them, before the turn ends, to one that
     // can to check them (once a turn).
     let mut downloaded_images = false;
+    // A vendor CLI's asks (before a command, on its control channel) and questions: each is put
+    // to the user by the UI thread — the approval card, the question view — and answered on
+    // the channel from a small task, so the stream keeps flowing meanwhile. An answer the
+    // channel cannot carry (a question on a CLI that already told itself the question was
+    // skipped) comes back here and resumes the session as the next prompt once the run ends.
+    // The engine's asks go through its own hooks instead.
+    let (asks_tx, mut asks_rx) = mpsc::unbounded_channel::<AskOutcome>();
+    let mut asks_in_flight: usize = 0;
+    let mut resume_with: Option<String> = None;
     loop {
         let silence = async {
             match first_event_at {
@@ -2139,8 +2205,165 @@ pub async fn run_workshop_turn(
                 Some(AdapterEvent::Usage(usage)) => {
                     let _ = tx.send(WorkshopTurnMsg::Usage(usage));
                 }
+                Some(AdapterEvent::PermissionAsk { id, tool, input }) => {
+                    first_event_at = None;
+                    let Some(replier) = stream.replier() else {
+                        continue;
+                    };
+                    let (reply_tx, reply_rx) = oneshot::channel();
+                    let request =
+                        adapter_permission_request(&id, stream.session_id(), &tool, &input);
+                    if tx
+                        .send(WorkshopTurnMsg::PermissionAsk {
+                            request,
+                            reply: reply_tx,
+                        })
+                        .is_err()
+                    {
+                        // No UI to ask: fail closed.
+                        replier
+                            .reply(AskReply::Deny {
+                                id,
+                                message: DECLINED_ACTION.into(),
+                            })
+                            .await;
+                        continue;
+                    }
+                    asks_in_flight += 1;
+                    let asks_tx = asks_tx.clone();
+                    tokio::spawn(async move {
+                        let reply = match reply_rx.await.unwrap_or(PermissionReply::Reject) {
+                            PermissionReply::Reject => AskReply::Deny {
+                                id,
+                                message: DECLINED_ACTION.into(),
+                            },
+                            PermissionReply::Once => AskReply::Allow { id, always: false },
+                            PermissionReply::Always => AskReply::Allow { id, always: true },
+                        };
+                        replier.reply(reply).await;
+                        let _ = asks_tx.send(AskOutcome::Done);
+                    });
+                }
+                Some(AdapterEvent::Question { id, questions }) => {
+                    first_event_at = None;
+                    // A question hands the turn to the user: not an unfinished action.
+                    tail.clear();
+                    let (reply_tx, reply_rx) = oneshot::channel();
+                    let request = QuestionRequest {
+                        id: id.clone(),
+                        session_id: stream.session_id().unwrap_or_default(),
+                        questions: questions.clone(),
+                        call_id: Some(id.clone()),
+                    };
+                    let replier = stream.replier();
+                    if tx
+                        .send(WorkshopTurnMsg::QuestionAsk {
+                            request,
+                            reply: reply_tx,
+                        })
+                        .is_err()
+                    {
+                        if let Some(replier) = replier {
+                            replier
+                                .reply(AskReply::Deny {
+                                    id,
+                                    message: DECLINED_QUESTION.into(),
+                                })
+                                .await;
+                        }
+                        continue;
+                    }
+                    asks_in_flight += 1;
+                    let asks_tx = asks_tx.clone();
+                    tokio::spawn(async move {
+                        let answers = reply_rx.await.ok().flatten();
+                        let outcome = match (answers, replier) {
+                            (Some(answers), Some(replier)) => {
+                                if replier
+                                    .reply(AskReply::Answer {
+                                        id,
+                                        answers: answers.clone(),
+                                    })
+                                    .await
+                                {
+                                    AskOutcome::Done
+                                } else {
+                                    AskOutcome::Resume(question_answers_prompt(
+                                        &questions, &answers,
+                                    ))
+                                }
+                            }
+                            (Some(answers), None) => {
+                                AskOutcome::Resume(question_answers_prompt(&questions, &answers))
+                            }
+                            (None, Some(replier)) => {
+                                replier
+                                    .reply(AskReply::Deny {
+                                        id,
+                                        message: DECLINED_QUESTION.into(),
+                                    })
+                                    .await;
+                                AskOutcome::Done
+                            }
+                            (None, None) => AskOutcome::Done,
+                        };
+                        let _ = asks_tx.send(outcome);
+                    });
+                }
                 Some(AdapterEvent::Done { .. }) => {}
                 None => {
+                    // A vendor CLI's asks still with the user outlive its run (a question it
+                    // skipped itself): wait for them — Esc declines, Ctrl-C cancels — and
+                    // continue the same session with the answers its channel could not take.
+                    if !is_engine {
+                        while asks_in_flight > 0 && !aborted_by_us {
+                            tokio::select! {
+                                biased;
+                                _ = wait_cancelled(&mut cancel_rx) => {
+                                    cancelled = true;
+                                    aborted_by_us = true;
+                                }
+                                outcome = asks_rx.recv() => {
+                                    asks_in_flight = asks_in_flight.saturating_sub(1);
+                                    if let Some(AskOutcome::Resume(prompt)) = outcome {
+                                        resume_with = Some(prompt);
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(prompt) = resume_with.take()
+                            && !aborted_by_us
+                            && !errored
+                        {
+                            if let WorkshopTurnKind::Adapter { resume, .. } = &mut spec.kind
+                                && let Some(session) = stream.session_id()
+                            {
+                                *resume = Some(session);
+                            }
+                            spec.text = prompt;
+                            match build_stream(&spec, &tx, permission).await {
+                                Ok((next, _)) => {
+                                    stream = next;
+                                    first_event_at = Some(
+                                        tokio::time::Instant::now() + FIRST_EVENT_TIMEOUT,
+                                    );
+                                    engine_progress(&tx, THINKING);
+                                    continue;
+                                }
+                                Err(error) => {
+                                    errored = true;
+                                    let line = match error {
+                                        TurnStartError::Other(line) => line,
+                                        TurnStartError::EngineUnavailable(reason) => {
+                                            log_failure_cause(&reason);
+                                            failure_line(&model_name)
+                                        }
+                                    };
+                                    let _ = tx.send(WorkshopTurnMsg::Error(line));
+                                }
+                            }
+                        }
+                    }
                     // Images a model that cannot see downloaded are checked by one that can.
                     let mut checking = false;
                     if vision_switch.is_none()
@@ -2243,6 +2466,12 @@ pub async fn run_workshop_turn(
                     break;
                 }
             },
+            Some(outcome) = asks_rx.recv() => {
+                asks_in_flight = asks_in_flight.saturating_sub(1);
+                if let AskOutcome::Resume(prompt) = outcome {
+                    resume_with = Some(prompt);
+                }
+            }
             _ = wait_cancelled(&mut cancel_rx), if !aborted_by_us => {
                 cancelled = true;
                 aborted_by_us = true;

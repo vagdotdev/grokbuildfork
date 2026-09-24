@@ -15,11 +15,31 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::adapter::{Adapter, PinStatus, PromptDelivery, RunRequest, Terminal};
+use crate::adapter::{Adapter, AskReply, PinStatus, PromptDelivery, RunRequest, Terminal};
 use crate::detect::InstalledCli;
 use crate::event::AdapterEvent;
+
+type ReplyMsg = (AskReply, oneshot::Sender<bool>);
+
+/// Answers asks on a live run's control channel ([`PromptDelivery::Channel`]). Cloneable, so a
+/// host can answer from wherever its user's decision lands.
+#[derive(Clone)]
+pub struct Replier(mpsc::UnboundedSender<ReplyMsg>);
+
+impl Replier {
+    /// Send `reply` to the CLI. `false` when the run cannot carry it: the vendor has no control
+    /// channel, the ask was not one of this run's, or the run is over — the host then falls
+    /// back (a question's answers resume the session as the next prompt).
+    pub async fn reply(&self, reply: AskReply) -> bool {
+        let (done_tx, done_rx) = oneshot::channel();
+        if self.0.send((reply, done_tx)).is_err() {
+            return false;
+        }
+        done_rx.await.unwrap_or(false)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct SupervisorOptions {
@@ -107,11 +127,17 @@ pub struct RunHandle {
     session: watch::Receiver<Option<String>>,
     outcome: tokio::task::JoinHandle<RunOutcome>,
     pid: u32,
+    replier: Replier,
 }
 
 impl RunHandle {
     pub fn pid(&self) -> u32 {
         self.pid
+    }
+
+    /// Answer the run's asks ([`AdapterEvent::PermissionAsk`], [`AdapterEvent::Question`]).
+    pub fn replier(&self) -> Replier {
+        self.replier.clone()
     }
 
     /// Next normalized event; `None` once the stream is finished.
@@ -196,7 +222,7 @@ pub async fn spawn(
     cmd.args(&args)
         .current_dir(&req.cwd)
         .stdin(match delivery {
-            PromptDelivery::Stdin => Stdio::piped(),
+            PromptDelivery::Stdin | PromptDelivery::Channel => Stdio::piped(),
             PromptDelivery::Argument => Stdio::null(),
         })
         .stdout(Stdio::piped())
@@ -224,14 +250,32 @@ pub async fn spawn(
             })?;
     let pid = child.id().unwrap_or(0);
 
-    if delivery == PromptDelivery::Stdin
-        && let Some(mut stdin) = child.stdin.take()
-    {
-        let prompt = req.prompt.clone();
-        tokio::spawn(async move {
-            let _ = stdin.write_all(prompt.as_bytes()).await;
-            let _ = stdin.shutdown().await;
-        });
+    let mut channel_stdin = None;
+    match delivery {
+        PromptDelivery::Stdin => {
+            if let Some(mut stdin) = child.stdin.take() {
+                let prompt = req.prompt.clone();
+                tokio::spawn(async move {
+                    let _ = stdin.write_all(prompt.as_bytes()).await;
+                    let _ = stdin.shutdown().await;
+                });
+            }
+        }
+        PromptDelivery::Channel => {
+            // The prompt goes first; stdin stays open for the run's asks and closes at the end.
+            if let Some(mut stdin) = child.stdin.take() {
+                let mut framed = String::new();
+                for line in adapter.prompt_lines(&req.prompt) {
+                    framed.push_str(&line);
+                    framed.push('\n');
+                }
+                if let Err(e) = stdin.write_all(framed.as_bytes()).await {
+                    tracing::warn!(error = %e, "could not write the prompt to the cli");
+                }
+                channel_stdin = Some(stdin);
+            }
+        }
+        PromptDelivery::Argument => {}
     }
 
     let stdout = child.stdout.take().expect("piped stdout");
@@ -240,6 +284,7 @@ pub async fn spawn(
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let (session_tx, session_rx) = watch::channel(None);
     let (lines_tx, lines_rx) = mpsc::channel::<Result<String, LineError>>(64);
+    let (reply_tx, reply_rx) = mpsc::unbounded_channel::<ReplyMsg>();
 
     let max_line = opts.max_line_bytes;
     tokio::spawn(read_lines(stdout, max_line, lines_tx));
@@ -255,6 +300,8 @@ pub async fn spawn(
         session_tx,
         cancel_rx,
         lines_rx,
+        reply_rx,
+        stdin: channel_stdin,
         stderr_task,
         idle_timeout: opts.idle_timeout,
         cancel_grace: opts.cancel_grace,
@@ -268,6 +315,7 @@ pub async fn spawn(
         session: session_rx,
         outcome,
         pid,
+        replier: Replier(reply_tx),
     })
 }
 
@@ -365,6 +413,10 @@ struct Driver {
     session_tx: watch::Sender<Option<String>>,
     cancel_rx: watch::Receiver<bool>,
     lines_rx: mpsc::Receiver<Result<String, LineError>>,
+    reply_rx: mpsc::UnboundedReceiver<ReplyMsg>,
+    /// The control channel of a [`PromptDelivery::Channel`] run; `None` otherwise, and once
+    /// closed after the terminal event.
+    stdin: Option<tokio::process::ChildStdin>,
     stderr_task: tokio::task::JoinHandle<String>,
     idle_timeout: Option<Duration>,
     cancel_grace: Duration,
@@ -471,10 +523,20 @@ impl Driver {
                             for ev in events {
                                 self.emit(ev).await;
                             }
+                            self.flush_stdin().await;
+                            // The CLI's turn is over: closing its control channel ends it.
+                            if self.normalizer.terminal().is_some() {
+                                self.close_stdin().await;
+                            }
                         }
                         Err(e) => return Stop::Fatal(e.to_string()),
                     },
                 },
+                Some((reply, done)) = self.reply_rx.recv() => {
+                    let carried = self.stdin.is_some() && self.normalizer.reply(&reply);
+                    self.flush_stdin().await;
+                    let _ = done.send(carried);
+                }
                 _ = self.child.wait(), if !leader_exited => {
                     leader_exited = true;
                 }
@@ -491,6 +553,32 @@ impl Driver {
 
     async fn emit(&mut self, ev: AdapterEvent) {
         let _ = self.events_tx.send(ev).await;
+    }
+
+    /// Write what the normalizer queued for the CLI's stdin (answers to its asks).
+    async fn flush_stdin(&mut self) {
+        let lines = self.normalizer.take_stdin_lines();
+        if lines.is_empty() {
+            return;
+        }
+        let Some(stdin) = self.stdin.as_mut() else {
+            return;
+        };
+        let mut framed = String::new();
+        for line in lines {
+            framed.push_str(&line);
+            framed.push('\n');
+        }
+        if let Err(e) = stdin.write_all(framed.as_bytes()).await {
+            tracing::warn!(pid = self.pid, error = %e, "could not write to the cli's stdin");
+            self.stdin = None;
+        }
+    }
+
+    async fn close_stdin(&mut self) {
+        if let Some(mut stdin) = self.stdin.take() {
+            let _ = stdin.shutdown().await;
+        }
     }
 
     async fn stderr_tail(&mut self) -> String {

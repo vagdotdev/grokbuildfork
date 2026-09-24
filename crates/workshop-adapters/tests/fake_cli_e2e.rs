@@ -16,10 +16,12 @@ use workshop_adapters::{
 };
 
 const CLAUDE_SUCCESS: &str = include_str!("fixtures/claude_success.jsonl");
+const CLAUDE_ASK: &str = include_str!("fixtures/claude_ask.jsonl");
 const CLAUDE_LOGGED_OUT: &str = include_str!("fixtures/claude_logged_out.jsonl");
 const CODEX_SUCCESS: &str = include_str!("fixtures/codex_success.jsonl");
 const CODEX_LOGGED_OUT: &str = include_str!("fixtures/codex_logged_out.jsonl");
 const CURSOR_SUCCESS: &str = include_str!("fixtures/cursor_success.jsonl");
+const CURSOR_QUESTION: &str = include_str!("fixtures/cursor_question.jsonl");
 const OPENCODE_SUCCESS: &str = include_str!("fixtures/opencode_success.jsonl");
 const OPENCODE_ERROR: &str = include_str!("fixtures/opencode_error.jsonl");
 
@@ -229,8 +231,8 @@ async fn claude_stream_normalizes_and_uses_pinned_flags() {
             td("the README."),
             AdapterEvent::ToolCall {
                 id: "toolu_01".into(),
-                name: "Read".into(),
-                input: json!({"file_path": "/work/README.md"}),
+                name: "read".into(),
+                input: json!({"filePath": "/work/README.md"}),
             },
             AdapterEvent::ToolResult {
                 id: "toolu_01".into(),
@@ -260,18 +262,182 @@ async fn claude_stream_normalizes_and_uses_pinned_flags() {
             "stream-json",
             "--verbose",
             "--include-partial-messages",
-            "--permission-prompts",
-            "none",
+            "--input-format",
+            "stream-json",
+            "--permission-prompt-tool",
+            "stdio",
             "--permission-mode",
             "plan"
         ]
     );
+    // The prompt goes over stdin as the SDK's `user` message, after its `initialize`.
+    let stdin: Vec<serde_json::Value> = sandbox
+        .stdin()
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("stdin lines are JSON"))
+        .collect();
+    assert_eq!(stdin.len(), 2, "{stdin:?}");
+    assert_eq!(stdin[0]["request"]["subtype"], "initialize");
+    assert_eq!(stdin[1]["type"], "user");
     assert_eq!(
-        sandbox.stdin(),
-        "summarize README",
-        "prompt goes over stdin"
+        stdin[1]["message"]["content"][0]["text"],
+        "summarize README"
     );
     assert_eq!(sandbox.child_cwd(), sandbox.work().to_string_lossy());
+}
+
+/// Normal mode on the Claude rail (`acceptEdits` + the stdio prompt tool): the CLI asks before
+/// the command and blocks until Workshop answers on its stdin; the user's approval (with
+/// "always") and the answers to an `AskUserQuestion` reach the CLI as `control_response`
+/// lines, and the run then completes.
+#[tokio::test]
+async fn claude_normal_mode_asks_on_the_channel_and_answers_reach_the_cli() {
+    let sandbox = Sandbox::new();
+    sandbox.install(&CLAUDE);
+    sandbox.set_fixture(CLAUDE_ASK);
+    let mut req = RunRequest::new("make the page use my wallpaper", sandbox.work());
+    req.permission = PermissionPolicy::WorkspaceWrite;
+    let adapter = vendors::by_id(CLAUDE.id);
+    let cli = detect_installed(&sandbox, &CLAUDE).await;
+    let mut run = spawn(adapter.as_ref(), &cli, req, &sandbox.supervisor_options())
+        .await
+        .expect("spawn");
+    let replier = run.replier();
+    let mut events = Vec::new();
+    while let Some(ev) = tokio::time::timeout(Duration::from_secs(10), run.next_event())
+        .await
+        .expect("the run must not hang on an unanswered ask")
+    {
+        match &ev {
+            AdapterEvent::Question { id, questions } => {
+                assert_eq!(questions[0].options[1].label, "Ocean");
+                assert!(
+                    replier
+                        .reply(workshop_adapters::AskReply::Answer {
+                            id: id.clone(),
+                            answers: vec![vec!["Ocean".into()]],
+                        })
+                        .await,
+                    "the channel carries the answer"
+                );
+            }
+            AdapterEvent::PermissionAsk { id, tool, input } => {
+                assert_eq!(tool, "bash");
+                assert_eq!(input["command"], "cp ~/Pictures/ocean.png assets/");
+                assert!(
+                    replier
+                        .reply(workshop_adapters::AskReply::Allow {
+                            id: id.clone(),
+                            always: true,
+                        })
+                        .await
+                );
+            }
+            _ => {}
+        }
+        events.push(ev);
+    }
+    let outcome = tokio::time::timeout(Duration::from_secs(10), run.wait())
+        .await
+        .expect("run.wait() hung");
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert!(
+        sandbox
+            .argv()
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "acceptEdits"]),
+        "{:?}",
+        sandbox.argv()
+    );
+    // No plumbing row for the question; the command row is the `Run`.
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AdapterEvent::ToolCall { name, input, .. }
+            if name == "bash" && input["command"] == "cp ~/Pictures/ocean.png assets/"
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AdapterEvent::ToolCall { id, .. } if id == "toolu_q")),
+        "{events:#?}"
+    );
+    assert!(matches!(events.last(), Some(AdapterEvent::Done { .. })));
+
+    let replies: Vec<serde_json::Value> = sandbox
+        .replies()
+        .iter()
+        .map(|l| serde_json::from_str(l).expect("control responses are JSON"))
+        .collect();
+    assert_eq!(replies.len(), 2, "{replies:?}");
+    assert_eq!(replies[0]["response"]["request_id"], "req_q");
+    assert_eq!(
+        replies[0]["response"]["response"]["updatedInput"]["answers"]["Which wallpaper should the page use?"],
+        "Ocean"
+    );
+    assert_eq!(replies[1]["response"]["request_id"], "req_cp");
+    assert_eq!(replies[1]["response"]["response"]["behavior"], "allow");
+    assert_eq!(
+        replies[1]["response"]["response"]["updatedPermissions"][0]["rules"][0]["ruleContent"],
+        "cp:*"
+    );
+}
+
+/// The three permission policies are each vendor's own modes: Plan is the read-only one,
+/// Normal the write-capable one that still asks (where the CLI can), always-approve the
+/// run-everything one. Nothing maps Normal or Auto to a plan mode.
+#[tokio::test]
+async fn every_vendor_maps_plan_normal_and_always_approve_to_its_own_modes() {
+    let sandbox = Sandbox::new();
+    for vendor in ALL {
+        sandbox.install(vendor);
+    }
+    let fixtures = [
+        (&CLAUDE, CLAUDE_SUCCESS),
+        (&CODEX, CODEX_SUCCESS),
+        (&CURSOR, CURSOR_SUCCESS),
+        (&OPENCODE, OPENCODE_SUCCESS),
+    ];
+    let mut seen = Vec::new();
+    for (vendor, fixture) in fixtures {
+        for policy in [
+            PermissionPolicy::ReadOnly,
+            PermissionPolicy::WorkspaceWrite,
+            PermissionPolicy::AlwaysApprove,
+        ] {
+            sandbox.set_fixture(fixture);
+            let mut req = RunRequest::new("hi", sandbox.work());
+            req.permission = policy;
+            let (_, outcome) = collect(&sandbox, vendor, req).await;
+            assert_eq!(outcome, RunOutcome::Completed, "{} {policy:?}", vendor.id);
+            seen.push((vendor.id, policy, sandbox.argv().join(" ")));
+        }
+    }
+    let argv = |id: workshop_adapters::AdapterId, policy: PermissionPolicy| -> String {
+        seen.iter()
+            .find(|(v, p, _)| *v == id && *p == policy)
+            .map(|(_, _, a)| a.clone())
+            .unwrap()
+    };
+    use PermissionPolicy::{AlwaysApprove, ReadOnly, WorkspaceWrite};
+    use workshop_adapters::AdapterId::{Claude, Codex, Cursor, OpenCode};
+    assert!(argv(Claude, ReadOnly).contains("--permission-mode plan"));
+    assert!(argv(Claude, WorkspaceWrite).contains("--permission-mode acceptEdits"));
+    assert!(argv(Claude, AlwaysApprove).contains("--permission-mode bypassPermissions"));
+    assert!(argv(Codex, ReadOnly).contains("-s read-only"));
+    assert!(argv(Codex, WorkspaceWrite).contains("-s workspace-write"));
+    assert!(argv(Codex, AlwaysApprove).contains("-s danger-full-access"));
+    assert!(argv(Cursor, ReadOnly).contains("--mode plan"));
+    assert!(
+        !argv(Cursor, WorkspaceWrite).contains("--mode")
+            && !argv(Cursor, WorkspaceWrite).contains("--force")
+    );
+    assert!(
+        argv(Cursor, AlwaysApprove).contains("--force")
+            && !argv(Cursor, AlwaysApprove).contains("--mode")
+    );
+    assert!(argv(OpenCode, ReadOnly).contains("--agent plan"));
+    assert!(!argv(OpenCode, WorkspaceWrite).contains("--agent plan"));
+    assert!(!argv(OpenCode, AlwaysApprove).contains("--agent plan"));
 }
 
 #[tokio::test]
@@ -291,8 +457,13 @@ async fn codex_stream_normalizes_and_resume_uses_exec_resume() {
             },
             AdapterEvent::ToolCall {
                 id: "item_1".into(),
-                name: "command_execution".into(),
-                input: json!({"command": "/bin/bash -lc ls"}),
+                name: "bash".into(),
+                input: json!({"command": "ls"}),
+            },
+            AdapterEvent::ToolDetail {
+                id: "item_1".into(),
+                title: Some("ls".into()),
+                metadata: json!({"output": "README.md\nsrc\n", "exit": 0}),
             },
             AdapterEvent::ToolResult {
                 id: "item_1".into(),
@@ -301,8 +472,8 @@ async fn codex_stream_normalizes_and_resume_uses_exec_resume() {
             },
             AdapterEvent::ToolCall {
                 id: "item_2".into(),
-                name: "file_change".into(),
-                input: json!({"changes": [{"path": "README.md", "kind": "update"}]}),
+                name: "edit".into(),
+                input: json!({"filePath": "README.md", "changes": [{"path": "README.md", "kind": "update"}]}),
             },
             AdapterEvent::ToolResult {
                 id: "item_2".into(),
@@ -374,12 +545,12 @@ async fn cursor_stream_normalizes_and_prompt_is_positional() {
             },
             AdapterEvent::ToolCall {
                 id: "call_1".into(),
-                name: "readToolCall".into(),
-                input: json!({"path": "README.md"}),
+                name: "read".into(),
+                input: json!({"filePath": "README.md"}),
             },
             AdapterEvent::ToolResult {
                 id: "call_1".into(),
-                output: json!({"success": {"content": "# Demo\n", "isEmpty": false}}).to_string(),
+                output: "# Demo\n".into(),
                 is_error: false,
             },
             td("The README "),
@@ -428,6 +599,113 @@ async fn cursor_stream_normalizes_and_prompt_is_positional() {
             .argv()
             .contains(&"--resume=c0ffee00-1111-4222-8333-444455556666".to_string())
     );
+}
+
+/// The owner's bench turn (Cursor rail, always-approve): the CLI runs with `--force` so no
+/// command is auto-denied; its `editToolCall` / `shellToolCall` become the pager's `edit` /
+/// `bash` rows (a rejected command is the row's error, in the CLI's words); the text flushed
+/// before each tool call and before `result` is not printed twice; `askQuestionToolCall` is a
+/// question for the ask-user view, and the answers resume the same chat as the next prompt.
+#[tokio::test]
+async fn cursor_question_turn_dedupes_text_maps_rows_and_resumes_with_answers() {
+    let sandbox = Sandbox::new();
+    sandbox.install(&CURSOR);
+    sandbox.set_fixture(CURSOR_QUESTION);
+    let mut req = RunRequest::new("create a landing page with the wallpaper", sandbox.work());
+    req.permission = PermissionPolicy::AlwaysApprove;
+    let (events, outcome) = collect(&sandbox, &CURSOR, req).await;
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert!(
+        sandbox.argv().contains(&"--force".to_string()),
+        "always-approve is the CLI's run-everything flag: {:?}",
+        sandbox.argv()
+    );
+    assert!(!sandbox.argv().contains(&"--mode".to_string()));
+
+    let text: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            AdapterEvent::TextDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        text,
+        vec![
+            "Writing the page first, ",
+            "then I'll need one approval.",
+            "Tell me which wallpaper you want and I'll finish."
+        ],
+        "each paragraph exactly once: {events:#?}"
+    );
+    let rows: Vec<(&str, &str)> = events
+        .iter()
+        .filter_map(|e| match e {
+            AdapterEvent::ToolCall { name, input, .. } => Some((
+                name.as_str(),
+                input
+                    .get("filePath")
+                    .or_else(|| input.get("command"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("edit", "/work/index.html"),
+            ("bash", "cp ~/Pictures/wallpaper.png assets/")
+        ]
+    );
+    let debug = format!("{events:?}");
+    for key in ["shellToolCall", "editToolCall", "askQuestionToolCall"] {
+        assert!(
+            !debug.contains(key),
+            "protobuf oneof key {key} reached the host: {events:#?}"
+        );
+    }
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AdapterEvent::ToolResult { id, output, is_error: true }
+            if id == "call_cp" && output.contains("requires approval")
+    )));
+    let question = events
+        .iter()
+        .find_map(|e| match e {
+            AdapterEvent::Question { id, questions } => Some((id.clone(), questions.clone())),
+            _ => None,
+        })
+        .expect("the CLI's question reaches the host");
+    assert_eq!(question.0, "call_q");
+    assert_eq!(
+        question.1[0].question,
+        "Which wallpaper should the page use?"
+    );
+    assert_eq!(question.1[0].options[1].label, "Ocean");
+    let session = match events.last() {
+        Some(AdapterEvent::Done { session_id, .. }) => session_id.clone().expect("session id"),
+        other => panic!("expected Done, got {other:?}"),
+    };
+
+    // The user's answer continues the same chat: the answers prompt is the next positional
+    // argument of a `--resume=<chat>` run.
+    let answers = workshop_adapters::question_answers_prompt(&question.1, &[vec!["Ocean".into()]]);
+    assert_eq!(
+        answers,
+        "My answers to your questions:\n- Which wallpaper should the page use?: Ocean\nContinue with the task using these answers."
+    );
+    sandbox.set_fixture(CURSOR_SUCCESS);
+    let mut req = RunRequest::new(answers.clone(), sandbox.work());
+    req.resume = Some(session.clone());
+    req.permission = PermissionPolicy::AlwaysApprove;
+    let (_, outcome) = collect(&sandbox, &CURSOR, req).await;
+    assert_eq!(outcome, RunOutcome::Completed);
+    let argv = sandbox.argv();
+    assert!(argv.contains(&format!("--resume={session}")), "{argv:?}");
+    // The fake records one argv line per `\n`, so the multi-line prompt is the joined tail.
+    assert!(argv.join("\n").ends_with(&answers), "{argv:?}");
 }
 
 #[tokio::test]

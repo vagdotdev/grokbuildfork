@@ -1,9 +1,9 @@
 //! OpenAI Codex CLI (`codex`).
 //!
-//! Verified against `@openai/codex` 0.155.1 (`codex exec --help`,
+//! Verified against `@openai/codex` 0.155.1 and 0.156.1 (`codex exec --help`,
 //! `codex exec resume --help`, `codex login status --help`) and
-//! `codex-rs/exec/src/exec_events.rs` + `codex-rs/cli/src/login.rs` at tag
-//! `rust-v0.155.1`.
+//! `codex-rs/exec/src/exec_events.rs` + `codex-rs/cli/src/login.rs` at tags
+//! `rust-v0.155.1` / `rust-v0.156.1`.
 //!
 //! * identity: `codex --version` -> `codex-cli 0.155.1`
 //! * status:   `codex login status` -> stderr `Logged in using ChatGPT` (exit 0)
@@ -11,17 +11,22 @@
 //! * login:    `codex login` in the user's terminal.
 //! * run:      `codex exec --json -s <sandbox> --skip-git-repo-check [-m M] -`
 //!   (prompt on stdin via the `-` sentinel). Headless exec never asks for
-//!   approvals (`AskForApproval::Never`), so the sandbox flag is the policy.
+//!   approvals (`AskForApproval::Never`), so the sandbox flag is the policy:
+//!   `read-only`, `workspace-write` (no network), or `danger-full-access` for
+//!   always-approve (every command runs, unsandboxed, as `--yolo`).
 //! * resume:   `codex exec resume <id> --json --skip-git-repo-check
 //!   -c sandbox_mode="<sandbox>" [-m M] -` (resume has no `-s` flag).
+//!
+//! `exec` has no ask-user-question item (that lives in the app-server protocol only), so no
+//! question event is raised here.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::claude::truncate;
-use super::json;
+use super::{json, tool};
 use crate::adapter::{
     Adapter, AdapterId, LoginState, NormalizeError, Normalizer, PermissionPolicy, ProbeOutput,
     PromptDelivery, RunRequest, Terminal, VersionPin,
@@ -34,7 +39,37 @@ fn sandbox(policy: PermissionPolicy) -> &'static str {
     match policy {
         PermissionPolicy::ReadOnly => "read-only",
         PermissionPolicy::WorkspaceWrite => "workspace-write",
+        PermissionPolicy::AlwaysApprove => "danger-full-access",
     }
+}
+
+/// The command as Codex's own TUI shows it: without the `bash -lc` wrapper `exec` reports
+/// (`/bin/bash -lc 'cd /w && ls'` -> `cd /w && ls`).
+fn display_command(command: &str) -> String {
+    let trimmed = command.trim();
+    for shell in ["/bin/bash", "/bin/zsh", "/bin/sh", "bash", "zsh", "sh"] {
+        for flag in [" -lc ", " -c "] {
+            if let Some(rest) = trimmed
+                .strip_prefix(shell)
+                .and_then(|r| r.strip_prefix(flag))
+            {
+                return unquote(rest.trim());
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
+fn unquote(s: &str) -> String {
+    if s.len() >= 2 {
+        if let Some(inner) = s.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')) {
+            return inner.replace("'\\''", "'");
+        }
+        if let Some(inner) = s.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+            return inner.replace("\\\"", "\"").replace("\\\\", "\\");
+        }
+    }
+    s.to_string()
 }
 
 impl Adapter for CodexAdapter {
@@ -64,7 +99,7 @@ impl Adapter for CodexAdapter {
     fn version_pin(&self) -> VersionPin {
         VersionPin {
             min_supported: "0.155.1",
-            max_tested: "0.155.1",
+            max_tested: "0.156.1",
         }
     }
 
@@ -161,23 +196,56 @@ pub struct CodexNormalizer {
 }
 
 impl CodexNormalizer {
+    /// The pager's tool row for one thread item: `command_execution` is `bash` (the command
+    /// without its `bash -lc` wrapper), `file_change` is `edit` — or `write` when every change
+    /// adds a file — on the changed paths, `web_search` is `websearch`, an MCP call is its
+    /// tool's own name with its arguments.
     fn tool_call_for(item: &Value, id: &str, kind: &str) -> Option<AdapterEvent> {
-        let input = match kind {
-            "command_execution" => serde_json::json!({ "command": json::str(item, "command") }),
-            "mcp_tool_call" => serde_json::json!({
-                "server": json::str(item, "server"),
-                "tool": json::str(item, "tool"),
-                "arguments": item.get("arguments").cloned().unwrap_or(Value::Null),
-            }),
-            "web_search" => serde_json::json!({ "query": json::str(item, "query") }),
-            "file_change" => serde_json::json!({
-                "changes": item.get("changes").cloned().unwrap_or(Value::Null)
-            }),
+        let (name, input) = match kind {
+            "command_execution" => (
+                tool::BASH.to_string(),
+                json!({ "command": display_command(json::str(item, "command").unwrap_or_default()) }),
+            ),
+            "mcp_tool_call" => (
+                json::str(item, "tool")
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or("mcp")
+                    .to_string(),
+                match item.get("arguments") {
+                    Some(args) if args.is_object() => args.clone(),
+                    Some(Value::Null) | None => json!({}),
+                    Some(other) => json!({ "arguments": other }),
+                },
+            ),
+            "web_search" => (
+                tool::WEB_SEARCH.to_string(),
+                json!({ "query": json::str(item, "query").unwrap_or_default() }),
+            ),
+            "file_change" => {
+                let changes: Vec<&Value> = item
+                    .get("changes")
+                    .and_then(Value::as_array)
+                    .map(|c| c.iter().collect())
+                    .unwrap_or_default();
+                let paths: Vec<&str> = changes
+                    .iter()
+                    .filter_map(|c| json::str(c, "path"))
+                    .collect();
+                let all_new = !changes.is_empty()
+                    && changes.iter().all(|c| json::str(c, "kind") == Some("add"));
+                (
+                    if all_new { tool::WRITE } else { tool::EDIT }.to_string(),
+                    json!({
+                        "filePath": paths.join(", "),
+                        "changes": item.get("changes").cloned().unwrap_or(Value::Null),
+                    }),
+                )
+            }
             _ => return None,
         };
         Some(AdapterEvent::ToolCall {
             id: id.to_string(),
-            name: kind.to_string(),
+            name,
             input,
         })
     }
@@ -229,14 +297,27 @@ impl Normalizer for CodexNormalizer {
                         }
                         let status = json::str(item, "status").unwrap_or_default();
                         let (output, is_error) = match kind {
-                            "command_execution" => (
-                                json::str(item, "aggregated_output")
+                            "command_execution" => {
+                                // As the engine's `bash`: the exit code travels in the detail
+                                // (a non-zero one reads `exit N` on the `Run` row); a command
+                                // that never ran (declined, no exit code) is the row's error.
+                                let output = json::str(item, "aggregated_output")
                                     .unwrap_or_default()
-                                    .to_string(),
-                                status != "completed"
-                                    || item.get("exit_code").and_then(Value::as_i64).unwrap_or(0)
-                                        != 0,
-                            ),
+                                    .to_string();
+                                let exit = item.get("exit_code").and_then(Value::as_i64);
+                                let mut metadata = json!({ "output": output });
+                                if let Some(code) = exit {
+                                    metadata["exit"] = Value::from(code);
+                                }
+                                events.push(AdapterEvent::ToolDetail {
+                                    id: id.to_string(),
+                                    title: Some(display_command(
+                                        json::str(item, "command").unwrap_or_default(),
+                                    )),
+                                    metadata,
+                                });
+                                (output, exit.is_none() && status != "completed")
+                            }
                             "mcp_tool_call" => match item.get("error") {
                                 Some(err) if !err.is_null() => (
                                     json::str(err, "message").unwrap_or_default().to_string(),
@@ -397,6 +478,21 @@ mod tests {
                 "-"
             ]
         );
+        // Always-approve drops the sandbox (workspace-write would still deny network and
+        // out-of-folder writes): every command runs, as with `--yolo`.
+        let mut yolo = RunRequest::new("hi", "/tmp");
+        yolo.permission = PermissionPolicy::AlwaysApprove;
+        assert!(
+            a.run_args(&yolo)
+                .windows(2)
+                .any(|w| w == ["-s", "danger-full-access"])
+        );
+        yolo.resume = Some("thread-1".into());
+        assert!(
+            a.run_args(&yolo)
+                .windows(2)
+                .any(|w| w == ["-c", "sandbox_mode=\"danger-full-access\""])
+        );
         let mut req = RunRequest::new("hi", "/tmp");
         req.resume = Some("thread-1".into());
         req.permission = PermissionPolicy::WorkspaceWrite;
@@ -416,5 +512,102 @@ mod tests {
                 "-"
             ]
         );
+    }
+
+    /// Thread items become the pager's rows: `command_execution` is a `Run` of the command
+    /// without its `bash -lc` wrapper, carrying exit code and output; `file_change` an `Edit`
+    /// (or `Creating`, when every change adds a file) on the changed paths; `web_search` a
+    /// `Web search`; an MCP call its tool's own name.
+    #[test]
+    fn thread_items_use_the_pager_vocabulary() {
+        assert_eq!(display_command("/bin/bash -lc ls"), "ls");
+        assert_eq!(
+            display_command("/bin/bash -lc 'cd /w && ls -la'"),
+            "cd /w && ls -la"
+        );
+        assert_eq!(
+            display_command("bash -lc \"echo \\\"hi\\\"\""),
+            "echo \"hi\""
+        );
+        assert_eq!(display_command("python3 run.py"), "python3 run.py");
+
+        let mut n = CodexNormalizer::default();
+        let lines = [
+            r#"{"type":"item.started","item":{"id":"i1","type":"command_execution","command":"/bin/bash -lc 'ls /nope'","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#,
+            r#"{"type":"item.completed","item":{"id":"i1","type":"command_execution","command":"/bin/bash -lc 'ls /nope'","aggregated_output":"ls: cannot access '/nope'\n","exit_code":2,"status":"failed"}}"#,
+            r#"{"type":"item.completed","item":{"id":"i2","type":"file_change","changes":[{"path":"README.md","kind":"update"}],"status":"completed"}}"#,
+            r#"{"type":"item.completed","item":{"id":"i3","type":"file_change","changes":[{"path":"a.txt","kind":"add"},{"path":"b.txt","kind":"add"}],"status":"completed"}}"#,
+            r#"{"type":"item.started","item":{"id":"i4","type":"web_search","query":"ghostty ubuntu","action":{"type":"search"}}}"#,
+            r#"{"type":"item.completed","item":{"id":"i5","type":"mcp_tool_call","server":"fs","tool":"read_file","arguments":{"path":"/w/a"},"result":{"content":[{"type":"text","text":"hi"}]},"error":null,"status":"completed"}}"#,
+        ];
+        let events: Vec<AdapterEvent> = lines
+            .iter()
+            .flat_map(|l| n.on_line(l).expect("valid line"))
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                AdapterEvent::ToolCall {
+                    id: "i1".into(),
+                    name: "bash".into(),
+                    input: json!({"command": "ls /nope"}),
+                },
+                AdapterEvent::ToolDetail {
+                    id: "i1".into(),
+                    title: Some("ls /nope".into()),
+                    metadata: json!({"output": "ls: cannot access '/nope'\n", "exit": 2}),
+                },
+                AdapterEvent::ToolResult {
+                    id: "i1".into(),
+                    output: "ls: cannot access '/nope'\n".into(),
+                    is_error: false,
+                },
+                AdapterEvent::ToolCall {
+                    id: "i2".into(),
+                    name: "edit".into(),
+                    input: json!({"filePath": "README.md", "changes": [{"path": "README.md", "kind": "update"}]}),
+                },
+                AdapterEvent::ToolResult {
+                    id: "i2".into(),
+                    output: json!([{"path": "README.md", "kind": "update"}]).to_string(),
+                    is_error: false,
+                },
+                AdapterEvent::ToolCall {
+                    id: "i3".into(),
+                    name: "write".into(),
+                    input: json!({"filePath": "a.txt, b.txt", "changes": [{"path": "a.txt", "kind": "add"}, {"path": "b.txt", "kind": "add"}]}),
+                },
+                AdapterEvent::ToolResult {
+                    id: "i3".into(),
+                    output:
+                        json!([{"path": "a.txt", "kind": "add"}, {"path": "b.txt", "kind": "add"}])
+                            .to_string(),
+                    is_error: false,
+                },
+                AdapterEvent::ToolCall {
+                    id: "i4".into(),
+                    name: "websearch".into(),
+                    input: json!({"query": "ghostty ubuntu"}),
+                },
+                AdapterEvent::ToolCall {
+                    id: "i5".into(),
+                    name: "read_file".into(),
+                    input: json!({"path": "/w/a"}),
+                },
+                AdapterEvent::ToolResult {
+                    id: "i5".into(),
+                    output: json!({"content": [{"type": "text", "text": "hi"}]}).to_string(),
+                    is_error: false,
+                },
+            ]
+        );
+        // A declined command never ran: no exit code, and the row's error.
+        let declined = n
+            .on_line(r#"{"type":"item.completed","item":{"id":"i6","type":"command_execution","command":"/bin/bash -lc 'rm -rf /'","aggregated_output":"","exit_code":null,"status":"declined"}}"#)
+            .unwrap();
+        assert!(matches!(
+            declined.last(),
+            Some(AdapterEvent::ToolResult { is_error: true, .. })
+        ));
     }
 }
