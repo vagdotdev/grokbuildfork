@@ -7,8 +7,11 @@ use crate::views::dashboard::state::RowState;
 
 /// Parent turn, wake, command, pending dispatch, or replay activity.
 /// Background work alone can keep the row Working without making the parent's activity live.
+/// Workshop: an Engine/Adapter turn runs outside the ACP session (whose state stays idle), so it
+/// counts here too, else the row sits under "Idle" for the whole turn.
 pub(crate) fn has_live_parent_activity(agent: &AgentView) -> bool {
     !agent.session.state.is_idle()
+        || agent.workshop_turn_active
         || agent.wake_turn_active()
         || agent.session.turn_activity().is_some()
         || !agent.session.pending_prompts.is_empty()

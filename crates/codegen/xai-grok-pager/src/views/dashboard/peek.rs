@@ -738,12 +738,18 @@ pub fn extract_last_response_type(agent: &AgentView) -> String {
 
     use crate::acp::tracker::TurnActivity;
 
-    let running = !agent.session.state.is_idle();
+    // Workshop: an Engine/Adapter turn reports its activity through the event loop, not the ACP tracker.
+    let running = !agent.session.state.is_idle() || agent.workshop_turn_active;
+    let live_activity = if agent.workshop_turn_active {
+        agent.workshop_turn_activity.clone()
+    } else {
+        agent.session.turn_activity()
+    };
     // While the turn is running, the live activity is the ground truth for what the agent is doing
     // RIGHT NOW. Driving the status from this, not only from the scrollback scan, keeps the peek from
     // dwelling on the previous, now-stale "Response".
     if running {
-        match agent.session.turn_activity() {
+        match live_activity {
             Some(TurnActivity::Thinking) => return "Thinking".to_string(),
             Some(TurnActivity::Responding) => return "Response".to_string(),
             Some(TurnActivity::AutoCompacting) => return "Compacting".to_string(),

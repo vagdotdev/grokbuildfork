@@ -609,6 +609,7 @@ pub(crate) fn top_level_last_change_at(agent: &AgentView, state: RowState) -> Sy
     let anchor: Instant = match state {
         RowState::Working => agent
             .turn_started_at
+            .or(agent.workshop_turn_started_at)
             .or(agent.last_active_at)
             .unwrap_or_else(fallback_epoch),
         RowState::NeedsInput
