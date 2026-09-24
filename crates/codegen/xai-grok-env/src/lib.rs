@@ -17,12 +17,19 @@ pub struct GrokBuildEndpoints {
     pub gateway_ws_url: &'static str,
     pub ws_origin: &'static str,
 }
+/// Workshop (gate:no-xai, Gate 3): the compiled production endpoint set is loopback-only.
+/// Workshop has no first-party proxy, asset server, relay or gateway; every inherited auxiliary
+/// service (model list, managed config, feedback, trace upload, relay, cloud sandbox) therefore
+/// fails fast against a closed loopback port instead of reaching an xAI host. `127.0.0.1:1`
+/// (tcpmux) is never listening on a developer machine and cannot be bound without root.
+/// A user who adds the optional xAI connection gets that provider's endpoints from its manifest,
+/// not from this process-wide default. Operators can still override via `GROK_PRODUCTION_*`.
 const PRODUCTION_ENDPOINTS: GrokBuildEndpoints = GrokBuildEndpoints {
-    cli_chat_proxy_base_url: "https://cli-chat-proxy.grok.com/v1",
-    asset_server_url: "https://assets.grok.com",
-    relay_ws_url: "wss://code.grok.com/ws/code-agent",
-    gateway_ws_url: "wss://grok.com/ws/gw/",
-    ws_origin: "https://grok.com",
+    cli_chat_proxy_base_url: "http://127.0.0.1:1/v1",
+    asset_server_url: "http://127.0.0.1:1",
+    relay_ws_url: "ws://127.0.0.1:1/ws/code-agent",
+    gateway_ws_url: "ws://127.0.0.1:1/ws/gw/",
+    ws_origin: "http://127.0.0.1:1",
 };
 pub const PROD_CLI_CHAT_PROXY_BASE_URL: &str = PRODUCTION_ENDPOINTS.cli_chat_proxy_base_url;
 pub const PROD_ASSET_SERVER_URL: &str = PRODUCTION_ENDPOINTS.asset_server_url;
