@@ -859,10 +859,10 @@ index 40625217..6b47c26a 100644
      };
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_askpass.rs b/crates/codegen/xai-grok-pager/src/app/workshop_askpass.rs
 new file mode 100644
-index 00000000..93eb17fc
+index 00000000..9e9288b0
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_askpass.rs
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,508 @@
 +//! Workshop: `sudo` passwords for the engine's commands, the way Grok Build handles them.
 +//!
 +//! Grok Build's own shell tool runs commands with a null stdin and no PTY
@@ -897,6 +897,123 @@ index 00000000..93eb17fc
 +/// The engine-side environment: the helper `sudo` runs and the socket it reaches Workshop on.
 +pub const HELPER_ENV: &str = "SUDO_ASKPASS";
 +pub const SOCKET_ENV: &str = "WORKSHOP_ASKPASS_SOCK";
++
++// ── Caller authentication ────────────────────────────────────────────────────────────────────────
++//
++// The helper path and the socket are in every engine command's environment, and with the `sudo -A`
++// shim every sudo runs the helper. Without a check, a prompt-injected model command could run
++// `$SUDO_ASKPASS` itself (or connect to the socket directly), show Workshop's legitimate password
++// card, and read the typed password. So the password is delivered only when the *caller's parent is
++// a live `sudo` process* — verified two ways: the helper checks its own parent before it connects,
++// and the socket server checks the connecting peer's parent via `SO_PEERCRED`.
++//
++// "Real sudo" = a process whose *effective* uid is root and whose executable name is `sudo`. A
++// non-root attacker cannot impersonate that: obtaining euid 0 needs a setuid-root binary they cannot
++// create. An env-carried secret would not help instead — every engine command shares one
++// environment and can set variables inline, so any nonce would be readable and forgeable by the
++// attacker; the kernel-verified peer credential is the sound binding to the active sudo tool call.
++
++/// True when `pid` is a live process with effective uid 0 and executable name `sudo` (real,
++/// setuid-root sudo). Reads `/proc/<pid>/status` on Linux — world-readable even for a setuid,
++/// non-dumpable process, unlike `/proc/<pid>/exe`, which is root-only there, so an unprivileged
++/// helper/server can still check it. Falls back to `ps` on other unix.
++fn effective_root_sudo(pid: i32) -> bool {
++    if pid <= 1 {
++        return false;
++    }
++    #[cfg(target_os = "linux")]
++    {
++        let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
++            return false;
++        };
++        let mut name_sudo = false;
++        let mut euid_root = false;
++        for line in status.lines() {
++            if let Some(name) = line.strip_prefix("Name:") {
++                name_sudo = name.trim() == "sudo";
++            } else if let Some(uids) = line.strip_prefix("Uid:") {
++                // "Uid:\t<real>\t<effective>\t<saved>\t<fs>"
++                euid_root = uids.split_whitespace().nth(1) == Some("0");
++            }
++        }
++        name_sudo && euid_root
++    }
++    #[cfg(not(target_os = "linux"))]
++    {
++        let Ok(out) = std::process::Command::new("ps")
++            .args(["-o", "euid=", "-o", "comm=", "-p", &pid.to_string()])
++            .output()
++        else {
++            return false;
++        };
++        let text = String::from_utf8_lossy(&out.stdout);
++        let mut fields = text.split_whitespace();
++        let euid = fields.next();
++        let comm = fields.next();
++        euid == Some("0") && comm.is_some_and(|c| c == "sudo" || c.ends_with("/sudo"))
++    }
++}
++
++/// The parent pid of `pid`.
++fn parent_pid(pid: i32) -> Option<i32> {
++    #[cfg(target_os = "linux")]
++    {
++        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
++        // "<pid> (comm) <state> <ppid> …"; comm may itself contain ')', so split at the last one.
++        let after_comm = stat.rsplit_once(')')?.1;
++        let mut fields = after_comm.split_whitespace();
++        let _state = fields.next()?;
++        fields.next()?.parse().ok()
++    }
++    #[cfg(not(target_os = "linux"))]
++    {
++        let out = std::process::Command::new("ps")
++            .args(["-o", "ppid=", "-p", &pid.to_string()])
++            .output()
++            .ok()?;
++        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
++    }
++}
++
++/// The connecting socket peer's pid via `SO_PEERCRED` (Linux). `None` where the platform cannot
++/// report it.
++#[cfg(target_os = "linux")]
++fn peer_pid(fd: std::os::fd::RawFd) -> Option<i32> {
++    let mut cred = libc::ucred {
++        pid: 0,
++        uid: 0,
++        gid: 0,
++    };
++    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
++    // SAFETY: `getsockopt(SO_PEERCRED)` writes a `ucred` of `len` bytes into `cred`, which outlives
++    // the call; `len` is initialised to its size.
++    let rc = unsafe {
++        libc::getsockopt(
++            fd,
++            libc::SOL_SOCKET,
++            libc::SO_PEERCRED,
++            (&mut cred as *mut libc::ucred).cast(),
++            &mut len,
++        )
++    };
++    (rc == 0 && cred.pid > 0).then_some(cred.pid)
++}
++
++#[cfg(not(target_os = "linux"))]
++fn peer_pid(_fd: std::os::fd::RawFd) -> Option<i32> {
++    None
++}
++
++/// Whether the socket peer is a real sudo's askpass helper: its parent is real sudo. On a platform
++/// without `SO_PEERCRED` this cannot be verified server-side, so it defers to the helper's own
++/// parent check (the helper refused to connect unless launched by sudo).
++fn peer_is_real_sudo_child(stream: &tokio::net::UnixStream) -> bool {
++    use std::os::fd::AsRawFd;
++    match peer_pid(stream.as_raw_fd()) {
++        Some(pid) => parent_pid(pid).is_some_and(effective_root_sudo),
++        None => !cfg!(target_os = "linux"),
++    }
++}
 +
 +/// A password `sudo` is waiting for. Lives on `AppView` while the prompt is up; the typed bytes
 +/// are wiped when the answer goes out or the prompt is dropped.
@@ -992,7 +1109,12 @@ index 00000000..93eb17fc
 +        tracing::warn!(error = %e, "askpass: cannot create $WORKSHOP_HOME/run or bin");
 +        return None;
 +    }
-+    private_dir(&run_dir);
++    // Fail closed if the socket directory cannot be made private: a world-accessible askpass socket
++    // would let any local process reach the password prompt.
++    if !make_private(&run_dir) {
++        tracing::warn!(path = %run_dir.display(), "askpass: refusing to start — cannot make the socket directory private");
++        return None;
++    }
 +    let socket = run_dir.join(format!("askpass-{}.sock", std::process::id()));
 +    let _ = std::fs::remove_file(&socket);
 +    let listener = match tokio::net::UnixListener::bind(&socket) {
@@ -1002,6 +1124,11 @@ index 00000000..93eb17fc
 +            return None;
 +        }
 +    };
++    if !restrict_socket(&socket) {
++        tracing::warn!(path = %socket.display(), "askpass: refusing to start — cannot restrict the socket to the owner");
++        let _ = std::fs::remove_file(&socket);
++        return None;
++    }
 +    let helper = bin_dir.join("askpass");
 +    let exe = match std::env::current_exe() {
 +        Ok(p) => p,
@@ -1027,13 +1154,32 @@ index 00000000..93eb17fc
 +    Some(AskpassServer { socket, helper })
 +}
 +
++/// Make `dir` owner-only (0700) and confirm it took; the caller fails closed otherwise.
 +#[cfg(unix)]
-+fn private_dir(dir: &Path) {
++fn make_private(dir: &Path) -> bool {
 +    use std::os::unix::fs::PermissionsExt;
-+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
++    if std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).is_err() {
++        return false;
++    }
++    std::fs::metadata(dir)
++        .map(|m| m.permissions().mode() & 0o077 == 0)
++        .unwrap_or(false)
 +}
 +#[cfg(not(unix))]
-+fn private_dir(_dir: &Path) {}
++fn make_private(_dir: &Path) -> bool {
++    true
++}
++
++/// Restrict the socket file to the owner (0600); the caller fails closed otherwise.
++#[cfg(unix)]
++fn restrict_socket(path: &Path) -> bool {
++    use std::os::unix::fs::PermissionsExt;
++    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).is_ok()
++}
++#[cfg(not(unix))]
++fn restrict_socket(_path: &Path) -> bool {
++    true
++}
 +
 +async fn serve(listener: tokio::net::UnixListener, ui_tx: mpsc::UnboundedSender<WorkshopTurnMsg>) {
 +    loop {
@@ -1054,12 +1200,23 @@ index 00000000..93eb17fc
 +    ui_tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
 +) -> std::io::Result<()> {
 +    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
++    // Only a real sudo's askpass helper is answered: a command that connects directly (or runs
++    // `$SUDO_ASKPASS` itself) has a shell/other parent, never sudo, so no card is shown and no
++    // password is returned.
++    let authenticated = peer_is_real_sudo_child(&stream);
 +    let (reader, mut writer) = stream.into_split();
 +    let mut line = String::new();
 +    tokio::io::BufReader::new(reader)
 +        .take(4096)
 +        .read_line(&mut line)
 +        .await?;
++    if !authenticated {
++        tracing::warn!(
++            "askpass: refusing a client whose parent is not sudo (possible direct $SUDO_ASKPASS call)"
++        );
++        writer.write_all(b"{\"skipped\":true}\n").await?;
++        return writer.shutdown().await;
++    }
 +    let request: serde_json::Value = serde_json::from_str(line.trim()).unwrap_or_default();
 +    let prompt = request
 +        .get("prompt")
@@ -1106,6 +1263,17 @@ index 00000000..93eb17fc
 +}
 +
 +fn helper_main(prompt: &str) -> i32 {
++    // Fail closed unless our parent is real sudo: a model command that runs `$SUDO_ASKPASS` itself
++    // has a shell parent, so it never reaches the socket and never shows a card.
++    #[cfg(unix)]
++    {
++        // SAFETY: getppid takes no arguments and only reads the caller's parent pid.
++        let ppid = unsafe { libc::getppid() };
++        if !effective_root_sudo(ppid) {
++            eprintln!("{SKIPPED}");
++            return 1;
++        }
++    }
 +    let Some(socket) = std::env::var_os(SOCKET_ENV) else {
 +        eprintln!("{SKIPPED}");
 +        return 1;
@@ -1177,6 +1345,17 @@ index 00000000..93eb17fc
 +    }
 +
 +    #[test]
++    fn only_real_sudo_parents_are_trusted() {
++        // This test process is not sudo: not effective-root and not named `sudo`.
++        assert!(!effective_root_sudo(std::process::id() as i32));
++        assert!(!effective_root_sudo(1)); // init
++        assert!(!effective_root_sudo(0)); // degenerate
++        // Our own parent (cargo test harness / shell) is discoverable and is not sudo either.
++        let ppid = parent_pid(std::process::id() as i32).expect("own ppid");
++        assert!(!effective_root_sudo(ppid));
++    }
++
++    #[test]
 +    fn typed_bytes_are_wiped_on_answer_and_drop() {
 +        let (tx, rx) = oneshot::channel();
 +        let mut pending = PendingPassword::new("t".into(), tx);
@@ -1194,10 +1373,10 @@ index 00000000..93eb17fc
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_engine_shell.rs b/crates/codegen/xai-grok-pager/src/app/workshop_engine_shell.rs
 new file mode 100644
-index 00000000..35aa6096
+index 00000000..f76d90da
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_engine_shell.rs
-@@ -0,0 +1,454 @@
+@@ -0,0 +1,459 @@
 +//! Workshop: the shell the OpenCode engine runs its commands through, so a blocking command or a
 +//! GUI the model launches behaves the way Grok Build's shell tool makes it behave.
 +//!
@@ -1400,7 +1579,7 @@ index 00000000..35aa6096
 +    if args.get(1).map(OsString::as_os_str) != Some(OsStr::new("__engine-shell")) {
 +        return None;
 +    }
-+    let command = extract_command(&args[2..]);
++    let command = extract_command(args.get(2..).unwrap_or(&[]));
 +    Some(run(&command))
 +}
 +
@@ -1445,6 +1624,9 @@ index 00000000..35aa6096
 +    // `setsid`: the command runs in its own session, so a daemon or GUI it leaves behind survives
 +    // this shim's exit and is out of OpenCode's process group (its timeout kill cannot reach it).
 +    xai_tty_utils::detach_std_command(&mut cmd);
++    // Enrolling would tie the child to this process's scope; the whole point is that it outlives us
++    // (a backgrounded command, a detached GUI), so it is spawned deliberately unenrolled.
++    #[allow(clippy::disallowed_methods)]
 +    let mut child = match cmd.spawn() {
 +        Ok(child) => child,
 +        Err(e) => {
@@ -1520,7 +1702,9 @@ index 00000000..35aa6096
 +        match reader.read(&mut buf) {
 +            Ok(0) => break,
 +            Ok(n) => {
-+                if out.write_all(&buf[..n]).is_ok() {
++                if let Some(chunk) = buf.get(..n)
++                    && out.write_all(chunk).is_ok()
++                {
 +                    *offset += n as u64;
 +                    wrote = true;
 +                }
