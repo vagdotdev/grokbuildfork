@@ -100,6 +100,11 @@ def stage(rel, src=None, data=None):
 # --- the fresh HOME ----------------------------------------------------------------------------
 if OTHER:
     sh(f"sudo rm -rf '{HOME}'")
+    # A model writes to /tmp directly too, not only to $TMPDIR: clear what finished runs' accounts left
+    # there (a fresh machine has none of it), leaving runs still in progress alone.
+    for u in [l.split(":")[0] for l in open("/etc/passwd") if l.startswith("acc") and len(l.split(":")[0]) == 9]:
+        if u != USER and sh(f"pgrep -u {u}").returncode:
+            sh(f"sudo find /tmp -mindepth 1 -maxdepth 1 -user {u} -exec rm -rf {{}} +")
     # root-owned and execute-only: a run can reach its own HOME but cannot list the others
     sh(f"sudo install -d -m 711 -o root -g root '{HOME.parent}'")
     # the account's home is the run's HOME, created from /etc/skel like any new desktop account
