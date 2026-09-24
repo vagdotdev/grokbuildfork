@@ -9,8 +9,9 @@
 # pane is also shown in an xfce4-terminal on $DISPLAY and the whole desktop is recorded to
 # OUTDIR/raw-screen.mp4 (render.py cuts the waits afterwards).
 #
-# The task runs as its own account (default `sam`, with NOPASSWD sudo like a Mac admin using Homebrew;
-# T11's `mac` needs its password), with HOME under the root-owned, unlistable /home/acc/. That account
+# The task runs as its own account (`acc<hash>`, one per result folder), set up like a normal desktop user:
+# sudo asks for its password, which the monitor types when a password prompt shows, as the user would.
+# HOME is under the root-owned, unlistable /home/acc/. That account
 # cannot read the invoking user's home, where the evidence and the fixtures' answer keys live; after the
 # checks the HOME is moved into OUTDIR/home.
 #
@@ -43,7 +44,8 @@ STEPS="$HERE/tasks/$TASK.steps"
 RUN_ID="$(basename "$OUT")"
 # Unique per output folder: runs of the same task in parallel result trees (one per model, say) must
 # never share a tmux server or a HOME.
-RUN_KEY="$RUN_ID-$(printf %s "$OUT" | sha1sum | cut -c1-6)"
+RUN_HASH="$(printf %s "$OUT" | sha1sum | cut -c1-6)"
+RUN_KEY="$RUN_ID-$RUN_HASH"
 SESSION="acc-$RUN_KEY"
 # One tmux server per run: tmux 3.5a has segfaulted with several sessions on one server.
 T=(tmux -L "$SESSION")
@@ -52,8 +54,9 @@ export DISPLAY="${DISPLAY:-:1}"
 XAUTH="${XAUTHORITY:-$HOME/.Xauthority}"
 
 directive() { sed -n "s/^@$1[[:space:]]\+//p" "$STEPS" | head -1; }
-RUN_USER="$(directive user)"; RUN_USER="${RUN_USER:-${ACC_USER:-sam}}"
-PASSWORD="$(directive password)"
+# Its own account per run, whose home IS the run's HOME (so `whoami`, ~user and $HOME agree).
+RUN_USER="$(directive user)"; RUN_USER="${RUN_USER:-${ACC_USER:-acc$RUN_HASH}}"
+PASSWORD="$(directive password)"; PASSWORD="${PASSWORD:-workshop}"  # the run user's sudo password (setup.py sets it)
 TURN_TIMEOUT="$(directive timeout)"; TURN_TIMEOUT="${TURN_TIMEOUT:-900}"
 STALL="$(directive stall)"; STALL="${STALL:-120}"
 if [ "$RUN_USER" = "$(id -un)" ]; then UHOME="$OUT/home"; AS=(); else UHOME="/home/acc/$RUN_KEY"; AS=(sudo -n -u "$RUN_USER"); fi
@@ -81,8 +84,10 @@ tool_running() {
   for p in $(pgrep -f "$UHOME/.workshop/tools/opencode" 2>/dev/null); do pgrep -P "$p" >/dev/null && return 0; done
   return 1
 }
-# The waiting line (`⠏ Thinking… · 4s · Ctrl+C to cancel`); braille alone is not busy (the hero logo uses it).
-busy() { screen | grep -qE 'Thinking…|Ctrl\+C to cancel|Esc to interrupt'; }
+# The waiting line (`⠏ Thinking… · 4s · Ctrl+C to cancel`, or v0.2.2's `⠼ Run … 13s ⇣1.6k [stop]`); braille
+# alone is not busy (the hero logo uses it).
+# The status line can be cut at the screen edge (`… 12s ⇣12.5k [sto`): its token counter counts too.
+busy() { screen | grep -qE 'Thinking…|Ctrl\+C to cancel|Esc to interrupt|\[stop\]|⇣[0-9.]+k'; }
 uread() { "${AS[@]}" cat "$@" 2>/dev/null; }
 turns_total() {
   local f n=0 k
@@ -115,7 +120,17 @@ waitshell() { # the shell prompt is back as the last non-empty line
   done
   ev shell_timeout; return 1
 }
-TURN_BASE=0
+TURN_BASE=0; TURN_PROMPT=""
+# v0.2.2's done line (`Worked for 22s`): below this turn's own prompt, or the last line above the
+# composer box when the prompt has scrolled away.
+done_line() {
+  screen | awk -v p="$TURN_PROMPT" '
+    p != "" && index($0, p) {f = 1}
+    f && /Worked for/ {d = 1}
+    /╭─/ {exit}
+    {g = $0; gsub(/[[:space:]█]/, "", g); if (g != "") last = $0}
+    END {exit !(d || last ~ /Worked for/)}'
+}
 waitturn() {
   local limit="${1:-$TURN_TIMEOUT}" start=$SECONDS prev="" cur still=0 stalled=0 n active=$SECONDS
   while [ $((SECONDS - start)) -lt "$limit" ]; do
@@ -126,7 +141,12 @@ waitturn() {
     if [ "$n" -gt "$TURN_BASE" ] && [ $still -ge 6 ] && ! busy; then
       ev turn_end "record $n after $((SECONDS - start))s"; TURN_BASE="$n"; return 0
     fi
-    # No engine record (a non-engine connection answered): 120 s still, and for the last 30 s nothing
+    # No engine record (the silent fallback answered on the shell path): v0.2.2's done line
+    # (`Worked for 22s`) that appeared after the prompt ends the turn.
+    if [ "$n" -le "$TURN_BASE" ] && [ $still -ge 6 ] && ! busy && done_line; then
+      ev turn_end "done line without a record after $((SECONDS - start))s"; return 0
+    fi
+    # No engine record and no done line: 120 s still, and for the last 30 s nothing
     # busy on screen and no tool process running, ends the turn.
     if [ $still -ge 240 ] && [ $((SECONDS - active)) -ge 30 ] && [ "$n" -le "$TURN_BASE" ]; then
       ev turn_end "idle 120s without a record after $((SECONDS - start))s"; return 0
@@ -173,17 +193,21 @@ fi
 RC="$UHOME/.acc-rc"
 printf 'PS1="\\$ "\nexport LANG=C.UTF-8\ncd ~\n' | "${AS[@]}" tee "$RC" >/dev/null
 UPATH="$UHOME/.local/bin:$UHOME/.workshop/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# Its own TMPDIR: OpenCode's scratch folder is $TMPDIR/opencode, and a shared /tmp/opencode would hand
+# a run the files earlier runs (other accounts) left there, some of which it cannot overwrite.
+UTMP="/tmp/acc-$RUN_KEY"; sudo rm -rf "$UTMP"; "${AS[@]}" mkdir -m 700 "$UTMP"
 XENV="DISPLAY=$DISPLAY XAUTHORITY=$XAUTH"
 if [ ${#AS[@]} -gt 0 ]; then # the desktop session's X cookie, as any desktop user's home has one
   xauth -f "$XAUTH" extract - "$DISPLAY" 2>/dev/null | "${AS[@]}" xauth -f "$UHOME/.Xauthority" merge - 2>/dev/null
   XENV="DISPLAY=$DISPLAY XAUTHORITY=$UHOME/.Xauthority"
 fi
-INNER="${AS[*]} env -i HOME=$UHOME USER=$RUN_USER LOGNAME=$RUN_USER PATH=$UPATH TERM=xterm-256color LANG=C.UTF-8 SHELL=/bin/bash $XENV bash --noprofile --rcfile $RC -i"
+# ACC_ENV="K=V …": extra variables for the user's shell (e.g. WORKSHOP_DISABLE_AUTOUPDATER=1 before a release publishes).
+INNER="${AS[*]} env -i HOME=$UHOME USER=$RUN_USER LOGNAME=$RUN_USER PATH=$UPATH TMPDIR=$UTMP TERM=xterm-256color LANG=C.UTF-8 SHELL=/bin/bash $XENV ${ACC_ENV:-} bash --noprofile --rcfile $RC -i"
 python3 - "$OUT/run.json" <<EOF
 import json, sys, time
 json.dump({"task": "$TASK", "run_id": "$RUN_ID", "user": "$RUN_USER", "home": "$UHOME", "bin": "$BIN",
-           "path": "$UPATH", "desktop": "$DESKTOP" == "--desktop", "started": time.time(),
-           "turn_timeout": $TURN_TIMEOUT, "stall": $STALL, "model": "${ACC_MODEL_REF:-}", "seeded_permission_mode": "${ACC_PERMISSION_MODE:-}"}, open(sys.argv[1], "w"), indent=1)
+           "path": "$UPATH", "tmpdir": "$UTMP", "desktop": "$DESKTOP" == "--desktop", "started": time.time(),
+           "turn_timeout": $TURN_TIMEOUT, "stall": $STALL, "model": "${ACC_MODEL_REF:-}", "seeded_permission_mode": "${ACC_PERMISSION_MODE:-}", "extra_env": "${ACC_ENV:-}"}, open(sys.argv[1], "w"), indent=1)
 EOF
 python3 "$HERE/verify.py" snap "$TASK" "$OUT" before >> "$LOG" 2>&1
 
@@ -224,7 +248,7 @@ while IFS= read -r raw || [ -n "$raw" ]; do
       if screen_has 'always-approve'; then ev mode_on_screen always-approve; else ev mode_on_screen "not shown"; fi
       screen > "$OUT/probes/composer.txt"
       TURN_BASE="$(turns_total)" ;;
-    type) TURN_BASE="$(turns_total)"; type_text "$arg"; "${T[@]}" send-keys -t "$SESSION" Enter; ev prompt_sent "$arg" ;;
+    type) TURN_BASE="$(turns_total)"; TURN_PROMPT="${arg:0:40}"; type_text "$arg"; "${T[@]}" send-keys -t "$SESSION" Enter; ev prompt_sent "$arg" ;;
     waitturn) waitturn ${arg:+"$arg"}; screen > "$OUT/probes/turn-end-$(grep -c '"turn_end"\|"turn_timeout"' "$EVENTS").txt" ;;
     line) type_line "$arg"; ev line "$arg" ;;
     key) # shellcheck disable=SC2086
@@ -251,6 +275,7 @@ kill "$MON" 2>/dev/null
 ev recording_stopped
 python3 "$HERE/verify.py" verify "$TASK" "$OUT" >> "$LOG" 2>&1
 python3 "$HERE/verify.py" cleanup "$TASK" "$OUT" >> "$LOG" 2>&1
+sudo rm -rf "$UTMP"
 if [ ${#AS[@]} -gt 0 ]; then
   sudo mv "$UHOME" "$OUT/home" && sudo chown -R "$(id -un):$(id -gn)" "$OUT/home"
 fi

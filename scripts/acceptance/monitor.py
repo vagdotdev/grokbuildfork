@@ -10,7 +10,7 @@ pairs to OUTDIR/cast-wall-sync.txt so cast time maps onto the desktop video afte
 It also plays the user where a real user would have to act, and logs each case to OUTDIR/prompts.log:
 - An approval prompt ("Allow …" with a numbered option footer) should never show in always-approve.
   If one does, it is logged with a screen dump and answered `1` after 3 s so the run can go on.
-- A password prompt drawn on the terminal (`[sudo] password for …:`, `Password:`) is answered with
+- A password prompt (sudo's `[sudo] password for …:` / `Password:`, or Workshop's password card) is answered with
   $ACC_SUDO_PASSWORD and Enter after 3 s, the way the user would type it. Without that variable the
   prompt is only logged.
 """
@@ -33,7 +33,8 @@ sync = open(os.path.join(out, "cast-wall-sync.txt"), "a", buffering=1)
 
 APPROVAL_Q = re.compile(r"Allow [^\n]*")
 APPROVAL_OPTS = re.compile(r"Yes, proceed|1 \(.\) Yes|\d/\d:select")
-PASSWORD = re.compile(r"\[sudo\] password for [^\n:]*:|^\s*Password:\s*$", re.M)
+# sudo's own terminal prompt, or Workshop's password card ("Needs your password for: sudo -A …")
+PASSWORD = re.compile(r"\[sudo\] password for [^\n:]*:|^\s*Password:\s*$|Needs your password", re.M)
 
 
 def keys(*args):

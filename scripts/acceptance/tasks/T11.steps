@@ -1,5 +1,4 @@
-# T11 — a command that needs sudo with a password (Mac-like account `mac`; sudo asks for the password)
-@user mac
+# T11 — a command that needs sudo with a password (every run's account is a normal desktop user whose sudo asks)
 @password workshop
 @timeout 300
 @stall 60
