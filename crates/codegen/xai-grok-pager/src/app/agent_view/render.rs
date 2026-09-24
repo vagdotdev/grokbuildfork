@@ -53,6 +53,10 @@ pub struct AppRenderParams<'a> {
     /// The footer's `Ctrl+X` label when this view stands in for another agent (a subagent's fullscreen takeover): the
     /// parent's resolved stop/archive/close action, which the child cannot compute from its own state.
     pub overlay_stop_label: Option<&'static str>,
+    /// Workshop: the pending `sudo` password prompt (an AppView-owned overlay). When set it is laid
+    /// out in the composer slot, exactly like a permission card, so the turn-status row sits above
+    /// it instead of drawing over it (fresh-eyes review issue 9).
+    pub workshop_password: Option<&'a crate::app::workshop_askpass::PendingPassword>,
 }
 /// What the dashboard overlay contributes to the header row (see [`AppRenderParams::overlay_header`]).
 #[derive(Debug, Clone, Copy, Default)]
@@ -588,6 +592,7 @@ impl AgentView {
             workspace_dashboard_enabled,
             overlay_header,
             overlay_stop_label,
+            workshop_password,
         } = app_params;
         self.scrollback.begin_frame();
         self.in_dashboard_overlay = in_dashboard_overlay;
@@ -942,7 +947,19 @@ impl AgentView {
             0
         };
         let question_footer_h: u16 = if question_view_h > 0 { 3 } else { 0 };
-        let prompt_height = if permission_view_h > 0 {
+        // Workshop: the `sudo` password card takes the composer slot like a permission card, so the
+        // turn-status row is reserved above it (issue 9). It outranks the others: a password ask
+        // only arrives mid-command, when none of them is up.
+        let password_view_h: u16 = if workshop_password.is_some()
+            && area.height >= crate::views::workshop_password::HEIGHT
+        {
+            crate::views::workshop_password::HEIGHT
+        } else {
+            0
+        };
+        let prompt_height = if password_view_h > 0 {
+            password_view_h
+        } else if permission_view_h > 0 {
             if is_permission_followup && perm_inline_prompt_h > 1 {
                 permission_view_h + perm_inline_prompt_h.saturating_sub(1)
             } else {
@@ -2406,7 +2423,12 @@ impl AgentView {
         };
         let mut prompt_cursor_pos: Option<(u16, u16)> = None;
         let mut prompt_post_flush: Option<crate::terminal::overlay::PostFlush> = None;
-        if permission_view_h > 0 {
+        if password_view_h > 0 {
+            // Draw the masked password card in the composer slot; the status row stays above it.
+            if let Some(ask) = workshop_password {
+                crate::views::workshop_password::render(layout.prompt, buf, &theme, ask);
+            }
+        } else if permission_view_h > 0 {
             let perm_area = layout.prompt;
             if let Some(perm) = self.permission_queue.front() {
                 let followup_text = self.prompt.text();
