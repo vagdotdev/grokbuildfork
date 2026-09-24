@@ -19,6 +19,12 @@
 //! * `session.error { error }` — turn-level failure (also emitted on abort).
 //! * `session.status { status: { type } }` / `session.idle` — `idle` after
 //!   `busy` ends the turn.
+//! * `session.created` / `session.updated { sessionID, info: { id, parentID } }` — a
+//!   subagent's session (the `task` tool creates it with `parentID` = the turn's session, and
+//!   resumes one with `task_id`). Its `permission.asked` / `question.asked` are the turn's to
+//!   answer: the child runs under the same user, and an ask nobody answers hangs the `task` call
+//!   for good. Everything else a child says (its text, tool parts, idle) stays with the child:
+//!   the parent's `task` row is what the user sees.
 
 use std::collections::HashSet;
 
@@ -133,6 +139,9 @@ fn error_name(err: &Value) -> Option<&str> {
 /// Per-turn state machine.
 pub struct ServeTurn {
     session_id: String,
+    /// Subagent sessions this turn started (or resumed), by `session.created` / `session.updated`
+    /// events whose `info.parentID` is the turn's session or another tracked child.
+    child_sessions: HashSet<String>,
     streamed_parts: HashSet<String>,
     /// Parts announced as `reasoning` (`message.part.updated` precedes their deltas): a delta on
     /// one of these is the model thinking, not its answer — the delta's own `field` is `text`
@@ -155,6 +164,7 @@ impl ServeTurn {
     pub fn new(session_id: impl Into<String>) -> Self {
         Self {
             session_id: session_id.into(),
+            child_sessions: HashSet::new(),
             streamed_parts: HashSet::new(),
             reasoning_parts: HashSet::new(),
             announced_calls: HashSet::new(),
@@ -193,14 +203,45 @@ impl ServeTurn {
         std::mem::take(&mut self.pending_questions)
     }
 
-    /// Feed one SSE event (any session; foreign sessions are ignored).
+    /// Subagent sessions this turn has seen start (or resume).
+    pub fn child_sessions(&self) -> &HashSet<String> {
+        &self.child_sessions
+    }
+
+    /// Feed one SSE event (any session). The turn's own session is followed in full; a subagent
+    /// session the turn started contributes only its asks (permissions, questions); every other
+    /// session is ignored.
     pub fn on_event(&mut self, event: &Value) -> Vec<AdapterEvent> {
-        if session_of(event) != Some(self.session_id.as_str()) {
+        let kind = json::str(event, "type");
+        let props = event.get("properties").unwrap_or(&Value::Null);
+        if matches!(kind, Some("session.created") | Some("session.updated")) {
+            // `{ sessionID, info: { id, parentID } }`: a child of this turn's session (or of one
+            // of its children) is the turn's to answer for.
+            let info = props.get("info").unwrap_or(&Value::Null);
+            if let (Some(id), Some(parent)) = (json::str(info, "id"), json::str(info, "parentID"))
+                && id != self.session_id
+                && (parent == self.session_id || self.child_sessions.contains(parent))
+            {
+                self.child_sessions.insert(id.to_string());
+            }
             return Vec::new();
         }
-        let props = event.get("properties").unwrap_or(&Value::Null);
+        let Some(session) = session_of(event) else {
+            return Vec::new();
+        };
+        if session != self.session_id {
+            if self.child_sessions.contains(session)
+                && matches!(
+                    kind,
+                    Some("permission.updated") | Some("permission.asked") | Some("question.asked")
+                )
+            {
+                self.on_ask(kind, props, session);
+            }
+            return Vec::new();
+        }
         let mut out = Vec::new();
-        match json::str(event, "type") {
+        match kind {
             Some("message.part.delta") => {
                 let part_id = json::str(props, "partID").unwrap_or_default();
                 if !part_id.is_empty() {
@@ -349,6 +390,19 @@ impl ServeTurn {
                     }
                 }
             }
+            Some("question.asked") | Some("permission.updated") | Some("permission.asked") => {
+                let session = self.session_id.clone();
+                self.on_ask(kind, props, &session);
+            }
+            _ => {}
+        }
+        out
+    }
+
+    /// Queue an ask (`permission.asked` / `permission.updated` / `question.asked`) from
+    /// `session` — the turn's own or a child's; the reply goes back to that session.
+    fn on_ask(&mut self, kind: Option<&str>, props: &Value, session: &str) {
+        match kind {
             Some("question.asked") => {
                 let questions = props
                     .get("questions")
@@ -357,7 +411,7 @@ impl ServeTurn {
                     .unwrap_or_default();
                 self.pending_questions.push(QuestionRequest {
                     id: json::str(props, "id").unwrap_or_default().to_string(),
-                    session_id: self.session_id.clone(),
+                    session_id: session.to_string(),
                     questions,
                     call_id: props
                         .get("tool")
@@ -388,7 +442,7 @@ impl ServeTurn {
                     .map(str::to_string);
                 self.pending_permissions.push(PermissionRequest {
                     id: json::str(props, "id").unwrap_or_default().to_string(),
-                    session_id: self.session_id.clone(),
+                    session_id: session.to_string(),
                     kind,
                     title,
                     patterns,
@@ -399,7 +453,6 @@ impl ServeTurn {
             }
             _ => {}
         }
-        out
     }
 
     fn note_error(&mut self, err: &Value) {
@@ -649,6 +702,96 @@ mod tests {
             json!({"id": "x", "sessionID": "other", "permission": "bash", "patterns": []}),
         ));
         assert!(turn.take_permissions().is_empty());
+    }
+
+    /// The `task` tool's subagent runs in a child session (`session.created` with `parentID` =
+    /// the turn's session, as 1.18.31 publishes it: `{ sessionID, info }`). Its permission and
+    /// question asks are the turn's to answer, addressed to the child session; its text, tool
+    /// parts and idle stay with the child and never end the parent's turn. A grandchild announced
+    /// by `session.updated` counts too; a session with some other parent stays foreign.
+    #[test]
+    fn a_subagent_sessions_asks_are_the_turns() {
+        const CHILD: &str = "ses_child";
+        let mut turn = ServeTurn::new(SID);
+        turn.on_event(&ev(
+            "session.status",
+            json!({"sessionID": SID, "status": {"type": "busy"}}),
+        ));
+        turn.on_event(&ev("message.part.updated", json!({"part": {"id": "p1", "sessionID": SID, "type": "tool",
+            "tool": "task", "callID": "call_task", "state": {"status": "running", "input": {"subagent_type": "explore", "description": "Extract Wikimedia image candidates"}}}})));
+        assert_eq!(turn.tools_running(), 1);
+        turn.on_event(&ev("session.created", json!({"sessionID": CHILD, "info": {"id": CHILD, "parentID": SID,
+            "title": "Extract Wikimedia image candidates (@explore subagent)", "agent": "explore"}})));
+        assert!(turn.child_sessions().contains(CHILD));
+
+        // The child's own activity is not the parent's answer, not its tool rows, not its end.
+        let out = turn.on_event(&ev("message.part.updated", json!({"part": {"id": "p2", "sessionID": CHILD, "type": "tool",
+            "tool": "read", "callID": "call_read", "state": {"status": "completed", "input": {"filePath": "/w/x"}, "output": "…"}}})));
+        assert!(out.is_empty());
+        assert_eq!(
+            turn.tools_running(),
+            1,
+            "a child's tool parts are not the parent's"
+        );
+        assert!(turn.on_event(&ev("message.part.delta", json!({"sessionID": CHILD, "messageID": "m", "partID": "p3", "field": "text", "delta": "child text"}))).is_empty());
+        turn.on_event(&ev(
+            "session.status",
+            json!({"sessionID": CHILD, "status": {"type": "idle"}}),
+        ));
+        turn.on_event(&ev("session.idle", json!({"sessionID": CHILD})));
+        assert!(
+            turn.terminal().is_none(),
+            "a child going idle does not end the parent's turn"
+        );
+
+        // Its asks are ours, addressed to the child session.
+        turn.on_event(&ev("permission.asked", json!({
+            "id": "per_child", "sessionID": CHILD, "permission": "bash", "patterns": ["python3 extract.py"],
+            "metadata": {"command": "python3 extract.py"}, "always": ["python3 *"],
+            "tool": {"messageID": "msg_c", "callID": "call_py"}
+        })));
+        let perms = turn.take_permissions();
+        assert_eq!(perms.len(), 1);
+        assert_eq!(perms[0].id, "per_child");
+        assert_eq!(perms[0].session_id, CHILD);
+        assert_eq!(perms[0].command(), Some("python3 extract.py"));
+        assert_eq!(perms[0].call_id.as_deref(), Some("call_py"));
+        turn.on_event(&ev("question.asked", json!({"id": "que_child", "sessionID": CHILD, "tool": {"messageID": "msg_c", "callID": "call_q"},
+            "questions": [{"question": "Which species first?", "header": "Order", "options": [{"label": "Lion"}, {"label": "Tiger"}]}]})));
+        let questions = turn.take_questions();
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].session_id, CHILD);
+        assert_eq!(questions[0].questions[0].question, "Which species first?");
+
+        // A grandchild announced by `session.updated` (a resumed `task_id` never fires `created`).
+        turn.on_event(&ev("session.updated", json!({"sessionID": "ses_grandchild", "info": {"id": "ses_grandchild", "parentID": CHILD}})));
+        turn.on_event(&ev(
+            "permission.asked",
+            json!({"id": "per_gc", "sessionID": "ses_grandchild", "permission": "bash",
+            "patterns": ["ls"], "metadata": {"command": "ls"}, "always": []}),
+        ));
+        assert_eq!(turn.take_permissions()[0].session_id, "ses_grandchild");
+
+        // Some other session's child is not ours.
+        turn.on_event(&ev(
+            "session.created",
+            json!({"sessionID": "ses_x", "info": {"id": "ses_x", "parentID": "ses_elsewhere"}}),
+        ));
+        turn.on_event(&ev(
+            "permission.asked",
+            json!({"id": "per_x", "sessionID": "ses_x", "permission": "bash", "patterns": []}),
+        ));
+        assert!(turn.take_permissions().is_empty());
+
+        // The parent finishes as before.
+        turn.on_event(&ev("message.part.updated", json!({"part": {"id": "p1", "sessionID": SID, "type": "tool",
+            "tool": "task", "callID": "call_task", "state": {"status": "completed", "input": {}, "output": "15 candidates", "title": "Extract Wikimedia image candidates"}}})));
+        assert_eq!(turn.tools_running(), 0);
+        turn.on_event(&ev(
+            "session.status",
+            json!({"sessionID": SID, "status": {"type": "idle"}}),
+        ));
+        assert_eq!(turn.terminal(), Some(&Terminal::Completed));
     }
 
     /// 1.18.31 `question.asked` (the `question` tool): the questions with their options and the

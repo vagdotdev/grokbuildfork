@@ -49,6 +49,12 @@ from the real server:
     8 s of silence, the completed part, "Done waiting." (silence while a tool runs is not a stall).
   * "go silent"                       -> starts an answer ("Let me look at that") and then never
     sends another event; the turn only ends when the host aborts it (logged as `aborted`).
+  * "photo candidates"                -> the `task` tool with the built-in `explore` subagent: a
+    `running` task part, then a child session (session.created, parentID = the turn's session;
+    logged as `{"created", "parent"}`) that reads a file and asks permission for a bash command
+    with its *own* sessionID. A reply posted under any other session is refused (404, logged
+    `misrouted`), as the real server's per-session pending asks would lose it. Approved: the child
+    finishes, the task part completes, "Found 15 photo candidates, 3 per species.".
   * agent == plan                     -> never a tool part, never a permission ask: text only.
 
 Every turn ends with a step-finish carrying tokens (total 8627 -> "8.6K") and goes idle. Every
@@ -84,6 +90,7 @@ sessions = {}  # id -> {"messages": [...]}
 permission_replies = {}  # permission id -> reply string
 stalled_sessions = set()  # sessions whose turn went silent on purpose ("stall")
 permission_events = {}  # permission id -> threading.Event
+permission_sessions = {}  # permission id -> the session that asked (a reply elsewhere is lost)
 aborts = {}  # session id -> threading.Event, set by POST /session/{id}/abort
 question_events = {}  # question id -> threading.Event, set by POST /question/{id}/reply|reject
 question_answers = {}  # question id -> the answers posted (None when rejected)
@@ -159,7 +166,8 @@ def ask_permission(sid, mid, call_id, kind, patterns, metadata, always):
     pid = next_id("per")
     ev = threading.Event()
     permission_events[pid] = ev
-    log({"asked": pid, "permission": kind, "callID": call_id})
+    permission_sessions[pid] = sid
+    log({"asked": pid, "permission": kind, "callID": call_id, "session": sid})
     broadcast({"type": "permission.asked", "properties": {
         "id": pid, "sessionID": sid, "permission": kind, "patterns": patterns,
         "metadata": metadata, "always": always, "tool": {"messageID": mid, "callID": call_id}}})
@@ -382,6 +390,43 @@ def run_turn(sid, agent, text, model=None):
         else:
             emit_part(tool_part(sid, mid, "bash", call_id, {"command": "sleep 8"}, "The user rejected permission to use this specific tool call.", "sleep 8", {}, status="error"))
             answer = "Understood."
+    elif "photo candidates" in text_l:
+        # The `task` tool with a built-in subagent, as 1.18.31 runs it: the subagent gets a child
+        # session (`session.created`, parentID = this session) and works there; its bash needs
+        # permission, and the ask carries the *child's* sessionID. The reply must come back to
+        # the child (see the permissions route); nothing else the child says is the parent's.
+        call_id = next_id("call")
+        desc = "Extract Wikimedia image candidates"
+        task_input = {"subagent_type": "explore", "description": desc,
+                      "prompt": "List Wikimedia image candidates for each Panthera species."}
+        emit_part(tool_part(sid, mid, "task", call_id, task_input, "", desc, {}, status="running"))
+        child = next_id("ses_fake")
+        sessions[child] = {"messages": []}
+        log({"created": child, "parent": sid})
+        broadcast({"type": "session.created", "properties": {"sessionID": child, "info": {
+            "id": child, "parentID": sid, "title": desc + " (@explore subagent)", "agent": "explore", "directory": CWD}}})
+        cmid = next_id("msg")
+        broadcast({"type": "message.updated", "properties": {"info": {"id": cmid, "sessionID": child, "role": "assistant",
+                                                                        "time": {"created": now_ms()}, "agent": "explore", "modelID": "big-pickle", "providerID": "opencode"}}})
+        broadcast({"type": "session.status", "properties": {"sessionID": child, "status": {"type": "busy"}}})
+        emit_part(tool_part(child, cmid, "read", next_id("call"), {"filePath": os.path.join(CWD, "species.txt")},
+                            "lion\ntiger\nleopard\njaguar\nsnow leopard\n", "species.txt", {}))
+        cmd = "python3 extract_candidates.py species.txt"
+        ccall = next_id("call")
+        reply = ask_permission(child, cmid, ccall, "bash", [cmd], {"command": cmd}, ["python3 *"])
+        if reply in ("once", "always"):
+            emit_part(tool_part(child, cmid, "bash", ccall, {"command": cmd}, "15 candidates", cmd,
+                                {"output": "15 candidates", "exit": 0, "truncated": False}))
+            result = "Subagent report: 15 candidates, 3 per species."
+            answer = "Found 15 photo candidates, 3 per species."
+        else:
+            emit_part(tool_part(child, cmid, "bash", ccall, {"command": cmd}, "The user rejected permission to use this specific tool call.", cmd, {}, status="error"))
+            result = "Subagent report: the extraction was not allowed."
+            answer = "Understood — the subagent did not run the extraction."
+        stream_text(child, cmid, result)
+        broadcast({"type": "session.status", "properties": {"sessionID": child, "status": {"type": "idle"}}})
+        broadcast({"type": "session.idle", "properties": {"sessionID": child}})
+        emit_part(tool_part(sid, mid, "task", call_id, task_input, result, desc, {"sessionId": child}))
     elif "list files" in text_l or text_l.strip() == "ls":
         if "think" in text_l:
             stream_text(sid, mid, "\n\n")
@@ -518,8 +563,14 @@ class H(BaseHTTPRequestHandler):
             return
         if path.startswith("/session/") and "/permissions/" in path:
             pid = path.rsplit("/", 1)[1]
+            sid = path.split("/")[2]
+            # Like the real server, a session's pending asks are its own: a reply posted under
+            # another session (the parent's, for a subagent's ask) answers nothing.
+            if permission_sessions.get(pid, sid) != sid:
+                log({"permission": pid, "response": body.get("response", "reject"), "session": sid, "misrouted": True})
+                return self._json(404, {"error": "no pending permission " + pid + " in session " + sid})
             permission_replies[pid] = body.get("response", "reject")
-            log({"permission": pid, "response": permission_replies[pid]})
+            log({"permission": pid, "response": permission_replies[pid], "session": sid})
             ev = permission_events.get(pid)
             if ev:
                 ev.set()
