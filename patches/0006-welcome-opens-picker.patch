@@ -159,7 +159,7 @@ index f1602289..7300f065 100644
      ChangelogFetched {
          markdown: Option<String>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..8a1be94f 100644
+index fc9a4553..186daf8d 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -928,24 +928,20 @@ index fc9a4553..8a1be94f 100644
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5299,12 +5712,10 @@ impl AppView {
-                 )
+@@ -5300,11 +5713,7 @@ impl AppView {
              {
                  needs_redraw = true;
--            } else {
+             } else {
 -                let frame = crate::views::welcome::shimmer_frame();
 -                if frame != self.welcome_shimmer_frame {
 -                    self.welcome_shimmer_frame = frame;
 -                    needs_redraw = true;
 -                }
-+            } else if self.welcome_hero_spins() {
-+                self.welcome_hero_frame =
-+                    (self.welcome_hero_frame + 1) % workshop_brand::donut::FRAMES as u32;
-+                needs_redraw = true;
++                needs_redraw |= self.tick_welcome_hero();
              }
          }
          if matches!(self.active_view, ActiveView::AgentDashboard)
-@@ -5355,7 +5766,10 @@ impl AppView {
+@@ -5355,7 +5764,10 @@ impl AppView {
              }
              let spinner_frame_tick =
                  agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
@@ -957,29 +953,28 @@ index fc9a4553..8a1be94f 100644
              needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
                  && spinner_frame_tick;
              needs_redraw |= matches!(
-@@ -5623,6 +6037,21 @@ impl AppView {
+@@ -5623,6 +6035,20 @@ impl AppView {
          }
          needs_redraw
      }
 +    /// Workshop: the welcome hero's own animation clock, the one place that decides whether the
 +    /// hero art has a new frame to paint. The welcome view redraws on a tick only when this frame
-+    /// advances (today the logo shimmer, which holds still between glints); nothing outside the
-+    /// hero changes on such a frame, so the terminal diff writes the hero cells only. A hero that
-+    /// animates on its own replaces the frame source here (its own frame counter at its own rate)
-+    /// and its cadence in [`Self::view_tick_demand`] (`ActiveView::Welcome`, [`SLOW_TICK_INTERVAL`]
-+    /// today); the clock runs only while the welcome view is up, so it stops with the first message.
++    /// advances; nothing outside the hero changes on such a frame, so the terminal diff writes the
++    /// hero cells only. The donut advances one frame of its loop per slow tick
++    /// ([`SLOW_TICK_INTERVAL`], ~12 fps) while [`Self::welcome_hero_spins`]; the clock runs only
++    /// while the welcome view is up, so it stops with the first message.
 +    fn tick_welcome_hero(&mut self) -> bool {
-+        let frame = crate::views::welcome::shimmer_frame();
-+        if frame == self.welcome_shimmer_frame {
++        if !self.welcome_hero_spins() {
 +            return false;
 +        }
-+        self.welcome_shimmer_frame = frame;
++        self.welcome_hero_frame =
++            (self.welcome_hero_frame + 1) % workshop_brand::donut::FRAMES as u32;
 +        true
 +    }
      /// Check if animation ticks should be scheduled.
      pub fn needs_animation(&self) -> bool {
          self.tick_demand() != TickDemand::None
-@@ -5637,6 +6066,15 @@ impl AppView {
+@@ -5637,6 +6063,15 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -995,7 +990,7 @@ index fc9a4553..8a1be94f 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5781,9 +6219,94 @@ impl AppView {
+@@ -5781,9 +6216,94 @@ impl AppView {
                      TickDemand::None
                  }
              }
@@ -1018,8 +1013,8 @@ index fc9a4553..8a1be94f 100644
 +                    TickDemand::None
 +                }
 +            }
-+        }
-+    }
+         }
+     }
 +    /// Workshop: whether the welcome hero should advance a frame on the next tick — the user has
 +    /// not turned it off (`[ui] hero_animation = false`), the terminal can show it (colour on, no
 +    /// legacy console), the last paint spun it (wide layout, logo shown) and the terminal is
@@ -1062,8 +1057,8 @@ index fc9a4553..8a1be94f 100644
 +                true
 +            }
 +            _ => false,
-         }
-     }
++        }
++    }
 +    /// Workshop: the turn-status row's activity for the running Engine/Adapter turn — the newest
 +    /// tool call still running, else the wait for the model (as the ACP tracker reports the gap
 +    /// before the first token and after each tool result).
@@ -1091,7 +1086,7 @@ index fc9a4553..8a1be94f 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6328,9 @@ impl AppView {
+@@ -5805,7 +6325,9 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };

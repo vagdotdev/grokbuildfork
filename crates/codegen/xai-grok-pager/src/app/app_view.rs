@@ -5712,10 +5712,8 @@ impl AppView {
                 )
             {
                 needs_redraw = true;
-            } else if self.welcome_hero_spins() {
-                self.welcome_hero_frame =
-                    (self.welcome_hero_frame + 1) % workshop_brand::donut::FRAMES as u32;
-                needs_redraw = true;
+            } else {
+                needs_redraw |= self.tick_welcome_hero();
             }
         }
         if matches!(self.active_view, ActiveView::AgentDashboard)
@@ -6039,17 +6037,16 @@ impl AppView {
     }
     /// Workshop: the welcome hero's own animation clock, the one place that decides whether the
     /// hero art has a new frame to paint. The welcome view redraws on a tick only when this frame
-    /// advances (today the logo shimmer, which holds still between glints); nothing outside the
-    /// hero changes on such a frame, so the terminal diff writes the hero cells only. A hero that
-    /// animates on its own replaces the frame source here (its own frame counter at its own rate)
-    /// and its cadence in [`Self::view_tick_demand`] (`ActiveView::Welcome`, [`SLOW_TICK_INTERVAL`]
-    /// today); the clock runs only while the welcome view is up, so it stops with the first message.
+    /// advances; nothing outside the hero changes on such a frame, so the terminal diff writes the
+    /// hero cells only. The donut advances one frame of its loop per slow tick
+    /// ([`SLOW_TICK_INTERVAL`], ~12 fps) while [`Self::welcome_hero_spins`]; the clock runs only
+    /// while the welcome view is up, so it stops with the first message.
     fn tick_welcome_hero(&mut self) -> bool {
-        let frame = crate::views::welcome::shimmer_frame();
-        if frame == self.welcome_shimmer_frame {
+        if !self.welcome_hero_spins() {
             return false;
         }
-        self.welcome_shimmer_frame = frame;
+        self.welcome_hero_frame =
+            (self.welcome_hero_frame + 1) % workshop_brand::donut::FRAMES as u32;
         true
     }
     /// Check if animation ticks should be scheduled.
