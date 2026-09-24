@@ -15,7 +15,6 @@ use crate::scrollback::text_selection::ResolvedSelectionModel;
 use crate::views::prompt_widget::PromptWidget;
 use crate::views::queue_mutation::QueueMutation;
 use crate::views::queue_pane::QueuePane;
-use crate::views::subagent_catalog_pane::SubagentCatalogPane;
 use crate::views::tasks_pane::TasksPane;
 use crate::views::todo_pane::TodoPane;
 use ratatui::layout::Rect;
@@ -135,17 +134,9 @@ impl AgentView {
             session_binding_epoch: 0,
             scrollback,
             prompt,
-            workshop_model_label: None,
-            workshop_context: None,
-            workshop_turn_active: false,
-            workshop_turn_activity: None,
-            workshop_turn_started_at: None,
-            workshop_turn_cancelling: false,
-            workshop_retry_prompt: None,
             tip_typing_dismissed: false,
             todo: TodoPane::new(),
             tasks: TasksPane::new(),
-            catalog: SubagentCatalogPane::new(),
             queue: QueuePane::new(),
             shared_queue: Vec::new(),
             attached_as_viewer: false,
@@ -281,7 +272,6 @@ impl AgentView {
             hit_todo_close: Default::default(),
             hit_bg_close: Default::default(),
             hit_subagent_close: Default::default(),
-            hit_catalog_close: Default::default(),
             hit_bg_status: Default::default(),
             hit_goal_status: Default::default(),
             hit_goal_close: Default::default(),
@@ -409,8 +399,6 @@ impl AgentView {
             cancel_trigger_hint: None,
             rewind_state: None,
             rewind_points: None,
-            inline_edit: None,
-            pending_inline_resubmit: None,
             jump_state: None,
             timeline_rail: None,
             timeline_hover: None,
@@ -485,14 +473,13 @@ impl AgentView {
         child_view.queue.set_mutation(QueueMutation::ReadOnly);
         self.subagent_views.insert(child_sid, child_view);
     }
+    #[cfg(test)]
     pub(crate) fn subagent_view(&self, child_sid: &str) -> Option<&AgentView> {
         self.subagent_views.get(child_sid).map(|v| &**v)
     }
+    #[cfg(test)]
     pub(crate) fn subagent_view_mut(&mut self, child_sid: &str) -> Option<&mut AgentView> {
         self.subagent_views.get_mut(child_sid).map(|v| &mut **v)
-    }
-    pub(crate) fn has_subagent_view(&self, child_sid: &str) -> bool {
-        self.subagent_views.contains_key(child_sid)
     }
     /// Called at every turn-termination site; clears the wall anchor so a turn that reuses a prompt id cannot report the prior attempt's wall span.
     pub(crate) fn mark_turn_finished(&mut self, end: TurnEnd) {
@@ -881,7 +868,6 @@ impl AgentView {
         self.session.state.is_turn_running()
             || self.session.state.is_compact_running()
             || (self.wake_turn_active() && !self.wake_turn_cancelling())
-            || self.workshop_turn_active
     }
     /// Whether a local or wake cancel is still in flight.
     pub(crate) fn any_cancel_pending(&self) -> bool {
@@ -913,19 +899,6 @@ impl AgentView {
             } else {
                 &crate::app::agent::AgentState::TurnRunning
             }
-        })
-    }
-    /// Workshop: an Engine/Adapter turn runs outside the ACP session (its state stays idle), so
-    /// the turn-status row is shown from this state instead — running, or cancelling after
-    /// Ctrl+C — exactly as a shell turn would show it.
-    pub(crate) fn workshop_display_state(&self) -> Option<&'static crate::app::agent::AgentState> {
-        if !self.workshop_turn_active || !self.session.state.is_idle() {
-            return None;
-        }
-        Some(if self.workshop_turn_cancelling {
-            &crate::app::agent::AgentState::TurnCancelling
-        } else {
-            &crate::app::agent::AgentState::TurnRunning
         })
     }
     /// Finalize a reconnect-reload window and, iff the running prompt is adoptable, adopt it. Returns whether the window finalized.
@@ -1059,10 +1032,6 @@ impl AgentView {
     }
     /// Effective turn elapsed time, excluding time spent in question views (accumulated pauses plus the currently open one, on both clocks).
     pub fn turn_elapsed(&self) -> Option<std::time::Duration> {
-        // Workshop: an Engine/Adapter turn keeps its own clock (no ACP prompt, no pauses).
-        if self.workshop_turn_active {
-            return self.workshop_turn_started_at.map(|t| t.elapsed());
-        }
         let instant_elapsed = self.turn_started_at?.elapsed();
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut instant_paused = self.turn_paused_duration;
@@ -1094,10 +1063,6 @@ impl AgentView {
     ) -> Option<crate::acp::tracker::TurnActivity> {
         use crate::acp::tracker::{TurnActivity, WaitingReason};
         use crate::app::agent::AgentState;
-        // Workshop: an Engine/Adapter turn reports its activity through the event loop.
-        if self.workshop_turn_active {
-            return self.workshop_turn_activity.clone();
-        }
         if let Some(activity) = self.session.turn_activity() {
             return Some(activity);
         }
@@ -1353,7 +1318,6 @@ impl AgentView {
             ActivePane::Queue => ActivePaneSnapshot::Queue,
             ActivePane::Prompt => ActivePaneSnapshot::Prompt,
             ActivePane::Tasks => ActivePaneSnapshot::Tasks,
-            ActivePane::Catalog => ActivePaneSnapshot::Catalog,
             ActivePane::Dock => ActivePaneSnapshot::Other,
         };
         let outcome_snap = match outcome {

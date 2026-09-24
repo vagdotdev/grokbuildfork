@@ -41,10 +41,10 @@ use super::session::load::{
 };
 use super::session::modal::remove_agent_and_cleanup;
 use super::session::picker_routing::PickerRequest;
-use super::settings::ui::apply_setting_rollback;
+use super::settings::ui::{apply_setting_rollback, refresh_open_settings_modals};
 use super::status::{
     handle_coding_data_sharing_failed, handle_coding_data_sharing_updated,
-    handle_context_info_complete, handle_session_usage_result, scrub_error_for_toast,
+    handle_context_info_complete, handle_session_usage_result, toast_persist_failure,
     usage_modal_state_mut,
 };
 use super::transcript::{
@@ -281,7 +281,7 @@ pub(super) fn maybe_show_x11_primary_paste_hint(
     show_clipboard_toast(target, X11_PRIMARY_PASTE_HINT, app);
 }
 /// A clean `FullMiss` always qualifies; a remote read *error* (`AttachmentRead`) qualifies too.
-/// Inside `workshop wrap` the authoritative pasteboard is the local host's, not the (absent) remote one.
+/// Inside `grok wrap` the authoritative pasteboard is the local host's, not the (absent) remote one.
 /// Every other failure (`TextRead`, `TargetInsertion`, `AlreadyReported`) is a real dead end and must keep toasting.
 pub(super) fn wrap_host_image_request_eligible(completion: ClipboardPasteCompletion) -> bool {
     matches!(
@@ -999,108 +999,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
-        TaskResult::WorkshopPickerLoaded(snap) => {
-            if let Some(picker) = app.connection_picker.as_mut() {
-                // The cursor lands on the active connection's row (never xAI, never Zen).
-                picker.apply_snapshot(snap);
-                picker.status = None;
-                // `/model` queued a live refresh behind this cached load: start it now, so the
-                // live rows (and any `refresh failed` note) always land after the cached ones.
-                if picker.refresh_pending && !picker.refresh_in_flight {
-                    picker.refresh_in_flight = true;
-                    return vec![Effect::WorkshopRefreshCatalogs {
-                        force: false,
-                        engine: app.workshop_engine.clone(),
-                    }];
-                }
-                // Nothing live is queued (`/auth`, after a sign-in) but a signed-in rail has no
-                // cached list yet: ask its CLI. That snapshot never comes back `Loading`.
-                if !picker.refresh_pending
-                    && picker.rails.iter().any(|r| {
-                        matches!(r.subscription, workshop_detect::RailModels::Loading)
-                    })
-                {
-                    return vec![Effect::WorkshopRefreshRailModels];
-                }
-            }
-            vec![]
-        }
-        TaskResult::WorkshopConnectDone {
-            provider_id,
-            result,
-        } => {
-            if let Some(picker) = app.connection_picker.as_mut() {
-                match result {
-                    Ok(backend) => {
-                        picker.set_status(format!(
-                            "{provider_id} connected (key saved to {backend}). Refreshing…"
-                        ));
-                        picker.loading = true;
-                        return vec![Effect::WorkshopLoadPicker];
-                    }
-                    Err(e) => picker.set_status(format!("{provider_id}: {e}")),
-                }
-            }
-            vec![]
-        }
-        TaskResult::WorkshopRailInstallDone { rail, result } => {
-            app.workshop_rail_install = None;
-            let name = rail.vendor().display_name();
-            let Some(picker) = app.connection_picker.as_mut() else {
-                // The picker was closed meanwhile: the rails re-probe on the next open.
-                if let Err(e) = result {
-                    tracing::warn!(vendor = rail.vendor().id(), error = %e, "workshop: installer failed");
-                }
-                return vec![];
-            };
-            match result {
-                Ok(()) => {
-                    // Installed: flow straight into the vendor's own sign-in — the Connect
-                    // path, attached to the terminal — with no further keypress.
-                    let argv = crate::app::workshop::rail_login_argv(rail);
-                    picker.set_status(format!("Installed {name} \u{b7} signing you in\u{2026}"));
-                    app.pending_workshop_login = Some((rail, argv));
-                    vec![]
-                }
-                Err(reason) => {
-                    picker.set_status(format!(
-                        "Couldn't install {name} \u{2014} {reason} \u{b7} Enter to retry"
-                    ));
-                    vec![]
-                }
-            }
-        }
-        TaskResult::WorkshopVoicePrefetchDone => {
-            // The outcome lives in the shared status `/voice` reads; nothing to draw here.
-            vec![]
-        }
-        TaskResult::WorkshopLoginTerminalDone { rail, exit } => {
-            use workshop_detect::process::InteractiveExit;
-            if let Some(picker) = app.connection_picker.as_mut() {
-                // Focus returns to the rail list: the detail panel that Connect's Enter opened
-                // would otherwise hold ↑/↓ until the tab is switched away and back.
-                picker.detail_open = false;
-                if exit == InteractiveExit::Interrupted {
-                    picker.set_status(format!(
-                        "{} sign-in cancelled (Ctrl+C); nothing changed.",
-                        rail.display_name()
-                    ));
-                    return vec![];
-                }
-                picker.set_status(format!(
-                    "{} login {}; re-probing…",
-                    rail.display_name(),
-                    if exit == InteractiveExit::Success {
-                        "finished"
-                    } else {
-                        "exited with an error"
-                    }
-                ));
-                picker.loading = true;
-                return vec![Effect::WorkshopLoadPicker];
-            }
-            vec![]
-        }
         TaskResult::ChangelogFetched { markdown, entries } => {
             app.changelog_markdown = markdown;
             app.changelog_bullets =
@@ -1274,11 +1172,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             } = &app.auth_state
                 && *current_seq == request_seq
             {
-                // Workshop: an activation started from the open connection picker failed; say so
-                // in the picker instead of leaving "Connecting…" on screen.
-                if let Some(picker) = app.connection_picker.as_mut() {
-                    picker.set_status(format!("Could not connect: {error}"));
-                }
                 app.auth_state = AuthState::Pending { error: Some(error) };
                 app.auth_code_input.reset();
             }
@@ -1292,7 +1185,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => handle_auth_url_ready(app, request_seq, auth_url, external, mode),
         TaskResult::AuthCodeSubmitted { .. } => vec![],
         TaskResult::AuthCancelComplete => vec![],
-        TaskResult::WorkshopModelsReloaded => vec![],
         TaskResult::McpsListLoaded { agent_id, result } => {
             use crate::views::extensions_modal::TabDataState;
             if let Some(agent) = app.agents.get_mut(&agent_id)
@@ -2136,32 +2028,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             tracing::warn!(error = %error, "bundle status fetch failed");
             vec![]
         }
-        TaskResult::CatalogEntryReady {
-            kind,
-            name,
-            content,
-        } => {
-            if let ActiveView::Agent(id) = app.active_view
-                && let Some(agent) = app.agents.get_mut(&id)
-            {
-                let title = format!("{kind}: {name}");
-                agent.show_block_viewer(
-                    crate::views::block_viewer::BlockViewerPane::for_plain_text(&title, &content),
-                );
-            }
-            vec![]
-        }
-        TaskResult::CatalogEntryFailed { error } => {
-            tracing::warn!(error = %error, "catalog entry fetch failed");
-            if let ActiveView::Agent(id) = app.active_view
-                && let Some(agent) = app.agents.get_mut(&id)
-            {
-                agent
-                    .scrollback
-                    .push_block(RenderBlock::system(format!("Couldn't load entry: {error}")));
-            }
-            vec![]
-        }
         TaskResult::BtwResponse {
             agent_id,
             result,
@@ -2270,6 +2136,19 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::CheckSubscriptionComplete { verify, meta } => {
             handle_check_subscription_complete(app, verify, meta)
+        }
+        TaskResult::TeamCapabilityHydrated {
+            identity,
+            can_administer_team,
+        } => {
+            if can_administer_team.is_some()
+                && app.can_administer_team.is_none()
+                && identity.matches(&app.auth_identity())
+            {
+                app.can_administer_team = can_administer_team;
+                refresh_open_settings_modals(app);
+            }
+            vec![]
         }
         TaskResult::GateVerifyTimeout { generation } => handle_gate_verify_timeout(app, generation),
         TaskResult::CreditLimitRecheckComplete { agent_id, meta } => {
@@ -2380,8 +2259,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => {
             let rollback_effects = apply_setting_rollback(app, key, &rollback_value);
             tracing::warn!(target: "settings", ?key, ?rollback_value, %error, "setting persist failed; rolled back");
-            let scrubbed = scrub_error_for_toast(&error);
-            app.show_toast(&format!("\u{2717} Could not save {key}: {scrubbed}"));
+            toast_persist_failure(app, key, &error);
             rollback_effects
         }
         TaskResult::SettingPersistFailedBestEffort { key, error } => {
@@ -2390,9 +2268,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 ?key, %error,
                 "setting persist failed (best-effort); in-memory state stays at optimistic value",
             );
-            let scrubbed = scrub_error_for_toast(&error);
-            app.show_toast(&format!("\u{2717} Could not save {key}: {scrubbed}"));
+            toast_persist_failure(app, key, &error);
             vec![]
+        }
+        TaskResult::FeatureOverridePersisted { feature, result } => {
+            settings::handle_feature_override_persisted(app, feature, result)
         }
     }
 }

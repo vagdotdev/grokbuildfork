@@ -9,36 +9,18 @@ use crate::theme::Theme;
 #[derive(Debug, Clone)]
 pub struct SystemMessageBlock {
     pub text: String,
-    /// Workshop: an actionable failure (engine / adapter error) rather than a muted notice —
-    /// rendered in the error color with an error accent bar so it cannot be read past.
-    pub error: bool,
 }
 
 impl SystemMessageBlock {
     pub fn new(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            error: false,
-        }
-    }
-
-    /// A failure line: same shape as [`Self::new`], styled as an error.
-    pub fn error(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            error: true,
-        }
+        Self { text: text.into() }
     }
 }
 
 impl BlockContent for SystemMessageBlock {
     fn output(&self, ctx: &BlockContext) -> BlockOutput {
         let theme = Theme::current();
-        let style = if self.error {
-            ratatui::style::Style::default().fg(theme.accent_error)
-        } else {
-            theme.muted()
-        };
+        let style = theme.muted();
 
         let styled_lines: Vec<Line<'static>> = self
             .text
@@ -83,8 +65,7 @@ impl BlockContent for SystemMessageBlock {
     }
 
     fn accent(&self, _ctx: &BlockContext) -> Option<AccentStyle> {
-        self.error
-            .then(|| AccentStyle::static_color(Theme::current().accent_error))
+        None
     }
 
     fn has_vpad_for(&self, _appearance: &AppearanceConfig) -> bool {

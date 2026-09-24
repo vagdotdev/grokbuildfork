@@ -3,7 +3,7 @@
 # source_rev is xAI's internal monorepo pointer (upstream SOURCE_REV); it is
 # informational only and is never fetched.
 source = "https://github.com/xai-org/grok-build"
-git_sha = "4247f661689354b831191f11eeeac8424993fe3d"
-source_rev = "9bb727ccdff0a793ee73bcde4e2e09cbef6b5387"
-version = "1.0.38"
-fetched_at = "2026-09-22"
+git_sha = "f0e3be1100ef5252488e3be8bb0e91cf68d8c305"
+source_rev = "036a5d8348cd744767cd0b08518ab17bf608fa7f"
+version = "1.0.41"
+fetched_at = "2026-09-24"

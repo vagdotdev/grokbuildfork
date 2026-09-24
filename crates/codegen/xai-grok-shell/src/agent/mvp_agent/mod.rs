@@ -9,7 +9,8 @@ use std::{
 use tokio::sync::mpsc;
 /// A `'static` reference to a value on a single-threaded `LocalSet`. Encapsulates the raw-pointer pattern used when `spawn_local` tasks need `&T` but the borrow checker requires `'static`.
 /// The pointer is valid as long as: `T` is heap-allocated and never moved (e.g., behind `Rc` or owned by the ACP connection for the process lifetime). All access happens on the **same** `LocalSet` thread (no `Send`).
-/// The `LocalRef` does not outlive the `LocalSet`. These invariants are upheld by construction. `LocalRef` is `!Send` (via `*const T`) and is only used inside `spawn_local` closures on the agent's `LocalSet`.
+/// The `LocalRef` does not outlive the `LocalSet`. `LocalRef` is `!Send` (via `*const T`) and is only used inside `spawn_local` closures on the agent's `LocalSet`.
+/// Every entrypoint that builds a `MvpAgent` must hold an `Rc` to it, declared before the `LocalSet`, so the agent outlives every task on the set on normal exit and unwind alike.
 pub(crate) struct LocalRef<T> {
     ptr: *const T,
 }
@@ -559,6 +560,10 @@ struct SettingsUpdateNotification {
     subscription_watch_interval_secs: Option<u64>,
     dock_enabled: Option<bool>,
     terminal_theme_enabled: Option<bool>,
+    /// The remote tier the pager's settings row shows beside the saved `[features]` key.
+    /// Omitted while the agent has no settings (the pager keeps the tier it seeded itself); `null` once fetched settings lack the key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subagent_model_inheritance_enabled: Option<Option<bool>>,
 }
 /// When the announcements push gate emits despite an unchanged visible list.
 #[derive(Clone, Copy, Debug)]
@@ -1062,10 +1067,6 @@ struct AuthRequestMeta {
     /// Scopes `x.ai/auth/cancel` so a delayed cancel cannot tear down a successor login.
     #[serde(default)]
     request_seq: Option<u64>,
-    /// Workshop: the user explicitly selected the labeled "xAI (optional)" connection card.
-    /// Only then may the inherited xAI OAuth2 flow run when no session-login provider is configured.
-    #[serde(default)]
-    workshop_xai_opt_in: bool,
 }
 impl AuthRequestMeta {
     /// `--oauth` forces loopback; otherwise default (loopback).
@@ -1725,10 +1726,12 @@ impl MvpAgent {
                     email: auth.email.clone(),
                     auth_mode: Some(format!("{:?}", auth.auth_mode)),
                     team_id: auth.team_id.clone(),
+                    is_team_principal: auth.is_team_principal(),
                     team_name: auth.team_name.clone(),
                     is_zdr: auth.is_zdr_team(),
                     team_role: auth.team_role.clone(),
                     coding_data_retention_opt_out: auth.coding_data_retention_opt_out,
+                    can_administer_team: auth.can_administer_team,
                     show_resolved_model,
                     gate,
                     subscription_tier,
@@ -1875,6 +1878,10 @@ impl MvpAgent {
                     .and_then(|s| s.subscription_watch_interval_secs),
                 dock_enabled: rs.and_then(|s| s.dock_enabled),
                 terminal_theme_enabled: rs.and_then(|s| s.terminal_theme_enabled),
+                subagent_model_inheritance_enabled: rs
+                    .map(|s| {
+                        config::Feature::SubagentModelInheritance.remote_value(Some(s))
+                    }),
             }
         };
         if let Ok(params) = serde_json::value::to_raw_value(&payload) {

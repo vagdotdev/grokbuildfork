@@ -349,9 +349,7 @@ impl AgentView {
             .selected()
             .is_some_and(|idx| self.scrollback.entry_content_hidden_by_group(idx));
         let (selected_supports_copy, selected_meta_label, selected_supports_fullscreen) =
-            if self.active_pane == ActivePane::Catalog {
-                (false, None, self.catalog.selected_entry().is_some())
-            } else if self.active_pane == ActivePane::Tasks {
+            if self.active_pane == ActivePane::Tasks {
                 let has_selected = self.tasks.selected_task_id().is_some_and(|tid| {
                     self.session
                         .bg_tasks
@@ -414,9 +412,7 @@ impl AgentView {
                 .tracker
                 .running_execute_tool_call_id()
                 .is_some();
-        let selected_can_kill = if self.surface() == ViewSurface::ChildTakeover
-            || self.active_pane == ActivePane::Catalog
-        {
+        let selected_can_kill = if self.surface() == ViewSurface::ChildTakeover {
             false
         } else if self.active_pane == ActivePane::Dock {
             self.dock_items()
@@ -572,7 +568,6 @@ impl AgentView {
         pending_hint: Option<PendingHint>,
         overlay_focused: bool,
         banner: super::BannerSlotParams<'_>,
-        bundle_state: &crate::app::bundle::BundleState,
         in_dashboard_overlay: bool,
         link_spans_out: &mut Vec<xai_ratatui_inline::LinkSpan>,
         app_params: AppRenderParams<'_>,
@@ -669,7 +664,6 @@ impl AgentView {
                 scratch,
                 pending_hint,
                 &theme,
-                bundle_state,
                 in_dashboard_overlay.then(|| super::subagent_takeover::InheritedOverlay {
                     header: overlay_header,
                     stop_label: self.overlay_stop_label(),
@@ -741,9 +735,7 @@ impl AgentView {
             } else {
                 None
             },
-            // Workshop: the empty composer reads its invitation whenever nothing is running; a
-            // turn in flight leaves it blank until the turn ends.
-            placeholder_when_focused: !self.stoppable_activity_running(),
+            placeholder_when_focused: false,
             placeholder_override: if let Some(ph) = self
                 .prompt_input_mode
                 .placeholder_override(self.multiline_mode)
@@ -1000,14 +992,6 @@ impl AgentView {
         if self.active_pane == ActivePane::Tasks && !self.tasks.is_visible() {
             self.active_pane = ActivePane::Scrollback;
         }
-        self.catalog.sync_from_bundle(bundle_state);
-        if self.active_pane == ActivePane::Catalog && !self.catalog.is_visible() {
-            self.active_pane = ActivePane::Scrollback;
-        }
-        self.catalog.sync_from_bundle(bundle_state);
-        if self.active_pane == ActivePane::Catalog && !self.catalog.is_visible() {
-            self.active_pane = ActivePane::Scrollback;
-        }
         let viewer_open = self.active_subagent.is_some();
         let dock_on = crate::views::dock::enabled()
             && !viewer_open
@@ -1017,11 +1001,6 @@ impl AgentView {
             0
         } else {
             self.tasks.desired_height(area.height)
-        };
-        let catalog_height = if viewer_open {
-            0
-        } else {
-            self.catalog.desired_height(area.height)
         };
         let todo_height = if viewer_open {
             0
@@ -1060,10 +1039,7 @@ impl AgentView {
         };
         let turn_status_parked = if dock_covers_cues { false } else { parked };
         let wake_display_state = self.wake_display_state();
-        // Workshop: an Engine/Adapter turn shows the same turn-status row a shell turn does.
-        let display_state = wake_display_state
-            .or_else(|| self.workshop_display_state())
-            .unwrap_or(&self.session.state);
+        let display_state = wake_display_state.unwrap_or(&self.session.state);
         let send_now_gap = self.send_now_awaiting_current() && display_state.is_idle();
         let status_state = if send_now_gap {
             crate::app::agent::AgentState::TurnRunning
@@ -1122,7 +1098,6 @@ impl AgentView {
             timeline_width,
             prompt_height,
             tasks_height,
-            catalog_height,
             todo_height,
             queue_height,
             btw_height,
@@ -1160,7 +1135,6 @@ impl AgentView {
         if layout.timeline_width > 0 {
             self.sync_pending_user_input_marks();
             self.scrollback.set_cwd(Some(self.session.cwd.clone()));
-            let _ = self.sync_inline_edit_layout(layout.scrollback_content.width);
             self.scrollback.prepare_layout(
                 layout.scrollback_content.width,
                 layout.scrollback_content.height,
@@ -1319,21 +1293,13 @@ impl AgentView {
                 Line::from(Span::styled(label, mode_style)),
             );
         }
-        // Workshop: an Engine/Adapter connection meters the live model (its own usage and
-        // context window), never the shell placeholder model's numbers; unknown stays hidden.
-        let (ctx_used, ctx_total) = match self.workshop_context {
-            Some((used, limit)) => (used, limit),
-            None => {
-                let model_window = self.session.models.get_context_window();
-                (
-                    self.context_state.as_ref().map(|c| c.used),
-                    self.context_state
-                        .as_ref()
-                        .and_then(|c| (c.total > 0).then_some(c.total))
-                        .or(model_window),
-                )
-            }
-        };
+        let ctx_used = self.context_state.as_ref().map(|c| c.used);
+        let model_window = self.session.models.get_context_window();
+        let ctx_total = self
+            .context_state
+            .as_ref()
+            .and_then(|c| (c.total > 0).then_some(c.total))
+            .or(model_window);
         if let Some(ctx_line) = context_bar::context_bar_line_for_session(
             ctx_used,
             ctx_total,
@@ -1367,11 +1333,12 @@ impl AgentView {
             );
         }
         let dashboard_available = in_dashboard_overlay
-            || self
-                .prompt
-                .slash_controller
-                .registry()
-                .dashboard_dispatchable();
+            || (self.child_link().is_none()
+                && self
+                    .prompt
+                    .slash_controller
+                    .registry()
+                    .dashboard_dispatchable());
         if dashboard_available {
             status.push(
                 "dashboard",
@@ -1519,18 +1486,15 @@ impl AgentView {
         }
         self.hit_upgrade_cta
             .set_unless_dropdown(upgrade_cta_rect, dropdown_open);
-        let mut inline_edit_cursor: Option<(u16, u16)> = None;
         let sticky_gap_row: Option<u16>;
         {
             self.sync_pending_user_input_marks();
             self.scrollback.set_cwd(Some(self.session.cwd.clone()));
-            let inline_edit_dim_from =
-                self.sync_inline_edit_layout(layout.scrollback_content.width);
             self.scrollback.prepare_layout(
                 layout.scrollback_content.width,
                 layout.scrollback_content.height,
             );
-            let rewind_dim_from = self.rewind_dim_from_entry().or(inline_edit_dim_from);
+            let rewind_dim_from = self.rewind_dim_from_entry();
             let sb_focused = self.active_pane == ActivePane::Scrollback && !overlay_focused;
             let search_highlight = if search_active {
                 self.scrollback_search
@@ -1560,12 +1524,6 @@ impl AgentView {
                 sb_rendered.selection_boundaries,
             );
             self.reclamp_drag_head_post_render(false);
-            if self.inline_edit.is_some() {
-                let cursor = self.render_inline_edit(buf, layout.scrollback_content);
-                if self.rewind_state.is_none() {
-                    inline_edit_cursor = cursor;
-                }
-            }
             if search_reserved_rows > 0
                 && let Some(search) = self.scrollback_search.as_ref()
             {
@@ -1844,24 +1802,6 @@ impl AgentView {
             )
             .and_then(|sel| sel.close_button_rect());
             self.hit_bg_close.set(close_rect);
-        }
-        if catalog_height > 0 {
-            let cat_focused = self.active_pane == ActivePane::Catalog && !overlay_focused;
-            self.catalog
-                .render(layout.catalog, buf, cat_focused, layout_cfg);
-            let close_rect = agent::render_todo_chrome(
-                buf,
-                layout.catalog,
-                layout_cfg,
-                cat_focused,
-                false,
-                self.hit_catalog_close.hovered,
-                &theme,
-            )
-            .and_then(|sel| sel.close_button_rect());
-            self.hit_catalog_close.set(close_rect);
-        } else {
-            self.hit_catalog_close.clear();
         }
         if todo_height > 0 {
             let todo_focused = self.active_pane == ActivePane::Todo && !overlay_focused;
@@ -2265,26 +2205,18 @@ impl AgentView {
                 dot,
                 Style::default().fg(dot_color).bg(bg),
             );
+            buf.set_string(
+                content_x + 2,
+                rec_area.y,
+                "Recording",
+                Style::default().fg(theme.accent_error).bg(bg),
+            );
             let stop_str = "[stop]";
             let stop_w = unicode_width::UnicodeWidthStr::width(stop_str) as u16;
             let stop_x = rec_area.x
                 + rec_area
                     .width
                     .saturating_sub(layout_cfg.block_pad_right + stop_w);
-            // Workshop overlay: while the local engine downloads or loads its model the row carries
-            // that one progress line (voice-spec §5 rule 6); otherwise the plain "Recording".
-            let label_avail = stop_x.saturating_sub(content_x + 3) as usize;
-            let (label, label_style) = match crate::voice::banner_status() {
-                Some(status) if label_avail > 0 => (
-                    crate::render::line_utils::truncate_str(&status, label_avail),
-                    Style::default().fg(theme.accent_running).bg(bg),
-                ),
-                _ => (
-                    "Recording".to_owned(),
-                    Style::default().fg(theme.accent_error).bg(bg),
-                ),
-            };
-            buf.set_string(content_x + 2, rec_area.y, &label, label_style);
             let stop_fg = if self.hit_voice_stop_button.hovered {
                 theme.accent_error
             } else {
@@ -2359,13 +2291,9 @@ impl AgentView {
         let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
         let usage_warning = usage_warning_text.as_deref();
         let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
-        let model_label = match &self.workshop_model_label {
-            // Workshop Engine/Adapter connection: name the runtime, not a shell model.
-            Some(label) => label.clone(),
-            None => match self.session.models.reasoning_effort {
-                Some(eff) => format!("{model_id} ({eff})"),
-                None => model_id,
-            },
+        let model_label = match self.session.models.reasoning_effort {
+            Some(eff) => format!("{model_id} ({eff})"),
+            None => model_id,
         };
         let info = match &self.prompt_mode {
             PromptMode::Normal => PromptInfo {
@@ -4375,12 +4303,7 @@ impl AgentView {
                 }
             }
         }
-        let cursor = if self.inline_edit.is_some() {
-            inline_edit_cursor
-        } else {
-            prompt_cursor_pos
-        };
-        (cursor, prompt_post_flush)
+        (prompt_cursor_pos, prompt_post_flush)
     }
 }
 /// Draw one ▼/▲ scroll-indicator arrow centered on row `y`, or clear its hit area when hidden (`y: None`).
@@ -4525,7 +4448,6 @@ mod voice_recording_overlay_tests {
     use super::super::test_fixtures::make_plan_approval_view_state;
     use super::AgentView;
     use crate::actions::ActionRegistry;
-    use crate::app::bundle::BundleState;
     use crate::scrollback::render::ScratchBuffer;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -4551,7 +4473,6 @@ mod voice_recording_overlay_tests {
             None,
             false,
             crate::app::agent_view::BannerSlotParams::none(),
-            &BundleState::default(),
             false,
             &mut Vec::new(),
             super::AppRenderParams {
@@ -4596,7 +4517,6 @@ mod voice_recording_overlay_tests {
 mod overlay_cycle_hint_tests {
     use super::super::test_fixtures::make_agent;
     use crate::actions::ActionRegistry;
-    use crate::app::bundle::BundleState;
     use crate::scrollback::render::ScratchBuffer;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -4636,7 +4556,6 @@ mod overlay_cycle_hint_tests {
             None,
             false,
             crate::app::agent_view::BannerSlotParams::none(),
-            &BundleState::default(),
             true,
             &mut Vec::new(),
             super::AppRenderParams {
@@ -4731,7 +4650,6 @@ mod overlay_cycle_hint_tests {
                 pending,
                 false,
                 crate::app::agent_view::BannerSlotParams::none(),
-                &BundleState::default(),
                 true,
                 &mut Vec::new(),
                 super::AppRenderParams {
@@ -4772,7 +4690,6 @@ mod overlay_cycle_hint_tests {
 mod overlay_post_flush_tests {
     use super::super::test_fixtures::make_agent;
     use crate::actions::ActionRegistry;
-    use crate::app::bundle::BundleState;
     use crate::scrollback::render::ScratchBuffer;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -4789,7 +4706,6 @@ mod overlay_post_flush_tests {
                 None,
                 false,
                 crate::app::agent_view::BannerSlotParams::none(),
-                &BundleState::default(),
                 false,
                 &mut Vec::new(),
                 super::AppRenderParams::default(),
@@ -4922,7 +4838,6 @@ mod status_line_draw_tests {
     use super::super::test_fixtures::make_agent;
     use super::AgentView;
     use crate::actions::ActionRegistry;
-    use crate::app::bundle::BundleState;
     use crate::scrollback::render::ScratchBuffer;
     use crate::views::question_view::QuestionViewState;
     use crate::views::status_line::{SanitizedText, StatusLineDisplay, StatusLineFrame};
@@ -4947,7 +4862,6 @@ mod status_line_draw_tests {
             None,
             false,
             crate::app::agent_view::BannerSlotParams::none(),
-            &BundleState::default(),
             false,
             &mut Vec::new(),
             super::AppRenderParams {

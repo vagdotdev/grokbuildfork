@@ -39,33 +39,6 @@ pub(in crate::app::dispatch) fn dispatch_load_session(
     session_cwd: Option<std::path::PathBuf>,
     chat_kind: bool,
 ) -> Vec<Effect> {
-    // Workshop: an engine conversation is not a shell session — replay Workshop's record into a
-    // fresh agent and continue the same OpenCode session from there.
-    if let Some(record) = crate::app::workshop_sessions::load(&session_id) {
-        crate::unified_log::info(
-            "workshop.engine_resume",
-            None,
-            Some(serde_json::json!({
-                "session": record.id,
-                "turns": record.turns.len(),
-                "startup_allowed": app.session_startup_allowed(),
-            })),
-        );
-        invalidate_picker_fetch_on_dismiss(app);
-        if let Some(existing) = app.agents.iter().find_map(|(id, a)| {
-            (app.workshop_engine_session.as_deref() == Some(record.id.as_str())
-                && a.session.session_id.is_some())
-            .then_some(*id)
-        }) {
-            switch_to_agent(app, existing, SwitchCause::Load);
-            return vec![];
-        }
-        // The welcome screen's unused home husk is not needed once a real conversation opens.
-        let mut effects = abandon_unused_empty_for_load(app, &session_id);
-        app.workshop_engine_resume = Some(record);
-        effects.extend(super::lifecycle::dispatch_new_session_inner(app, None));
-        return effects;
-    }
     if !app.session_startup_allowed() {
         #[cfg(feature = "local-workspace")]
         {
@@ -434,12 +407,11 @@ pub(in crate::app::dispatch) fn dispatch_pick_session(
             app.welcome_history_load_as_build = true;
         }
     }
+    if crate::app::is_daemon_or_remote_control_row(&source) {
+        return dispatch_daemon_session_pick(app, session_id, cwd);
+    }
     if chat_kind {
         return dispatch_load_session(app, session_id, None, true);
-    }
-    // Workshop: an engine conversation row (recorded under the home, not a shell session dir).
-    if crate::app::workshop_sessions::load(&session_id).is_some() {
-        return dispatch_load_session(app, session_id, None, false);
     }
     let local_cwd = app.cwd.to_string_lossy().to_string();
     if xai_grok_shell::session::resolve_local_session(&session_id, &local_cwd).is_some() {
@@ -472,6 +444,14 @@ pub(in crate::app::dispatch) fn dispatch_pick_session(
         app.show_toast("Session not found locally");
         vec![]
     }
+}
+fn dispatch_daemon_session_pick(app: &mut AppView, session_id: String, cwd: String) -> Vec<Effect> {
+    #[cfg(feature = "local-workspace")]
+    {
+        app.welcome_history_load_as_build = true;
+    }
+    let session_cwd = (!cwd.is_empty()).then(|| std::path::PathBuf::from(cwd));
+    dispatch_load_session(app, session_id, session_cwd, false)
 }
 /// Pick a session from the picker and resume it in a new git worktree.
 pub(in crate::app::dispatch) fn dispatch_pick_session_in_worktree(
@@ -543,6 +523,10 @@ pub(in crate::app::dispatch) fn dispatch_pick_session_in_worktree(
     };
     if source == "conversation" {
         app.show_toast("Chat conversations can't be resumed in a worktree");
+        return vec![];
+    }
+    if crate::app::is_daemon_or_remote_control_row(&source) {
+        app.show_toast("Daemon sessions can't be resumed in a worktree");
         return vec![];
     }
     #[cfg(feature = "local-workspace")]
@@ -1060,10 +1044,6 @@ pub(in crate::app::dispatch) fn dispatch_pick_content_session(
     if chat_kind {
         return dispatch_load_session(app, session_id, None, true);
     }
-    // Workshop: an engine conversation row (recorded under the home, not a shell session dir).
-    if crate::app::workshop_sessions::load(&session_id).is_some() {
-        return dispatch_load_session(app, session_id, None, false);
-    }
     let local_cwd = app.cwd.to_string_lossy().to_string();
     if xai_grok_shell::session::resolve_local_session(&session_id, &local_cwd).is_some() {
         return dispatch_load_session(app, session_id, None, false);
@@ -1270,10 +1250,11 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
             app.models = Some(m).into();
             agent.session.models = app.models.clone();
         }
-        if agent.apply_session_modes(modes) {
-            app.default_yolo = false;
-            app.current_ui.permission_mode = Some("ask".into());
-        }
+        crate::app::dispatch::session::lifecycle::apply_session_modes_dropping_auto(
+            agent,
+            modes,
+            &mut app.current_ui.permission_mode,
+        );
         let deferred = crate::app::dispatch::session::lifecycle::apply_deferred_model_switch(
             agent,
             app.cli_effort_token.as_deref(),

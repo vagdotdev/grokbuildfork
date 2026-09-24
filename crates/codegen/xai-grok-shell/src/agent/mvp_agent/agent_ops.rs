@@ -19,16 +19,11 @@ fn byok_from_models(
     preferred: Option<&str>,
     current: &str,
 ) -> Option<String> {
-    // Workshop anonymous connections carry a sentinel, never a usable static key.
-    let real = |m: &ModelEntry| {
-        m.own_credential()
-            .filter(|k| !crate::agent::config::is_workshop_anonymous_key(k))
-    };
     preferred
         .and_then(|id| models.get(id))
-        .and_then(real)
-        .or_else(|| models.get(current).and_then(real))
-        .or_else(|| models.values().find_map(real))
+        .and_then(|m| m.own_credential())
+        .or_else(|| models.get(current).and_then(|m| m.own_credential()))
+        .or_else(|| models.values().find_map(|m| m.own_credential()))
 }
 struct MissingSessionCtx {
     has_session_key: bool,
@@ -56,24 +51,6 @@ fn polled_fields(settings: &crate::util::config::RemoteSettings) -> PolledFields
     (settings.announcements.clone(), settings.accept_request_encodings.clone())
 }
 impl MvpAgent {
-    /// Announce a session's new title over ACP.
-    /// ACP scopes `session/update` to sessions the client established, and a rename can name a history row it never loaded.
-    /// So the liveness check belongs here rather than at each call site.
-    pub(crate) fn notify_session_info_update(
-        &self,
-        session_id: &agent_client_protocol::SessionId,
-        title: &str,
-    ) {
-        if self.is_resident(session_id) {
-            self.gateway
-                .forward_fire_and_forget(
-                    crate::session::summary::session_info_update_manual(
-                        session_id.clone(),
-                        title,
-                    ),
-                );
-        }
-    }
     pub fn reload_skills_all_sessions(&self) -> usize {
         let session_ids = self.resident_ids();
         for sid in &session_ids {
@@ -1460,24 +1437,12 @@ impl MvpAgent {
         &self,
     ) -> Option<acp::AuthMethodId> {
         let preferred = self.cfg.borrow().grok_com_config.preferred_method;
-        let has_session_login_provider = self
-            .cfg
-            .borrow()
-            .grok_com_config
-            .has_session_login_provider()
-            || self
-                .cfg
-                .borrow()
-                .grok_com_config
-                .auth_provider_command
-                .is_some();
         let id = auth_method::method_id_after_cached_token_unavailable(
             auth_method::should_advertise_xai_api_key_with_env_ok(
                 self.cfg.borrow().grok_com_config.api_key_auth_disabled(),
                 self.models_manager.models().values(),
                 self.auth_manager.first_party_env_api_key_ok(),
             ),
-            has_session_login_provider,
             preferred,
         )?;
         Some(acp::AuthMethodId::new(id))
@@ -4416,6 +4381,10 @@ impl MvpAgent {
             .cfg
             .borrow()
             .is_feature_enabled(crate::agent::config::Feature::CompactionVerbatimInput);
+        let long_reasoning_reminder = self
+            .cfg
+            .borrow()
+            .resolve_long_reasoning_reminder();
         let compaction_tool_choice = self.cfg.borrow().resolve_compaction_tool_choice();
         let auto_update = self.cfg.borrow().cli.auto_update;
         let client_type = *self.client_type.borrow();
@@ -4878,6 +4847,7 @@ impl MvpAgent {
                     system_prompt_label,
                     compaction_mode,
                     compaction_verbatim_input,
+                    long_reasoning_reminder,
                     compaction_tool_choice,
                     two_pass_enabled,
                     buffering_settings,

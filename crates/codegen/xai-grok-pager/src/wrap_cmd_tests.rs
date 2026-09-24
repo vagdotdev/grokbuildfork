@@ -1,4 +1,4 @@
-//! Unit tests for the `workshop wrap` spawn planning in [`super`] (`wrap_cmd`), split out via `#[path]` to keep the module itself small.
+//! Unit tests for the `grok wrap` spawn planning in [`super`] (`wrap_cmd`), split out via `#[path]` to keep the module itself small.
 //!
 //! Everything is pure: `derive_spawn` takes the PATH lookup result and the shell as inputs.
 //! The exception is the final test, which round-trips the rejoined line through a real `/bin/sh -c` to prove the quoting contract end to end.

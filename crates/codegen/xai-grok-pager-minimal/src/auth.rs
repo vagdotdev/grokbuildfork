@@ -190,7 +190,7 @@ pub(super) fn render_auth(buf: &mut Buffer, area: Rect, theme: &Theme, hint: &Mi
                 area,
                 y,
                 bottom,
-                Line::from(Span::styled("Workshop — connect a model", bold)),
+                Line::from(Span::styled("Sign in to Grok", bold)),
             );
             y = put_line(buf, area, y, bottom, Line::default());
             match url {
@@ -297,7 +297,7 @@ pub(super) fn render_auth(buf: &mut Buffer, area: Rect, theme: &Theme, hint: &Mi
                 y,
                 bottom,
                 Line::from(Span::styled(
-                    "Workshop may run or modify contents in this directory,",
+                    "Grok Build may run or modify contents in this directory,",
                     gray,
                 )),
             );
@@ -469,7 +469,7 @@ mod tests {
         };
         render_auth(&mut buf, area, &theme, &hint);
         let text = crate::buffer_text(&buf);
-        assert!(text.contains("Workshop — connect a model"), "header: {text:?}");
+        assert!(text.contains("Sign in to Grok"), "header: {text:?}");
         assert!(text.contains("accounts.x.ai/device"), "url: {text:?}");
         assert!(text.contains("ABCD-EFGH"), "device code: {text:?}");
         assert!(

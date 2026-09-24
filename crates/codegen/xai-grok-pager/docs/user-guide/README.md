@@ -1,6 +1,6 @@
-# Workshop User Guide
+# Grok Build User Guide
 
-Learn how to install, configure, and extend Workshop, the terminal coding agent that starts on a free model and connects the subscriptions and API keys you already have.
+Learn how to install, configure, and extend Grok Build, the terminal-based AI coding assistant from SpaceXAI.
 
 ---
 
@@ -10,8 +10,8 @@ Start here. These guides cover what you need on your first day.
 
 | # | Document | Description |
 |---|----------|-------------|
-| 1 | [Getting Started](01-getting-started.md) | One-line install, first launch on a free model, `/model` and `/auth`, basic interaction, and key concepts |
-| 2 | [Authentication](02-authentication.md) | Free models, subscription CLIs, API keys in the OS keyring, local servers, the optional xAI account |
+| 1 | [Getting Started](01-getting-started.md) | Installation, first launch, authentication, basic interaction, and key concepts |
+| 2 | [Authentication](02-authentication.md) | Browser login, API keys, OIDC/SSO, external auth providers, and device-code flow |
 | 3 | [Keyboard Shortcuts](03-keyboard-shortcuts.md) | Reference for every key binding and mouse action in the TUI |
 | 4 | [Slash Commands](04-slash-commands.md) | Every `/` command, including goals, deep research, and workflow run management |
 | 5 | [Configuration](05-configuration.md) | `config.toml`, `pager.toml`, environment variables, and file locations |
@@ -20,7 +20,7 @@ Start here. These guides cover what you need on your first day.
 
 ## Tier 2: Core Feature Docs
 
-Customize and extend Workshop.
+Customize and extend Grok Build.
 
 | # | Document | Description |
 |---|----------|-------------|
@@ -37,11 +37,11 @@ Customize and extend Workshop.
 
 ## Tier 3: Advanced Usage Docs
 
-Automate, script, and integrate Workshop with other systems.
+Automate, script, and integrate Grok Build with other systems.
 
 | # | Document | Description |
 |---|----------|-------------|
-| 14 | [Headless Mode and Scripting](14-headless-mode.md) | `workshop -p`, output formats, CI/CD integration, and piping |
+| 14 | [Headless Mode and Scripting](14-headless-mode.md) | `grok -p`, output formats, CI/CD integration, and piping |
 | 15 | [Agent Mode and IDE Integration](15-agent-mode.md) | ACP stdio transport, WebSocket relay, and SDK integration |
 | 16 | [Subagents and Personas](16-subagents.md) | Parallel child sessions, agent types, personas, and capability modes |
 | 17 | [Session Management](17-sessions.md) | Save, load, resume, rewind, compact, and the session persistence format |
@@ -51,5 +51,6 @@ Automate, script, and integrate Workshop with other systems.
 | 21 | [Terminal Support and Troubleshooting](21-terminal-support.md) | tmux, SSH, truecolor, clipboard, and OSC 52 |
 | 22 | [Permissions and Safety](22-permissions-and-safety.md) | Modes (always-approve, auto, ask), rules, matching, hooks, and examples |
 | 23 | [Agent Dashboard](23-dashboard.md) | Central overview of local sessions and forks |
+| 24 | [Monitoring Usage (External OpenTelemetry)](24-monitoring-usage.md) | Customer OTEL export |
 | 25 | [Status Line](25-status-line.md) | The bottom status row: built-in segments, command scripts, and the stdin JSON contract |
 | 26 | [Configuration Reference](26-config-reference.md) | Field list for `config.toml`, `managed_config.toml`, and `requirements.toml` |

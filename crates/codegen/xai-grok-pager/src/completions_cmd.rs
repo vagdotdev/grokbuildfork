@@ -1,4 +1,4 @@
-//! `workshop completions <shell>`: generate shell completion scripts.
+//! `grok completions <shell>`: generate shell completion scripts.
 //!
 //! Used by the installers and npm postinstall; must stay side-effect free (no network, auth, tracing, or tokio).
 
@@ -7,20 +7,17 @@ use clap_complete::{Shell, generate};
 
 use crate::app::PagerArgs;
 
-/// The public binary name the completion scripts complete.
-pub const BIN_NAME: &str = "workshop";
-
 /// Generate and print the completion script for the given shell.
 pub fn run(shell: Shell) {
-    // Workshop: the script completes the public `workshop` binary name.
-    let mut cmd = PagerArgs::command().name(BIN_NAME);
+    // Ensure the script always uses the public "grok" name (matches historical behavior and what the installers and docs expect)
+    let mut cmd = PagerArgs::command().name("grok");
     if shell != Shell::Zsh {
-        generate(shell, &mut cmd, BIN_NAME, &mut std::io::stdout());
+        generate(shell, &mut cmd, "grok", &mut std::io::stdout());
         return;
     }
     // zsh needs post-processing (see fix_zsh_root_prompt_positional).
     let mut buf = Vec::new();
-    generate(shell, &mut cmd, BIN_NAME, &mut buf);
+    generate(shell, &mut cmd, "grok", &mut buf);
     match String::from_utf8(buf) {
         Ok(script) => print!("{}", fix_zsh_root_prompt_positional(&script)),
         // clap_complete output is generated from Rust strings, so this arm is unreachable in practice
@@ -33,7 +30,7 @@ pub fn run(shell: Shell) {
 }
 
 /// Work around clap_complete's broken zsh output for an optional free-form positional (`[PROMPT]`) preceding the
-/// subcommand slot. Upstream bug: <https://github.com/clap-rs/clap/issues/6282>. `workshop worktree <TAB>` then
+/// subcommand slot. Upstream bug: <https://github.com/clap-rs/clap/issues/6282>. `grok worktree <TAB>` then
 /// re-offers every top-level command. Delete this whole workaround once upstream fixes the generator.
 fn fix_zsh_root_prompt_positional(script: &str) -> String {
     let mut out = String::with_capacity(script.len());
@@ -51,8 +48,8 @@ fn fix_zsh_root_prompt_positional(script: &str) -> String {
             r#"words=($line[1] "${words[@]}")"#,
         ),
         (
-            r#"curcontext="${curcontext%:*:*}:workshop-command-$line[2]:""#,
-            r#"curcontext="${curcontext%:*:*}:workshop-command-$line[1]:""#,
+            r#"curcontext="${curcontext%:*:*}:grok-command-$line[2]:""#,
+            r#"curcontext="${curcontext%:*:*}:grok-command-$line[1]:""#,
         ),
         (r#"case $line[2] in"#, r#"case $line[1] in"#),
     ] {
@@ -67,14 +64,14 @@ mod tests {
 
     /// Generate the zsh completion script exactly like `run` does.
     fn zsh_script() -> String {
-        let mut cmd = PagerArgs::command().name(BIN_NAME);
+        let mut cmd = PagerArgs::command().name("grok");
         let mut buf = Vec::new();
-        generate(Shell::Zsh, &mut cmd, BIN_NAME, &mut buf);
+        generate(Shell::Zsh, &mut cmd, "grok", &mut buf);
         String::from_utf8(buf).expect("completion script is UTF-8")
     }
 
     // The optional `[PROMPT]` positional (app/cli.rs) makes clap_complete emit a `::prompt` slot before the subcommand slot
-    // Dispatch happens on `$line[2]`, so `workshop worktree <TAB>` re-offered every top-level command (upstream clap-rs/clap#6282)
+    // Dispatch happens on `$line[2]`, so `grok worktree <TAB>` re-offered every top-level command (upstream clap-rs/clap#6282)
     #[test]
     fn zsh_completions_drop_prompt_slot_and_dispatch_on_line_1() {
         let raw = zsh_script();
@@ -96,15 +93,15 @@ mod tests {
             "root dispatch must be shifted to $line[1]"
         );
         assert!(
-            fixed.contains(r#"curcontext="${curcontext%:*:*}:workshop-command-$line[1]:""#),
+            fixed.contains(r#"curcontext="${curcontext%:*:*}:grok-command-$line[1]:""#),
             "root dispatch context must use $line[1]"
         );
         // Subcommand dispatch blocks (already on $line[1]) must survive.
         assert!(
-            fixed.contains("workshop-worktree-command-$line[1]"),
+            fixed.contains("grok-worktree-command-$line[1]"),
             "nested subcommand dispatch must be untouched"
         );
         // The subcommand list itself must still be offered at the root.
-        assert!(fixed.contains("_workshop_commands"), "root command list intact");
+        assert!(fixed.contains("_grok_commands"), "root command list intact");
     }
 }

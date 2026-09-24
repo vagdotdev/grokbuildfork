@@ -13,14 +13,6 @@ pub mod actions;
 pub mod agent;
 pub mod agent_view;
 pub mod app_view;
-/// Workshop overlay: connection picker loading and activation.
-pub mod workshop;
-pub mod workshop_askpass;
-pub mod workshop_engine_state;
-pub mod workshop_permissions;
-pub mod workshop_sessions;
-pub mod workshop_update;
-pub mod workshop_tools;
 pub mod bundle;
 pub(crate) mod cancel_latency;
 pub mod cli;
@@ -35,6 +27,12 @@ pub mod edit_highlight_worker;
 /// Off-thread Mermaid diagram render worker (out of process) + per-session cache.
 pub mod mermaid_worker;
 pub(crate) mod prompt_ack;
+pub(crate) fn is_daemon_session_row(_source: &str) -> bool {
+    false
+}
+pub(crate) fn is_daemon_or_remote_control_row(_source: &str) -> bool {
+    false
+}
 pub use xai_prompt_queue as prompt_queue;
 mod acp_handler;
 mod connect_timeout;
@@ -62,7 +60,6 @@ mod event_loop_stall;
 mod exit_timeout;
 pub(crate) mod external_editor;
 mod foreign_sessions;
-mod inline_edit;
 #[cfg(all(test, unix))]
 mod leader_cluster;
 mod modals;
@@ -823,20 +820,9 @@ pub async fn run(
         }
         session_startup::set_active_local_workspace(lw)?;
     }
-    let mut intent = args
+    let intent = args
         .session_startup_intent()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    // Workshop: an engine conversation (`--resume ses_…`, or `-c` under an Engine connection)
-    // is Workshop's own record, replayed into a fresh agent that continues the same OpenCode
-    // session; the shell starts a new session underneath as on any launch.
-    let workshop_engine_resume = crate::app::workshop_sessions::startup_resume(
-        args.session_to_resume(),
-        args.resume_most_recent() || args.continue_last_session,
-        &std::env::current_dir().unwrap_or_default(),
-    );
-    if workshop_engine_resume.is_some() {
-        intent = session_startup::SessionStartupIntent::NewAuto;
-    }
     let mut materialize_ctx = session_startup::MaterializeCtx::from_pager_args(&args);
     materialize_ctx.restore_progress_on_stdout =
         std::io::IsTerminal::is_terminal(&std::io::stdout());
@@ -913,7 +899,7 @@ pub async fn run(
         xai_grok_shell::util::config::default_interactive_permission_mode(),
     );
     let mut connect_flags = crate::acp::ConnectFlags {
-        subagents: !args.no_subagents,
+        no_subagents: args.no_subagents,
         memory_enabled_override: args.memory_enabled_override(),
         memory_override_flag: args.memory_override_flag(),
         disable_web_search: args.disable_web_search,
@@ -1173,7 +1159,6 @@ pub async fn run(
         bg_update_rx,
         writer_event_rx,
         &mut reader_thread,
-        workshop_engine_resume,
     )
     .await;
     signal_handler::clear_quit_notify();
@@ -1253,7 +1238,7 @@ pub async fn run(
         Err(run_error) => Err(run_error),
     }
 }
-/// Plain-quit "Continue later with…" lines (after terminal restore).
+/// Plain-quit "Resume this session with…" lines (after terminal restore).
 /// Best-effort: closed-pane EIO/BrokenPipe must not panic (`panic = "abort"`).
 /// TODO: extend beyond --minimal by rebuilding resume argv from launch flags (see screen_mode_relaunch)
 fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write) {
@@ -1273,12 +1258,11 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
         }
         let _ = writeln!(w);
     }
-    // Workshop: short and human — `-c` continues this directory's most recent session, so the
-    // user never has to carry a session id around.
+    let _ = writeln!(w, "Resume this session with:");
     if info.minimal {
-        let _ = writeln!(w, "Continue later with: workshop --minimal -c");
+        let _ = writeln!(w, "  grok --minimal --resume {}", info.session_id);
     } else {
-        let _ = writeln!(w, "Continue later with: workshop -c");
+        let _ = writeln!(w, "  grok --resume {}", info.session_id);
     }
 }
 /// Screen-mode relaunch failure fallback (same quit tail as plain resume).
@@ -1495,11 +1479,6 @@ fn init_terminal(
         startup_typeahead.extend(event_loop::capture_startup_typeahead(
             std::time::Duration::from_millis(0),
         ));
-        // Workshop: save the terminal's own title (XTWINOPS 22) so shutdown can restore it
-        // instead of leaving "Workshop" in the tab; terminals without a title stack ignore it.
-        xai_grok_shell::util::with_locked_stderr(|stderr| {
-            let _ = stderr.write_all(crate::notifications::TITLE_SAVE.as_bytes());
-        });
         set_terminal_title("");
         if want_minimal && clear_main_screen {
             xai_grok_shell::util::with_locked_stderr(|stderr| {
@@ -1697,10 +1676,10 @@ pub(crate) fn set_terminal_title(title: &str) {
 fn terminal_title_string(title: &str) -> String {
     let sanitized: String = title.chars().filter(|c| !c.is_control()).collect();
     if sanitized.is_empty() {
-        "Workshop".into()
+        "grok".into()
     } else {
-        let truncated: String = sanitized.chars().take(80 - 11).collect();
-        format!("{} - Workshop", truncated)
+        let truncated: String = sanitized.chars().take(80 - 6).collect();
+        format!("{} - grok", truncated)
     }
 }
 #[cfg(test)]
@@ -1750,11 +1729,11 @@ mod tests {
     fn terminal_title_strips_control_characters() {
         assert_eq!(
             terminal_title_string("evil\x07\x1b]52;c;payload\x07title"),
-            "evil]52;c;payloadtitle - Workshop"
+            "evil]52;c;payloadtitle - grok"
         );
-        assert_eq!(terminal_title_string("\x07\x1b\x00"), "Workshop");
-        assert_eq!(terminal_title_string(""), "Workshop");
-        assert_eq!(terminal_title_string("My chat"), "My chat - Workshop");
+        assert_eq!(terminal_title_string("\x07\x1b\x00"), "grok");
+        assert_eq!(terminal_title_string(""), "grok");
+        assert_eq!(terminal_title_string("My chat"), "My chat - grok");
     }
     #[test]
     fn hunk_tracker_mode_nothing_set_is_none() {
@@ -2271,9 +2250,9 @@ mod tests {
         assert!(!args.no_alt_screen);
     }
     #[test]
-    fn cli_command_name_is_workshop() {
+    fn cli_command_name_is_grok() {
         use clap::CommandFactory;
-        assert_eq!(PagerArgs::command().get_name(), "workshop");
+        assert_eq!(PagerArgs::command().get_name(), "grok");
     }
     #[test]
     fn cli_help_output_header() {
@@ -2283,9 +2262,9 @@ mod tests {
         assert_eq!(
             first_5,
             vec![
-                "Workshop: a coding-agent runtime that connects to local models, API keys, or subscription CLIs",
+                "Grok Build TUI",
                 "",
-                "Usage: workshop [OPTIONS] [PROMPT] [COMMAND]",
+                "Usage: grok [OPTIONS] [PROMPT] [COMMAND]",
                 "",
                 "Arguments:",
             ]
@@ -2331,7 +2310,7 @@ mod tests {
         print_exit_resume_hint(&bare_exit_info("sess-abc", false), 80, &mut buf);
         assert_eq!(
             String::from_utf8(buf).unwrap(),
-            "\nContinue later with: workshop -c\n"
+            "\nResume this session with:\n  grok --resume sess-abc\n"
         );
     }
     #[test]
@@ -2340,7 +2319,7 @@ mod tests {
         print_exit_resume_hint(&bare_exit_info("sess-abc", true), 80, &mut buf);
         assert_eq!(
             String::from_utf8(buf).unwrap(),
-            "\nContinue later with: workshop --minimal -c\n"
+            "\nResume this session with:\n  grok --minimal --resume sess-abc\n"
         );
     }
     #[test]
@@ -2364,7 +2343,8 @@ mod tests {
                 "> make the suite deterministic\n",
                 "  Pinned the seed; 200 consecutive green runs.\n",
                 "\n",
-                "Continue later with: workshop -c\n",
+                "Resume this session with:\n",
+                "  grok --resume sess-abc\n",
             )
         );
     }
@@ -2385,7 +2365,7 @@ mod tests {
         assert!(out.contains(&format!("\n{}…\n", "t".repeat(19))));
         assert!(out.contains(&format!("\n> {}…\n", "p".repeat(17))));
         assert!(out.contains(&format!("\n  {}…\n", "r".repeat(17))));
-        assert!(out.contains("Continue later with: workshop -c\n"));
+        assert!(out.contains("  grok --resume sess-abc\n"));
     }
     #[test]
     fn print_relaunch_failure_hint_writes_expected_lines() {

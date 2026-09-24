@@ -248,18 +248,9 @@ fn build_stt_ws_url(config: &VoiceConfig) -> Result<Url, VoiceError> {
 mod tests {
     use super::*;
 
-    /// The xAI client under test needs an explicit base: Workshop's default config has none.
-    fn xai_cfg() -> VoiceConfig {
-        VoiceConfig {
-            provider: crate::config::VoiceProvider::Xai,
-            api_base: "https://stt.example.com".into(),
-            ..VoiceConfig::default()
-        }
-    }
-
     #[test]
     fn stt_url_includes_query_params() {
-        let cfg = xai_cfg();
+        let cfg = VoiceConfig::default();
         let url = build_stt_ws_url(&cfg).unwrap();
         let q = url.query().unwrap_or_default();
         assert!(q.contains("sample_rate=16000"));
@@ -271,7 +262,7 @@ mod tests {
     fn stt_url_resolves_auto_to_concrete_language() {
         let cfg = VoiceConfig {
             language: "auto".into(),
-            ..xai_cfg()
+            ..VoiceConfig::default()
         };
         let url = build_stt_ws_url(&cfg).unwrap();
         let q = url.query().unwrap_or_default();
@@ -298,7 +289,7 @@ mod tests {
     fn stt_url_passes_through_catalog_language() {
         let cfg = VoiceConfig {
             language: "ja".into(),
-            ..xai_cfg()
+            ..VoiceConfig::default()
         };
         let url = build_stt_ws_url(&cfg).unwrap();
         assert!(url.query().unwrap_or_default().contains("language=ja"));

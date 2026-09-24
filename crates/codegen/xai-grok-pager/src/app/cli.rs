@@ -6,29 +6,26 @@ use std::path::PathBuf;
 /// Top-level commands for the pager binary.
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
-    /// Run Workshop without the interactive UI
+    /// Run Grok without the interactive UI
     Agent(Box<AgentArgs>),
-    /// Show the configuration Workshop discovers for this directory
+    /// Show the configuration Grok discovers for this directory
     Inspect {
         /// Emit machine-readable JSON output.
         #[arg(long)]
         json: bool,
     },
-    /// Check terminal, clipboard, color, and input support without starting Workshop
+    /// Check terminal, clipboard, color, and input support without starting Grok
     Doctor(crate::doctor_cmd::DoctorArgs),
     /// Manage running leader processes
     Leader(LeaderMgmtArgs),
     /// Sign out and clear cached credentials
     Logout,
-    /// Show the connection picker (Local model, API key, subscription CLI, optional xAI)
+    /// Sign in to Grok
     Login {
         /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
         #[arg(long, hide = true)]
         legacy: bool,
-        /// Optional: sign in with an xAI account (opens auth.x.ai). Never the default.
-        #[arg(long = "xai")]
-        xai: bool,
-        /// Use the loopback OAuth transport for a configured session-login provider.
+        /// Use Grok OAuth via auth.x.ai.
         #[arg(long = "oauth", alias = "oidc", conflicts_with_all = ["device_auth"])]
         oauth: bool,
         /// Use device-code authentication for headless/remote environments.
@@ -57,7 +54,7 @@ pub enum Command {
     Usage(crate::usage_cmd::UsageArgs),
     /// Fetch and install managed configuration
     Setup {
-        /// Print the fetched configuration as JSON instead of installing it; writes nothing to ~/.workshop.
+        /// Print the fetched configuration as JSON instead of installing it; writes nothing to ~/.grok.
         #[arg(long)]
         json: bool,
     },
@@ -78,10 +75,10 @@ clipboard (containers, SSH) and your terminal does not handle OSC 52 itself
 sync with your window size.
 
 Examples:
-  workshop wrap docker exec -it my-container bash
-  workshop wrap kubectl exec -it my-pod -- bash
+  grok wrap docker exec -it my-container bash
+  grok wrap kubectl exec -it my-pod -- bash
 
-See https://github.com/vagdotdev/grokbuildfork for more information.
+See ~/.grok/README.md for more information.
 ")]
     Wrap(WrapArgs),
     /// Export a session transcript as Markdown
@@ -111,7 +108,7 @@ See https://github.com/vagdotdev/grokbuildfork for more information.
         /// Switch to the enterprise release channel.
         #[arg(long, conflicts_with_all = ["alpha", "stable"], hide = true)]
         enterprise: bool,
-        /// Internal: what spawned this `workshop update` (`user_command`, `auto_background`, `leader_converge`). Hidden.
+        /// Internal: what spawned this `grok update` (`user_command`, `auto_background`, `leader_converge`). Hidden.
         #[arg(long, hide = true)]
         trigger: Option<String>,
         /// Internal compat alias for `--trigger=auto_background` (older parents still spawn children with it).
@@ -133,17 +130,17 @@ See https://github.com/vagdotdev/grokbuildfork for more information.
     },
     /// Manage git worktrees
     Worktree(crate::worktree_cmd::WorktreeArgs),
-    /// Show what the Workshop home (~/.workshop) uses on disk
+    /// Show what the grok home (~/.grok) uses on disk
     #[command(name = "du", visible_alias = "disk-usage")]
     DiskUsage(crate::disk_usage_cmd::DiskUsageArgs),
     /// Expose this workspace to the Computer Hub (via the leader).
     ///
-    /// Disabled by default and enabled server-side per account; set `WORKSHOP_WORKSPACE_COMMAND=1` to enable it locally for testing.
+    /// Disabled by default and enabled server-side per account; set `GROK_WORKSPACE_COMMAND=1` to enable it locally for testing.
     #[command(hide = true)]
     Workspace(WorkspaceMgmtArgs),
     /// Open the Agent Dashboard view at startup.
     /// The dashboard shows every session, top-level and subagents.
-    /// Disabled when `[dashboard].enabled = false` in `~/.workshop/config.toml` or when the `WORKSHOP_AGENT_DASHBOARD=0` env var is set.
+    /// Disabled when `[dashboard].enabled = false` in `~/.grok/config.toml` or when the `GROK_AGENT_DASHBOARD=0` env var is set.
     Dashboard,
 }
 /// Arguments for the `wrap` subcommand: the command to run, then its args.
@@ -159,10 +156,10 @@ pub struct WrapArgs {
     )]
     pub command: Vec<String>,
 }
-/// Targets a running leader process by PID (used by `workshop leader` / `workshop workspace`).
+/// Targets a running leader process by PID (used by `grok leader` / `grok workspace`).
 #[derive(Debug, clap::Args, Clone, Default)]
 pub struct LeaderTargetArgs {
-    /// Leader process ID from `workshop leader list`.
+    /// Leader process ID from `grok leader list`.
     #[arg(long)]
     pub pid: Option<u32>,
 }
@@ -298,7 +295,7 @@ pub struct AgentArgs {
     /// Override the CLI chat proxy base URL.
     #[arg(long = "cli-chat-proxy-base-url")]
     pub cli_chat_proxy_base_url: Option<String>,
-    /// Override the API base URL of the optional xAI account connection.
+    /// Override the public xAI API base URL.
     #[arg(long = "xai-api-base-url")]
     pub xai_api_base_url: Option<String>,
     /// Agent runtime mode
@@ -333,7 +330,7 @@ impl AgentArgs {
 pub enum AgentCmd {
     /// Run the agent over stdio
     Stdio,
-    /// Run the agent headlessly over a WebSocket relay
+    /// Run the agent headlessly over the Grok WebSocket relay
     Headless(HeadlessArgs),
     /// Run the agent as a WebSocket server
     Serve(ServeArgs),
@@ -343,11 +340,9 @@ pub enum AgentCmd {
 /// WebSocket URL override arguments, used by headless / leader / serve modes.
 #[derive(Debug, clap::Args, Clone, Default)]
 pub struct HeadlessArgs {
-    /// Relay overrides for the inherited grok.com transport; Workshop never uses that relay by
-    /// default, so the flags stay accepted but out of `--help`.
-    #[arg(long = "grok-ws-origin", hide = true)]
+    #[arg(long = "grok-ws-origin")]
     pub grok_ws_origin: Option<String>,
-    #[arg(long = "grok-ws-url", hide = true)]
+    #[arg(long = "grok-ws-url")]
     pub grok_ws_url: Option<String>,
 }
 /// Arguments for the `agent serve` subcommand.
@@ -357,7 +352,7 @@ pub struct ServeArgs {
     #[arg(long, default_value = "127.0.0.1:2419")]
     pub bind: SocketAddr,
     /// Secret token for client authentication (auto-generated if not provided)
-    #[arg(long, env = "WORKSHOP_AGENT_SECRET")]
+    #[arg(long, env = "GROK_AGENT_SECRET")]
     pub secret: Option<String>,
     /// Remote agent URL for proxy mode
     #[arg(long)]
@@ -385,7 +380,7 @@ pub struct LeaderArgs {
     /// Keep the leader running after the last client disconnects.
     #[arg(long)]
     pub no_exit_on_disconnect: bool,
-    /// Defer the relay WebSocket until the first headless IPC client registers.
+    /// Defer the grok.com relay WebSocket until the first headless IPC client registers.
     /// Without this flag the leader connects the relay eagerly at startup.
     /// Passed by leaders auto-spawned from interactive clients (TUI/IDE), which only need the relay if a headless client appears.
     #[arg(long)]
@@ -399,9 +394,9 @@ pub struct LeaderArgs {
 }
 #[derive(Debug, Clone, Parser)]
 #[command(
-    name = "workshop",
+    name = "grok",
     version = xai_grok_version::full_version(),
-    about = "Workshop: a coding-agent runtime that connects to local models, API keys, or subscription CLIs",
+    about = "Grok Build TUI",
     disable_version_flag = true,
     next_display_order = None,
     help_template = "\
@@ -425,9 +420,9 @@ pub struct PagerArgs {
     /// Working directory.
     #[arg(long)]
     pub cwd: Option<PathBuf>,
-    /// Use a custom leader socket path instead of the default `~/.workshop/leader.sock`.
+    /// Use a custom leader socket path instead of the default `~/.grok/leader.sock`.
     /// A local/branch build can thus run an isolated leader without colliding with the default one already running on the machine
-    /// Name it `~/.workshop/leader-*.sock` to keep `workshop leader list/kill` able to find it; any other location works but won't be auto-discovered
+    /// Name it `~/.grok/leader-*.sock` to keep `grok leader list/kill` able to find it; any other location works but won't be auto-discovered
     #[arg(
         long = "leader-socket",
         value_name = "PATH",
@@ -703,7 +698,7 @@ pub struct PagerArgs {
     )]
     pub background_wait_timeout_secs: u64,
     /// Sandbox profile for filesystem and network access.
-    #[arg(long, env = "WORKSHOP_SANDBOX", value_name = "PROFILE")]
+    #[arg(long, env = "GROK_SANDBOX", value_name = "PROFILE")]
     pub sandbox: Option<String>,
     /// Session storage mode: local or writeback.
     #[arg(long = "storage-mode", value_name = "MODE", hide = true)]
@@ -747,7 +742,7 @@ pub struct PagerArgs {
     /// Fullscreen-vs-inline still follows the alt-screen policy (--no-alt-screen, [terminal] alt_screen, terminal auto-detection).
     #[arg(long = "fullscreen", conflicts_with = "minimal")]
     pub fullscreen: bool,
-    /// Write sampling events to ~/.workshop/logs/sampling.jsonl.
+    /// Write sampling events to ~/.grok/logs/sampling.jsonl.
     #[arg(long = "log-sampling", env = "GROK_LOG_SAMPLING", hide = true)]
     pub log_sampling: bool,
     /// Show the login screen even when credentials are already available.
@@ -762,7 +757,7 @@ pub struct PagerArgs {
     /// Run standalone even when leader mode is configured.
     #[arg(long, conflicts_with = "leader", hide = true)]
     pub no_leader: bool,
-    /// Initial prompt for the interactive session, e.g. `workshop "fix the bug"` or `workshop --worktree=feat "create this feature"`.
+    /// Initial prompt for the interactive session, e.g. `grok "fix the bug"` or `grok --worktree=feat "create this feature"`.
     #[arg(
         value_name = "PROMPT",
         conflicts_with_all = &["single",
@@ -835,8 +830,8 @@ impl PagerArgs {
             .map(std::path::Path::new)
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
-            .filter(|n| *n == "workshop" || *n == "grok" || *n == "agent")
-            .unwrap_or("workshop")
+            .filter(|n| *n == "grok" || *n == "agent")
+            .unwrap_or("grok")
             .to_owned();
         Self::parse_from(std::iter::once(bin_name).chain(std::env::args().skip(1)))
     }
@@ -933,7 +928,7 @@ impl PagerArgs {
     }
     /// Resolve the sandbox profile to apply at startup, accounting for the profile the resumed session was created with.
     /// `saved` is the resumed session's persisted profile (read once via [`Self::saved_resume_profile`]).
-    /// An explicit `--sandbox`/`WORKSHOP_SANDBOX` that differs from the saved profile is refused: changing a session's sandbox on resume would be unsafe.
+    /// An explicit `--sandbox`/`GROK_SANDBOX` that differs from the saved profile is refused: changing a session's sandbox on resume would be unsafe.
     pub fn startup_sandbox_profile(&self, saved: Option<&str>) -> SandboxStartup {
         let explicit = self.sandbox.as_deref().filter(|s| !s.is_empty());
         Self::resolve_startup_sandbox(explicit, saved.map(String::from))

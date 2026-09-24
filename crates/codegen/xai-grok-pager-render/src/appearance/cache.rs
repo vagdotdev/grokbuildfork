@@ -31,8 +31,7 @@ const FOLLOW_UP_BEHAVIOR_DEFAULT: FollowUpBehavior = FollowUpBehavior::Queue;
 const SIMPLE_MODE_DEFAULT: bool = true;
 /// This matches the previous on-disk default.
 const VIM_MODE_DEFAULT: bool = false;
-/// Workshop: the model's thinking is not shown unless the user turns it on in `/settings`.
-const SHOW_THINKING_BLOCKS_DEFAULT: bool = false;
+const SHOW_THINKING_BLOCKS_DEFAULT: bool = true;
 const GROUP_TOOL_VERBS_DEFAULT: bool = true;
 /// Rollout flag; while it is off, edit blocks render as the legacy expanded diffs.
 const COLLAPSED_EDIT_BLOCKS_DEFAULT: bool = false;
@@ -348,7 +347,8 @@ thread_local! {
     static COLLAPSED_EDIT_BLOCKS_LOADED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Seeds from `[ui]`; consulted only when `[scrollback.blocks.edit]` shape keys are unset. Startup settings may override.
+/// Read cached `collapsed_edit_blocks`, seeding from `[ui]` on first call.
+/// Settings resolution at startup may override the seeded value.
 pub fn load_collapsed_edit_blocks() -> bool {
     COLLAPSED_EDIT_BLOCKS_LOADED.with(|loaded| {
         if !loaded.get() {

@@ -38,74 +38,17 @@ pub use mode_support::{ModeSupport, Remedy};
 /// Maximum number of visible rows in the dropdown (scroll beyond this).
 pub const MAX_VISIBLE_SUGGESTIONS: usize = 8;
 
-/// Workshop: the eight commands a first-time user needs, in the order the bare `/` menu shows
-/// them, ahead of everything else.
-pub const COMMON_COMMANDS: [&str; 8] = [
-    "model", "auth", "help", "new", "resume", "compact", "theme", "quit",
-];
-
-/// Workshop: power tools. They sit at the bottom of the bare `/` menu under an `[advanced]` tag
-/// (and in the command palette's Advanced section) so day one is `/model`, `/auth` and a few
-/// verbs, not sixty rows.
-pub const ADVANCED_COMMANDS: &[&str] = &[
-    "deep-research",
-    "goal",
-    "loop",
-    "workflow",
-    "workflows",
-    "personas",
-    "import-claude",
-    "marketplace",
-    "hooks",
-    "skills",
-    "mcps",
-    "plugins",
-    "config-agents",
-    "fork",
-    "timeline",
-    "vim-mode",
-    "minimal",
-    "compact-mode",
-    "dream",
-    "flush",
-    "audit",
-    "debug",
-    "scroll-debug",
-    "gboom",
-    "effort",
-    "agent-budget",
-    "toggle-mouse-reporting",
-    "timestamps",
-    "transcript",
-    "announcements",
-    "privacy",
-    "expand",
-    "active-one",
-    "sprint-2",
-    "demo",
-    "demo-2",
-];
-
-/// Whether `canonical` (bare command name) is one of the power tools.
-pub fn is_advanced_command(canonical: &str) -> bool {
-    ADVANCED_COMMANDS.contains(&canonical)
-}
-
-/// Grouping for the bare `/` menu, ordered top to bottom: the common eight, the everyday
-/// commands, the advanced tools, then skills (which sink below the commands because there can be
-/// far more of them than fit on screen).
+/// Grouping for the bare `/` menu, ordered top to bottom. Skills sink below the commands because there can be far more of them than fit on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum MenuGroup {
-    Common,
     Command,
-    Advanced,
     BundledSkill,
     /// User, project, server and plugin skills.
     OtherSkill,
 }
 
 impl MenuGroup {
-    fn of(provenance: &CommandProvenance, canonical: &str) -> Self {
+    fn of(provenance: &CommandProvenance) -> Self {
         match provenance {
             // A skill's source is its plugin name when it has one, else its scope, and bundled skills never come from a plugin.
             CommandProvenance::Skill { source }
@@ -114,15 +57,7 @@ impl MenuGroup {
                 Self::BundledSkill
             }
             CommandProvenance::Skill { .. } => Self::OtherSkill,
-            CommandProvenance::Builtin | CommandProvenance::Shell => {
-                if COMMON_COMMANDS.contains(&canonical) {
-                    Self::Common
-                } else if is_advanced_command(canonical) {
-                    Self::Advanced
-                } else {
-                    Self::Command
-                }
-            }
+            CommandProvenance::Builtin | CommandProvenance::Shell => Self::Command,
         }
     }
 }
@@ -147,18 +82,7 @@ impl MenuKey {
         mru: &mut mru::SlashMru,
     ) -> Self {
         let (recency, name) = match group {
-            // The common eight keep their fixed, documented order.
-            MenuGroup::Common => (
-                u64::MAX
-                    - COMMON_COMMANDS
-                        .iter()
-                        .position(|c| *c == canonical)
-                        .unwrap_or(COMMON_COMMANDS.len()) as u64,
-                String::new(),
-            ),
-            MenuGroup::Command | MenuGroup::Advanced => {
-                (mru.rank_score("", canonical), String::new())
-            }
+            MenuGroup::Command => (mru.rank_score("", canonical), String::new()),
             // Nothing ranks skills, so alphabetical is the only order predictable enough to find one in.
             _ => (0, row.display.to_lowercase()),
         };
@@ -1117,20 +1041,14 @@ impl SlashController {
                         colliding_command_indices.contains(&trigger.command_index),
                     ));
                     canonicals.push(trigger.canonical.as_str());
-                    groups.push(MenuGroup::of(&trigger.provenance, &trigger.canonical));
+                    groups.push(MenuGroup::of(&trigger.provenance));
                 }
             }
-            // Tag from the data map in one scoped borrow; key off canonical (never the alias/display).
-            // Workshop: the power tools carry a visible `[advanced]` tag when nothing else tags them.
+            // Tag from the data map in one scoped borrow; key off canonical (never the alias/display)
             {
                 let command_tags = self.command_tags.borrow();
-                for ((row, canonical), group) in
-                    rows.iter_mut().zip(canonicals.iter()).zip(groups.iter())
-                {
+                for (row, canonical) in rows.iter_mut().zip(canonicals.iter()) {
                     row.tag = command_tags.get(*canonical).cloned();
-                    if row.tag.is_none() && *group == MenuGroup::Advanced {
-                        row.tag = Some("advanced".to_owned());
-                    }
                 }
             }
 
@@ -1342,11 +1260,18 @@ impl SlashController {
         let rows: Vec<SuggestionRow> = if trimmed.is_empty() {
             items.iter().map(SuggestionRow::from_arg).collect()
         } else {
-            let hits = self
-                .matcher
-                .rank(items.as_slice(), trimmed, items.len(), |item| {
-                    item.match_text.as_str()
-                });
+            let fallbacks: Vec<String> = items.iter().map(label_match_haystack).collect();
+            let cands: Vec<(&ArgItem, &str)> = items
+                .iter()
+                .zip(fallbacks.iter().map(String::as_str))
+                .collect();
+            let hits = self.matcher.rank_either(
+                cands.as_slice(),
+                trimmed,
+                cands.len(),
+                |cand| cand.0.match_text.as_str(),
+                |cand| cand.1,
+            );
             hits.into_iter()
                 .filter_map(|(idx, _)| {
                     let mut row = SuggestionRow::from_arg(items.get(idx)?);
@@ -1359,6 +1284,31 @@ impl SlashController {
             target.and_then(|target| rows.iter().position(|row| row.insert_text == target));
         ArgSuggestions { rows, preselected }
     }
+}
+
+/// Label haystack. Keeps the model-name prefix when the label is not already in `match_text`.
+fn label_match_haystack(item: &ArgItem) -> String {
+    let label = item
+        .display
+        .strip_suffix(" (active)")
+        .or_else(|| item.display.strip_suffix(" (current)"))
+        .unwrap_or(item.display.as_str());
+    if contains_ignore_ascii_case(&item.match_text, label) {
+        return label.to_string();
+    }
+    match item.match_text.rsplit_once(' ') {
+        Some((prefix, _)) => format!("{prefix} {label}"),
+        None => label.to_string(),
+    }
+}
+
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let needle = needle.as_bytes();
+    needle.is_empty()
+        || haystack
+            .as_bytes()
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 /// Conversely, [`SlashCommand::dashboard_only`] commands (`/cd`) are offered only when `hide_session_scoped` is set
@@ -1783,12 +1733,9 @@ mod tests {
     #[test]
     fn required_arg_command_blocks_without_args() {
         let reg = test_registry();
-        // /rename has takes_args=true, args_required=true.
-        assert!(!is_command_complete("/rename", &reg));
-        assert!(!is_command_complete("/rename ", &reg));
-        assert!(is_command_complete("/rename my session", &reg));
-        // Workshop: bare /model opens the Models overlay, so it is complete without args.
-        assert!(is_command_complete("/model", &reg));
+        // /model has takes_args=true, args_required=true.
+        assert!(!is_command_complete("/model", &reg));
+        assert!(!is_command_complete("/model ", &reg));
         assert!(is_command_complete("/model grok-4", &reg));
     }
 
@@ -3089,35 +3036,6 @@ mod tests {
         assert_eq!(order, vec!["/alpha", "/zulu"]);
     }
 
-    /// Workshop: the common eight lead the bare menu in their fixed order, the power tools sink
-    /// below the everyday commands under an `[advanced]` tag, whatever the recency says.
-    #[test]
-    fn empty_query_leads_with_common_commands_and_sinks_advanced_ones() {
-        let mut ctrl = tie_controller(
-            &["deep-research", "alpha", "auth", "model"],
-            &[("deep-research", 1_700_000_999), ("auth", 1_700_000_500)],
-        );
-        let state = SlashState::default();
-        let models = ModelState::default();
-
-        ctrl.refresh(&state, "/", 1, &models);
-
-        let rows = state.snapshot().matches.clone();
-        let order: Vec<String> = rows.iter().map(|r| r.display.clone()).collect();
-        assert_eq!(
-            order,
-            vec!["/model", "/auth", "/alpha", "/deep-research"],
-            "common (fixed order), everyday, advanced"
-        );
-        assert_eq!(
-            rows.last().and_then(|r| r.tag.clone()).as_deref(),
-            Some("advanced")
-        );
-        assert!(rows[0].tag.is_none());
-        assert!(is_advanced_command("hooks") && !is_advanced_command("model"));
-        assert!(COMMON_COMMANDS.iter().all(|c| !is_advanced_command(c)));
-    }
-
     /// Within the command group the menu leads with what you actually use.
     #[test]
     fn empty_query_orders_commands_by_recency_then_registry_order() {
@@ -3674,6 +3592,85 @@ mod tests {
         let text = "/model Reasoning X h";
         ctrl.refresh(&state, text, text.len(), &models);
         assert_eq!(0, state.snapshot().selected);
+    }
+
+    #[test]
+    fn model_effort_phase_matches_a_catalog_id_prefix() {
+        let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
+        let state = SlashState::default();
+        let mut models = ModelState::default();
+        let id = acp::ModelId::new(Arc::from("grok-4.7"));
+        models.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id, "Grok 4.7").meta(
+                serde_json::json!({ "supportsReasoningEffort": true, "reasoningEffort": "high" })
+                    .as_object()
+                    .cloned(),
+            ),
+        );
+
+        // `grok-4.7` is not a subsequence of `Grok 4.7` (the hyphen). Rows must carry the id.
+        let text = "/model grok-4.7 ";
+        ctrl.refresh(&state, text, text.len(), &models);
+        let snap = state.snapshot();
+        assert!(snap.open, "effort menu closed for a catalog id");
+        assert_eq!(
+            Some("grok-4.7 high"),
+            snap.selection().map(|row| row.insert_text.as_str())
+        );
+
+        let text = "/model grok-4.7 hi";
+        ctrl.refresh(&state, text, text.len(), &models);
+        let snap = state.snapshot();
+        assert!(
+            snap.matches
+                .iter()
+                .any(|row| row.insert_text == "grok-4.7 high"),
+            "id prefix filtered out the effort rows: {:?}",
+            snap.matches
+                .iter()
+                .map(|row| row.insert_text.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn effort_active_suffix_is_not_searchable() {
+        let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
+        let state = SlashState::default();
+        let mut models = ModelState::default();
+        let id = acp::ModelId::new(Arc::from("reasoning-x"));
+        models.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id.clone(), "Reasoning X").meta(
+                serde_json::json!({ "supportsReasoningEffort": true, "reasoningEffort": "high" })
+                    .as_object()
+                    .cloned(),
+            ),
+        );
+        models.current = Some(id);
+        models.reasoning_effort = Some(xai_grok_shell::sampling::types::ReasoningEffort::High);
+
+        let text = "/effort ";
+        ctrl.refresh(&state, text, text.len(), &models);
+        let open = state.snapshot();
+        assert!(
+            open.matches
+                .iter()
+                .any(|row| row.display == "high (active)"),
+            "expected the active row before filtering"
+        );
+
+        let text = "/effort act";
+        ctrl.refresh(&state, text, text.len(), &models);
+        let filtered = state.snapshot();
+        assert!(
+            filtered
+                .matches
+                .iter()
+                .all(|row| row.display != "high (active)"),
+            "active suffix matched"
+        );
     }
 
     #[test]

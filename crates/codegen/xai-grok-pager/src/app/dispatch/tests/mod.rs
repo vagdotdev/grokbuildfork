@@ -56,6 +56,7 @@ use super::session::modal::{
     dispatch_rename_session, dispatch_reset_session_title, dispatch_sessions_confirm_close,
     drop_other_agents_in_minimal,
 };
+use super::settings::handle_feature_override_persisted;
 use super::settings::setters::set_default_model_inner;
 use super::settings::ui::{action_for_reset, apply_setting_rollback};
 use super::status::scrub_error_for_toast;
@@ -181,40 +182,14 @@ fn test_app() -> AppView {
         auth_url_poll_handle: None,
         deferred_startup: Default::default(),
         auth_use_oauth: false,
-        connection_picker: None,
-        workshop_password_ask: None,
-        workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
-        workshop_engine: None,
-        workshop_engine_session: None,
-        workshop_turn_active: false,
-        workshop_turn_tx: None,
-        workshop_turn_cancel: None,
-        workshop_turn_stream_entry: None,
-        workshop_turn_agent: None,
-        workshop_turn_prompt_entry: None,
-        workshop_turn_thinking_entry: None,
-        workshop_turn_tools: std::collections::HashMap::new(),
-        workshop_turn_tool_inputs: std::collections::HashMap::new(),
-        workshop_turn_queue: std::collections::VecDeque::new(),
-        workshop_turn_decided_calls: std::collections::HashMap::new(),
-        workshop_context_used: None,
-        workshop_engine_resume: None,
-        workshop_turn_record: Vec::new(),
-        workshop_turn_prompt_text: None,
-        workshop_resend: None,
-        workshop_fallback: None,
-        workshop_first_launch: false,
-        workshop_engine_slot: crate::app::workshop::new_engine_slot(),
-        workshop_engine_warm_started: false,
-        workshop_turn_running: Vec::new(),
-        workshop_turn_errored: false,
-        workshop_last_prompt: None,
         auth_clipboard_delivery: None,
         auth_clipboard_feedback_generation: 0,
         team_id: None,
+        is_team_principal: false,
         team_name: None,
         is_zdr: false,
         team_role: None,
+        can_administer_team: None,
         coding_data_retention_opt_out: false,
         privacy_notice_rollout: false,
         privacy_banner_reshow_days: None,
@@ -224,6 +199,9 @@ fn test_app() -> AppView {
         show_tips: None,
         auto_update: None,
         ask_user_question_timeout_enabled: None,
+        subagent_model_inheritance: crate::settings::FeatureOverrideState::new(
+            xai_grok_shell::agent::config::Feature::SubagentModelInheritance,
+        ),
         zdr_access_enabled: false,
         usage_billing_redirect_url: None,
         access_gate_shown_logged: false,
@@ -250,8 +228,6 @@ fn test_app() -> AppView {
         welcome_menu_index: None,
         welcome_menu_rects: Vec::new(),
         welcome_show_changelog_action: false,
-        welcome_show_resume_action: true,
-        welcome_has_resumable_sessions: std::cell::OnceCell::new(),
         welcome_import_banner_rect: None,
         last_mouse_pos: None,
         last_scroll_pos: None,
@@ -307,7 +283,6 @@ fn test_app() -> AppView {
         startup_warnings: Vec::new(),
         is_api_key_auth: false,
         pending_update_version: None,
-        workshop_updated_to: None,
         foreign_resume_launch_generation: 0,
         foreign_resume_launch: None,
         quit_for_update: false,
@@ -320,9 +295,6 @@ fn test_app() -> AppView {
         pending_effects: Vec::new(),
         pending_editor: None,
         pending_pager_path: None,
-        pending_workshop_login: None,
-        workshop_rail_install: None,
-        workshop_voice_prefetch: None,
         pending_pager_ansi: false,
         minimal_state: crate::minimal_api::MinimalState::default(),
         reconnect_pending: false,
@@ -618,25 +590,6 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
     std::fs::create_dir_all(&sess_dir).expect("plant session dir");
     std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
     sess_dir
-}
-/// Workshop: `Action::Login` opens the connection picker (Subscriptions view) and never sends
-/// `Authenticate` by itself. The inherited interactive flow these tests exercise starts only from
-/// the picker's labeled optional xAI card — the last Subscriptions entry, two explicit Enters — so
-/// drive the picker there.
-pub(super) fn start_login_flow(app: &mut AppView) -> Vec<Effect> {
-    use workshop_auth::{PickerInput, PickerTab};
-    dispatch(Action::Login, app);
-    let picker = app
-        .connection_picker
-        .as_ref()
-        .expect("Login must open the connection picker");
-    assert_eq!(picker.tab, PickerTab::Subscriptions);
-    let entries = picker.subscriptions_len();
-    for _ in 0..entries {
-        dispatch(Action::ConnectionPicker(PickerInput::Down), app);
-    }
-    dispatch(Action::ConnectionPicker(PickerInput::Enter), app); // shows the labeled copy (arms)
-    dispatch(Action::ConnectionPicker(PickerInput::Enter), app) // starts the flow
 }
 /// Extract the in-flight auth request sequence, panicking if the auth state is not `Authenticating`.
 fn authenticating_seq(app: &AppView) -> u64 {

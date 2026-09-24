@@ -131,7 +131,6 @@ use crate::views::plan_approval_view::{PlanApprovalViewState, PlanComment};
 use crate::views::prompt_widget::{PromptWidget, StashedPrompt};
 use crate::views::question_view::QuestionViewState;
 use crate::views::queue_pane::QueuePane;
-use crate::views::subagent_catalog_pane::SubagentCatalogPane;
 use crate::views::tasks_pane::TasksPane;
 use crate::views::todo_pane::TodoPane;
 use ratatui::buffer::Buffer;
@@ -740,35 +739,10 @@ pub struct AgentView {
     pub(crate) session_binding_epoch: u32,
     pub scrollback: ScrollbackState,
     pub prompt: PromptWidget,
-    /// Workshop: composer label for an Engine/Adapter connection (`Big Pickle · OpenCode`,
-    /// `Claude · {model}`); `None` for Shell (Direct/Local), which shows the shell model name.
-    pub(crate) workshop_model_label: Option<String>,
-    /// Workshop: the context meter's numbers for an Engine/Adapter connection — `(used, limit)`:
-    /// the engine's last reported usage and the live model's context window. `None` for Shell
-    /// (the shell's own numbers show). Either side unknown → the meter is hidden, never guessed.
-    pub(crate) workshop_context: Option<(Option<u64>, Option<u64>)>,
-    /// Workshop: a streaming Engine/Adapter turn is in flight for this agent. Mirrors the app-level
-    /// flag so the per-agent input layer treats Ctrl+C as a cancellable activity (there is no ACP
-    /// turn to detect). Cleared when the turn ends.
-    pub(crate) workshop_turn_active: bool,
-    /// Workshop: what the running Engine/Adapter turn is doing, for the pager's own turn-status
-    /// row (`Waiting for response…`, `Thinking…`, `Responding…`, `Run <command>` with its phase
-    /// timer): the event loop sets it from the turn's stream, the way the ACP tracker does for a
-    /// shell turn.
-    pub(crate) workshop_turn_activity: Option<crate::acp::tracker::TurnActivity>,
-    /// Workshop: when the running Engine/Adapter turn was sent — the status row's turn timer and
-    /// the `Worked for …` marker at its end.
-    pub(crate) workshop_turn_started_at: Option<Instant>,
-    /// Workshop: Ctrl+C / `[stop]` asked the running Engine/Adapter turn to end; the status row
-    /// reads `Cancelling…` until it does.
-    pub(crate) workshop_turn_cancelling: bool,
-    /// Workshop: the prompt whose Engine/Adapter turn failed; Enter on an empty composer resends it.
-    pub(crate) workshop_retry_prompt: Option<String>,
     /// Sticky: once the user types in the prompt, hide the tip for the session.
     pub tip_typing_dismissed: bool,
     pub todo: TodoPane,
     pub tasks: TasksPane,
-    pub catalog: SubagentCatalogPane,
     pub queue: QueuePane,
     /// Per-agent mirror of the server-authoritative shared prompt queue
     /// (`AppView::shared_prompt_queues[sid]`), kept in sync by `handle_queue_changed` and the immediate-send path. The queue pane renders the union of this and the local `pending_prompts`; the edit handlers read it to route remove/reorder by origin. Empty unless a plain prompt was queued server-side while a turn was running.
@@ -1084,7 +1058,6 @@ pub struct AgentView {
     pub hit_todo_close: HitArea,
     pub hit_bg_close: HitArea,
     pub hit_subagent_close: HitArea,
-    pub hit_catalog_close: HitArea,
     pub hit_bg_status: HitArea,
     pub hit_goal_status: HitArea,
     pub hit_goal_close: HitArea,
@@ -1399,12 +1372,6 @@ pub struct AgentView {
     pub(crate) cancel_trigger_hint: Option<crate::app::actions::CancelTrigger>,
     pub(crate) rewind_state: Option<crate::views::rewind::RewindState>,
     pub(crate) rewind_points: Option<Vec<crate::views::rewind::RewindPointInfo>>,
-    /// In-place edit of a previous user prompt. See `inline_edit.rs`.
-    pub(crate) inline_edit: Option<crate::app::inline_edit::InlineEditState>,
-    /// Edited text awaiting its rewind; `dispatch_rewind_success` resubmits it.
-    /// Set only when the rewind flow emits `Effect::RewindExecute` while the inline editor is open (see `stash_inline_resubmit_if_editing`).
-    /// inline editor is open (see `stash_inline_resubmit_if_editing`).
-    pub(crate) pending_inline_resubmit: Option<String>,
     /// `/jump` picker overlay (pure client-side turn navigation).
     pub(crate) jump_state: Option<crate::views::jump::JumpState>,
     /// Timeline sidebar rail geometry for the current frame (`None` means
@@ -3461,10 +3428,6 @@ mod prompt_input_mode_tests {
     use crate::app::actions::Action;
     use crate::theme::Theme;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    #[test]
-    fn default_is_normal() {
-        assert_eq!(PromptInputMode::default(), PromptInputMode::Normal);
-    }
     #[test]
     fn accent_color_returns_expected_for_each_variant() {
         let theme = Theme::current();

@@ -1,100 +1,110 @@
 # Getting Started
 
-Workshop is a terminal coding agent: it reads your codebase, runs shell commands, edits files and
-tracks tasks, right in your terminal. It starts on a free model with nothing to configure; when you
-want more, `/model` switches models and `/auth` connects a coding subscription (Claude Code, Codex,
-Cursor) or an API key.
+Grok Build is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
 
-You can use it interactively as a full-screen TUI, run it headlessly for scripting and CI/CD, or
-integrate it into editors via the Agent Client Protocol (ACP).
+You can use it interactively as a full-screen TUI, run it headlessly for scripting and CI/CD, or integrate it into editors via the Agent Client Protocol (ACP).
 
 ---
 
 ## Installation
 
-macOS and Linux, one line:
+Install the latest stable release (macOS, Linux, or Windows via Git Bash):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vagdotdev/grokbuildfork/release-channel/install.sh | sh
+curl -fsSL https://x.ai/cli/install.sh | bash
 ```
 
-The installer downloads the release for your platform, verifies its SHA-256 against the channel
-manifest, installs `~/.workshop/bin/workshop` and prints the one line to add to your `PATH` if it
-is not there yet. It makes no other network requests and sends no telemetry. Later:
+Install a specific version:
 
 ```bash
-workshop update            # move to the newest release
-workshop --version
+curl -fsSL https://x.ai/cli/install.sh | bash -s 0.1.42
 ```
 
-Prefer a specific version? `WORKSHOP_VERSION=0.2.2 curl -fsSL … | sh`. Prefer to build from
-source? `cargo build --release -p xai-grok-pager-bin --bin workshop` in a checkout of the
-repository (`protoc` 29 is required).
+On **Windows (PowerShell)**, use the native PowerShell installer:
 
-**macOS:** the binary is not Apple-notarized. The installer clears the quarantine attribute; if
-macOS still refuses to start it, run `xattr -d com.apple.quarantine ~/.workshop/bin/workshop`.
+```powershell
+irm https://x.ai/cli/install.ps1 | iex
+```
 
-Workshop keeps everything in `~/.workshop` (override with `WORKSHOP_HOME`). It never reads another
-tool's settings, hooks or sessions.
+Install a specific version:
+
+```powershell
+$env:GROK_VERSION="0.1.42"; irm https://x.ai/cli/install.ps1 | iex
+```
+
+The PowerShell installer automatically adds `%USERPROFILE%\.grok\bin` to your User PATH. Alternatively, install via [Git for Windows](https://gitforwindows.org/) (Git Bash) or MSYS2 using the bash script above. WSL users get the Linux binary automatically.
+
+Verify the installation:
+
+```bash
+grok --version
+```
+
+Update to the latest version at any time:
+
+```bash
+grok update
+```
+
+If you installed Grok Build with WinGet, update it with WinGet instead. Quit
+Grok first, then run:
+
+```powershell
+winget upgrade --id xAI.GrokBuild -e
+```
+
+On a WinGet install, `grok update` prints this command and changes nothing.
+The WinGet package tracks the stable channel, and new releases can take a few
+days to reach it.
+
+To fetch a repository through Grove (NFS on macOS, FUSE on Linux), enable
+`grok clone` with `[clone] enabled = true` in Grove config, `GROK_CLONE=1`,
+or the enable-both convenience `GROK_GROVE=1` / `[cli] grove = true` in
+`~/.grok/config.toml`:
+
+```bash
+grok clone <url> [dir]
+```
+
+The default is a depth-1 checkout of the selected branch. Pass `--full-history`
+for a complete clone. Clone enablement is independent of session / `-w` Grove
+worktrees (the convenience above turns both on; the specific knobs still win).
+the grok.com sign-in below — see [grok clone](27-grok-clone.md#authentication)
+and [Configuration reference](26-config-reference.md).
 
 ---
 
 ## First Launch
 
+Start Grok by running:
+
 ```bash
-cd your-project
-workshop
+grok
 ```
 
-You land in the composer. The footer names the active model, **Big Pickle**: OpenCode's free
-default, no sign-in, no key. Type a sentence and press `Enter`.
+On first launch, Grok opens your browser to authenticate with grok.com. After you sign in, Grok stores your credentials in `~/.grok/auth.json`, where they persist across sessions. Grok refreshes your credentials automatically and prompts you to sign in again when they can no longer be renewed.
 
-OpenCode's official `opencode` CLI is installed on your first launch and started in the background
-every time Workshop opens, so it is usually ready by the time you press `Enter`; a message sent
-before it is ready simply waits for it — the status row reads `First-time setup, 12 MB downloaded…`
-while it does. The install (about a minute on a slow connection) reaches only opencode.ai, the
-vendor's installer; every later message answers within seconds. While a message is being
-worked on, the status row above the composer shows what is happening — `Waiting for response…`,
-`Thinking…`, `Run sudo apt install ghostty` with that command's own seconds — plus the turn's total
-time and `[stop]` (or `Ctrl+C`) to cancel; the turn closes with `Worked for 2m31s`. If the free
-model cannot be reached, Workshop quietly answers through another free model and the footer names
-the model that answered; only if that fails too do you see `Couldn't reach Big Pickle — Enter to
-retry · /model to switch`.
+If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
 
-Two commands are all you need to know on day one:
+```bash
+export XAI_API_KEY="xai-..."
+grok
+```
 
-- **`/model`** lists the models you can use right now: OpenCode's free models, then each coding
-  subscription whose CLI is installed (Claude, Codex, Cursor) with its models — or a `Sign in` row
-  when the CLI is not signed in yet — then any API-key provider you connected, and local servers
-  (Ollama, LM Studio, llama.cpp / vLLM). Type to filter; `Ctrl+A` shows the non-chat models
-  (classifiers, routers) hidden by default.
-- **`/auth`** connects more: the Claude / Codex / Cursor subscription CLIs (installed and signed in
-  with their own official login), API keys for OpenRouter, Google AI Studio, NVIDIA, OpenAI and
-  Anthropic (kept in your OS keyring), and — last, optional and labeled — an xAI account.
-
-See [Authentication](02-authentication.md) for the details of each.
+See [Authentication](02-authentication.md) for the full set of auth options including OIDC, external auth providers, and device code flow.
 
 ---
 
 ## Basic Interaction
 
-Workshop presents a full-screen TUI with two main areas:
+Once authenticated, Grok presents a full-screen TUI with two main areas:
 
-- **Scrollback** -- the conversation history showing your prompts, Workshop's responses, tool
-  calls, file edits, and more.
+- **Scrollback** -- the conversation history showing your prompts, Grok's responses, tool calls, file edits, and more.
 - **Prompt** -- the input area at the bottom where you type messages.
 
-Type a message and press `Enter` to send it. Workshop reads files, runs commands, and edits code as
-needed. Each tool run streams into the scrollback in real time. While the model has not answered
-yet, an animated line shows the phase and the elapsed time; `Ctrl+C` cancels.
+Type a message and press `Enter` to send it. Grok reads files, runs commands, and edits code as needed. Each tool run streams into the scrollback in real time.
 
-Press `Tab` to move focus between the prompt and the scrollback. While a turn is running, `Ctrl+C`
-cancels it once the composer is empty — with a draft, the first press only clears it. `Esc` never
-cancels a turn; mid-turn it shows a reminder to use `Ctrl+C`. Idle, press `Esc` twice within 800ms
-to clear a non-empty prompt, or (with an empty prompt and conversation messages) to open rewind —
-see [Keyboard Shortcuts](03-keyboard-shortcuts.md#escape). With the scrollback focused, use the
-arrow keys to select entries and to collapse or expand them. To navigate with `j`/`k` and fold with
-`h`/`l` instead, enable Vim mode.
+Press `Tab` to move focus between the prompt and the scrollback. While a turn is running, `Ctrl+C` cancels it once the composer is empty — with a draft, the first press only clears it. `Esc` never cancels a turn; mid-turn it shows a reminder to use `Ctrl+C`. Idle, press `Esc` twice within 800ms to clear a non-empty prompt, or (with an empty prompt and conversation messages) to open rewind — see [Keyboard Shortcuts](03-keyboard-shortcuts.md#escape). With the scrollback focused, use the arrow keys to select entries and to collapse or expand them. To navigate with `j`/`k` and fold with `h`/`l` instead, enable Vim mode.
 
 ### File References
 
@@ -106,8 +116,7 @@ Use `@` in your prompt to attach files:
 @src/                     # Browse a directory
 ```
 
-The `@` operator opens a fuzzy file picker. By default it respects `.gitignore` and hides dotfiles.
-Prefix with `!` to search hidden files:
+The `@` operator opens a fuzzy file picker. By default it respects `.gitignore` and hides dotfiles. Prefix with `!` to search hidden files:
 
 ```
 @!.github                 # Search hidden files
@@ -116,14 +125,10 @@ Prefix with `!` to search hidden files:
 
 ### Permissions
 
-Workshop starts in **Always-approve**: commands and edits run without prompts, and the composer
-border says so (`Big Pickle · always-approve`). `Shift+Tab` cycles the session mode: **Normal**
-asks before risky commands and edits, **Plan** explores read-only and presents a plan first,
-**Always-approve** skips the prompts. The mode you pick is remembered for later launches. You can
-also:
+By default, Grok asks for permission before executing shell commands or editing files. You can approve individually or toggle always-approve mode:
 
 - Press `Ctrl+O` to toggle always-approve mode
-- Use the `--always-approve` flag at launch: `workshop --always-approve`
+- Use the `--yolo` flag at launch: `grok --yolo`
 - Type `/always-approve` in the prompt to toggle the mode
 
 ---
@@ -132,31 +137,27 @@ also:
 
 ### Sessions
 
-Every conversation is a **session**. Sessions are automatically saved to `~/.workshop/sessions/`
-and can be resumed later. Each session tracks the full conversation history, tool calls, file
-edits, and task state.
+Every conversation is a **session**. Sessions are automatically saved to `~/.grok/sessions/` and can be resumed later. Each session tracks the full conversation history, tool calls, file edits, and task state.
 
 - Start a new session: `Ctrl+N` or `/new`
 - Resume a previous session: `/resume` in the TUI, or `--resume <ID>` from the CLI
-- Continue the most recent session: `workshop -c`
+- Continue the most recent session: `grok -c`
 
 ### Scrollback
 
 The scrollback is the main display area. It shows:
 
 - **User prompts** -- your messages, rendered as sticky headers
-- **Agent messages** -- Workshop's responses with full markdown rendering and syntax highlighting
-- **Thinking blocks** -- the model's reasoning process (collapsible)
+- **Agent messages** -- Grok's responses with full markdown rendering and syntax highlighting
+- **Thinking blocks** -- Grok's reasoning process (collapsible)
 - **Tool calls** -- file edits (with inline diffs), command executions, search results, and more
 - **Task lists** -- TODO items tracking progress
 
-Collapse or expand the selected entry with the `Left`/`Right` arrow keys (or `h`/`l` and `e` in
-Vim mode). In Vim mode, press `y` to copy its content and `Y` to copy its metadata (for example,
-the command that ran). Press `Enter` to open it in the fullscreen viewer (in any mode).
+Collapse or expand the selected entry with the `Left`/`Right` arrow keys (or `h`/`l` and `e` in Vim mode). In Vim mode, press `y` to copy its content and `Y` to copy its metadata (for example, the command that ran). Press `Enter` to open it in the fullscreen viewer (in any mode).
 
 ### Tools
 
-Workshop has built-in tools for:
+Grok has built-in tools for:
 
 | Tool | Description |
 |------|-------------|
@@ -169,17 +170,14 @@ Workshop has built-in tools for:
 | `spawn_subagent` | Spawn parallel subagent sessions |
 | `memory_search` | Search cross-session memory |
 
-Tools can be extended with [MCP servers](05-configuration.md#mcp-servers) for integrations like
-GitHub, databases, and more.
+Tools can be extended with [MCP servers](05-configuration.md#mcp-servers) for integrations like GitHub, databases, and more.
 
 ### Slash Commands
 
-Type `/` in the prompt to access commands. These provide quick actions without writing a full
-prompt:
+Type `/` in the prompt to access commands. These provide quick actions without writing a full prompt:
 
 ```
-/model                            # Switch model (type to filter the list)
-/auth                             # Connect a subscription CLI or an API key
+/model grok-4.6                 # Switch model
 /compact                          # Compress conversation history
 /always-approve                   # Toggle always-approve mode
 /new                              # Start a new session
@@ -193,50 +191,54 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
 
 ```bash
 # Launch the interactive TUI and submit an initial prompt as the first turn
-workshop "fix the failing auth test and run it"
+grok "fix the failing auth test and run it"
 
 # Initial prompt in a new git worktree. Use --worktree=<name> (with `=`) so the
-# prompt isn't swallowed as the worktree name — `workshop -w "refactor module X"`
+# prompt isn't swallowed as the worktree name — `grok -w "refactor module X"`
 # would treat "refactor module X" as the worktree label, not the prompt.
-workshop --worktree=feat "refactor module X"
+grok --worktree=feat "refactor module X"
 
 # Base the worktree on a specific branch (e.g. main) instead of the current HEAD:
-workshop -w --ref main "implement feature from main"
+grok -w --ref main "implement feature from main"
+
 
 # Start in a specific project directory
-workshop --cwd ~/projects/my-app
+grok --cwd ~/projects/my-app
 
 # Add project-specific rules
-workshop --rules "Always use TypeScript. Prefer functional components."
+grok --rules "Always use TypeScript. Prefer functional components."
 
 # Auto-approve all tool executions
-workshop --always-approve
+grok --yolo
+
+# Use a specific model
+grok -m grok-4.6
 
 # Resume a previous session
-workshop --resume <session-id>
+grok --resume <session-id>
 
 # Continue the most recent session
-workshop -c
+grok -c
 
-# Experimental scrollback-native render mode. Sticky: plain `workshop` reopens in
+# Experimental scrollback-native render mode. Sticky: plain `grok` reopens in
 # the mode last chosen via --minimal/--fullscreen (or /minimal//fullscreen).
-workshop --minimal
+grok --minimal
 
 # Back to the standard fullscreen TUI (and make it sticky again)
-workshop --fullscreen
+grok --fullscreen
 
 # Headless mode (for scripts)
-workshop -p "Explain this codebase"
+grok -p "Explain this codebase"
 ```
 
 ---
 
 ## Headless Mode
 
-Run Workshop non-interactively for scripting, CI/CD, and automation:
+Run Grok non-interactively for scripting, CI/CD, and automation:
 
 ```bash
-workshop -p "Your prompt here"
+grok -p "Your prompt here"
 ```
 
 Output formats:
@@ -250,24 +252,22 @@ Output formats:
 Example CI/CD usage:
 
 ```bash
-workshop -p "Review changes for bugs" --output-format json --always-approve | jq -r '.text'
+grok -p "Review changes for bugs" --output-format json --yolo | jq -r '.text'
 ```
 
 ---
 
 ## Project Rules (AGENTS.md)
 
-Add per-project instructions by creating an `AGENTS.md` file in your repository. Workshop reads
-these files and injects their contents as a project-instructions message at the start of the
-conversation:
+Add per-project instructions by creating an `AGENTS.md` file in your repository. Grok reads these files and injects their contents as a project-instructions message at the start of the conversation:
 
 ```
-~/.workshop/AGENTS.md       # Global rules (apply to all projects)
+~/.grok/AGENTS.md           # Global rules (apply to all projects)
 <repo-root>/AGENTS.md       # Repository-level rules
 <cwd>/AGENTS.md             # Directory-level rules (highest priority)
 ```
 
-Deeper files take precedence. Workshop also reads `CLAUDE.md` files for compatibility.
+Deeper files take precedence. Grok also reads `CLAUDE.md` files for compatibility.
 
 ---
 
@@ -275,7 +275,7 @@ Deeper files take precedence. Workshop also reads `CLAUDE.md` files for compatib
 
 | Document | What You Will Learn |
 |----------|-------------------|
-| [Authentication](02-authentication.md) | `/model`, `/auth`, subscription CLIs, API keys in the keyring, local servers |
+| [Authentication](02-authentication.md) | Browser login, API keys, OIDC, external auth, device code flow |
 | [Keyboard Shortcuts](03-keyboard-shortcuts.md) | Complete reference for all key bindings |
 | [Slash Commands](04-slash-commands.md) | All available `/` commands |
 | [Configuration](05-configuration.md) | config.toml, pager.toml, environment variables |

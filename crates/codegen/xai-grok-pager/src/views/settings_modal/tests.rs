@@ -174,7 +174,7 @@ fn enum_choice_gated_off_covers_voice_permission_and_terminal_theme() {
     for key in ["theme", "auto_dark_theme", "auto_light_theme"] {
         assert!(enum_choice_gated_off(key, "terminal", theme_off));
         assert!(!enum_choice_gated_off(key, "terminal", on));
-        assert!(!enum_choice_gated_off(key, "night", theme_off));
+        assert!(!enum_choice_gated_off(key, "groknight", theme_off));
     }
 }
 
@@ -723,6 +723,8 @@ fn rows_contain_categories_and_settings_through_pr_14() {
             "coding_data_sharing",
             // SHELL-owned default_model (Models category).
             "default_model",
+            // SHELL-owned `[features]` row (Models category, registered right after default_model)
+            "subagent_model_inheritance",
             // Models category. `default_reasoning_effort`, `web_search_model`, and `session_summary_model` are not exposed in the modal.
             "fork_secondary_model",
             // `auto_compact_threshold_percent` (Session category) is not exposed in the modal
@@ -2256,9 +2258,9 @@ fn int_editing_value_click_on_value_text_is_noop() {
 #[test]
 fn picking_enum_esc_dispatches_preview_revert_for_each_key() {
     let cases: &[(&str, &str)] = &[
-        ("theme", "night"),
-        ("auto_dark_theme", "night"),
-        ("auto_light_theme", "day"),
+        ("theme", "groknight"),
+        ("auto_dark_theme", "groknight"),
+        ("auto_light_theme", "grokday"),
     ];
     for &(key, original) in cases {
         let mut s = make_state();
@@ -2294,12 +2296,12 @@ fn picking_enum_esc_dispatches_preview_revert_for_each_key() {
 #[test]
 fn picking_enum_esc_returns_to_browse() {
     let mut s = make_state();
-    s.transition_to_picking_enum("theme", 0, SettingValue::Enum("night"), true);
+    s.transition_to_picking_enum("theme", 0, SettingValue::Enum("groknight"), true);
     let outcome = handle_settings_key(&mut s, &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     match outcome {
         SettingsKeyOutcome::Action(Action::PreviewTheme(name)) => {
             assert_eq!(
-                name, "night",
+                name, "groknight",
                 "Esc revert must dispatch the original canonical"
             );
         }
@@ -2568,7 +2570,7 @@ fn browse_path_enter_commit_returns_to_browse() {
 #[test]
 fn deep_link_theme_commit_closes_with_set() {
     let mut s = make_state();
-    s.transition_to_picking_enum("theme", 0, SettingValue::Enum("night"), true);
+    s.transition_to_picking_enum("theme", 0, SettingValue::Enum("groknight"), true);
     s.close_on_picker_exit = true;
 
     let outcome = handle_settings_key(&mut s, &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -2585,13 +2587,13 @@ fn deep_link_theme_commit_closes_with_set() {
 #[test]
 fn deep_link_picker_esc_reverts_preview_and_closes() {
     let mut s = make_state();
-    s.transition_to_picking_enum("theme", 0, SettingValue::Enum("night"), true);
+    s.transition_to_picking_enum("theme", 0, SettingValue::Enum("groknight"), true);
     s.close_on_picker_exit = true;
 
     let outcome = handle_settings_key(&mut s, &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     match outcome {
         SettingsKeyOutcome::ActionThenClose(Action::PreviewTheme(name)) => {
-            assert_eq!(name, "night");
+            assert_eq!(name, "groknight");
         }
         other => panic!("expected ActionThenClose(PreviewTheme), got {other:?}"),
     }
@@ -5797,15 +5799,15 @@ fn docs_footer_tip_is_centered() {
     );
 
     // SHORT path: width that fits SHORT but not LONG.
-    // SHORT is "Tip · Ask the model to change a setting" (39 cells); LONG is ~73 cells. width=40 lands in the SHORT band.
+    // SHORT is "Tip · Ask Grok to change a setting" (34 cells); LONG is ~73 cells. width=40 lands in the SHORT band.
     let (row_short, tip_start_short, trailing_short) = render(40);
     assert!(
         row_short.contains("change a setting"),
         "width=40 must render SHORT path (contains `change a setting`): {row_short:?}",
     );
     assert!(
-        !row_short.contains("day"),
-        "width=40 must NOT render LONG path (no `day`): {row_short:?}",
+        !row_short.contains("grokday"),
+        "width=40 must NOT render LONG path (no `grokday`): {row_short:?}",
     );
     assert!(
         tip_start_short.abs_diff(trailing_short) <= 1,
@@ -5845,7 +5847,7 @@ fn tip_line_has_blank_row_above() {
     let mut tip_y: Option<u16> = None;
     for y in 0..area.height {
         let txt = buf_row_text(&buf, y, area.x, area.width);
-        if txt.contains("Tip") && txt.contains("Ask the model") {
+        if txt.contains("Tip") && txt.contains("Ask Grok") {
             tip_y = Some(y);
             break;
         }
@@ -6096,11 +6098,11 @@ fn click_settings_breadcrumb_collapses_picker_to_browse() {
         click_y,
     );
     // For preview-supporting enums (theme), the breadcrumb-click revert dispatches `Action::PreviewTheme(original)`
-    // The default theme's original canonical is `"night"`
+    // The default theme's original canonical is `"groknight"`
     match outcome {
         SettingsKeyOutcome::Action(Action::PreviewTheme(orig)) => {
             assert_eq!(
-                orig, "night",
+                orig, "groknight",
                 "breadcrumb-click revert must carry the original canonical",
             );
         }
@@ -6148,7 +6150,7 @@ fn click_settings_breadcrumb_ignores_close_on_picker_exit() {
     );
     match outcome {
         SettingsKeyOutcome::Action(Action::PreviewTheme(orig)) => {
-            assert_eq!(orig, "night");
+            assert_eq!(orig, "groknight");
         }
         other => panic!("expected preview revert Action, got {other:?}"),
     }
@@ -6189,7 +6191,7 @@ fn click_settings_breadcrumb_after_nav_reverts_to_original() {
         other => panic!("expected PickingEnum, got {other:?}"),
     };
     // Pick a different index
-    // The default theme is `night` (index 1 per the registry); advance to index 0 to ensure we're navigating to a different value
+    // The default theme is `groknight` (index 1 per the registry); advance to index 0 to ensure we're navigating to a different value
     let target_idx = if advanced_idx == 0 { 1 } else { 0 };
     match s.mode() {
         SettingsModalMode::PickingEnum {
@@ -6245,10 +6247,10 @@ fn d_key_in_picking_enum_dispatches_open_reset_confirm() {
                 key, "theme",
                 "OpenResetConfirm key must be the active picker setting",
             );
-            // Default theme is `night`
+            // Default theme is `groknight`
             // Entering the picker captures `original_value = current value = groknight`, so the revert dispatches with that canonical
             assert_eq!(
-                orig, "night",
+                orig, "groknight",
                 "PreviewTheme revert must carry the original canonical",
             );
         }
@@ -6451,7 +6453,7 @@ fn consent_chooser_drops_tip_and_reset() {
     let mut consent = enter_picker_for("coding_data_sharing");
     let text = screen(&mut consent);
     assert!(
-        !text.contains("Ask the model"),
+        !text.contains("Ask Grok"),
         "consent chooser must not render the docs tip:\n{text}"
     );
     assert!(
@@ -6480,7 +6482,7 @@ fn consent_chooser_drops_tip_and_reset() {
     let mut ordinary = enter_picker_for("theme");
     let text = screen(&mut ordinary);
     assert!(
-        text.contains("d reset") && text.contains("Ask the model"),
+        text.contains("d reset") && text.contains("Ask Grok"),
         "ordinary pickers keep the tip and the reset hint:\n{text}"
     );
     assert!(
@@ -7644,6 +7646,56 @@ fn locked_coding_data_sharing_row_renders_locked_value_without_chevron() {
         line.contains(chevron),
         "unlocked row must keep the `{chevron}` enter affordance: {line:?}"
     );
+}
+
+/// A `\n` in a description starts a new painted line in the expanded detail instead of rendering as a control cell.
+#[test]
+fn expanded_description_newlines_start_new_lines() {
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 80,
+    };
+    let mut s = make_state();
+    let description = s
+        .registry
+        .find("subagent_model_inheritance")
+        .expect("registered")
+        .description;
+    let paragraph_heads: Vec<String> = description
+        .split('\n')
+        .map(|paragraph| {
+            paragraph
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    assert!(
+        paragraph_heads.len() > 1,
+        "the row's description is multi-line"
+    );
+    s.selected = s
+        .rows
+        .iter()
+        .position(
+            |r| matches!(r, RowEntry::Setting { key, .. } if *key == "subagent_model_inheritance"),
+        )
+        .expect("row present");
+    s.expanded_keys.insert("subagent_model_inheritance");
+    let mut buf = Buffer::empty(area);
+    render_rows(&mut buf, area, &mut s, &Theme::current());
+    let rows: Vec<String> = (0..area.height)
+        .map(|y| buf_row_text(&buf, y, area.x, area.width).trim().to_owned())
+        .collect();
+    for head in &paragraph_heads {
+        assert!(
+            rows.iter().any(|row| row.starts_with(head.as_str())),
+            "paragraph {head:?} must begin a painted line: {rows:?}"
+        );
+    }
 }
 
 /// Expanding a locked row replaces the registry description with the lock reason; the unlocked expansion shows the description.

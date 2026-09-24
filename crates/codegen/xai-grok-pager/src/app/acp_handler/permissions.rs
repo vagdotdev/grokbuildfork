@@ -46,7 +46,7 @@ pub(super) fn handle_permission_request(
     {
         app.notification_service.notify(NotificationEvent {
             kind: NotificationEventKind::ApprovalRequired,
-            title: "Workshop".into(),
+            title: "Grok".into(),
             body: NotificationEventKind::ApprovalRequired.as_ref().into(),
             session_id: Some(perm.request.session_id.0.to_string()),
         });
@@ -55,15 +55,6 @@ pub(super) fn handle_permission_request(
 
     let needs_redraw = enqueue_permission(perm, agent);
     needs_redraw && is_active
-}
-
-/// Workshop: queue a permission prompt built by the pager itself (the OpenCode engine's asks),
-/// with the same stash/pane/notification bookkeeping as a shell-originated request.
-pub(crate) fn enqueue_permission_for_workshop(
-    perm: xai_acp_lib::AcpArgs<acp::RequestPermissionRequest>,
-    agent: &mut AgentView,
-) -> bool {
-    enqueue_permission(perm, agent)
 }
 
 fn enqueue_permission(

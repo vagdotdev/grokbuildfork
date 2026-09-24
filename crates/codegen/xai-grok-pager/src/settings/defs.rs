@@ -10,7 +10,7 @@ use crate::appearance::ScrollMode;
 use crate::appearance::TextSelection;
 use crate::appearance::permission_cursor::DefaultSelectedPermission;
 
-use xai_grok_shell::agent::config::UiConfig;
+use xai_grok_shell::agent::config::{Feature, UiConfig};
 use xai_grok_shell::util::config::DISPLAY_REFRESH_DEFAULT_AUTO_CADENCE_ENABLED;
 use xai_grok_tools::implementations::grok_build::ask_user_question;
 
@@ -34,13 +34,13 @@ const THEME_CHOICES: &[EnumChoice] = &[
         description: "Follow system dark/light appearance.",
     },
     EnumChoice {
-        canonical: "night",
-        display: "Night",
+        canonical: "groknight",
+        display: "Grok Night",
         description: "Neutral dark with magenta accent.",
     },
     EnumChoice {
-        canonical: "day",
-        display: "Day",
+        canonical: "grokday",
+        display: "Grok Day",
         description: "Light theme for bright environments.",
     },
     EnumChoice {
@@ -258,12 +258,12 @@ const SCREEN_MODE_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "fullscreen",
         display: "Fullscreen",
-        description: "Open plain workshop in the standard fullscreen TUI. Default when unset.",
+        description: "Open plain grok in the standard fullscreen TUI. Default when unset.",
     },
     EnumChoice {
         canonical: "minimal",
         display: "Minimal",
-        description: "Open plain workshop in scrollback-native (minimal) mode.",
+        description: "Open plain grok in scrollback-native (minimal) mode.",
     },
 ];
 
@@ -422,13 +422,13 @@ const VOICE_STT_LANGUAGE_CHOICES: &[EnumChoice] = &[
 /// There is no dark/light filtering: the user can pair any theme with any system-appearance bucket.
 const CONCRETE_THEME_CHOICES: &[EnumChoice] = &[
     EnumChoice {
-        canonical: "night",
-        display: "Night",
+        canonical: "groknight",
+        display: "Grok Night",
         description: "Neutral dark with magenta accent.",
     },
     EnumChoice {
-        canonical: "day",
-        display: "Day",
+        canonical: "grokday",
+        display: "Grok Day",
         description: "Light theme for bright environments.",
     },
     EnumChoice {
@@ -493,7 +493,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Appearance,
             owner: SettingOwner::Shell,
             label: "Default screen mode",
-            description: "How Workshop opens next time: Fullscreen (default when unset) or \
+            description: "How plain grok opens next time: Fullscreen (default when unset) or \
                           Minimal. Writes [ui] screen_mode in config.toml. Restart required. \
                           Switch this session only with /minimal or /fullscreen.",
             keywords: &[
@@ -684,7 +684,6 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             hidden_in_minimal: false,
         },
-        // --- theme and auto themes -------------------------------------------
         SettingMeta {
             key: "theme",
             category: SettingCategory::Appearance,
@@ -701,8 +700,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "light",
             ],
             kind: SettingKind::Enum {
-                // `Option<String>`: `None` resolves to "night"
-                default: "night",
+                // `Option<String>`: `None` resolves to "groknight"
+                default: "groknight",
                 choices: THEME_CHOICES,
                 supports_preview: true,
             },
@@ -717,8 +716,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
             description: "Theme to use when the system is in dark mode (only with theme=auto).",
             keywords: &["auto", "dark", "theme", "system", "appearance", "night"],
             kind: SettingKind::Enum {
-                // `Option<String>`: `None` falls back to "night"
-                default: "night",
+                // `Option<String>`: `None` falls back to "groknight"
+                default: "groknight",
                 choices: CONCRETE_THEME_CHOICES,
                 supports_preview: true,
             },
@@ -733,8 +732,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
             description: "Theme to use when the system is in light mode (only with theme=auto).",
             keywords: &["auto", "light", "theme", "system", "appearance", "day"],
             kind: SettingKind::Enum {
-                // `Option<String>`: `None` falls back to "day"
-                default: "day",
+                // `Option<String>`: `None` falls back to "grokday"
+                default: "grokday",
                 choices: CONCRETE_THEME_CHOICES,
                 supports_preview: true,
             },
@@ -858,6 +857,41 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             hidden_in_minimal: false,
         },
+        // SHELL-owned `[features].subagent_model_inheritance`, a registry feature row rather than a `[ui]` key
+        // `restart_required` because each agent latches the mode when it is built; the row's value is the next-start resolution
+        // Each `\n` starts a new line in the expanded detail (a Bool row never reaches the single-line sub-pane header)
+        SettingMeta {
+            key: "subagent_model_inheritance",
+            category: SettingCategory::Models,
+            owner: SettingOwner::Shell,
+            label: "Subagent model inheritance",
+            description: "On: Grok cannot set models for subagents\n\
+                          Off: Grok may choose a different model for a subagent. Takes effect \
+                          after restart.\n\
+                          NOTE: This setting only applies when all models are xAI \
+                          \"model_family\". You likely don't need to configure this setting.",
+            keywords: &[
+                "subagent",
+                "subagents",
+                "subagent model",
+                "same model",
+                "model",
+                "parent",
+                "inherit",
+                "inheritance",
+                "picker",
+                "argument",
+                "task",
+                "spawn",
+                "xai",
+                "features",
+            ],
+            kind: SettingKind::Bool {
+                default: Feature::SubagentModelInheritance.default_enabled(),
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
+        },
         // SHARED. `u16` in UiConfig, widened to `i64` for registry.
         // Width changes apply on the next render frame.
         SettingMeta {
@@ -883,7 +917,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             hidden_in_minimal: false,
         },
-        // SHELL-owned: `[ui].show_thinking_blocks` with a process-wide cache. Default OFF.
+        // SHELL-owned: `[ui].show_thinking_blocks` with a process-wide cache. Default ON.
         SettingMeta {
             key: "show_thinking_blocks",
             category: SettingCategory::Appearance,
@@ -899,7 +933,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "hide",
             ],
             kind: SettingKind::Bool {
-                default: ui_default.show_thinking_blocks.unwrap_or(false),
+                default: ui_default.show_thinking_blocks.unwrap_or(true),
             },
             restart_required: false,
             hidden_in_minimal: false,
@@ -1143,10 +1177,10 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Privacy,
             owner: SettingOwner::Shell,
             label: "Coding data, retention, and training",
-            description: "Whether the optional xAI account connection may retain and train on \
-                          your coding data (prompts, traces, metrics). Workshop itself sends \
-                          nothing anywhere; other connections follow their own provider's \
-                          terms.",
+            description: "Opt-in to provide SpaceXAI the ability to retain and train on \
+                          coding data, e.g., prompts, traces, & metrics, for training and \
+                          debugging purposes. We may still collect simple user metrics, \
+                          e.g. how many times you use the product or a feature.",
             keywords: &[
                 "privacy",
                 "data",
@@ -1407,7 +1441,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Editor,
             owner: SettingOwner::Shell,
             label: "Voice language",
-            description: "Speech-to-text language for voice dictation. \
+            description: "Speech-to-text language for voice dictation (Grok STT). \
                           English by default; System uses your locale when supported. \
                           Sets formatting language for numbers and currencies.",
             keywords: &["voice", "language", "locale", "dictation", "stt", "speech"],
@@ -1542,7 +1576,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Advanced,
             owner: SettingOwner::Shell,
             label: "SSH wrap",
-            description: "Show a `/doctor` tip when an SSH session is not using `workshop wrap`.",
+            description: "Show a `/doctor` tip when an SSH session is not using `grok wrap`.",
             keywords: &[
                 "ssh",
                 "wrap",

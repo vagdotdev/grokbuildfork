@@ -1,6 +1,6 @@
 # Background Tasks and Monitoring
 
-Workshop runs long-lived processes without blocking the conversation. This document covers background commands, the `/loop` command, the `monitor` tool, and the scheduler.
+Grok runs long-lived processes without blocking the conversation. This document covers background commands, the `/loop` command, the `monitor` tool, and the scheduler.
 
 ---
 
@@ -22,7 +22,7 @@ Use `get_command_or_subagent_output` to check a background command or subagent. 
 - Omit `timeout_ms`, or pass `0`, for a non-blocking snapshot.
 - A positive `timeout_ms` waits for completion. Several ids wait until **all** complete.
 
-A positive `timeout_ms` is clamped to **1 hour** (`3600000` ms). Hosts with a shorter transport deadline set `WORKSHOP_MAX_WAIT_BLOCK_MS` (plain milliseconds; unparseable values keep the default).
+A positive `timeout_ms` is clamped to **1 hour** (`3600000` ms). Hosts with a shorter transport deadline set `GROK_MAX_WAIT_BLOCK_MS` (plain milliseconds; unparseable values keep the default).
 
 If the wait returns while the child is still running, leave it alone: do not kill it or tell it to stop. Completion wakes the parent automatically. Poll again only if you need another snapshot.
 
@@ -94,7 +94,7 @@ The `monitor` tool streams events from a long-running script. Each line of outpu
 ### How It Works
 
 1. You provide a shell command (`command`) and a short `description` that appears in every notification.
-2. Workshop merges the command's stdout and stderr into a single output file.
+2. Grok merges the command's stdout and stderr into a single output file.
 3. Each new line in that file becomes a notification delivered to the conversation.
 4. The monitor runs until the command exits or you stop it.
 
@@ -137,7 +137,7 @@ Stop persistent monitors with `kill_command_or_subagent(task_id)`.
 
 ### Volume Control
 
-If a monitor produces too many events, Workshop stops it automatically. When this happens, restart the monitor with a tighter filter. Prefer `grep --line-buffered`, `awk`, or a wrapper script that emits only the events you care about.
+If a monitor produces too many events, Grok stops it automatically. When this happens, restart the monitor with a tighter filter. Prefer `grep --line-buffered`, `awk`, or a wrapper script that emits only the events you care about.
 
 ---
 

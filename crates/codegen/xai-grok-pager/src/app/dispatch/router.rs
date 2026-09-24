@@ -1,8 +1,7 @@
 //! Top-level action router: maps actions and action results to handlers.
 use super::auth::{
-    dispatch_cancel_login, dispatch_connection_picker, dispatch_login, dispatch_logout,
-    dispatch_open_connection_picker, dispatch_open_models_view, dispatch_submit_auth_code,
-    dispatch_switch_account, dispatch_workshop_engine_unavailable, dispatch_workshop_first_run,
+    dispatch_cancel_login, dispatch_login, dispatch_logout, dispatch_submit_auth_code,
+    dispatch_switch_account,
 };
 use super::billing::dispatch_open_supergrok_url;
 use super::ctx::{
@@ -51,9 +50,9 @@ use super::prompt::{
 use super::queue;
 use super::queue::dispatch_drain_queue;
 use super::rewind::{
-    dispatch_inline_edit_submit, dispatch_rewind, dispatch_rewind_cancel_offer,
-    dispatch_rewind_confirm, dispatch_rewind_confirm_never_ask, dispatch_rewind_dismiss,
-    dispatch_rewind_dismiss_error, dispatch_rewind_picker_select, dispatch_rewind_show_picker,
+    dispatch_rewind, dispatch_rewind_cancel_offer, dispatch_rewind_confirm,
+    dispatch_rewind_confirm_never_ask, dispatch_rewind_dismiss, dispatch_rewind_dismiss_error,
+    dispatch_rewind_picker_select, dispatch_rewind_show_picker,
 };
 use super::session::foreign::dispatch_fetch_session_list;
 use super::session::fork::{
@@ -76,11 +75,11 @@ use super::session::load::{
 };
 use super::session::modal::{dispatch_rename_session, dispatch_reset_session_title};
 use super::settings::setters::{
-    clear_default_model, clear_fork_secondary_model, preview_auto_dark_theme,
-    preview_auto_light_theme, preview_theme, set_ask_user_question_timeout_enabled,
-    set_auto_dark_theme, set_auto_light_theme, set_auto_update, set_collapsed_edit_blocks,
-    set_combine_queued_prompts, set_compact_mode, set_confirm_before_rewind,
-    set_contextual_hint_export_copy, set_contextual_hint_image_input,
+    clear_default_model, clear_fork_secondary_model, clear_subagent_model_inheritance,
+    preview_auto_dark_theme, preview_auto_light_theme, preview_theme,
+    set_ask_user_question_timeout_enabled, set_auto_dark_theme, set_auto_light_theme,
+    set_auto_update, set_collapsed_edit_blocks, set_combine_queued_prompts, set_compact_mode,
+    set_confirm_before_rewind, set_contextual_hint_export_copy, set_contextual_hint_image_input,
     set_contextual_hint_plan_mode, set_contextual_hint_send_now, set_contextual_hint_small_screen,
     set_contextual_hint_ssh_wrap, set_contextual_hint_undo, set_contextual_hint_word_select,
     set_default_model, set_default_selected_permission, set_display_refresh_auto_cadence,
@@ -88,9 +87,9 @@ use super::settings::setters::{
     set_invert_scroll, set_keep_text_selection, set_max_thoughts_width, set_multiline_mode,
     set_page_flip_on_send, set_prompt_suggestions, set_remember_tool_approvals, set_render_mermaid,
     set_respect_manual_folds, set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed,
-    set_show_thinking_blocks, set_show_tips, set_simple_mode, set_theme, set_timeline,
-    set_timestamps, set_vim_mode, set_voice_capture_mode, set_voice_keybind_enabled,
-    set_voice_stt_language,
+    set_show_thinking_blocks, set_show_tips, set_simple_mode, set_subagent_model_inheritance,
+    set_theme, set_timeline, set_timestamps, set_vim_mode, set_voice_capture_mode,
+    set_voice_keybind_enabled, set_voice_stt_language,
 };
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
@@ -1055,9 +1054,6 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::CancelScheduledTask(task_id) => dispatch_cancel_scheduled_task(app, task_id),
         Action::DemoteToBackground => dispatch_demote_to_background(app),
         Action::RequestBundleStatus => vec![Effect::FetchBundleStatus],
-        Action::ViewCatalogEntry { kind, name } => {
-            vec![Effect::FetchCatalogEntry { kind, name }]
-        }
         Action::CycleMode => dispatch_cycle_mode(app),
         Action::ShareSession => dispatch_share_session(app),
         Action::ShowSessionInfo => dispatch_show_session_info(app),
@@ -1118,6 +1114,8 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetAskUserQuestionTimeoutEnabled(v) => {
             set_ask_user_question_timeout_enabled(app, v)
         }
+        Action::SetSubagentModelInheritance(v) => set_subagent_model_inheritance(app, v),
+        Action::ClearSubagentModelInheritance => clear_subagent_model_inheritance(app),
         Action::SetKeepTextSelection(v) => set_keep_text_selection(app, v),
         Action::SetScrollSpeed(v) => set_scroll_speed(app, v),
         Action::SetScrollMode(v) => set_scroll_mode(app, v),
@@ -1243,22 +1241,6 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![]
         }
         Action::Login => dispatch_login(app),
-        // Workshop: an explicit `/model` is the user asking for the live model lists; the hermetic
-        // doors (`Login`, `/auth`) only show what is cached.
-        Action::OpenConnectionPicker(workshop_auth::PickerTab::Models) => {
-            dispatch_open_models_view(app)
-        }
-        Action::OpenConnectionPicker(tab) => dispatch_open_connection_picker(app, tab),
-        Action::ConnectionPicker(input) => dispatch_connection_picker(app, input),
-        Action::WorkshopFirstRun => dispatch_workshop_first_run(app),
-        Action::WorkshopEngineUnavailable {
-            agent_id,
-            reason,
-            text,
-        } => dispatch_workshop_engine_unavailable(app, agent_id, reason, text),
-        Action::WorkshopNextQueuedPrompt { agent_id } => {
-            super::prompt::dispatch_workshop_next_queued(app, agent_id)
-        }
         Action::CancelLogin => dispatch_cancel_login(app),
         Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
         Action::CopyAuthUrl => {
@@ -1615,7 +1597,6 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::RewindCancelOffer => dispatch_rewind_cancel_offer(app),
         Action::RewindDismiss => dispatch_rewind_dismiss(app),
         Action::RewindDismissError => dispatch_rewind_dismiss_error(app),
-        Action::InlineEditSubmit => dispatch_inline_edit_submit(app),
         Action::JumpShowPicker => dispatch_jump_show_picker(app),
         Action::JumpPickerSelect(turn_idx) => dispatch_jump_picker_select(app, turn_idx),
         Action::JumpDismiss => dispatch_jump_dismiss(app),

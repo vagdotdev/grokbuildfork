@@ -82,7 +82,6 @@ pub(super) fn collect_live_doctor_report_for_terminal(
     if crate::app::voice_mode_enabled() {
         crate::diagnostics::apply_voice_probe(&mut report, true);
     }
-    crate::diagnostics::apply_engine_probe(&mut report);
     Some(report)
 }
 
@@ -615,167 +614,6 @@ pub(super) fn dispatch_send_prompt_inner(
     dispatch_send_prompt_submission(app, text, None, consume_input, literal, is_follow_up)
 }
 
-/// gate:overlay-isolation — a prompt leaves the ACP path only for a live Engine/Adapter connection
-/// and only for real prompt text. `Shell` (Direct/Local), literal sends, slash commands, and empty
-/// input always stay on the byte-identical upstream ACP path. Pure so a gate test can pin it.
-pub(super) fn routes_off_acp_path(
-    conn: &crate::app::workshop::WorkshopConnection,
-    literal: bool,
-    text: &str,
-) -> bool {
-    !conn.is_shell() && !literal && !text.trim().is_empty() && !text.trim().starts_with('/')
-}
-
-/// Route one prompt to the OpenCode engine (`Engine`) or a vendor CLI adapter (`Adapter`): echo the
-/// user bubble, mark the turn active, clear the composer, and spawn the streaming task whose events
-/// the event loop's Workshop `select!` arm renders. Never touches the ACP path.
-fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<Effect> {
-    use crate::app::workshop::{self, WorkshopConnection, WorkshopTurnKind, WorkshopTurnSpec};
-
-    if app.workshop_turn_active {
-        // One turn at a time on the engine: later prompts wait their turn and go out as
-        // separate messages when this one ends (`Done` drains the queue), never concatenated.
-        let queued = {
-            app.workshop_turn_queue.push_back(text.trim().to_owned());
-            app.workshop_turn_queue.len()
-        };
-        if let Some(agent) = app.agents.get_mut(&id) {
-            agent.prompt.set_text("");
-        }
-        app.show_toast(&format!(
-            "Queued ({queued}) — sends when this turn ends. Ctrl+C cancels the current turn."
-        ));
-        return vec![];
-    }
-    let Some(tx) = app.workshop_turn_tx.clone() else {
-        // No interactive loop channel (headless / tests): nothing to stream into.
-        return vec![];
-    };
-    let Some(agent) = app.agents.get(&id) else {
-        return vec![];
-    };
-    let cwd = agent.session.cwd.clone();
-    let mode = workshop_permission_mode(agent);
-    // Images pasted with the prompt travel with it (the engine sends them as file parts).
-    let images: Vec<_> = match app.agents.get_mut(&id) {
-        Some(agent) => agent
-            .prompt
-            .drain_images()
-            .iter()
-            .filter_map(crate::app::workshop::prompt_file)
-            .collect(),
-        None => Vec::new(),
-    };
-
-    let kind = match &app.workshop_connection {
-        WorkshopConnection::Shell => return vec![],
-        // A launch is a new engine conversation unless it resumed one (`--resume`, `-c`, the
-        // picker); the id then lives in `workshop_engine_session` for the rest of the process.
-        WorkshopConnection::Engine { model } => WorkshopTurnKind::Engine {
-            slot: app.workshop_engine_slot.clone(),
-            session: app.workshop_engine_session.clone(),
-            model: model.clone(),
-        },
-        WorkshopConnection::Adapter { rail, model } => WorkshopTurnKind::Adapter {
-            adapter_id: workshop::rail_adapter_id(*rail),
-            resume: workshop::load_resume_id(rail.vendor().id(), &cwd),
-            model: Some(model.model.clone()),
-        },
-    };
-    let spec = WorkshopTurnSpec {
-        kind,
-        cwd,
-        text: text.clone(),
-        images,
-        mode,
-    };
-
-    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
-    app.workshop_turn_cancel = Some(cancel_tx);
-    app.workshop_turn_active = true;
-    app.workshop_turn_agent = Some(id);
-    app.workshop_turn_stream_entry = None;
-    app.workshop_turn_running.clear();
-    app.workshop_turn_errored = false;
-    app.workshop_last_prompt = Some(text.clone());
-    app.workshop_turn_thinking_entry = None;
-    app.workshop_turn_tools.clear();
-    app.workshop_turn_decided_calls.clear();
-    app.workshop_turn_record.clear();
-    app.workshop_turn_prompt_text = Some(text.trim().to_owned());
-
-    if let Some(agent) = app.agents.get_mut(&id) {
-        agent.record_prompt_in_history(text.trim());
-        let entry = agent
-            .scrollback
-            .push_block(RenderBlock::user_prompt(text.as_str()));
-        app.workshop_turn_prompt_entry = Some(entry);
-        agent.prompt.set_text("");
-        agent.workshop_turn_active = true;
-        // The pager's own turn-status row runs from here: the wait for the model, its timers,
-        // `[stop]` — the same row a shell turn shows.
-        agent.workshop_turn_activity = Some(crate::acp::tracker::TurnActivity::Waiting(
-            crate::acp::tracker::WaitingReason::Model,
-        ));
-        agent.workshop_turn_started_at = Some(std::time::Instant::now());
-        agent.workshop_turn_cancelling = false;
-        // A fresh phase clock: the row's first frame counts from this send, not from whatever
-        // the previous turn ended on.
-        agent.last_activity = None;
-        agent.activity_started_at = None;
-        agent.workshop_retry_prompt = None;
-        // The terminal title follows the session topic: Engine/Adapter turns never reach the
-        // shell's auto-titling, so the first prompt names the session.
-        if agent.display_name.is_none() && agent.generated_session_title.is_none() {
-            agent.generated_session_title = Some(workshop::session_topic(&text));
-        }
-        // Sending brings the new turn into view like the ACP path does: pin the prompt at the
-        // top when "Snap prompt to top on send" is on, else follow the bottom — never leave the
-        // view parked wherever the user last scrolled.
-        let prompt_idx = agent.scrollback.len().saturating_sub(1);
-        let flip = crate::appearance::cache::load_page_flip_on_send();
-        agent.scrollback.follow_new_turn(Some(prompt_idx), flip);
-        if !flip {
-            agent.scrollback.follow_new_turn(None, false);
-        }
-    }
-
-    tokio::spawn(workshop::run_workshop_turn(spec, tx, cancel_rx));
-    vec![]
-}
-
-/// The agent's permission mode as it applies to an Engine/Adapter turn: Plan (pending or active)
-/// wins, then always-approve, then Auto, else Normal (ask).
-pub(crate) fn workshop_permission_mode(
-    agent: &crate::app::agent_view::AgentView,
-) -> crate::app::workshop::WorkshopPermissionMode {
-    use crate::app::workshop::WorkshopPermissionMode as Mode;
-    if agent.plan_mode_pending.unwrap_or(agent.plan_mode_active) {
-        Mode::Plan
-    } else if agent.session.is_yolo() {
-        Mode::AlwaysApprove
-    } else if agent.session.is_auto() {
-        Mode::Auto
-    } else {
-        Mode::Normal
-    }
-}
-
-/// Start the next queued prompt once the running Engine/Adapter turn has ended (`Done`). Each
-/// queued prompt is its own turn with its own bubble; nothing is joined.
-pub(crate) fn dispatch_workshop_next_queued(app: &mut AppView, id: AgentId) -> Vec<Effect> {
-    if app.workshop_turn_active {
-        return vec![];
-    }
-    let Some(text) = app.workshop_turn_queue.pop_front() else {
-        return vec![];
-    };
-    if text.is_empty() {
-        return dispatch_workshop_next_queued(app, id);
-    }
-    dispatch_workshop_turn(app, id, text)
-}
-
 pub(super) fn dispatch_send_prompt_submission(
     app: &mut AppView,
     text: String,
@@ -851,20 +689,6 @@ pub(super) fn dispatch_send_prompt_submission(
         text
     };
 
-    // Workshop: an `Engine` (OpenCode free tier) or `Adapter` (Claude/Codex/Cursor CLI) connection
-    // does not use the shell's ACP session — route the turn through workshop-adapters and stream it
-    // into the scrollback. Pure slash commands already returned above; only real prompt text
-    // reaches here. Direct/Local (`Shell`) connections fall through to the ACP path unchanged.
-    // While the silent fallback carries the session, prompts stay on the shell (ACP) path: the
-    // fallback model is the shell's active model.
-    if routes_off_acp_path(&app.workshop_connection, literal, &text)
-        && app.workshop_fallback.is_none()
-    {
-        let mut effects = prelude;
-        effects.extend(dispatch_workshop_turn(app, id, text));
-        return effects;
-    }
-
     // Capture app-level fields before the mut-borrow on `agent`.
     let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
     let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
@@ -874,10 +698,10 @@ pub(super) fn dispatch_send_prompt_submission(
     let auto_mode_gate_from_app = app.auto_mode_gate;
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
     let voice_stt_language_from_app = app.voice_config.language.clone();
+    let subagent_model_inheritance_from_app = app.subagent_model_inheritance;
     let login_method_id_from_app = app.login_method_id.as_ref().map(|id| id.0.to_string());
     let leader_mode = app.leader_mode;
     let screen_mode_is_minimal = app.screen_mode.is_minimal();
-    let workshop_connection_is_shell = app.workshop_connection.is_shell();
     let Some(agent) = app.agents.get_mut(&id) else {
         return prelude;
     };
@@ -1015,6 +839,7 @@ pub(super) fn dispatch_send_prompt_submission(
                     auto_mode_gate: auto_mode_gate_from_app,
                     ask_user_question_timeout_enabled: ask_user_question_timeout_enabled_from_app,
                     voice_stt_language: voice_stt_language_from_app,
+                    subagent_model_inheritance: subagent_model_inheritance_from_app,
                 },
             };
 
@@ -1206,23 +1031,6 @@ pub(super) fn dispatch_send_prompt_submission(
                 return effects;
             }
             CommandResult::QueueCommand(cmd_text) => {
-                // Workshop: shell-side commands (`/compact`, `/dream`, `/flush`, …) run on
-                // Workshop's own agent loop, which an Engine/Adapter connection bypasses; queuing
-                // them would hit the placeholder model and fail with a loopback connection error.
-                if !workshop_connection_is_shell {
-                    let name = cmd_text.split_whitespace().next().unwrap_or("This command");
-                    push_and_page_flip(
-                        &mut agent.scrollback,
-                        RenderBlock::system(format!(
-                            "{name} runs on Workshop's own agent loop, not on this connection — \
-                             pick a Direct API or Local model with /model to use it."
-                        )),
-                    );
-                    if consume_input {
-                        agent.prompt.set_text("");
-                    }
-                    return effects;
-                }
                 agent.session.enqueue_command(cmd_text);
             }
             CommandResult::InjectSkill {
@@ -1607,23 +1415,7 @@ pub(super) fn handle_prompt_response(
     // The leader's `running_prompt_id` broadcast can arrive before this `PromptResponse`
     // Take any stashed adoption now; it is applied after `finish_turn` clears `current_prompt_id` below
     let pending_adoption = app.pending_running_adoptions.remove(&agent_id);
-    // Workshop: while the silent fallback carries the session, a failed turn is reported as the
-    // one plain line (the technical cause goes to the log) and ends the fallback, so Enter retries
-    // from the top: the user's own model first, the fallback behind it.
-    let fallback_failure = if result.is_err() && app.workshop_fallback.take().is_some() {
-        Some((
-            crate::app::workshop::failure_line(&app.workshop_model_name()),
-            app.workshop_last_prompt.clone(),
-        ))
-    } else {
-        None
-    };
-    // With the fallback over, the composer names the user's own model again.
-    let restored_label = fallback_failure.as_ref().map(|_| app.workshop_label());
     if let Some(agent) = app.agents.get_mut(&agent_id) {
-        if let Some(label) = restored_label {
-            agent.workshop_model_label = label;
-        }
         // Discard PromptResponses that don't belong to the currently active prompt
         // They belong to a turn the user rewound, or to a queued prompt that never became the running turn
         // Without the `Err` fallback, a queued prompt's RPC error has no id to gate on and is misattributed to the running turn
@@ -1852,17 +1644,6 @@ pub(super) fn handle_prompt_response(
         // Insert the session event message (skip TurnCompleted for bash-mode, which has no agent turn)
         let event = match (&result, was_cancelling) {
             (Ok(_), false) if agent.bash_turn => None,
-            (Err(err), _) if fallback_failure.is_some() => {
-                crate::app::workshop::log_failure_cause(err);
-                // The wire error banner the retry handler already pushed for this turn (`Bad
-                // request (400): …`) is the cause, and the cause belongs in the log.
-                super::auth::strip_trailing_auth_error_blocks(agent);
-                if let Some((line, retry)) = fallback_failure.clone() {
-                    agent.scrollback.push_block(RenderBlock::system_error(line));
-                    agent.workshop_retry_prompt = retry;
-                }
-                None
-            }
             (Err(_), _) if dedicated_ux_shown => None,
             // `err` is already banner-formatted by `format_acp_error` at the producer, the single formatting owner
             // Don't re-format here
@@ -1903,13 +1684,9 @@ pub(super) fn handle_prompt_response(
                 };
                 Some((NotificationEventKind::TurnComplete, body))
             }
-            (Err(err), _) if !dedicated_ux_shown => Some((
-                NotificationEventKind::AgentError,
-                match &fallback_failure {
-                    Some((line, _)) => line.clone(),
-                    None => format!("Error: {err}"),
-                },
-            )),
+            (Err(err), _) if !dedicated_ux_shown => {
+                Some((NotificationEventKind::AgentError, format!("Error: {err}")))
+            }
             _ => None,
         };
 

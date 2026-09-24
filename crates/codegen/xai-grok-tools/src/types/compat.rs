@@ -293,19 +293,14 @@ impl VendorCompat {
 }
 
 impl Default for VendorCompat {
-    /// Workshop overlay: read-only project context from other tools (skills, rules, agent
-    /// instruction files) stays on; anything that *executes* another tool's configuration —
-    /// its hooks and MCP servers — or imports its sessions is off until the user turns the cell
-    /// on in `[compat.<vendor>]`. A hook from `~/.claude/settings.json` failing inside Workshop
-    /// is exactly the surprise this prevents (gate:config-isolation).
     fn default() -> Self {
         Self {
             skills: true,
             rules: true,
             agents: true,
-            mcps: false,
-            hooks: false,
-            sessions: false,
+            mcps: true,
+            hooks: true,
+            sessions: true,
         }
     }
 }
@@ -441,13 +436,8 @@ mod tests {
 
         let defaults = CompatConfig::default();
         for cell in COMPAT_CELLS {
-            let read_only = matches!(
-                cell.surface(),
-                CompatSurface::Skills | CompatSurface::Rules | CompatSurface::Agents
-            );
-            assert_eq!(
+            assert!(
                 defaults.value(cell),
-                read_only,
                 "{}.{}",
                 Into::<&'static str>::into(cell.vendor()),
                 Into::<&'static str>::into(cell.surface())
@@ -455,9 +445,8 @@ mod tests {
         }
         for vendor in [defaults.cursor, defaults.claude, defaults.codex] {
             assert!(vendor.skills && vendor.rules && vendor.agents);
-            // Workshop: executing surfaces and session imports are opt-in.
-            assert!(!vendor.mcps && !vendor.hooks);
-            assert!(!vendor.sessions);
+            assert!(vendor.mcps && vendor.hooks);
+            assert!(vendor.sessions);
         }
 
         assert_eq!(

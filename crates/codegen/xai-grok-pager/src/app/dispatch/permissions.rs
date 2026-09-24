@@ -259,7 +259,7 @@ pub(super) fn dispatch_permission_cancel(app: &mut AppView) -> Vec<Effect> {
 /// Drain all queued permission requests, sending `Cancelled` to each.
 /// Called on turn-end and turn-cancel; after draining, restores the stashed prompt/pane.
 /// Distinct from `dispatch_permission_cancel` (front only).
-pub(crate) fn drain_permission_queue(agent: &mut AgentView) {
+pub(super) fn drain_permission_queue(agent: &mut AgentView) {
     agent.last_permission_click = None;
     if agent.permission_queue.is_empty() {
         return;

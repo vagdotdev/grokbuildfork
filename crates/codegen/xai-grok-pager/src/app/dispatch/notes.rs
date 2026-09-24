@@ -24,28 +24,7 @@ fn next_rewrite_nonce() -> u64 {
 
 /// One copy of the send-time thank-you, shared by the immediate and modal commit paths.
 pub(crate) const FEEDBACK_THANKS_NOTICE: &str =
-    "Thanks for the feedback!";
-
-/// Workshop: the truthful commit notice. Nothing is posted anywhere: the note is appended to the
-/// session's `feedback.jsonl` under the Workshop home, and the maintainer reads GitHub issues —
-/// so the line says where the note went and carries a prefilled issue link.
-pub(crate) fn workshop_feedback_notice(
-    session_id: &agent_client_protocol::SessionId,
-    text: &str,
-) -> String {
-    let saved = xai_grok_shell::session::persistence::find_session_dir_by_id(session_id.0.as_ref())
-        .map(|dir| dir.join("feedback.jsonl").display().to_string())
-        .unwrap_or_else(|| {
-            format!(
-                "{}/sessions/…/feedback.jsonl",
-                crate::app::workshop::workshop_home().display()
-            )
-        });
-    format!(
-        "Thanks — saved to {saved} (nothing is sent anywhere). To reach the maintainer, open this prefilled issue: {}",
-        workshop_brand::feedback_issue_url(text, xai_grok_version::full_version())
-    )
-}
+    "Thanks for the feedback! The Grok Build team is on it.";
 
 /// Minimal mode cannot show a toast, so the notice goes to the transcript instead.
 fn feedback_notice(app: &mut AppView, message: &str) {
@@ -310,7 +289,7 @@ pub(super) fn dispatch_submit_feedback_modal(
     if draft_id.is_none() {
         agent
             .scrollback
-            .push_block(RenderBlock::system(workshop_feedback_notice(&session_id, &text)));
+            .push_block(RenderBlock::system(FEEDBACK_THANKS_NOTICE.to_string()));
     }
     let mut effects = vec![feedback_send_effect(
         id,
@@ -439,7 +418,7 @@ pub(crate) fn commit_feedback(
 
     agent
         .scrollback
-        .push_block(RenderBlock::system(workshop_feedback_notice(&session_id, &trimmed)));
+        .push_block(RenderBlock::system(FEEDBACK_THANKS_NOTICE.to_string()));
 
     Some(feedback_send_effect(
         id,

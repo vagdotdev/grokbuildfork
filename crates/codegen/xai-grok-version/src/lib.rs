@@ -8,15 +8,9 @@ use semver::Version;
 
 pub const TEST_VERSION_ENV: &str = "GROK_TEST_VERSION";
 
-/// Workshop's version: the release the pipeline stamps (`GROK_VERSION` / `WORKSHOP_VERSION`), or
-/// for a source build the release it is built from plus `-dev` (`0.2.1-dev`, see build.rs) —
-/// never upstream's crate version, which no user of Workshop should meet.
 pub const VERSION: &str = match option_env!("GROK_VERSION") {
     Some(v) => v,
-    None => match option_env!("WORKSHOP_VERSION") {
-        Some(v) => v,
-        None => env!("WORKSHOP_DEV_VERSION"),
-    },
+    None => env!("CARGO_PKG_VERSION"),
 };
 
 /// The release pipeline always injects `GROK_VERSION`; without it the build is from source.

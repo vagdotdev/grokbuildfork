@@ -94,6 +94,12 @@ impl AgentView {
         registry: &ActionRegistry,
         prompt_paging: bool,
     ) -> InputOutcome {
+        // Taken first so only a stash made after this key leaves the next Ctrl+Z armed
+        let stash_undo_armed = self
+            .prompt_stash
+            .as_mut()
+            .is_some_and(|entry| std::mem::take(&mut entry.undo_armed));
+
         // Dismiss transient toasts on any keypress so error messages don't linger while the user is already typing
         // Sticky status banners (`sticky_toast`) are unaffected; ephemeral tips intentionally survive typing (cleared by TTL, submit, or clear)
         self.toast = None;
@@ -540,15 +546,6 @@ impl AgentView {
                         self.prompt_input_mode = PromptInputMode::Normal;
                         return InputOutcome::Action(action);
                     }
-                    // Workshop: after an Engine/Adapter failure, Enter on the empty composer
-                    // resends the prompt that failed (the error line says so).
-                    if matches!(self.prompt_mode, PromptMode::Normal)
-                        && self.prompt.text().trim().is_empty()
-                        && !self.workshop_turn_active
-                        && let Some(text) = self.workshop_retry_prompt.take()
-                    {
-                        return InputOutcome::Action(Action::SendPrompt(text));
-                    }
                     // Mid-turn with a queued follow-up: bare Enter force-sends the top queue row so users discover send-now without a chord
                     // Skip while editing a queued row (edit-mode Enter is handled earlier for non-empty; empty must stay a no-op)
                     // That Enter must only insert the newline, not fire a queued follow-up
@@ -662,6 +659,9 @@ impl AgentView {
         // 3. Let the widget handle text editing (chars, paste, cursor, undo, newline).
         // (Skip if already handled by file search intercept above.)
         if !self.prompt.file_search_visible() {
+            if stash_undo_armed && let Some(outcome) = self.pop_stash_on_undo_key(key) {
+                return outcome;
+            }
             // The undo tip advertises ctrl+z; an undo keypress while it is on screen is the user acting on it
             // Captured before the widget runs so a bare ctrl+z (no tip up, or the tip disabled) emits nothing
             let undo_tip_accepted = crate::input::key::is_undo_key(key)

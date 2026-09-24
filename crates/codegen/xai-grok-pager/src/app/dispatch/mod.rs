@@ -47,10 +47,6 @@ pub(crate) use notes::FEEDBACK_TRACE_UPLOAD_TIMEOUT_MS;
 pub(crate) use notes::{recap_unavailable_toast, scrollback_has_user_messages};
 pub(crate) use permissions::resolve_permission_queue_transition;
 pub(crate) use prompt::dispatch_initial_prompt;
-// Workshop: the engine's permission asks are answered from the agent's live mode, and the
-// approval prompt is withdrawn when the engine turn ends.
-pub(crate) use permissions::drain_permission_queue as drain_workshop_permission_queue;
-pub(crate) use prompt::workshop_permission_mode;
 pub(in crate::app) use prompt::{
     present_export_copy_tip, show_small_screen_tip, show_ssh_wrap_tip,
 };
@@ -59,7 +55,7 @@ pub(super) use queue::{
     apply_turn_start_shim, arm_send_now_and_paint, flush_held_local_queue_into_wait,
     maybe_drain_queue_and_note_peek, note_peek_page_flip, shim_renders_own_user_block,
 };
-pub(in crate::app) use rewind::{find_user_prompt_entry_for_shell_index, shell_prompt_index_at};
+pub(in crate::app) use rewind::find_user_prompt_entry_for_shell_index;
 pub(crate) use router::{dispatch, flush_image_notices};
 pub(crate) use session::lifecycle::{abandon_unused_home_session, maybe_create_home_session};
 pub(crate) use settings::ui::refresh_open_settings_modals;

@@ -18,27 +18,8 @@
 mod auth;
 mod handle;
 
-use std::sync::Mutex;
-
 pub use auth::build_voice_auth;
 pub use handle::handle_voice_event;
-
-/// Workshop overlay: the one-line status the recording banner shows instead of "Recording" while
-/// the local engine gets ready (model download progress, model load). Set from
-/// [`xai_grok_voice::VoiceEvent::Status`], cleared by the next transcript or error. Process-global
-/// like the voice gates above so no `AppView` field or render plumbing changes.
-static BANNER_STATUS: Mutex<Option<String>> = Mutex::new(None);
-
-pub(crate) fn set_banner_status(text: &str) {
-    if let Ok(mut guard) = BANNER_STATUS.lock() {
-        *guard = Some(text.to_owned()).filter(|t| !t.trim().is_empty());
-    }
-}
-
-/// The banner text to paint: the engine's status line, or `None` for the plain "Recording" row.
-pub(crate) fn banner_status() -> Option<String> {
-    BANNER_STATUS.lock().ok().and_then(|g| g.clone())
-}
 pub(crate) use handle::{
     VoiceInterimCommit, commit_interim_into_prompt, merge_voice_fragment, prompt_blank_for_voice,
     space_voice_fragment,

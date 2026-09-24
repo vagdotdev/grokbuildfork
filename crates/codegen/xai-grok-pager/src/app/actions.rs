@@ -415,11 +415,6 @@ pub enum Action {
     DemoteToBackground,
     /// Request current bundle cache status via `x.ai/bundle/status`.
     RequestBundleStatus,
-    /// View a catalog entry's raw content in the block viewer.
-    ViewCatalogEntry {
-        kind: String,
-        name: String,
-    },
     /// Hide the announcements banner.
     AnnouncementsHide,
     /// Show the announcements banner.
@@ -458,6 +453,11 @@ pub enum Action {
     SetRememberToolApprovals(bool),
     /// Toggle the ask_user_question timeout. SHELL-owned; persisted to `[toolset.ask_user_question].timeout_enabled`. Applies to new sessions.
     SetAskUserQuestionTimeoutEnabled(bool),
+    /// Save `[features].subagent_model_inheritance` as an explicit override. SHELL-owned; agents latch it when built, so it applies on restart.
+    SetSubagentModelInheritance(bool),
+    /// Delete the saved `[features].subagent_model_inheritance` key so the remote setting or the default applies again.
+    /// The reset path uses this instead of writing the compiled default.
+    ClearSubagentModelInheritance,
     /// SHELL-owned `keep_text_selection` (`flash` | `hold`); cache and persist.
     SetKeepTextSelection(crate::appearance::TextSelection),
     /// Set the mouse-wheel scroll speed multiplier (1-100).
@@ -618,26 +618,7 @@ pub enum Action {
     /// Log out and immediately start a new login flow.
     SwitchAccount,
     /// User pressed login on the welcome screen.
-    /// Workshop: opens the connection picker (Subscriptions); never starts an OAuth flow by itself.
     Login,
-    /// Workshop: open the connection picker overlay on a view (`/model` → Models, `/auth` →
-    /// Subscriptions).
-    OpenConnectionPicker(workshop_auth::PickerTab),
-    /// Workshop: a key press routed to the open connection picker.
-    ConnectionPicker(workshop_auth::PickerInput),
-    /// Workshop: first run (nothing connected) — activate the OpenCode engine's default free model
-    /// and land in the composer. No picker, no network.
-    WorkshopFirstRun,
-    /// Workshop: the OpenCode engine could not start for a turn; fall back to the Kilo keyless pool
-    /// with a one-line notice and resend `text`.
-    WorkshopEngineUnavailable {
-        agent_id: AgentId,
-        reason: String,
-        text: String,
-    },
-    /// Workshop: an Engine/Adapter turn ended; start the next prompt queued during it (its own
-    /// turn, its own bubble), if any.
-    WorkshopNextQueuedPrompt { agent_id: AgentId },
     /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
     /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
     CancelLogin,
@@ -808,7 +789,7 @@ pub enum Action {
     OpenDashboard,
     /// Close the dashboard, returning to the previous `ActiveView`.
     ExitDashboard,
-    /// Attach to a dashboard row: switches to the parent agent and (for subagent rows) sets the parent's `active_subagent`.
+    /// Attach to a dashboard row: switches to that agent's view.
     DashboardAttach(crate::views::dashboard::DashboardRowId),
     DashboardCloseSessionPicker,
     DashboardPickSession(usize),
@@ -962,8 +943,6 @@ pub enum Action {
     RewindCancelOffer,
     RewindDismiss,
     RewindDismissError,
-    /// Submit an inline edit: conversation-only rewind to that prompt, then resubmit the edited text (state lives on `AgentView::inline_edit`).
-    InlineEditSubmit,
     /// Open the `/jump` turn picker.
     JumpShowPicker,
     /// Jump to a turn by its prompt's stable id and close the picker.
@@ -1690,6 +1669,12 @@ pub enum Effect {
         value: crate::settings::SettingValue,
         rollback_value: crate::settings::SettingValue,
     },
+    /// Write the user `[features]` key of `feature`, or delete it for `saved == None`; completes as
+    /// [`TaskResult::FeatureOverridePersisted`]. A row issues one of these at a time so the disk follows toggle order.
+    PersistFeatureOverride {
+        feature: xai_grok_shell::agent::config::Feature,
+        saved: Option<bool>,
+    },
     /// Toggle mouse reporting off and on to unwedge xterm.js's button tracker
     /// (see `AgentView::reset_wedged_mouse_reporting`). An effect so it rides the escape
     /// writer; `process_effects` re-checks capture so a toggle-off in the same batch wins.
@@ -1791,54 +1776,9 @@ pub enum Effect {
         method_id: acp::AuthMethodId,
         use_oauth: bool,
         force_interactive: bool,
-        /// Workshop: the user explicitly selected the labeled optional xAI card. Only then may the
-        /// shell attach the xAI OAuth2 provider for this login (`workshop_xai_opt_in` meta).
-        xai_opt_in: bool,
     },
     /// Poll for auth URL from the agent (ext request).
     PollAuthUrl { request_seq: u64 },
-    /// Workshop: load the connection picker's rows and rails (local probe, cached catalogs, CLI
-    /// detection). Never the network.
-    WorkshopLoadPicker,
-    /// Workshop: refresh the model lists from their live sources (keyless hosted catalogs and,
-    /// when an engine is up, its `/config/providers`), then reload the picker. Emitted only after
-    /// the user acted: an active connection at startup, `/model`, the picker's `r` (`force`).
-    WorkshopRefreshCatalogs {
-        force: bool,
-        engine: Option<std::sync::Arc<workshop_adapters::opencode_engine::OpenCodeEngine>>,
-    },
-    /// Workshop: the placeholder entry in config.toml changed its display name/window (the live
-    /// default model resolved); ask the shell to re-read its model list so the dashboard and
-    /// session surfaces show the real model name. No auth, no session switch.
-    WorkshopReloadModels,
-    /// Workshop: a signed-in rail is still `Loading models…` after a picker load with no live
-    /// refresh queued (`/auth`, after a sign-in): ask those CLIs for their models, then reload the
-    /// picker. Child processes only; Workshop itself makes no request.
-    WorkshopRefreshRailModels,
-    /// Workshop: a `[model.<key>]` was written; ask the shell to reload its model list, authenticate
-    /// with the non-interactive method, and switch the active session (if any) to `model_id`.
-    WorkshopActivateModel {
-        request_seq: u64,
-        model_id: String,
-        session: Option<(AgentId, acp::SessionId)>,
-    },
-    /// Workshop: OpenRouter PKCE sign-in (browser + loopback callback), then save the key.
-    WorkshopOpenRouterSignIn,
-    /// Workshop: run a vendor CLI's official installer (the user pressed Enter on an `Install`
-    /// rail); its latest output line lands in `progress` for the picker's status line.
-    WorkshopInstallRail {
-        rail: workshop_detect::Rail,
-        progress: std::sync::Arc<std::sync::Mutex<String>>,
-    },
-    /// Workshop: fetch the voice helper and this machine's speech model in the background (after
-    /// `delay`), reporting into `shared` for `/voice`'s `Voice is getting ready — 62%`.
-    WorkshopVoicePrefetch {
-        shared: workshop_voice::prefetch::Shared,
-        delay: std::time::Duration,
-        home: std::path::PathBuf,
-        voice_dir: std::path::PathBuf,
-        tier: Option<String>,
-    },
     /// Submit a manually-pasted auth code (ext request).
     SubmitAuthCode { request_seq: u64, code: String },
     /// Fetch MCP server list from the shell (x.ai/mcp/list).
@@ -2030,8 +1970,6 @@ pub enum Effect {
     },
     /// Fetch current bundle cache status via `x.ai/bundle/status`.
     FetchBundleStatus,
-    /// Fetch a bundled entry's raw content via `x.ai/bundle/entry/get`.
-    FetchCatalogEntry { kind: String, name: String },
     /// Send feedback about the current session (fire-and-forget POST).
     /// `origin` rides through to the completion so a modal send's parked consent can be matched or dropped.
     SendFeedback {
@@ -2126,6 +2064,10 @@ pub enum Effect {
     /// Re-check subscription status via `x.ai/auth/check_subscription`.
     /// `verify` scopes the result to a deferred-gate verification (see [`crate::app::subscription`]); `None` for generic checks.
     CheckSubscription { verify: Option<u64> },
+    /// `x.ai/auth/hydrate_team_capability` for `identity`; the answer is dropped if the account changed meanwhile.
+    HydrateTeamCapability {
+        identity: crate::app::app_view::AuthIdentity,
+    },
     /// One-shot subscription re-check triggered by a credit-limit 403.
     /// If the tier changed, the stashed prompt is retried instead of showing the upsell modal.
     CreditLimitRecheck { agent_id: AgentId },
@@ -2142,8 +2084,8 @@ pub enum Effect {
     },
     /// Clear the auth copy feedback after a delay if its generation is still current.
     ScheduleClearAuthCopyFeedback { generation: u64 },
-    /// Register the current session in the active-sessions crash-recovery
-    /// registry (`~/.grok/active_sessions.json`).
+    /// Register the current session in the active-session registry
+    /// (`~/.grok/active_sessions.json`).
     RegisterActiveSession {
         session_id: acp::SessionId,
         cwd: String,
@@ -2723,29 +2665,6 @@ pub enum TaskResult {
         /// Forwarded from `Effect::SwitchModel.prev_model_id` for rollback on `IncompatibleAgent`.
         prev_model_id: Option<acp::ModelId>,
     },
-    /// Workshop: picker rows/rails loaded.
-    WorkshopPickerLoaded(workshop_auth::PickerSnapshot),
-    /// Workshop: the shell re-read its model list after a placeholder rename; nothing to apply.
-    WorkshopModelsReloaded,
-    /// Workshop: a connect flow finished (`Ok(secret backend)` or an error message).
-    WorkshopConnectDone {
-        provider_id: String,
-        result: Result<&'static str, String>,
-    },
-    /// Workshop: a vendor CLI's official installer finished (`Ok`) or failed with a plain reason
-    /// that names the log.
-    WorkshopRailInstallDone {
-        rail: workshop_detect::Rail,
-        result: Result<(), String>,
-    },
-    /// Workshop: the background voice setup ended (its outcome is in the shared status).
-    WorkshopVoicePrefetchDone,
-    /// Workshop: the terminal login command exited; the rails must be re-probed unless the user
-    /// cancelled it (Ctrl+C), which leaves them as they were.
-    WorkshopLoginTerminalDone {
-        rail: workshop_detect::Rail,
-        exit: workshop_detect::process::InteractiveExit,
-    },
     /// Changelog fetched from CDN (both formats).
     ChangelogFetched {
         markdown: Option<String>,
@@ -3092,16 +3011,6 @@ pub enum TaskResult {
     BundleStatusFailed {
         error: String,
     },
-    /// Catalog entry content fetched successfully.
-    CatalogEntryReady {
-        kind: String,
-        name: String,
-        content: String,
-    },
-    /// Catalog entry fetch failed.
-    CatalogEntryFailed {
-        error: String,
-    },
     /// Side question (/btw) response received.
     BtwResponse {
         agent_id: AgentId,
@@ -3153,6 +3062,11 @@ pub enum TaskResult {
     CheckSubscriptionComplete {
         verify: Option<u64>,
         meta: Option<serde_json::Value>,
+    },
+    /// `None` is unresolved or a failed RPC; the next launch asks again.
+    TeamCapabilityHydrated {
+        identity: crate::app::app_view::AuthIdentity,
+        can_administer_team: Option<bool>,
     },
     /// Result of the credit-limit subscription re-check.
     /// If the tier changed the stashed prompt is retried; otherwise the upsell is shown.
@@ -3292,6 +3206,11 @@ pub enum TaskResult {
     SettingPersistFailedBestEffort {
         key: crate::settings::SettingKey,
         error: String,
+    },
+    /// One [`Effect::PersistFeatureOverride`] write finished; `Ok` carries what it left on disk.
+    FeatureOverridePersisted {
+        feature: xai_grok_shell::agent::config::Feature,
+        result: Result<Option<bool>, String>,
     },
     /// Off-thread clipboard attachment probe finished (see [`Effect::ProbeClipboardAttachment`]); dispatch attaches the chip.
     ClipboardAttachmentProbed {

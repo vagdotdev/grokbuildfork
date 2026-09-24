@@ -188,7 +188,7 @@ use crate::session::swap_policy::{
     DeferReason, SessionSnapshot, SwapAction, SwapDecision, SwapPolicy, SwapTrigger,
     record_swap_decision, record_toolset_swap,
 };
-use crate::session::tool_config::resolve_session_toolset;
+use crate::session::tool_config::resolve_session_toolset_for_host;
 use crate::session::{WorkspaceMcpBinding, WorkspaceSession, WorkspaceShared};
 use crate::telemetry::dc_log;
 use crate::workspace_ops::{
@@ -429,6 +429,7 @@ fn acknowledged_notify_channel(_enabled: bool) -> Option<AcknowledgedNotifyChann
     None
 }
 /// Client-fs resolution base: request paths resolve against `base`, and `canonical` is its canonicalized form used for containment checks.
+#[derive(Debug)]
 pub(crate) struct ClientFsBase {
     pub(crate) base: PathBuf,
     pub(crate) canonical: PathBuf,
@@ -642,6 +643,7 @@ impl WorkspaceHandle {
             skills_config: config.skills_config,
             plugin_discovery_config: config.plugin_discovery_config,
             hub_handle: tokio::sync::Mutex::new(None),
+            queue_stats_sampler: parking_lot::Mutex::new(None),
             hub_tools_snapshot: arc_swap::ArcSwap::new(Arc::new(vec![])),
             hub_config: config.hub_config,
             auth_provider: config.auth_provider,
@@ -834,7 +836,7 @@ impl WorkspaceHandle {
         let (effective, toolset, terminal_backend) = {
             let _span = LocalSpan::enter_with_local_parent("tool_server.toolset_resolve")
                 .with_property(|| ("session_id", session_id.clone()));
-            resolve_session_toolset(
+            resolve_session_toolset_for_host(
                 config,
                 capability,
                 &mcp_snapshot,
@@ -848,6 +850,7 @@ impl WorkspaceHandle {
                 viewer_ctx.clone(),
                 self.shared
                     .compose_session_notification_handle(system_notify_handle),
+                self.shared.host_kind,
             )
         }?;
         let session = Arc::new(WorkspaceSession::new(
@@ -1018,6 +1021,8 @@ impl WorkspaceHandle {
             .shared
             .compose_session_notification_handle(session.system_notify_handle());
         let terminal_backend = session.terminal_backend().clone();
+        let truncation =
+            crate::session::tool_config::truncation_config_for_host(self.shared.host_kind);
         let resolve_result = tokio::task::spawn_blocking(move || {
             crate::session::tool_config::resolve_session_toolset_rebuild(
                 new_config,
@@ -1033,6 +1038,7 @@ impl WorkspaceHandle {
                 viewer_ctx,
                 notification_handle,
                 terminal_backend,
+                truncation,
             )
         })
         .await
@@ -1700,22 +1706,31 @@ impl WorkspaceHandle {
         &self,
         session_id: Option<&str>,
     ) -> WorkspaceResult<ClientFsBase> {
+        let session = session_id.and_then(|id| self.session(id));
+        self.client_fs_base_for_session(session_id, session.as_ref())
+            .await
+    }
+    /// [`Self::client_fs_base`] for a session the caller already holds.
+    /// The cwd comes from that `Arc`, not from a map lookup after the await, so a session evicted mid-call cannot silently rebase the op onto the root.
+    pub(crate) async fn client_fs_base_for_session(
+        &self,
+        session_id: Option<&str>,
+        session: Option<&Arc<WorkspaceSession>>,
+    ) -> WorkspaceResult<ClientFsBase> {
         let root = self.root_cwd()?;
         let canonical_root = self.canonical_root().await?;
-        let suffix = session_id
-            .and_then(|id| self.session(id))
-            .and_then(|session| {
-                let cwd = session.cwd();
-                cwd.strip_prefix(&root)
-                    .or_else(|_| cwd.strip_prefix(&canonical_root))
-                    .ok()
-                    .filter(|s| {
-                        !s.as_os_str().is_empty()
-                            && s.components()
-                                .all(|c| matches!(c, std::path::Component::Normal(_)))
-                    })
-                    .map(std::path::Path::to_path_buf)
-            });
+        let suffix = session.and_then(|session| {
+            let cwd = session.cwd();
+            cwd.strip_prefix(&root)
+                .or_else(|_| cwd.strip_prefix(&canonical_root))
+                .ok()
+                .filter(|s| {
+                    !s.as_os_str().is_empty()
+                        && s.components()
+                            .all(|c| matches!(c, std::path::Component::Normal(_)))
+                })
+                .map(std::path::Path::to_path_buf)
+        });
         let root_base = || ClientFsBase {
             base: root.clone(),
             canonical: canonical_root.clone(),
@@ -2952,7 +2967,7 @@ impl WorkspaceHandle {
         let mcp_snapshot = self.shared.mcp_tools_snapshot.load_full();
         let hub_snapshot = self.shared.hub_tools_snapshot.load_full();
         let inherited_viewer_ctx = parent.viewer_ctx().cloned();
-        let (effective, toolset, terminal_backend) = resolve_session_toolset(
+        let (effective, toolset, terminal_backend) = resolve_session_toolset_for_host(
             baseline,
             config.capability_mode,
             &mcp_snapshot,
@@ -2965,6 +2980,7 @@ impl WorkspaceHandle {
             self.shared.lsp.clone(),
             inherited_viewer_ctx.clone(),
             self.shared.compose_session_notification_handle(None),
+            self.shared.host_kind,
         )?;
         let (hunk_event_tx, _hunk_event_rx) = tokio::sync::mpsc::unbounded_channel();
         let hunk_cancel = tokio_util::sync::CancellationToken::new();
@@ -3127,6 +3143,7 @@ impl WorkspaceHandle {
         session.shutdown_terminal_backend();
         session.shutdown_browser_service();
         session.cancel_hunk_tracker();
+        session.staged_uploads().abandon_all();
         self.shared.tool_defs_last_emit.remove(session_id);
     }
     /// Re-resolve every session's toolset against `new_snapshot` and emit one `WorkspaceEvent::ToolsChanged` per session.
@@ -3687,7 +3704,7 @@ impl WorkspaceHandle {
             let session_env = Arc::new(std::collections::HashMap::new());
             let mcp_snapshot = self.shared.mcp_tools_snapshot.load_full();
             let hub_snapshot = self.shared.hub_tools_snapshot.load_full();
-            let (_, template_toolset, _template_backend) = resolve_session_toolset(
+            let (_, template_toolset, _template_backend) = resolve_session_toolset_for_host(
                 self.shared.default_tool_config.clone(),
                 crate::capability::CapabilityMode::All,
                 &mcp_snapshot,
@@ -3700,6 +3717,7 @@ impl WorkspaceHandle {
                 self.shared.lsp.clone(),
                 None,
                 None,
+                self.shared.host_kind,
             )?;
             let mut handlers = build_session_routed_handlers(&template_toolset, self);
             let tool_names: Vec<String> = handlers
@@ -4053,6 +4071,9 @@ impl WorkspaceHandle {
     }
     /// Shutdown the server connection, if active.
     pub async fn shutdown_hub(&self) {
+        if let Some(sampler) = self.shared.queue_stats_sampler.lock().take() {
+            sampler.abort();
+        }
         let handle = self.shared.hub_handle.lock().await.take();
         if let Some(h) = handle {
             h.shutdown().await;
@@ -4336,6 +4357,13 @@ pub async fn connect_local_workspace(
         time_to_ready_started.elapsed().as_secs_f64(),
     );
     connect_result?;
+    if let Some(upload_queue) = &ws_handle.shared.upload_queue {
+        *ws_handle.shared.queue_stats_sampler.lock() =
+            Some(crate::upload::spawn_queue_stats_sampler(
+                upload_queue.clone(),
+                std::time::Duration::from_secs(15),
+            ));
+    }
     Ok(ws_handle)
 }
 /// Everything [`connect_local_workspace`] builds short of the hub connection: the catalog, session
@@ -4370,9 +4398,8 @@ pub(crate) async fn build_local_workspace(
             workspace_home.display()
         ))
     })?;
-    // Workshop (gate:no-xai, Gate 3): the compiled default is the neutral loopback placeholder.
     let api_base_url = std::env::var("GROK_CLI_CHAT_PROXY_BASE_URL")
-        .unwrap_or_else(|_| xai_grok_env::PROD_CLI_CHAT_PROXY_BASE_URL.to_string());
+        .unwrap_or_else(|_| "https://cli-chat-proxy.grok.com/v1".to_string());
     let data_collection_disabled =
         std::env::var("GROK_WORKSPACE_DATA_COLLECTION_DISABLED").as_deref() != Ok("false");
     let mut factory = host_kind.session_context_factory(auth.clone(), api_base_url.clone());
@@ -4460,10 +4487,6 @@ pub(crate) async fn build_local_workspace(
     }
     if let Some(upload_queue) = &upload_queue {
         upload_queue.cleanup_orphans(xai_file_utils::queue::DEFAULT_MAX_AGE);
-        crate::upload::spawn_queue_stats_sampler(
-            upload_queue.clone(),
-            std::time::Duration::from_secs(15),
-        );
     }
     if crate::session::tool_config::tool_state_enabled() {
         let home = workspace_home.clone();
@@ -4487,6 +4510,7 @@ pub(crate) async fn build_local_workspace(
         identity,
     )
     .map_err(|e| WorkspaceError::HubError(format!("failed to create workspace: {e}")))?;
+    let _maintenance = crate::file_system::client_fs::spawn_staged_upload_maintenance(&ws_handle);
     Ok(ws_handle)
 }
 /// Resolve `$GROK_WORKSPACE_HOME`, the workspace-owned on-disk state root. `<grok_home>/workspace`, where `<grok_home>` honours `$GROK_HOME` and otherwise falls back to `~/.grok` (see [`xai_grok_config::grok_home`]).

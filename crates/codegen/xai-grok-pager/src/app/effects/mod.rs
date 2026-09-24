@@ -188,6 +188,11 @@ pub(crate) fn execute(
             let tx = acp_tx.clone();
             tasks.spawn(async move { send_check_subscription(&tx, verify).await });
         }
+        Effect::HydrateTeamCapability { identity } => {
+            let tx = acp_tx.clone();
+            tasks
+                .spawn(async move { send_hydrate_team_capability(&tx, identity).await });
+        }
         Effect::CreditLimitRecheck { agent_id } => {
             let tx = acp_tx.clone();
             tasks.spawn(async move { send_credit_limit_recheck(&tx, agent_id).await });
@@ -214,7 +219,7 @@ pub(crate) fn execute(
             let abort_handle = tasks
                 .spawn(async move {
                     send_logout(&tx).await;
-                    send_authenticate(&tx, request_seq, method_id, use_oauth, false, false)
+                    send_authenticate(&tx, request_seq, method_id, use_oauth, false)
                         .await
                 });
             meta.auth_abort_handle = Some((request_seq, abort_handle));
@@ -2312,12 +2317,27 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::PersistFeatureOverride { feature, saved } => {
+            tasks
+                .spawn(async move {
+                    let result = xai_grok_shell::util::config::set_feature_override(
+                            feature,
+                            saved,
+                        )
+                        .await
+                        .map(|()| saved)
+                        .map_err(|e| e.to_string());
+                    TaskResult::FeatureOverridePersisted {
+                        feature,
+                        result,
+                    }
+                });
+        }
         Effect::Authenticate {
             request_seq,
             method_id,
             use_oauth,
             force_interactive,
-            xai_opt_in,
         } => {
             let tx = acp_tx.clone();
             let abort_handle = tasks
@@ -2328,132 +2348,10 @@ pub(crate) fn execute(
                             method_id,
                             use_oauth,
                             force_interactive,
-                            xai_opt_in,
                         )
                         .await
                 });
             meta.auth_abort_handle = Some((request_seq, abort_handle));
-        }
-        Effect::WorkshopLoadPicker => {
-            tasks
-                .spawn(async move {
-                    let snap = crate::app::workshop::load_picker_snapshot().await;
-                    TaskResult::WorkshopPickerLoaded(snap)
-                });
-        }
-        Effect::WorkshopRefreshCatalogs { force, engine } => {
-            tasks
-                .spawn(async move {
-                    let snap = crate::app::workshop::refresh_picker_snapshot(engine, force).await;
-                    TaskResult::WorkshopPickerLoaded(snap)
-                });
-        }
-        Effect::WorkshopReloadModels => {
-            let tx = acp_tx.clone();
-            tasks.spawn(async move {
-                let reload = acp::ExtRequest::new(
-                    "x.ai/internal/reload_models",
-                    serde_json::value::to_raw_value(&serde_json::json!({}))
-                        .expect("serialize reload params")
-                        .into(),
-                );
-                if let Err(e) = acp_send(reload, &tx).await {
-                    tracing::warn!(error = %e, "workshop: model list reload failed");
-                }
-                TaskResult::WorkshopModelsReloaded
-            });
-        }
-        Effect::WorkshopRefreshRailModels => {
-            tasks
-                .spawn(async move {
-                    let snap = crate::app::workshop::refresh_rail_models_snapshot().await;
-                    TaskResult::WorkshopPickerLoaded(snap)
-                });
-        }
-        Effect::WorkshopActivateModel {
-            request_seq,
-            model_id,
-            session,
-        } => {
-            let tx = acp_tx.clone();
-            let abort_handle = tasks
-                .spawn(async move {
-                    // 1. Re-read config.toml into the shell's model list (the same path the config
-                    //    hot-reload watcher uses).
-                    let reload = acp::ExtRequest::new(
-                        "x.ai/internal/reload_models",
-                        serde_json::value::to_raw_value(&serde_json::json!({}))
-                            .expect("serialize reload params")
-                            .into(),
-                    );
-                    if let Err(e) = acp_send(reload, &tx).await {
-                        return TaskResult::AuthFailed {
-                            request_seq,
-                            error: format!("model reload failed: {e}"),
-                        };
-                    }
-                    // 2. The new entry carries its own credential (or the anonymous sentinel), so the
-                    //    non-interactive method is now accepted.
-                    let auth = send_authenticate(
-                        &tx,
-                        request_seq,
-                        acp::AuthMethodId::new(
-                            xai_grok_shell::agent::auth_method::XAI_API_KEY_METHOD_ID,
-                        ),
-                        false,
-                        false,
-                        false,
-                    )
-                    .await;
-                    if let TaskResult::AuthFailed { .. } = &auth {
-                        return auth;
-                    }
-                    // 3. Switch the session the picker was opened from, if any.
-                    if let Some((_, session_id)) = session {
-                        let req = acp::SetSessionModelRequest::new(
-                            session_id,
-                            acp::ModelId::new(model_id.clone()),
-                        );
-                        if let Err(e) = acp_send(req, &tx).await {
-                            tracing::warn!(error = %e, model_id, "workshop: session model switch failed after activation");
-                        }
-                    }
-                    auth
-                });
-            meta.auth_abort_handle = Some((request_seq, abort_handle));
-        }
-        Effect::WorkshopOpenRouterSignIn => {
-            tasks
-                .spawn(async move {
-                    let result = crate::app::workshop::openrouter_sign_in().await;
-                    TaskResult::WorkshopConnectDone {
-                        provider_id: "openrouter".into(),
-                        result,
-                    }
-                });
-        }
-        Effect::WorkshopInstallRail { rail, progress } => {
-            tasks.spawn(async move {
-                let result = tokio::task::spawn_blocking(move || {
-                    crate::app::workshop::run_rail_installer(rail, progress)
-                })
-                .await
-                .unwrap_or_else(|e| Err(format!("installer task: {e}")));
-                TaskResult::WorkshopRailInstallDone { rail, result }
-            });
-        }
-        Effect::WorkshopVoicePrefetch {
-            shared,
-            delay,
-            home,
-            voice_dir,
-            tier,
-        } => {
-            tasks.spawn(async move {
-                tokio::time::sleep(delay).await;
-                workshop_voice::prefetch::run(home, voice_dir, tier, shared).await;
-                TaskResult::WorkshopVoicePrefetchDone
-            });
         }
         Effect::PollAuthUrl { request_seq } => {
             let tx = acp_tx.clone();
@@ -4675,61 +4573,6 @@ pub(crate) fn execute(
                 session_id,
                 vec![(text, interjection_id, blocks)],
             );
-        }
-        Effect::FetchCatalogEntry { kind, name } => {
-            let tx = acp_tx.clone();
-            tasks
-                .spawn(async move {
-                    let params = serde_json::json!({ "kind": kind, "name": name });
-                    let request = acp::ExtRequest::new(
-                        "x.ai/bundle/entry/get",
-                        serde_json::value::to_raw_value(&params)
-                            .expect("serialize bundle/entry/get params")
-                            .into(),
-                    );
-                    match acp_send(request, &tx).await {
-                        Ok(resp) => {
-                            let wrapper: serde_json::Value = serde_json::from_str(
-                                    resp.0.get(),
-                                )
-                                .unwrap_or_default();
-                            if let Some(err) = wrapper.get("error") {
-                                let msg = err
-                                    .as_str()
-                                    .map(String::from)
-                                    .unwrap_or_else(|| "unknown error".to_string());
-                                return TaskResult::CatalogEntryFailed {
-                                    error: msg,
-                                };
-                            }
-                            let inner = wrapper.get("result").unwrap_or(&wrapper);
-                            match serde_json::from_value::<
-                                super::bundle::EntryGetResult,
-                            >(inner.clone()) {
-                                Ok(r) => {
-                                    TaskResult::CatalogEntryReady {
-                                        kind: r.kind,
-                                        name: r.name,
-                                        content: r.content,
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::debug!("failed to parse catalog entry response: {e}");
-                                    TaskResult::CatalogEntryFailed {
-                                        error: "couldn't load entry".to_string(),
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            TaskResult::CatalogEntryFailed {
-                                error: sanitize_user_error(
-                                    &format!("couldn't load entry: {e}"),
-                                ),
-                            }
-                        }
-                    }
-                });
         }
         Effect::FetchBundleStatus => {
             let tx = acp_tx.clone();

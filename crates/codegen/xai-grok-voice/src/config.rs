@@ -5,36 +5,12 @@ use crate::error::VoiceError;
 /// Default STT capture rate (Hz). Shared with the `__mic-capture` helper's argv default so parent and child agree when `--rate` is omitted.
 pub const DEFAULT_SAMPLE_RATE: u32 = 16_000;
 
-/// Which speech-to-text engine `/voice` talks to.
-///
-/// Workshop overlay: the default is the local `voice-engine` helper (whisper.cpp, no account, no
-/// network after install). The inherited xAI WebSocket client is opt-in: `provider = "xai"` plus an
-/// explicit `api_base` and the user's own key; a normal install never constructs it.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum VoiceProvider {
-    #[default]
-    Local,
-    Xai,
-}
-
-/// `[voice]` config. For `provider = "xai"`, prefer an https `api_base` (same shape as chat);
-/// [`Self::stt_ws_url`] derives `wss://` and, when `[voice].api_base` is unset, inherits
-/// `[endpoints].xai_api_base_url` so enterprise proxies need no second knob. The local provider
-/// ignores `api_base`.
+/// Prefer https `api_base` (same shape as chat). [`Self::stt_ws_url`] derives `wss://`. When `[voice].api_base` is unset,
+/// inherits `[endpoints].xai_api_base_url` so enterprise proxies need no second knob.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct VoiceConfig {
-    pub provider: VoiceProvider,
-    /// Workshop overlay: force a Whisper model tier (`turbo` / `small` / `base`). Unset = chosen
-    /// per machine (voice-spec §9.6). Undocumented on purpose.
-    pub model: Option<String>,
-    /// Workshop overlay: path of the `voice-engine` helper; unset = beside the running binary.
-    pub engine_path: Option<String>,
-    /// Workshop overlay: fetch the helper and this machine's speech model in the background so
-    /// `/voice` is ready when first pressed (default on; `WORKSHOP_VOICE_AUTO=0` also turns it off).
-    pub auto_download: bool,
-    /// HTTPS API root (or bare host) for `provider = "xai"`. Empty for a normal launch.
+    /// HTTPS API root (or bare host).
     /// Bases may end in `/v1` or `/xai/v1`; the default STT path de-duplicates a leading `v1/` so both become `…/v1/stt`.
     pub api_base: String,
     pub stt_ws_path: String,
@@ -54,12 +30,7 @@ pub struct VoiceConfig {
 impl Default for VoiceConfig {
     fn default() -> Self {
         Self {
-            provider: VoiceProvider::Local,
-            model: None,
-            engine_path: None,
-            auto_download: true,
-            // No hosted endpoint by default (gate:no-xai): the xAI provider requires an explicit base.
-            api_base: String::new(),
+            api_base: "https://api.x.ai".into(),
             stt_ws_path: "/v1/stt".into(),
             language: "en".into(),
             sample_rate: DEFAULT_SAMPLE_RATE,
@@ -77,8 +48,7 @@ impl VoiceConfig {
         ws_url(&self.api_base, &self.stt_ws_path)
     }
 
-    /// `api_base` for `provider = "xai"`: non-empty `[voice].api_base`, else `[endpoints].xai_api_base_url` from `root`,
-    /// else `resolved_endpoints_base`. The local provider keeps `api_base` empty: no hosted endpoint is ever derived.
+    /// `api_base`: non-empty `[voice].api_base`, else `[endpoints].xai_api_base_url` from `root`, else `resolved_endpoints_base`, else the default.
     ///
     /// `resolved_endpoints_base` carries the caller's env/CLI overrides; it ranks below the raw table so config keeps beating env (shell precedence).
     pub fn from_config_table(root: &toml::Table, resolved_endpoints_base: Option<&str>) -> Self {
@@ -87,26 +57,22 @@ impl VoiceConfig {
             .and_then(|t| toml::Value::Table(t.clone()).try_into().ok())
             .unwrap_or_default();
 
-        // Read `[voice].api_base` from the raw table, not `cfg`: serde default makes "unset" and an explicit value indistinguishable
-        let explicit = non_empty_str(
+        // Read `[voice].api_base` from the raw table, not `cfg`: serde default makes "unset" and an explicit `https://api.x.ai` indistinguishable
+        cfg.api_base = non_empty_str(
             voice_table
                 .and_then(|t| t.get("api_base"))
                 .and_then(|v| v.as_str()),
-        );
-        cfg.api_base = match cfg.provider {
-            VoiceProvider::Xai => explicit
-                .or_else(|| {
-                    non_empty_str(
-                        root.get("endpoints")
-                            .and_then(|e| e.get("xai_api_base_url"))
-                            .and_then(|v| v.as_str()),
-                    )
-                })
-                .or_else(|| non_empty_str(resolved_endpoints_base))
-                .map(|base| base.trim_end_matches('/').to_owned())
-                .unwrap_or_default(),
-            VoiceProvider::Local => String::new(),
-        };
+        )
+        .or_else(|| {
+            non_empty_str(
+                root.get("endpoints")
+                    .and_then(|e| e.get("xai_api_base_url"))
+                    .and_then(|v| v.as_str()),
+            )
+        })
+        .or_else(|| non_empty_str(resolved_endpoints_base))
+        .map(|base| base.trim_end_matches('/').to_owned())
+        .unwrap_or_else(|| Self::default().api_base);
         cfg
     }
 }
@@ -126,13 +92,6 @@ fn strip_scheme<'a>(s: &'a str, scheme: &str) -> Option<&'a str> {
 fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
     let base = api_base.trim().trim_end_matches('/');
     let path = path.trim().trim_start_matches('/');
-    if base.is_empty() {
-        return Err(VoiceError::Config(
-            "voice provider \"xai\" needs [voice].api_base (or [endpoints].xai_api_base_url); \
-             Workshop sets no hosted speech endpoint by default"
-                .into(),
-        ));
-    }
     if strip_scheme(base, "http://").is_some() || strip_scheme(base, "ws://").is_some() {
         return Err(VoiceError::Config(format!(
             "insecure voice api_base {api_base:?}: voice requires a TLS endpoint \
@@ -155,59 +114,42 @@ fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
 mod tests {
     use super::*;
 
-    /// Workshop overlay (gate:no-xai): a default launch has no hosted speech endpoint at all.
     #[test]
-    fn default_is_local_with_no_hosted_endpoint() {
-        let cfg = VoiceConfig::default();
-        assert_eq!(cfg.provider, VoiceProvider::Local);
-        assert!(cfg.api_base.is_empty());
-        assert!(cfg.model.is_none());
-        assert!(matches!(cfg.stt_ws_url(), Err(VoiceError::Config(_))));
-        let cfg =
-            VoiceConfig::from_config_table(&toml::Table::new(), Some("https://env.example.com"));
-        assert_eq!(cfg.provider, VoiceProvider::Local);
-        assert!(
-            cfg.api_base.is_empty(),
-            "local ignores every endpoint fallback"
+    fn default_stt_ws_uses_wss() {
+        assert_eq!(
+            VoiceConfig::default().stt_ws_url().unwrap(),
+            "wss://api.x.ai/v1/stt"
         );
-    }
-
-    fn xai(base: &str) -> VoiceConfig {
-        VoiceConfig {
-            provider: VoiceProvider::Xai,
-            api_base: base.into(),
-            ..VoiceConfig::default()
-        }
     }
 
     #[test]
     fn scheme_less_and_wss_bases() {
-        for base in [
-            "stt.example.com",
-            "wss://stt.example.com",
-            "HTTPS://stt.example.com",
-        ] {
-            assert_eq!(
-                xai(base).stt_ws_url().unwrap(),
-                "wss://stt.example.com/v1/stt"
-            );
+        for base in ["api.x.ai", "wss://api.x.ai", "HTTPS://api.x.ai"] {
+            let cfg = VoiceConfig {
+                api_base: base.into(),
+                ..VoiceConfig::default()
+            };
+            assert_eq!(cfg.stt_ws_url().unwrap(), "wss://api.x.ai/v1/stt");
         }
     }
 
     #[test]
     fn v1_base_dedupes_default_path() {
-        assert_eq!(
-            xai("https://proxy.example.com/v1").stt_ws_url().unwrap(),
-            "wss://proxy.example.com/v1/stt"
-        );
+        let cfg = VoiceConfig {
+            api_base: "https://proxy.example.com/v1".into(),
+            ..VoiceConfig::default()
+        };
+        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://proxy.example.com/v1/stt");
     }
 
     #[test]
     fn xai_v1_base_preserves_prefix() {
+        let cfg = VoiceConfig {
+            api_base: "https://proxy.example.com/xai/v1".into(),
+            ..VoiceConfig::default()
+        };
         assert_eq!(
-            xai("https://proxy.example.com/xai/v1")
-                .stt_ws_url()
-                .unwrap(),
+            cfg.stt_ws_url().unwrap(),
             "wss://proxy.example.com/xai/v1/stt"
         );
     }
@@ -220,23 +162,24 @@ mod tests {
             "HTTP://localhost:8080",
             "Ws://localhost:8080",
         ] {
-            assert!(matches!(xai(base).stt_ws_url(), Err(VoiceError::Config(_))));
+            let cfg = VoiceConfig {
+                api_base: base.into(),
+                ..VoiceConfig::default()
+            };
+            assert!(matches!(cfg.stt_ws_url(), Err(VoiceError::Config(_))));
         }
     }
 
     #[test]
-    fn xai_provider_inherits_endpoints_when_voice_api_base_unset() {
+    fn inherits_endpoints_when_voice_api_base_unset() {
         let table: toml::Table = toml::from_str(
             r#"
 [endpoints]
 xai_api_base_url = "https://proxy.example.com/xai/v1"
-[voice]
-provider = "xai"
 "#,
         )
         .unwrap();
         let cfg = VoiceConfig::from_config_table(&table, None);
-        assert_eq!(cfg.provider, VoiceProvider::Xai);
         assert_eq!(cfg.api_base, "https://proxy.example.com/xai/v1");
         assert_eq!(
             cfg.stt_ws_url().unwrap(),
@@ -245,30 +188,12 @@ provider = "xai"
     }
 
     #[test]
-    fn local_provider_never_inherits_endpoints() {
+    fn empty_voice_api_base_still_inherits_endpoints() {
         let table: toml::Table = toml::from_str(
             r#"
 [endpoints]
 xai_api_base_url = "https://proxy.example.com/xai/v1"
 [voice]
-language = "fr"
-"#,
-        )
-        .unwrap();
-        let cfg = VoiceConfig::from_config_table(&table, Some("https://env.example.com"));
-        assert_eq!(cfg.provider, VoiceProvider::Local);
-        assert!(cfg.api_base.is_empty());
-        assert_eq!(cfg.language, "fr");
-    }
-
-    #[test]
-    fn xai_empty_voice_api_base_still_inherits_endpoints() {
-        let table: toml::Table = toml::from_str(
-            r#"
-[endpoints]
-xai_api_base_url = "https://proxy.example.com/xai/v1"
-[voice]
-provider = "xai"
 api_base = "  "
 language = "fr"
 "#,
@@ -280,30 +205,31 @@ language = "fr"
     }
 
     #[test]
-    fn xai_without_any_base_has_no_endpoint() {
+    fn whitespace_voice_api_base_without_endpoints_uses_default() {
         let table: toml::Table = toml::from_str(
             r#"
 [voice]
-provider = "xai"
 api_base = "  "
 "#,
         )
         .unwrap();
         let cfg = VoiceConfig::from_config_table(&table, None);
-        assert!(cfg.api_base.is_empty());
-        assert!(matches!(cfg.stt_ws_url(), Err(VoiceError::Config(_))));
+        assert_eq!(cfg.api_base, VoiceConfig::default().api_base);
+        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://api.x.ai/v1/stt");
     }
 
     #[test]
-    fn xai_resolved_endpoints_base_used_when_table_has_none() {
-        let table: toml::Table = toml::from_str("[voice]\nprovider = \"xai\"\n").unwrap();
-        let cfg = VoiceConfig::from_config_table(&table, Some("https://proxy.example.com/v1/"));
+    fn resolved_endpoints_base_used_when_table_has_none() {
+        let cfg = VoiceConfig::from_config_table(
+            &toml::Table::new(),
+            Some("https://proxy.example.com/v1/"),
+        );
         assert_eq!(cfg.api_base, "https://proxy.example.com/v1");
         assert_eq!(cfg.stt_ws_url().unwrap(), "wss://proxy.example.com/v1/stt");
 
-        // Whitespace-only resolved base leaves the endpoint empty.
-        let cfg = VoiceConfig::from_config_table(&table, Some("  "));
-        assert!(cfg.api_base.is_empty());
+        // Whitespace-only resolved base falls through to the default.
+        let cfg = VoiceConfig::from_config_table(&toml::Table::new(), Some("  "));
+        assert_eq!(cfg.api_base, VoiceConfig::default().api_base);
     }
 
     /// config.toml beats the env/CLI fallback, matching the shell's endpoints precedence.
@@ -313,8 +239,6 @@ api_base = "  "
             r#"
 [endpoints]
 xai_api_base_url = "https://config.example.com"
-[voice]
-provider = "xai"
 "#,
         )
         .unwrap();
@@ -329,20 +253,19 @@ provider = "xai"
 [endpoints]
 xai_api_base_url = "https://proxy.example.com/xai/v1"
 [voice]
-provider = "xai"
-api_base = "https://stt.example.com"
+api_base = "https://api.x.ai"
 language = "es"
 "#,
         )
         .unwrap();
         let cfg = VoiceConfig::from_config_table(&table, None);
-        assert_eq!(cfg.api_base, "https://stt.example.com");
+        assert_eq!(cfg.api_base, "https://api.x.ai");
         assert_eq!(cfg.language, "es");
-        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://stt.example.com/v1/stt");
+        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://api.x.ai/v1/stt");
     }
 
     #[test]
-    fn workshop_keys_parse_and_unknown_or_identity_fields_are_ignored() {
+    fn ignores_unknown_and_identity_fields() {
         let table: toml::Table = toml::from_str(
             r#"
 [voice]
@@ -350,25 +273,12 @@ enabled = false
 client_identifier = "spoofed"
 user_agent = "malicious/9.9"
 language = "es"
-model = "small"
-engine_path = "/opt/workshop/voice-engine"
-auto_download = false
 "#,
         )
         .unwrap();
         let cfg = VoiceConfig::from_config_table(&table, None);
         assert_eq!(cfg.language, "es");
-        assert_eq!(cfg.model.as_deref(), Some("small"));
-        assert_eq!(
-            cfg.engine_path.as_deref(),
-            Some("/opt/workshop/voice-engine")
-        );
-        assert!(!cfg.auto_download);
         assert!(cfg.client_identifier.is_empty());
         assert!(cfg.user_agent.is_empty());
-        assert!(
-            VoiceConfig::default().auto_download,
-            "voice gets ready in the background unless turned off"
-        );
     }
 }

@@ -31,18 +31,9 @@ fn main() {
         .filter(|s| s.len() == 12)
         .unwrap_or_else(|| "unknown".to_string());
 
-    // Workshop: the stamped release version, else the release this source build is built from
-    // plus `-dev` (the nearest `v*` tag) — the same rule as xai-grok-version, never the upstream
-    // crate version.
-    println!("cargo:rerun-if-env-changed=WORKSHOP_VERSION");
     let version = std::env::var("GROK_VERSION")
-        .or_else(|_| std::env::var("WORKSHOP_VERSION"))
-        .ok()
-        .or_else(|| {
-            git_stdout(&["describe", "--tags", "--match", "v[0-9]*", "--abbrev=0"])
-                .map(|tag| format!("{}-dev", tag.trim_start_matches('v')))
-        })
-        .unwrap_or_else(|| "0.0.0-dev".to_string());
+        .or_else(|_| std::env::var("CARGO_PKG_VERSION"))
+        .unwrap_or_else(|_| "0.0.0".to_string());
 
     println!("cargo:rustc-env=VERSION_WITH_COMMIT={version} ({commit})");
 

@@ -13,8 +13,9 @@ use tokio::io::AsyncWriteExt;
 use crate::cleanup_downloads::cleanup_old_downloads;
 use crate::version::{
     UpdateConfig, fetch_latest_version, get_installed_grok_version, get_latest_version,
-    is_version_cache_fresh, try_fetch_stable_pointer, write_version_cache,
+    is_stable_channel, is_version_cache_fresh, try_fetch_stable_pointer, write_version_cache,
 };
+use crate::winget::{UPGRADE_COMMAND, WINGET};
 use xai_grok_shell::util::config;
 use xai_grok_shell::util::grok_home::{grok_application, grok_home};
 pub use xai_grok_telemetry::events::CliUpdateTrigger;
@@ -30,11 +31,7 @@ pub enum UpdateRunMode {
 
 const PROMPT_UPDATE_NOW: &str = "Update now? [Y/n/d]";
 const MSG_AUTO_UPDATE_BACKGROUND: &str = "Auto-update running in background.";
-const MSG_RUN_UPDATE_MANUAL: &str = "Run `workshop update` to get the latest version.";
-/// An empty or `"stable"` channel means stable, the installer's default (`channel="${WORKSHOP_CHANNEL:-stable}"` in scripts/install.sh).
-fn is_stable_channel(channel: &str) -> bool {
-    channel.is_empty() || channel == "stable"
-}
+const MSG_RUN_UPDATE_MANUAL: &str = "Run `grok update` to get the latest version.";
 
 /// Manual-install one-liner for this platform's bootstrap installer. On Unix the variable must prefix `bash` (which runs
 /// install.sh), not `curl`. In `VAR=x curl … | bash` the assignment applies to `curl` only and install.sh would fall back
@@ -47,38 +44,33 @@ fn manual_install_cmd(channel: &str) -> String {
         && channel
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
-    if cfg!(windows) {
-        // Windows is best-effort: no PowerShell installer yet.
-        return format!(
-            "download workshop-<version>-windows-x86_64.tar.gz from https://github.com/{}/releases and extract workshop.exe",
-            crate::version::RELEASE_REPO
-        );
+    if channel == "enterprise" {
+        // Enterprise has its own bootstrap script; it needs no channel env.
+        return if cfg!(windows) {
+            "irm https://x.ai/cli/enterprise-install.ps1 | iex".to_string()
+        } else {
+            "curl -fsSL https://x.ai/cli/enterprise-install.sh | bash".to_string()
+        };
     }
     if is_stable_channel(channel) || !safe {
-        return format!("curl -fsSL {} | sh", installer_script_url());
+        return if cfg!(windows) {
+            "irm https://x.ai/cli/install.ps1 | iex".to_string()
+        } else {
+            "curl -fsSL https://x.ai/cli/install.sh | bash".to_string()
+        };
     }
-    format!(
-        "curl -fsSL {} | WORKSHOP_CHANNEL='{channel}' sh",
-        installer_script_url()
-    )
-}
-
-/// `scripts/install.sh` as published on the `release-channel` branch of the release repository.
-fn installer_script_url() -> String {
-    format!("{}/install.sh", crate::version::CHANNEL_BASE_URL)
+    if cfg!(windows) {
+        format!("$env:GROK_CHANNEL='{channel}'; irm https://x.ai/cli/install.ps1 | iex")
+    } else {
+        format!("curl -fsSL https://x.ai/cli/install.sh | GROK_CHANNEL='{channel}' bash")
+    }
 }
 
 fn reinstall_hint(installer: &str, channel: &str) -> String {
     match installer {
-        "npm" => format!(
-            "{}:\n  {}",
-            crate::version::NPM_UNSUPPORTED,
-            manual_install_cmd(channel)
-        ),
-        "gh-release" => format!(
-            "Please reinstall via GitHub Releases:\n  gh release download <tag> --repo {} --pattern 'workshop-*-<platform>.tar.gz'",
-            crate::version::RELEASE_REPO
-        ),
+        "npm" => "Please reinstall via npm:\n  npm i -g @xai-official/grok".to_string(),
+        "gh-release" => "Please reinstall via GitHub Releases:\n  gh release download --repo xai-org-shared/grok-build --pattern 'grok-*' --output grok && chmod +x grok".to_string(),
+        WINGET => format!("Update with WinGet:\n  {UPGRADE_COMMAND}"),
         _ => format!("Please reinstall via:\n  {}", manual_install_cmd(channel)),
     }
 }
@@ -203,11 +195,20 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
     if status.update_available {
         if let Some(latest_version) = status.latest_version.as_deref() {
             println!(
-                "A new version of Workshop is available: {} -> {}{}",
+                "A new version of Grok Build is available: {} -> {}{}",
                 status.current_version, latest_version, channel_label
             );
         } else {
-            println!("A new version of Workshop is available.");
+            println!("A new version of Grok Build is available.");
+        }
+        if status.installer.as_deref() == Some(WINGET) {
+            let target = match status.latest_version.as_deref() {
+                Some(latest) if has_version_cap(&config::VersionPolicy::resolve()) => {
+                    crate::winget::Target::Exact(latest)
+                }
+                _ => crate::winget::Target::Newest,
+            };
+            println!("{}", crate::winget::update_available_note(target));
         }
         return Ok(());
     }
@@ -220,7 +221,7 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
         return Ok(());
     }
 
-    println!("Workshop - v{}{}", status.current_version, channel_label);
+    println!("Grok Build - v{}{}", status.current_version, channel_label);
     Ok(())
 }
 
@@ -229,7 +230,12 @@ pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
     let current_version = get_installed_grok_version();
     let current_config = config::load_config().await;
     let auto_update = current_config.cli.auto_update;
-    let channel = update_config.channel.clone();
+    // The WinGet package ships only stable releases, whatever channel is configured.
+    let channel = if installer.as_deref() == Some(WINGET) {
+        "stable".to_owned()
+    } else {
+        update_config.channel.clone()
+    };
 
     let Some(ref inst) = installer else {
         return UpdateStatus {
@@ -339,6 +345,25 @@ fn plan_for(policy: &config::VersionPolicy, latest: String) -> UpdatePlan {
     }
 }
 
+/// `winget upgrade` jumps to the newest stable release, past an org version cap, so capped orgs get the exact target.
+fn has_version_cap(policy: &config::VersionPolicy) -> bool {
+    policy.maximum.is_some() || policy.required_maximum.is_some()
+}
+
+fn skipped_update_notice(latest: &str, current: &str) -> String {
+    format!(
+        "The latest release ({latest}) is not an allowed update; \
+         keeping the current version ({current})."
+    )
+}
+
+fn unavailable_update_error(latest: &str, target: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "The required minimum version ({target}) is newer than the latest \
+         available release ({latest}). Contact your administrator."
+    )
+}
+
 async fn fetch_update_plan(
     installer: &str,
     update_config: &UpdateConfig,
@@ -355,6 +380,9 @@ async fn fetch_update_plan(
 /// Gates on the installer (via `installer_allows_downgrade`) so npm is never downgraded; the decision depends on the installer, never the caller.
 pub async fn auto_update_target(update_config: &UpdateConfig) -> Option<(&'static str, String)> {
     let installer = get_installer().await?;
+    if installer == WINGET {
+        return None;
+    }
     let current = get_installed_grok_version();
     let policy = config::VersionPolicy::resolve();
     let UpdatePlan::Install { target, .. } = fetch_update_plan(installer, update_config, &policy)
@@ -398,6 +426,9 @@ pub async fn ensure_latest_on_disk(update_config: &UpdateConfig) -> Result<Ensur
     let Some(installer) = get_installer().await else {
         return Ok(outcome);
     };
+    if installer == WINGET {
+        return Ok(outcome);
+    }
     heal_managed_install(installer).await;
     let allow_downgrade = installer_allows_downgrade(installer);
     let policy = config::VersionPolicy::resolve();
@@ -454,42 +485,72 @@ fn disk_version_for_installer(installer: &str) -> Option<String> {
     }
 }
 
+fn parse_grok_installer(value: &str) -> Option<&'static str> {
+    match value.to_ascii_lowercase().as_str() {
+        "npm" => Some("npm"),
+        "internal" => Some("internal"),
+        "gh-release" | "gh" => Some("gh-release"),
+        _ => None,
+    }
+}
+
 fn env_installer() -> Option<&'static str> {
-    // Workshop: `WORKSHOP_INSTALLER` accepts `internal` and `gh-release` only (no npm channel exists).
-    if let Ok(v) = std::env::var("WORKSHOP_INSTALLER") {
-        return match v.to_ascii_lowercase().as_str() {
-            "internal" => Some("internal"),
-            "gh-release" | "gh" => Some("gh-release"),
-            _ => None,
-        };
+    if let Ok(v) = std::env::var("GROK_INSTALLER") {
+        let installer = parse_grok_installer(&v);
+        if installer.is_none() {
+            tracing::debug!(value = %v, "unrecognized GROK_INSTALLER disables env installer hints");
+        }
+        return installer;
+    }
+    if std::env::var_os("GROK_MANAGED_BY_NPM").is_some() {
+        return Some("npm");
     }
     if std::env::var_os("GROK_MANAGED_BY_INTERNAL").is_some() {
         return Some("internal");
+    }
+    if std::env::var_os("npm_config_user_agent").is_some() {
+        return Some("npm");
     }
     None
 }
 
 pub async fn get_installer() -> Option<&'static str> {
+    // Only an explicit override outranks the WinGet location; npm hints and stale config do not.
+    if let Some(explicit) = std::env::var("GROK_INSTALLER")
+        .ok()
+        .as_deref()
+        .and_then(parse_grok_installer)
+    {
+        return Some(explicit);
+    }
+    if running_exe_matches(crate::winget::is_winget_package_path) {
+        return Some(WINGET);
+    }
     if let Some(i) = env_installer() {
         return Some(i);
     }
     let cfg = config::load_config().await;
     match cfg.cli.installer.as_deref() {
+        Some("npm") => Some("npm"),
         Some("gh-release") => Some("gh-release"),
-        // Workshop has no npm channel: a legacy `installer = "npm"` is treated as the managed install.
         Some(_) => Some("internal"),
-        // Upstream reclassified node_modules installs as npm; Workshop binaries never live there.
-        None if path_resolves_to_npm_entry() => Some("internal"),
+        // A wiped config must not reclassify an npm install as internal:
+        // that re-enables downgrades and updates npm never sees.
+        None if running_exe_matches(is_under_node_modules) => Some("npm"),
         None => Some("internal"),
     }
 }
 
-/// The npm entry links to a binary inside the package, so the running
-/// executable's real path names the installer.
-fn path_resolves_to_npm_entry() -> bool {
-    std::env::current_exe()
-        .and_then(|exe| dunce::canonicalize(&exe))
-        .is_ok_and(|exe| is_under_node_modules(&exe))
+/// True when the running executable's raw or canonical path satisfies `is_match`. Package-manager entry points (the
+/// npm bin, WinGet's `Links\grok.exe`) link into the package, so the canonical path names the installer.
+fn running_exe_matches(is_match: fn(&std::path::Path) -> bool) -> bool {
+    match std::env::current_exe() {
+        Ok(exe) => is_match(&exe) || dunce::canonicalize(&exe).is_ok_and(|real| is_match(&real)),
+        Err(e) => {
+            tracing::debug!(error = %e, "current_exe unavailable; installer path checks skipped");
+            false
+        }
+    }
 }
 
 fn is_under_node_modules(exe: &std::path::Path) -> bool {
@@ -567,6 +628,9 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
     let Some(installer) = get_installer().await else {
         return BackgroundUpdateCheck::none();
     };
+    if installer == WINGET {
+        return BackgroundUpdateCheck::none();
+    }
 
     heal_managed_install(installer).await;
 
@@ -583,16 +647,7 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
     let policy = config::VersionPolicy::resolve();
     let target_version = match fetch_update_plan(installer, update_config, &policy).await {
         Ok(UpdatePlan::Install { target, .. }) => target,
-        Ok(UpdatePlan::Skip { .. } | UpdatePlan::Unavailable { .. }) => {
-            return BackgroundUpdateCheck::none();
-        }
-        Err(e) => {
-            // Workshop: offline or a broken channel is never shown, only logged.
-            xai_grok_telemetry::unified_log::info(
-                "update.check_failed",
-                None,
-                Some(serde_json::json!({ "error": format!("{e:#}") })),
-            );
+        Ok(UpdatePlan::Skip { .. } | UpdatePlan::Unavailable { .. }) | Err(_) => {
             return BackgroundUpdateCheck::none();
         }
     };
@@ -627,11 +682,6 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
 
     // Kick off a non-blocking download so the binary is ready when the user restarts (or accepts the in-TUI restart prompt)
     let download = if disk_needs_download {
-        xai_grok_telemetry::unified_log::info(
-            "update.download_started",
-            None,
-            Some(serde_json::json!({ "from": current_version, "to": target_version })),
-        );
         match run_update_subcommand(UpdateRunMode::NonBlocking, CliUpdateTrigger::AutoBackground)
             .await
         {
@@ -684,6 +734,7 @@ pub async fn run_update_if_available(
     let auto_update = current_config.cli.auto_update.unwrap_or(true);
 
     if current_config.cli.auto_update.is_none()
+        && inst != WINGET
         && let Err(e) = config::update_config(|st| {
             if st.cli.auto_update.is_none() {
                 st.cli.auto_update = Some(true);
@@ -699,14 +750,23 @@ pub async fn run_update_if_available(
     // Don't write version.json here
     // Only cache after confirming no update is needed or after a successful install
     // Otherwise a failed background download would suppress retries for the TTL window
-    let latest_version = match fetch_update_plan(inst, update_config, &policy).await {
-        Ok(UpdatePlan::Install { target, .. }) => target,
-        Ok(UpdatePlan::Skip { .. } | UpdatePlan::Unavailable { .. }) | Err(_) => return Ok(false),
+    let (latest_release, latest_version) =
+        match fetch_update_plan(inst, update_config, &policy).await {
+            Ok(UpdatePlan::Install { latest, target }) => (latest, target),
+            Ok(UpdatePlan::Skip { .. } | UpdatePlan::Unavailable { .. }) | Err(_) => {
+                return Ok(false);
+            }
+        };
+    // The WinGet package ships only stable releases, whatever channel is configured.
+    let channel = if inst == WINGET {
+        "stable"
+    } else {
+        update_config.channel.as_str()
     };
     if !needs_update(
         &current_version,
         &latest_version,
-        &update_config.channel,
+        channel,
         installer_allows_downgrade(inst),
     )
     .unwrap_or(false)
@@ -715,11 +775,25 @@ pub async fn run_update_if_available(
         write_version_cache(&latest_version, stable_ptr.as_deref()).await;
         return Ok(false);
     }
+    if inst == WINGET {
+        eprintln!(
+            "A new version of Grok Build is available: {current_version} -> {latest_version}"
+        );
+        let target = if has_version_cap(&policy) {
+            crate::winget::Target::Exact(&latest_version)
+        } else {
+            crate::winget::Target::Newest
+        };
+        eprintln!("{}", crate::winget::update_available_note(target));
+        // A WinGet plan reads the stable pointer, so `latest_release` is the uncapped stable version.
+        write_version_cache(&latest_version, Some(latest_release.as_str())).await;
+        return Ok(false);
+    }
 
     let channel_label = format!(" [{}]", update_config.channel);
     if auto_update {
         eprintln!(
-            "A new version of Workshop is available: {} -> {}{}",
+            "A new version of Grok Build is available: {} -> {}{}",
             current_version, latest_version, channel_label
         );
         if interactive {
@@ -747,7 +821,7 @@ pub async fn run_update_if_available(
             return Ok(false);
         }
         eprintln!(
-            "A new version of Workshop is available: {} -> {}{}",
+            "A new version of Grok Build is available: {} -> {}{}",
             current_version, latest_version, channel_label
         );
         if interactive {
@@ -818,7 +892,7 @@ async fn run_update_subcommand(
             // The atomic install protocol makes mid-download kills safe
             let status = cmd.status().await?;
             if !status.success() {
-                anyhow::bail!("workshop update failed with {}", status);
+                anyhow::bail!("grok update failed with {}", status);
             }
             Ok(None)
         }
@@ -855,7 +929,7 @@ pub fn restart_grok() -> Result<()> {
     }
     cmd.env_clear();
     cmd.envs(std::env::vars_os().filter(|(k, _)| k != "GROK_AUTO_UPDATE"));
-    eprintln!("Restarting Workshop...");
+    eprintln!("Restarting Grok...");
 
     // Use exec on Unix to replace the current process, avoiding stdio issues when the parent exits
     // On Windows, fall back to spawn and exit
@@ -902,6 +976,7 @@ pub async fn run_install_script(
         )
         .map(|()| None),
         "gh-release" => install_gh_release(target).await.map(|()| None),
+        WINGET => Err(anyhow::anyhow!("this install is managed by WinGet")),
         _ => install_internal(target, update_config).await.map(Some),
     };
     // Measured before the success-only cache sweep, so the sweep cannot inflate success durations
@@ -1255,6 +1330,20 @@ async fn remove_stale_models_cache() {
     }
 }
 
+/// Remove the stale `grok-pager` symlink/binary from `~/.grok/bin/` left by
+/// older installations that shipped a separate pager binary.
+async fn remove_stale_pager(bin_dir: &std::path::Path) {
+    let name = if cfg!(windows) {
+        "grok-pager.exe"
+    } else {
+        "grok-pager"
+    };
+    let link = bin_dir.join(name);
+    if link.exists() || link.is_symlink() {
+        let _ = tokio::fs::remove_file(&link).await;
+    }
+}
+
 async fn download_plain(url: &str, dest: &std::path::Path, with_progress: bool) -> Result<()> {
     if with_progress {
         download_with_progress(url, dest).await
@@ -1263,9 +1352,6 @@ async fn download_plain(url: &str, dest: &std::path::Path, with_progress: bool) 
     }
 }
 
-// The legacy object download (zstd/gzip sidecars, plain object) now serves only the Windows
-// MinGit payload (`windows_payload.rs`); the Workshop binary itself comes from the channel manifest.
-#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Clone, Copy)]
 enum Codec {
     Zstd,
@@ -1276,7 +1362,6 @@ enum Codec {
 // A real CLI binary is ~170 MiB; 512 MiB leaves 3x headroom
 const MAX_DECODED_BYTES: u64 = 512 * 1024 * 1024;
 
-#[cfg_attr(not(windows), allow(dead_code))]
 async fn download_and_decode(
     url: &str,
     dest: &std::path::Path,
@@ -1327,7 +1412,6 @@ async fn download_and_decode(
 }
 
 /// Object-name candidates in fetch order; on Windows the `.exe` name comes first.
-#[cfg_attr(not(windows), allow(dead_code))]
 fn cli_object_candidates(object_name: &str, windows: bool) -> Vec<String> {
     if windows {
         vec![format!("{object_name}.exe"), object_name.to_string()]
@@ -1336,8 +1420,7 @@ fn cli_object_candidates(object_name: &str, windows: bool) -> Vec<String> {
     }
 }
 
-/// Download a CLI object from a base URL, preferring a `.zst`/`.gz` sidecar over the plain object.
-#[cfg_attr(not(windows), allow(dead_code))]
+/// Download a CLI object from GCS, preferring a `.zst`/`.gz` sidecar over the plain object.
 async fn download_cli_artifact_from_gcs(
     gcs_base_url: &str,
     object_name: &str,
@@ -1389,9 +1472,9 @@ pub async fn install_internal_from_bases(
                     .map(|()| download.version)
                     .map_err(|e| InstallPhaseError::Activate(e).into());
             }
-            Err(e) if e.is::<SmokeTestFailure>() || e.is::<ChecksumMismatch>() => {
-                // Same published artifact on every base; retrying will not change a --version timeout, a crash,
-                // or a digest the manifest disagrees with. Left unwrapped so telemetry classification sees the typed failure
+            Err(e) if e.is::<SmokeTestFailure>() => {
+                // Same published artifact on every base; retrying will not change a --version timeout or crash
+                // Left unwrapped so telemetry classification sees the typed failure
                 return Err(e);
             }
             Err(e) => {
@@ -1517,8 +1600,8 @@ pub async fn install_internal_from_base(
         .map_err(|e| InstallPhaseError::Activate(e).into())
 }
 
-/// A downloaded and smoke-tested binary in `~/.workshop/downloads/`, not yet
-/// activated as the managed `workshop`.
+/// A downloaded and smoke-tested binary in `~/.grok/downloads/`, not yet
+/// activated as the managed `grok`/`agent`.
 struct VerifiedDownload {
     version: String,
     binary_path: std::path::PathBuf,
@@ -1527,52 +1610,43 @@ struct VerifiedDownload {
     payload: windows_payload::Payload,
 }
 
-/// Base-dependent install phase: read the channel manifest, download and checksum the platform artifact, extract the
-/// binary, and smoke-test it. Network / fetch failures here are worth retrying against another base URL.
-/// [`SmokeTestFailure`] and [`ChecksumMismatch`] are not; see [`install_internal_from_bases`].
+/// Base-dependent install phase: resolve the version (per base when no target is pinned), download the binary, and smoke-test it.
+/// Network / fetch failures here are worth retrying against another base URL.
+/// [`SmokeTestFailure`] is not; see [`install_internal_from_bases`].
 async fn download_verified_from_base(
     target: Option<&str>,
     update_config: &UpdateConfig,
-    channel_base_url: &str,
+    gcs_base_url: &str,
 ) -> Result<VerifiedDownload> {
     let (os, arch) = detect_platform()?;
     let platform = format!("{}-{}", os, arch);
 
-    let manifest =
-        crate::version::fetch_channel_manifest(&update_config.channel, channel_base_url).await?;
     let version = match target {
         Some(v) => {
             semver::Version::parse(v)
                 .map_err(|_| anyhow::anyhow!("invalid version format: '{}'", v))?;
-            if v != manifest.version {
-                // Pinned installs need the release's SHA256SUMS; scripts/install.sh does that today.
-                anyhow::bail!(
-                    "version {v} is not the current {} channel head ({}). Pinned installs: \
-                     WORKSHOP_VERSION={v} {}",
-                    update_config.channel,
-                    manifest.version,
-                    manual_install_cmd(&update_config.channel)
-                );
-            }
             v.to_string()
         }
-        None => manifest.version.clone(),
+        None => {
+            crate::version::fetch_gcs_version_from_base(&update_config.channel, gcs_base_url)
+                .await?
+        }
     };
-    let artifact = manifest.artifact_for(&platform)?;
 
     let grok_home = grok_home();
     let download_dir = grok_home.join("downloads");
     tokio::fs::create_dir_all(&download_dir).await?;
 
-    let binary_name = format!("workshop-{}-{}", version, platform);
+    let binary_name = format!("grok-{}-{}", version, platform);
     let binary_path = download_dir.join(&binary_name);
 
-    eprintln!("  Downloading workshop v{} ({})...", version, platform);
+    eprintln!("  Downloading grok v{} ({})...", version, platform);
 
-    download_manifest_artifact(artifact, &binary_path, true).await?;
+    // The downloaded binary is already +x (see `publish_downloaded_artifact`)
+    download_cli_artifact_from_gcs(gcs_base_url, &binary_name, &binary_path, true).await?;
 
     // Smoke-test: run the binary before activating it
-    // A truncated or corrupt download is caught here and never becomes the active workshop
+    // A truncated or corrupt download is caught here and never becomes the active grok
     let smoke_span = xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
         "update.smoke_test",
         elapsed_ms = tracing::field::Empty,
@@ -1591,8 +1665,7 @@ async fn download_verified_from_base(
 
     // Best-effort and base-dependent, so it belongs to this phase; a miss never fails the install.
     #[cfg(windows)]
-    let payload =
-        windows_payload::download(channel_base_url, &version, &platform, &download_dir).await;
+    let payload = windows_payload::download(gcs_base_url, &version, &platform, &download_dir).await;
     #[cfg(not(windows))]
     let payload = windows_payload::Payload::default();
 
@@ -1601,121 +1674,6 @@ async fn download_verified_from_base(
         binary_path,
         payload,
     })
-}
-
-/// The downloaded archive's SHA-256 did not match the manifest. Nothing was activated.
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "checksum mismatch for {name}\n  expected: {expected}\n  actual:   {actual}\n\
-     The download is corrupt or tampered with; your current version is unchanged."
-)]
-pub struct ChecksumMismatch {
-    name: String,
-    expected: String,
-    actual: String,
-}
-
-/// Download `artifact.url` (a `.tar.gz` from the release), verify its SHA-256 against the manifest, and extract
-/// `artifact.binary` to `dest` (mode 0755). The archive is removed afterwards; on any failure `dest` is untouched.
-async fn download_manifest_artifact(
-    artifact: &crate::version::ChannelArtifact,
-    dest: &std::path::Path,
-    with_progress: bool,
-) -> Result<()> {
-    if !crate::version::is_https_or_loopback(&artifact.url) {
-        anyhow::bail!(
-            "refusing to download from a non-https URL: {}",
-            artifact.url
-        );
-    }
-    let archive_tmp = tmp_download_path(dest);
-    if let Err(e) = download_plain(&artifact.url, &archive_tmp, with_progress).await {
-        let _ = tokio::fs::remove_file(&archive_tmp).await;
-        return Err(e);
-    }
-    verify_and_extract_archive(artifact, &archive_tmp, dest).await
-}
-
-/// Checksum `archive` against `artifact.sha256` (the same digest `SHA256SUMS` records), then extract the single
-/// `artifact.binary` member to `dest` via a temp file. `archive` is always removed; `dest` is only replaced on success.
-async fn verify_and_extract_archive(
-    artifact: &crate::version::ChannelArtifact,
-    archive: &std::path::Path,
-    dest: &std::path::Path,
-) -> Result<()> {
-    let expected = artifact.sha256.to_ascii_lowercase();
-    let name = artifact
-        .url
-        .rsplit('/')
-        .next()
-        .unwrap_or("artifact")
-        .to_owned();
-    let bin_tmp = tmp_download_path(dest);
-    let (archive_in, member, bin_out) = (archive.to_path_buf(), artifact.binary.clone(), bin_tmp.clone());
-    let extracted = tokio::task::spawn_blocking(move || -> Result<()> {
-        use std::io::Read as _;
-        // 1. SHA-256 over the whole archive, exactly as SHA256SUMS records it.
-        let mut file = std::fs::File::open(&archive_in)
-            .with_context(|| format!("open download {}", archive_in.display()))?;
-        let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
-        let mut buf = vec![0u8; 1 << 16];
-        loop {
-            let n = file.read(&mut buf).context("read download")?;
-            if n == 0 {
-                break;
-            }
-            sha2::Digest::update(&mut hasher, buf.get(..n).unwrap_or(&[]));
-        }
-        let actual = format!("{:x}", sha2::Digest::finalize(hasher));
-        if actual != expected {
-            return Err(ChecksumMismatch {
-                name,
-                expected,
-                actual,
-            }
-            .into());
-        }
-        // 2. Extract only the named member, capped like the legacy decoder.
-        let file = std::fs::File::open(&archive_in)?;
-        let mut tarball = tar::Archive::new(flate2::read::GzDecoder::new(file));
-        for entry in tarball.entries().context("read tar entries")? {
-            let mut entry = entry.context("read tar entry")?;
-            let path = entry.path().context("tar entry path")?.into_owned();
-            let matches = path == std::path::Path::new(&member)
-                || path == std::path::Path::new("./").join(&member);
-            if !matches {
-                continue;
-            }
-            let mut out = std::fs::File::create(&bin_out)
-                .with_context(|| format!("create extracted binary {}", bin_out.display()))?;
-            let mut capped = (&mut entry).take(MAX_DECODED_BYTES + 1);
-            let written = std::io::copy(&mut capped, &mut out).context("extract")?;
-            if written > MAX_DECODED_BYTES {
-                anyhow::bail!("extracted binary exceeds the {MAX_DECODED_BYTES}-byte cap");
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&bin_out, std::fs::Permissions::from_mode(0o755))?;
-            }
-            return Ok(());
-        }
-        anyhow::bail!("archive does not contain a `{member}` member")
-    })
-    .await;
-    let _ = tokio::fs::remove_file(archive).await;
-
-    match extracted {
-        Ok(Ok(())) => publish_downloaded_artifact(&bin_tmp, dest).await,
-        Ok(Err(e)) => {
-            let _ = tokio::fs::remove_file(&bin_tmp).await;
-            Err(e)
-        }
-        Err(e) => {
-            let _ = tokio::fs::remove_file(&bin_tmp).await;
-            Err(anyhow::anyhow!("extract task panicked: {e}"))
-        }
-    }
 }
 
 /// Local activation phase: swap the managed bin links to the downloaded binary and finish bookkeeping.
@@ -1731,8 +1689,10 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
     let bin_dir = grok_home.join("bin");
     tokio::fs::create_dir_all(&bin_dir).await?;
 
-    // Atomic swap of ~/.workshop/bin/workshop -> downloaded binary.
+    // Atomic swap of ~/.grok/bin/{grok,agent} -> downloaded binary.
     let link_path = swap_managed_bin_links(&download.binary_path, &bin_dir).await?;
+
+    remove_stale_pager(&bin_dir).await;
 
     // Hook exes beside grok.exe and the bundled MinGit; grok is already live, so a failure here is only logged.
     #[cfg(windows)]
@@ -1741,7 +1701,8 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
     eprintln!();
 
     // Current, N-1, and any leftover a live process is still executing.
-    cleanup_old_downloads(&download_dir, "workshop", &download.version).await;
+    cleanup_old_downloads(&download_dir, "grok", &download.version).await;
+    cleanup_old_downloads(&download_dir, "grok-pager", &download.version).await;
 
     // Persist installer to config.toml so future runs auto-detect internal.
     let _ = config::update_config(|st| {
@@ -1764,17 +1725,13 @@ async fn regenerate_completions(binary: &std::path::Path, grok_home: &std::path:
     // Derive $HOME independently: grok_home may be overridden via GROK_HOME env var, so grok_home.parent() isn't necessarily the user's home dir
     let user_home = xai_dirs::home_dir().unwrap_or_default();
 
-    let mut completions: Vec<(&str, std::path::PathBuf)> = vec![
-        ("bash", grok_home.join("completions/bash/workshop.bash")),
-        ("zsh", grok_home.join("completions/zsh/_workshop")),
+    let completions: &[(&str, std::path::PathBuf)] = &[
+        ("bash", grok_home.join("completions/bash/grok.bash")),
+        ("zsh", grok_home.join("completions/zsh/_grok")),
+        ("fish", user_home.join(".config/fish/completions/grok.fish")),
     ];
-    // Only a fish user's own config gets a file; nothing is created for a shell they do not use.
-    let fish_config = user_home.join(".config/fish");
-    if fish_config.is_dir() {
-        completions.push(("fish", fish_config.join("completions/workshop.fish")));
-    }
 
-    for (shell, dest) in &completions {
+    for (shell, dest) in completions {
         if let Some(parent) = dest.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
@@ -1817,22 +1774,22 @@ fn relative_symlink_target(target: &std::path::Path, link: &std::path::Path) -> 
     target.to_path_buf()
 }
 
-/// Workshop ships one binary: `scripts/install.sh` writes `$WORKSHOP_HOME/bin/workshop ->
-/// ../downloads/workshop-<version>-<platform>` and so does the updater (no `agent` alias). The swap is
-/// atomic and rolled back on failure, including *removing* a link that didn't exist before.
+/// The bootstrap installers (`install.sh`, `install.ps1`, `install-enterprise.sh`) maintain `grok` and `agent` in
+/// lockstep, and so must the updater. Otherwise `grok update` leaves `agent` pinned at the previous version. Any earlier
+/// successful swaps are rolled back if a later one fails, including *removing* a link that didn't exist before.
 async fn swap_managed_bin_links(
     binary_path: &std::path::Path,
     bin_dir: &std::path::Path,
 ) -> Result<std::path::PathBuf> {
-    let workshop_name = if cfg!(windows) {
-        "workshop.exe"
-    } else {
-        "workshop"
-    };
-    let workshop_link = bin_dir.join(workshop_name);
-    let pairs = [(binary_path.to_path_buf(), workshop_link.clone())];
+    let grok_name = if cfg!(windows) { "grok.exe" } else { "grok" };
+    let agent_name = if cfg!(windows) { "agent.exe" } else { "agent" };
+    let grok_link = bin_dir.join(grok_name);
+    let pairs = [
+        (binary_path.to_path_buf(), grok_link.clone()),
+        (binary_path.to_path_buf(), bin_dir.join(agent_name)),
+    ];
     replace_managed_bins(&pairs).await?;
-    Ok(workshop_link)
+    Ok(grok_link)
 }
 
 /// Point every `dest` in `pairs` at its `src` (a symlink on Unix, a copy through
@@ -2333,9 +2290,9 @@ async fn gh_release_download(tag: &str, pattern: &str, dest: &std::path::Path) -
     Ok(())
 }
 
-/// Download and install Workshop from GitHub Releases (`RELEASE_REPO`) with `gh release download`.
-/// This works anywhere the `gh` CLI is authenticated, including against the private release repository.
-/// The asset is `workshop-<version>-<platform>.tar.gz`; the digest is taken from the release's `SHA256SUMS`.
+/// Download and install grok from GitHub Releases (xai-org-shared/grok-build). Uses `gh release download` to fetch the
+/// binary matching the current platform. This works anywhere the `gh` CLI is authenticated, without needing npm or
+/// internal network access.
 async fn install_gh_release(target: Option<&str>) -> Result<()> {
     let (os, arch) = detect_platform()?;
     let platform = format!("{}-{}", os, arch);
@@ -2351,62 +2308,60 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
     tokio::fs::create_dir_all(&download_dir).await?;
     tokio::fs::create_dir_all(&bin_dir).await?;
 
-    let binary_name = format!("workshop-{}-{}", version, platform);
+    let binary_name = format!("grok-{}-{}", version, platform);
     let binary_path = download_dir.join(&binary_name);
-    let asset_name = format!("{binary_name}.tar.gz");
     let tag = format!("v{}", version);
 
     eprintln!(
-        "  Downloading workshop v{} ({}) from GitHub Releases...",
+        "  Downloading grok v{} ({}) from GitHub Releases...",
         version, platform
     );
 
-    let staging = tempfile_dir_in(&download_dir, &format!(".gh-{version}"))?;
-    let sums_path = staging.join("SHA256SUMS");
-    let asset_path = staging.join(&asset_name);
-    let fetched = async {
-        gh_release_download(&tag, "SHA256SUMS", &sums_path).await?;
-        gh_release_download(&tag, &asset_name, &asset_path).await?;
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
-    if let Err(e) = fetched {
-        let _ = tokio::fs::remove_dir_all(&staging).await;
-        return Err(e);
-    }
-    let sums = tokio::fs::read_to_string(&sums_path).await?;
-    let sha256 = sums
-        .lines()
-        .filter_map(|l| {
-            let mut it = l.split_whitespace();
-            let digest = it.next()?;
-            let name = it.next()?.trim_start_matches('*');
-            (name == asset_name).then(|| digest.to_ascii_lowercase())
-        })
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("{tag} has no SHA256SUMS entry for {asset_name}"))?;
-    let artifact = crate::version::ChannelArtifact {
-        url: format!("file://{}", asset_path.display()),
-        sha256,
-        size: 0,
-        format: "tar.gz".to_owned(),
-        binary: if cfg!(windows) {
-            "workshop.exe".to_owned()
-        } else {
-            "workshop".to_owned()
-        },
-    };
-    let result = extract_local_artifact(&artifact, &asset_path, &binary_path).await;
-    let _ = tokio::fs::remove_dir_all(&staging).await;
-    result?;
+    gh_release_download(&tag, &binary_name, &binary_path).await?;
 
-    // Atomic swap of ~/.workshop/bin/workshop -> downloaded binary.
+    // chmod +x
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755)).await?;
+    }
+
+    // Atomic swap of ~/.grok/bin/{grok,agent} -> downloaded binary.
     swap_managed_bin_links(&binary_path, &bin_dir).await?;
+
+    // Update grok-latest -> versioned binary so any existing symlinks that route
+    // through it (e.g. /usr/local/bin/grok -> ~/.grok/downloads/grok-latest)
+    // resolve to the newly installed version.
+    #[cfg(unix)]
+    {
+        let latest_path = download_dir.join("grok-latest");
+        let rel_target = relative_symlink_target(&binary_path, &latest_path);
+        if let Err(e) = atomic_symlink_swap(&rel_target, &latest_path).await {
+            tracing::warn!("Failed to update grok-latest symlink: {e}");
+        }
+    }
+
+    // Also update /usr/local/bin/{grok,agent} if either points directly into
+    // ~/.grok/downloads/ (legacy layout — skips the grok-latest indirection).
+    // Permission errors are ignored
+    #[cfg(unix)]
+    for name in ["grok", "agent"] {
+        let system_link = std::path::PathBuf::from(format!("/usr/local/bin/{name}"));
+        if let Ok(existing_target) = tokio::fs::read_link(&system_link).await {
+            let target_str = existing_target.to_string_lossy();
+            if target_str.contains(".grok/downloads/") && !target_str.ends_with("grok-latest") {
+                let _ = atomic_symlink_swap(&binary_path, &system_link).await;
+            }
+        }
+    }
+
+    remove_stale_pager(&bin_dir).await;
 
     eprintln!();
 
     // Current, N-1, and any leftover a live process is still executing.
-    cleanup_old_downloads(&download_dir, "workshop", &version).await;
+    cleanup_old_downloads(&download_dir, "grok", &version).await;
+    cleanup_old_downloads(&download_dir, "grok-pager", &version).await;
 
     // Persist installer to config.toml so future runs auto-detect gh-release.
     let _ = config::update_config(|st| {
@@ -2417,31 +2372,8 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// A fresh staging directory under `parent` (removed by the caller).
-fn tempfile_dir_in(parent: &std::path::Path, prefix: &str) -> Result<std::path::PathBuf> {
-    let dir = parent.join(format!("{prefix}-{}", std::process::id()));
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)?;
-    }
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
-
-/// Checksum and extract an already-downloaded archive (the `gh release download` path).
-async fn extract_local_artifact(
-    artifact: &crate::version::ChannelArtifact,
-    archive: &std::path::Path,
-    dest: &std::path::Path,
-) -> Result<()> {
-    let tmp = tmp_download_path(dest);
-    tokio::fs::copy(archive, &tmp).await?;
-    verify_and_extract_archive(artifact, &tmp, dest).await
-}
-
 /// Creates a temporary .npmrc file with the NPM token if present.
 /// Returns the path to the created file, or None if no token was set.
-/// Workshop: unused at runtime (no npm channel); kept for its unit tests.
-#[cfg_attr(not(test), allow(dead_code))]
 fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<std::path::PathBuf>> {
     if let Ok(token) = std::env::var("NPM_TOKEN") {
         let token = token.trim();
@@ -2473,7 +2405,6 @@ fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<std::path::Pat
 /// SIGKILL'd by the kernel. macOS (Apple Silicon in particular) can no longer verify the code signature of the mmap'd
 /// executable pages once the backing inode is unlinked.
 #[cfg(target_os = "macos")]
-#[allow(dead_code)] // Workshop: only the removed npm path called this.
 fn warn_if_other_grok_processes_running() {
     let my_pid = std::process::id().to_string();
     let mut cmd = Command::new("pgrep");
@@ -2496,7 +2427,7 @@ fn warn_if_other_grok_processes_running() {
             );
             eprintln!("    Processes running from the npm vendored binary path may be");
             eprintln!("    killed by macOS when npm replaces the package files.");
-            eprintln!("    Consider closing other Workshop sessions before updating.");
+            eprintln!("    Consider closing other grok sessions before updating.");
             eprintln!();
         }
     }
@@ -2512,15 +2443,80 @@ pub fn install_npm_for_test(
     install_npm(target, channel, npm_registry)
 }
 
-fn install_npm(_target: Option<&str>, _channel: &str, _npm_registry: Option<&str>) -> Result<()> {
-    // Workshop is not published to npm; the `.npmrc` helper below stays only for its tests.
-    anyhow::bail!(crate::version::NPM_UNSUPPORTED)
+fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    warn_if_other_grok_processes_running();
+
+    let version_arg = match target {
+        Some(ver) => format!("@xai-official/grok@{ver}"),
+        None => {
+            // All current callers resolve the version via get_latest_version (max(stable, alpha) for the alpha channel) before reaching here
+            // Falling back to a raw dist-tag would bypass that logic, so warn loudly if this path is ever hit
+            tracing::warn!(
+                channel,
+                "install_npm called without a resolved version, falling back to dist-tag"
+            );
+            format!(
+                "@xai-official/grok@{}",
+                if channel == "alpha" {
+                    "alpha"
+                } else {
+                    "latest"
+                }
+            )
+        }
+    };
+
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("  {spinner:.cyan} Installing via npm...")
+            .unwrap(),
+    );
+    pb.enable_steady_tick(Duration::from_millis(100));
+
+    let mut cmd = Command::new("npm");
+    cmd.args(["i", "-g", &version_arg]);
+    if let Some(registry) = npm_registry {
+        cmd.arg(format!("--registry={}", registry));
+    }
+
+    // Use a temporary .npmrc to avoid exposing the token in process lists or shell history.
+    let temp_npmrc = create_temp_npmrc(npm_registry)?;
+    if let Some(ref npmrc_path) = temp_npmrc {
+        cmd.arg(format!("--userconfig={}", npmrc_path.display()));
+    }
+
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        // inherit, not piped; same rationale as run_update_subcommand
+        .stderr(Stdio::inherit());
+    xai_grok_tools::util::detach_std_command(&mut cmd);
+    let status = cmd.status()?;
+
+    if let Some(path) = temp_npmrc
+        && let Err(e) = std::fs::remove_file(&path)
+    {
+        tracing::warn!("Failed to remove temp .npmrc file: {}", e);
+    }
+
+    pb.finish_and_clear();
+
+    if !status.success() {
+        anyhow::bail!("npm install failed. Please try again.");
+    }
+    eprintln!();
+    Ok(())
 }
 
 pub async fn apply_channel_switch(channel_switch: Option<&str>, update_config: &mut UpdateConfig) {
     if let Some(ch) = channel_switch
         && update_config.channel != ch
     {
+        if get_installer().await == Some(WINGET) {
+            eprint!("{}", crate::winget::ignored_channel_note(ch));
+            return;
+        }
         let _ = config::update_config(|st| {
             st.cli.channel = Some(ch.to_string());
         })
@@ -2540,8 +2536,56 @@ pub async fn run_update(
     update_config: &mut UpdateConfig,
     trigger: CliUpdateTrigger,
 ) -> Result<Option<String>> {
+    let installer = get_installer().await;
+    let policy = config::VersionPolicy::resolve();
+    if let Some(version) = pinned_version
+        && let Err(e) = crate::version_policy::check_install_target(&policy, version)
+    {
+        anyhow::bail!("{e}");
+    }
+    if installer == Some(WINGET) {
+        let capped = match pinned_version {
+            // No allowed target means no command: `winget upgrade` would jump past the cap
+            None if has_version_cap(&policy) => {
+                match fetch_update_plan(WINGET, update_config, &policy).await? {
+                    UpdatePlan::Install { target, .. } => {
+                        let current = get_installed_grok_version();
+                        // Like `--check`, never move down, unless the running version is above the hard cap
+                        let above_hard_cap = policy.required_maximum.as_ref().is_some_and(|hi| {
+                            semver::Version::parse(&current).is_ok_and(|v| v > *hi)
+                        });
+                        if !force
+                            && needs_update(&current, &target, "stable", above_hard_cap)
+                                == Some(false)
+                        {
+                            eprintln!("Already up to date ({current}).");
+                            return Ok(None);
+                        }
+                        Some(target)
+                    }
+                    UpdatePlan::Skip { latest } => {
+                        let current = get_installed_grok_version();
+                        eprintln!("{}", skipped_update_notice(&latest, &current));
+                        return Ok(None);
+                    }
+                    UpdatePlan::Unavailable { latest, target } => {
+                        return Err(unavailable_update_error(&latest, &target));
+                    }
+                }
+            }
+            _ => None,
+        };
+        let target = match (pinned_version.or(capped.as_deref()), force) {
+            (Some(version), _) => crate::winget::Target::Exact(version),
+            (None, true) => crate::winget::Target::Reinstall,
+            (None, false) => crate::winget::Target::Newest,
+        };
+        let channel = channel_switch.unwrap_or(update_config.channel.as_str());
+        eprint!("{}", crate::winget::hand_off_message(target, channel));
+        return Ok(None);
+    }
     apply_channel_switch(channel_switch, update_config).await;
-    let installer = match get_installer().await {
+    let installer = match installer {
         Some(i) => i,
         None => {
             eprintln!("Auto-update is not available for manual installations.");
@@ -2560,13 +2604,9 @@ pub async fn run_update(
     heal_managed_install(installer).await;
 
     let current_version = get_installed_grok_version();
-    let policy = config::VersionPolicy::resolve();
 
     // When --version is given, skip the latest-version check and install directly
     if let Some(version) = pinned_version {
-        if let Err(e) = crate::version_policy::check_install_target(&policy, version) {
-            anyhow::bail!("{e}");
-        }
         eprintln!(
             "Installing Grok {} (current: {})...",
             version, current_version
@@ -2581,8 +2621,8 @@ pub async fn run_update(
         {
             tracing::warn!("Failed to persist auto_update=false for pinned install: {e}");
         }
-        eprintln!("  ✓ Workshop v{} installed successfully!", version);
-        eprintln!("  Please restart Workshop.");
+        eprintln!("  ✓ grok v{} installed successfully!", version);
+        eprintln!("  Please restart Grok.");
         return Ok(Some(version.to_string()));
     }
 
@@ -2601,18 +2641,12 @@ pub async fn run_update(
             // Cache so an explicit `grok update` doesn't re-prompt every run.
             let stable_ptr = try_fetch_stable_pointer().await;
             write_version_cache(&latest, stable_ptr.as_deref()).await;
-            eprintln!(
-                "The latest release ({latest}) is not an allowed update; \
-                 keeping the current version ({current_version})."
-            );
+            eprintln!("{}", skipped_update_notice(&latest, &current_version));
             refresh_deployment_config().await;
             return Ok(None);
         }
         UpdatePlan::Unavailable { latest, target } => {
-            anyhow::bail!(
-                "The required minimum version ({target}) is newer than the latest \
-                 available release ({latest}). Contact your administrator."
-            );
+            return Err(unavailable_update_error(&latest, &target));
         }
         UpdatePlan::Install { latest, target } => (latest, target),
     };
@@ -2689,39 +2723,26 @@ pub async fn run_update(
         .unwrap_or(true)
     {
         eprintln!(
-            "Forcing reinstall of Workshop {} (already up to date)",
+            "Forcing reinstall of Grok {} (already up to date)",
             effective_current
         );
         &effective_current
     } else {
-        eprintln!("Updating Workshop {} → {}", effective_current, install_target);
+        eprintln!("Updating Grok {} → {}", effective_current, install_target);
         &install_target
     };
 
     eprintln!();
-    if let Err(e) = run_install_script(installer, Some(target_version), update_config, trigger).await
-    {
-        xai_grok_telemetry::unified_log::warn(
-            "update.install_failed",
-            None,
-            Some(serde_json::json!({ "to": target_version, "error": format!("{e:#}") })),
-        );
-        return Err(e);
-    }
-    xai_grok_telemetry::unified_log::info(
-        "update.installed",
-        None,
-        Some(serde_json::json!({ "from": effective_current, "to": target_version })),
-    );
+    run_install_script(installer, Some(target_version), update_config, trigger).await?;
     // Fetch the stable pointer now so the new binary has it immediately for channel_label() display
     // Otherwise it would wait for the next TTL-gated update check (~30 min)
     let stable_ptr = try_fetch_stable_pointer().await;
     write_version_cache(target_version, stable_ptr.as_deref()).await;
     refresh_deployment_config().await;
-    eprintln!("  ✓ Workshop v{} installed successfully!", target_version);
+    eprintln!("  ✓ grok v{} installed successfully!", target_version);
 
     if !force && std::env::var_os("GROK_AUTO_UPDATE").is_none() {
-        eprintln!("  Please restart Workshop.");
+        eprintln!("  Please restart Grok.");
     }
     Ok(Some(target_version.to_string()))
 }
@@ -2748,7 +2769,7 @@ async fn refresh_deployment_config() {
         Err(e) if e.is_auth_rejection() => tracing::debug!("managed config not applied: {e}"),
         Err(e) if e.is_retryable() => {
             tracing::debug!("managed config refresh failed: {e}");
-            eprintln!("  Couldn't apply managed configuration. Run `workshop setup` to retry.");
+            eprintln!("  Couldn't apply managed configuration. Run `grok setup` to retry.");
         }
         Err(e) => eprintln!("  Couldn't apply managed configuration. {e}"),
     }

@@ -1,4 +1,4 @@
-//! Local PTY wrapper: the engine behind `workshop wrap` (see [`crate::wrap_cmd`]).
+//! Local PTY wrapper: the engine behind `grok wrap` (see [`crate::wrap_cmd`]).
 //!
 //! Spawns a command inside a local pseudo-terminal and pipes its output through `crate::wrap_filter::Osc52Filter`.
 //! The filter intercepts OSC 52 clipboard sequences, making "copy" work for programs that cannot reach the user's clipboard (containers, SSH).
@@ -31,7 +31,7 @@ fn apply_wrap_child_env(
     }
 }
 
-/// Run an arbitrary command inside a local PTY with OSC 52 output filtering. This is the engine behind `workshop wrap`:
+/// Run an arbitrary command inside a local PTY with OSC 52 output filtering. This is the engine behind `grok wrap`:
 /// it spawns `program` (with `args`) attached to a local pseudo-terminal. Size changes of the outer terminal are
 /// forwarded to the child. All other output passes through unchanged.
 pub(crate) fn run_wrapped_command(program: &str, args: &[String]) -> Result<i32> {
@@ -62,7 +62,7 @@ pub(crate) fn run_wrapped_command(program: &str, args: &[String]) -> Result<i32>
     drop(pair.slave);
 
     // Obtain reader from the master PTY. Confining `write_all` to a single owner thread avoids that Handles are
-    // intentionally detached: `workshop wrap` is short-lived and exits with the child.
+    // intentionally detached: `grok wrap` is short-lived and exits with the child.
     let mut pty_reader = pair.master.try_clone_reader()?;
 
     // We deliberately do NOT block SIGWINCH here

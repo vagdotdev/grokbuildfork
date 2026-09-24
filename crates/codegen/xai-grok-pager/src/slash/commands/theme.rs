@@ -270,8 +270,8 @@ mod tests {
             let items = cmd.suggest_args(&ctx, "").expect("should return items");
             let groknight = items
                 .iter()
-                .find(|i| i.insert_text == "night")
-                .expect("night should be in list");
+                .find(|i| i.insert_text == "groknight")
+                .expect("groknight should be in list");
             assert!(
                 groknight.description.contains("(active)"),
                 "explicit theme should show (active), got: {}",
@@ -333,7 +333,7 @@ mod tests {
             let mut matcher = crate::slash::matcher::FuzzyMatcher::new();
             for (alias, canonical) in [
                 ("transparent", "terminal"),
-                ("dark", "night"),
+                ("dark", "groknight"),
                 ("system", "auto"),
             ] {
                 let hits = matcher.rank(&items, alias, items.len(), |item| &item.match_text);
@@ -370,10 +370,10 @@ mod tests {
                     ..crate::settings::PagerLocalSnapshot::default()
                 },
             };
-            let result = cmd.run(&mut ctx, "night");
+            let result = cmd.run(&mut ctx, "groknight");
             match result {
                 CommandResult::Action(Action::SetTheme(name)) => {
-                    assert_eq!(name, "night");
+                    assert_eq!(name, "groknight");
                 }
                 other => panic!("expected Action::SetTheme(\"groknight\"), got {other:?}"),
             }
@@ -534,7 +534,7 @@ mod tests {
             let result = cmd.run(&mut ctx, "dark");
             match result {
                 CommandResult::Action(Action::SetTheme(name)) => {
-                    assert_eq!(name, "night", "alias must normalise to canonical");
+                    assert_eq!(name, "groknight", "alias must normalise to canonical");
                 }
                 other => panic!("expected Action::SetTheme(\"groknight\"), got {other:?}"),
             }
@@ -559,7 +559,7 @@ mod tests {
         with_test_env(|| {
             theme_cache::set(ThemeKind::GrokNight);
             let cmd = ThemeCommand;
-            cmd.preview_arg("day");
+            cmd.preview_arg("grokday");
             assert_eq!(Theme::current_kind(), ThemeKind::GrokDay);
         });
     }
@@ -586,11 +586,11 @@ mod tests {
             theme_cache::set(ThemeKind::GrokNight);
             let cmd = ThemeCommand;
             // Simulate user navigating into a different theme during preview.
-            cmd.preview_arg("day");
+            cmd.preview_arg("grokday");
             assert_eq!(Theme::current_kind(), ThemeKind::GrokDay);
 
             // Then Escape (or arg picker dismissal): restore.
-            cmd.cancel_preview("night");
+            cmd.cancel_preview("groknight");
             assert_eq!(
                 Theme::current_kind(),
                 ThemeKind::GrokNight,
