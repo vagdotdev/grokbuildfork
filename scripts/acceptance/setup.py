@@ -77,7 +77,7 @@ def panthera_photos():
 
 
 def apt_purge(pkgs):
-    sh("sudo DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq " + " ".join(pkgs))
+    sh("sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 purge -y -qq " + " ".join(pkgs))
 
 
 def stage(rel, src=None, data=None):
@@ -184,7 +184,7 @@ elif TASK == "T5":
         sh(f"'{FFMPEG}' -loglevel error -y -f lavfi -i testsrc2=size=640x360:rate=25 -t 5 "
            f"-c:v libx264 -pix_fmt yuv420p '{clip}'", check=True)
     stage("Desktop/clip.mp4", src=clip)
-    sh("sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq ffmpeg")
+    sh("sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 remove -y -qq ffmpeg")
     fixture["ffmpeg_before"] = sh("command -v ffmpeg").stdout.strip()
 
 elif TASK == "T7":

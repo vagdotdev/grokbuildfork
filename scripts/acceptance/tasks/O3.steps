@@ -1,0 +1,12 @@
+# O3 — the owner's task 3: a Genus landing page from two links, opened in the browser by Workshop (docs: acceptance-tasks.md)
+@timeout 1800
+@stall 120
+launch workshop
+type Create a landing page for Genus, an independent cybersecurity research lab. Use this as the visual reference: https://styles.refero.design/style/fc84e9f0-2058-4a0a-8d26-9cc1ba84ec9c — white and green. The copy is declarative and clean, and its philosophy is based on this article, read it first: https://jyn.dev/a-year-to-fix-security/ . Make it extremely good and polished. When it's done, open it locally in the browser.
+waitturn 1800
+snap turn1
+mark protect-start
+sleep 12
+mark protect-end
+line /exit
+waitshell 30

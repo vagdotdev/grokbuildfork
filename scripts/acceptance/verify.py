@@ -811,6 +811,32 @@ def verify():
         c.add("T11.3", bool(echo) and echo[-1]["ev"] == "probe_ok" and not re.search(r"\[sudo\] password", final_screen),
               "the screen stays usable (composer echoes, no stray password prompt)", json.dumps(echo))
 
+    elif TASK == "O3":
+        pages = [p for p in walk(HOME, 4, skip=(".workshop", ".local", ".cache", ".config", ".npm", "node_modules"))
+                 if p.name == "index.html"]
+        page = max(pages, key=lambda p: len(read_bytes(p))) if pages else None
+        html = read_bytes(page).decode(errors="replace") if page else ""
+        refs = sorted({r for r in re.findall(r"""(?:src|href)\s*=\s*["']([^"'#?]+)""", html)
+                       + re.findall(r"""url\(\s*["']?([^"')#?]+)""", html)
+                       if not re.match(r"(?:[a-z]+:|//)", r, re.I)})
+        missing = [r for r in refs if not (page.parent / r).exists()] if page else []
+        c.add("O3.1", bool(page) and not missing, "the page exists under ~ and every local file it references is there",
+              json.dumps({"page": str(page) if page else None, "bytes": len(html), "local_refs": refs, "missing": missing}))
+        tools = [i for t in ts for i in t.get("items", []) if i.get("kind") == "tool"]
+        def read_url(u):
+            return [i.get("name") for i in tools if i.get("ok") is not False and u in json.dumps(i.get("input", {}))
+                    and (i.get("name") in ("webfetch", "fetch") or re.search(r"\b(curl|wget)\b", str(i.get("input", {}).get("command", ""))))]
+        urls = {u: read_url(u) for u in ("https://jyn.dev/a-year-to-fix-security", "https://styles.refero.design/style/fc84e9f0-2058-4a0a-8d26-9cc1ba84ec9c")}
+        c.add("O3.2", all(urls.values()), "both URLs were read (webfetch, curl or wget in the session record)", json.dumps(urls))
+        opens = [i.get("input", {}).get("command", "")[:200] for i in tools
+                 if re.search(r"\b(xdg-open|gio open|sensible-browser|x-www-browser|google-chrome\S*|chromium\S*|firefox)\b(?!.*--headless)",
+                              str(i.get("input", {}).get("command", "")))]
+        wl = OUT / "windows.log"
+        shown = [l.split("\t", 1) for l in wl.read_text().splitlines()] if wl.exists() else []
+        browser = [(t, w) for t, w in shown if re.search(r"Google Chrome|Chromium|Mozilla Firefox", w)]
+        c.add("O3.3", bool(opens) and bool(browser), "Workshop opened it in a browser (a tool call, and a browser window on the desktop)",
+              json.dumps({"tool_calls": opens, "browser_windows": browser[:3], "window_log_lines": len(shown)}))
+
     elif TASK == "TV":
         truth = json.loads((OUT / "fixture.json").read_text())["photos"]
         final = turn_text(ts[-1]) if ts else ""

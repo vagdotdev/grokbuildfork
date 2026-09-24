@@ -1,0 +1,15 @@
+# Written by the Workshop connection picker (/auth). Secrets are never stored here.
+[marketplace]
+default_skills_installs_purged = true
+
+[model.workshop-connection]
+model = "workshop-connection"
+base_url = "http://127.0.0.1:1"
+name = "Muse Spark 1.3 Free"
+api_backend = "chat_completions"
+auth_scheme = "bearer"
+api_key = "workshop-anonymous"
+context_window = 1048576
+
+[models]
+default = "workshop-connection"
