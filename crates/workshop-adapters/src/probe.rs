@@ -59,26 +59,14 @@ pub async fn run_probe(
     // Own process group, enrolled so session teardown can reap it. `group`
     // must outlive the child. A binary that was written a moment ago (an
     // installer that just finished, a fixture another thread is still
-    // closing) can refuse to exec with ETXTBSY for a few milliseconds; that is
-    // transient, so try again briefly before reporting it.
-    let mut attempt = 0u32;
-    let (mut child, group) = loop {
-        match xai_tty_utils::global_process_scope().spawn(build()) {
-            Ok(spawned) => break spawned,
-            Err(source)
-                if source.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 5 =>
-            {
-                attempt += 1;
-                tokio::time::sleep(Duration::from_millis(20 * u64::from(attempt))).await;
-            }
-            Err(source) => {
-                return Err(ProbeError::Spawn {
-                    program: name.clone(),
-                    source,
-                });
-            }
-        }
-    };
+    // closing) can refuse to exec with ETXTBSY for a few milliseconds; the
+    // shared spawn waits that out before reporting it.
+    let (mut child, group) = crate::spawn::spawn_enrolled(build())
+        .await
+        .map_err(|source| ProbeError::Spawn {
+            program: name.clone(),
+            source,
+        })?;
     let mut stdout = child.stdout.take().expect("piped stdout");
     let mut stderr = child.stderr.take().expect("piped stderr");
 

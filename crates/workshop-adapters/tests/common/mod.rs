@@ -255,13 +255,25 @@ impl Sandbox {
     }
 }
 
+/// Write an executable script so it can be exec'd right away: the bytes go to a sibling temp
+/// file that is fsynced and closed before it is made executable and renamed into place. Nothing
+/// ever sees a half-written or still-open script — the `ETXTBSY` ("Text file busy") a concurrent
+/// test's fork can otherwise provoke by inheriting the write handle is left only to the retry in
+/// the adapter's spawn path.
 fn write_script(path: &Path, body: &str) {
-    std::fs::write(path, body).unwrap();
+    use std::io::Write;
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    {
+        let mut file = std::fs::File::create(&tmp).unwrap();
+        file.write_all(body.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+    std::fs::rename(&tmp, path).unwrap();
 }
 
 fn sh_quote(s: &str) -> String {

@@ -402,8 +402,8 @@ impl OpenCodeEngine {
         .kill_on_drop(true);
         crate::env::apply(&mut cmd, &env);
         tracing::info!(program = %cli.path.display(), version = %cli.version, port, workspace = %opts.workspace.display(), "starting opencode serve");
-        let (mut child, group) = xai_tty_utils::global_process_scope()
-            .spawn(cmd)
+        let (mut child, group) = crate::spawn::spawn_enrolled(cmd)
+            .await
             .map_err(EngineError::Spawn)?;
 
         let stdout = child.stdout.take().expect("piped stdout");
