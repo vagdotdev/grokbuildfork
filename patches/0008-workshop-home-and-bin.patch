@@ -1,5 +1,5 @@
 diff --git a/crates/codegen/xai-dirs/src/lib.rs b/crates/codegen/xai-dirs/src/lib.rs
-index d07253cc..1a1bc581 100644
+index d07253cc5cfb63dbc12c87f0485520feb00ab244..1a1bc581839ff4c971b1cfa85b438fb3a5d8cb32 100644
 --- a/crates/codegen/xai-dirs/src/lib.rs
 +++ b/crates/codegen/xai-dirs/src/lib.rs
 @@ -24,12 +24,22 @@ use std::sync::OnceLock;
@@ -103,7 +103,7 @@ index d07253cc..1a1bc581 100644
  
      #[test]
 diff --git a/crates/codegen/xai-grok-config/src/paths.rs b/crates/codegen/xai-grok-config/src/paths.rs
-index e04d7b12..877b1334 100644
+index e04d7b12375e6281e9a9d49d2b15520c6ad6ebe8..877b133489d3233b56cb643eedc412d715b4e81c 100644
 --- a/crates/codegen/xai-grok-config/src/paths.rs
 +++ b/crates/codegen/xai-grok-config/src/paths.rs
 @@ -8,14 +8,20 @@ const CLAUDE_MANAGED_SETTINGS_PATH: &str =
@@ -131,10 +131,10 @@ index e04d7b12..877b1334 100644
  }
  
 diff --git a/crates/codegen/xai-grok-pager-bin/Cargo.toml b/crates/codegen/xai-grok-pager-bin/Cargo.toml
-index d66f3936..ff7b585e 100644
+index 3619ea422e5ccfd787b9d45b17b2004a23be45f2..ad0d4ede1831e5dbe9ef189c55c1befb0cc8c510 100644
 --- a/crates/codegen/xai-grok-pager-bin/Cargo.toml
 +++ b/crates/codegen/xai-grok-pager-bin/Cargo.toml
-@@ -4,20 +4,23 @@ version = "1.0.38"
+@@ -4,20 +4,23 @@ version = "1.0.41"
  edition.workspace = true
  license = "Apache-2.0"
  authors = ["xAI"]
@@ -165,9 +165,9 @@ index d66f3936..ff7b585e 100644
  # Optional scrollback-native render mode, wired in via the fn-pointer seam.
  xai-grok-pager-minimal = { path = "../xai-grok-pager-minimal" }
  
-@@ -52,6 +55,9 @@ xai-tty-utils = { workspace = true }
- # `collect_crashed()` for the startup crash notice.
- xai-grok-active-sessions = { workspace = true }
+@@ -50,6 +53,9 @@ dunce = { workspace = true }
+ semver = { workspace = true }
+ xai-tty-utils = { workspace = true }
  xai-grok-config = { workspace = true }
 +# Workshop overlay: `isolate_from_grok_build_env` (home + compat env cells) in main.
 +xai-dirs = { workspace = true }
