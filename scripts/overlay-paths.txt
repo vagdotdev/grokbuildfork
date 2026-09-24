@@ -1,6 +1,9 @@
 # Workshop-owned paths (one bash glob or path prefix per line; '#' starts a comment).
 # scripts/sync/replace-tree.sh preserves everything matching these when it replaces the tree with a
 # fresh xai-org/grok-build snapshot; everything else is upstream-owned and reset to the snapshot.
+# An entry that names a single file Workshop has (README.md) is a replacement: upstream's copy of
+# that file is dropped and ours kept, without a rule-4 collision. A prefix or glob under which
+# upstream starts shipping a file Workshop also has is still a collision (rule 4: rename ours).
 crates/workshop-*
 patches
 scripts
@@ -8,5 +11,7 @@ scripts
 docs/workshop*
 docs/upstream-sync.md
 upstream-lock.toml
-README-Workshop.md
+README.md
+SECURITY.md
+CONTRIBUTING.md
 voice

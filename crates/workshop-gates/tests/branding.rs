@@ -317,6 +317,69 @@ fn docs_guide_names_workshop_not_grok() {
     }
 }
 
+/// The repository's front page and its security / contributing routes are Workshop's, not the
+/// upstream Grok Build pages: the root `README.md` says what Workshop is and carries the one-line
+/// install; `SECURITY.md` and `CONTRIBUTING.md` route to this repository. All three are overlay
+/// paths (`scripts/overlay-paths.txt`), so a sync cannot bring the upstream pages back.
+#[test]
+fn repository_front_page_is_workshops() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read = |name: &str| {
+        std::fs::read_to_string(root.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"))
+    };
+    let readme = read("README.md");
+    assert!(
+        readme.starts_with("# Workshop\n"),
+        "README.md opens with Workshop:\n{}",
+        readme.lines().next().unwrap_or_default()
+    );
+    assert!(
+        readme.contains("curl -fsSL https://raw.githubusercontent.com/vagdotdev/grokbuildfork/release-channel/install.sh | sh"),
+        "README.md carries the one-line install"
+    );
+    for upstream in [
+        "x.ai/cli",
+        "media.x.ai",
+        "SpaceXAI",
+        "Grok Build (<code>grok</code>)",
+        "Installing the released binary",
+    ] {
+        assert!(
+            !readme.contains(upstream),
+            "README.md still carries the upstream page: {upstream:?}"
+        );
+    }
+    let security = read("SECURITY.md");
+    assert!(
+        security.contains("github.com/vagdotdev/grokbuildfork/security"),
+        "SECURITY.md routes to this repository"
+    );
+    assert!(
+        !security.contains("hackerone.com/x"),
+        "SECURITY.md still routes to xAI"
+    );
+    let contributing = read("CONTRIBUTING.md");
+    assert!(
+        !contributing.contains("SpaceXAI"),
+        "CONTRIBUTING.md still describes xAI's process"
+    );
+    assert!(
+        contributing.contains("regenerate-patches.sh"),
+        "CONTRIBUTING.md explains the overlay"
+    );
+    let overlay = read("scripts/overlay-paths.txt");
+    for path in ["README.md", "SECURITY.md", "CONTRIBUTING.md"] {
+        assert!(
+            overlay.lines().any(|l| l.trim() == path),
+            "{path} must be an overlay path or the next sync restores the upstream page"
+        );
+    }
+    assert!(
+        !root.join("README-Workshop.md").exists(),
+        "README-Workshop.md moved to README.md"
+    );
+}
+
 /// The welcome card: one product name on every launch, an invitation to type in the composer,
 /// and bundled release notes for its "Release notes" row.
 #[test]

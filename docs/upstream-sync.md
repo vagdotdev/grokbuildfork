@@ -15,7 +15,7 @@ builds, passes the no-xAI gates, and opens a sync PR.
 | `upstream-lock.toml` | The snapshot the upstream-owned tree mirrors: `source`, `git_sha` (public commit), `source_rev` (upstream's `SOURCE_REV`, an internal monorepo pointer — informational, never fetched), `version` (`xai-grok-pager-bin`), `fetched_at`. |
 | `patches/series` | Ordered patch list with tags (below). |
 | `patches/NNNN-*.patch` | `git format-patch` / `git diff` output against the locked upstream tree. |
-| `scripts/overlay-paths.txt` | Optional. Paths Workshop owns; everything else is upstream-owned. Default when absent: `crates/workshop-*`, `patches/`, `scripts/`, `.github/`, `docs/`, `upstream-lock.toml`. |
+| `scripts/overlay-paths.txt` | Optional. Paths Workshop owns; everything else is upstream-owned. Default when absent: `crates/workshop-*`, `patches/`, `scripts/`, `.github/`, `docs/`, `upstream-lock.toml`. An entry naming a single file Workshop has (`README.md`, `SECURITY.md`, `CONTRIBUTING.md`) replaces upstream's same-named file: ours is kept, upstream's dropped, no collision. |
 | `scripts/sync/` | The pipeline (this document). |
 | `scripts/sync/security-review-paths.txt` | Upstream paths whose change makes a sync a security review (rule 7). |
 | `.github/workflows/sync-upstream.yml` | Daily schedule + manual dispatch; opens the sync PR, never merges. |
@@ -97,7 +97,8 @@ No fuzz, no `patch -p1`: the same inputs always give the same tree.
 vs new SHA / `SOURCE_REV` / version / dates, upstream commits, the replay table
 (patch, tags, result, upstream-changed files), failed-patch details with reject
 hunks and upstream blame, `TODO(sync)` lines for deferrals, verification
-results, tree-replacement stats and the full upstream file list.
+results, tree-replacement stats (overlay files restored, files replacing
+upstream's, collisions, deletions, drops) and the full upstream file list.
 
 Auto-PR is not auto-merge: every sync PR gets human review and the required
 `no-xai` check. If upstream did not move, the workflow exits 0 and does nothing.
@@ -125,8 +126,12 @@ has an open PR, the run is a no-op (dispatch with `force` to rebuild it).
    both sides' blame: the upstream commits that changed the patched files and
    the patch's own header.
 4. **Overlay crates** are new files and should not conflict. If upstream adds a
-   same-named path, `replace-tree.sh` keeps upstream's file, lists the collision
-   and the run is red: rename the Workshop path, never overwrite upstream.
+   same-named path under an overlay prefix or glob, `replace-tree.sh` keeps
+   upstream's file, lists the collision and the run is red: rename the Workshop
+   path, never overwrite upstream. The exception is declared: an overlay entry
+   that names one file Workshop has (the root `README.md`, `SECURITY.md`,
+   `CONTRIBUTING.md`) is a replacement of upstream's file — ours is kept,
+   upstream's dropped, the PR body lists it under "replacing upstream's".
 5. **No silent tree replace.** Overlay paths are enumerated
    (`scripts/overlay-paths.txt` or the built-in default) and restored after
    every fetch. Files upstream deleted since the lock are counted as routine
