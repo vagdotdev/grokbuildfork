@@ -1184,8 +1184,8 @@ fn slash_model_no_args_opens_the_models_overlay() {
     );
     assert_eq!(agent_ref(&app, id).scrollback.len(), initial_scrollback);
     assert_eq!(
-        app.connection_picker.as_ref().map(|p| p.tab),
-        Some(workshop_auth::PickerTab::Models)
+        app.connection_picker.as_ref().map(|p| p.title()),
+        Some("Models".to_owned())
     );
 }
 #[test]

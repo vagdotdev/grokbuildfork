@@ -620,11 +620,14 @@ pub enum Action {
     /// User pressed login on the welcome screen.
     /// Workshop: opens the connection picker (Subscriptions); never starts an OAuth flow by itself.
     Login,
-    /// Workshop: open the connection picker overlay on a view (`/model` → Models, `/auth` →
-    /// Subscriptions).
-    OpenConnectionPicker(workshop_auth::PickerTab),
+    /// Workshop: open the one connection picker overlay (`/model` → on the active model, with any
+    /// typed text as the filter; `/auth` → on the Subscriptions section).
+    OpenConnectionPicker(workshop_auth::PickerFocus),
     /// Workshop: a key press routed to the open connection picker.
     ConnectionPicker(workshop_auth::PickerInput),
+    /// Workshop: `/effort <level>` on the active OpenCode model — one of its catalog levels, or
+    /// `default`; an empty level prints the usage with the offered levels.
+    WorkshopSetEffort(String),
     /// Workshop: first run (nothing connected) — activate the OpenCode engine's default free model
     /// and land in the composer. No picker, no network.
     WorkshopFirstRun,

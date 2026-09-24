@@ -1077,9 +1077,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::WorkshopLoginTerminalDone { rail, exit } => {
             use workshop_detect::process::InteractiveExit;
             if let Some(picker) = app.connection_picker.as_mut() {
-                // Focus returns to the rail list: the detail panel that Connect's Enter opened
-                // would otherwise hold ↑/↓ until the tab is switched away and back.
-                picker.detail_open = false;
                 if exit == InteractiveExit::Interrupted {
                     // A sign-in chained onto the one-keypress install: the rail still reads
                     // `[Install]` although the CLI is on PATH now, so re-detect (it becomes

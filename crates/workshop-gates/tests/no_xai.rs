@@ -446,13 +446,13 @@ fn branding_terminal_title_is_workshop_never_grok() {
     );
 }
 
-/// The picker policy: the xAI card is the last Subscriptions entry, never preselected, and only
-/// an explicit double-Enter reaches it; every other entry on both views yields something other
-/// than a login. The Models view (`/model`) has no xAI card at all.
+/// The picker policy: the xAI row is the last row of the one picker, never preselected, and only
+/// an explicit double-Enter reaches it; every other row — at the top level and inside every
+/// sub-menu — yields something other than a login.
 #[test]
 fn picker_xai_is_optional_last_and_explicit() {
     use workshop_auth::{
-        ModelsRow, PickerInput, PickerOutcome, PickerSnapshot, PickerState, PickerTab, models_rows,
+        ModelsRow, PickerInput, PickerOutcome, PickerSnapshot, PickerState, models_rows,
     };
     let mut p = PickerState::new();
     let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[], &[]);
@@ -463,36 +463,34 @@ fn picker_xai_is_optional_last_and_explicit() {
         secret_backend: Some("memory"),
         ..PickerSnapshot::default()
     });
-    assert!(!p.rows.iter().any(ModelsRow::is_xai), "no xAI on /model");
-    for i in 0..p.rows.len() {
-        p.models_selected = i;
-        p.xai_armed = false;
-        assert_ne!(
-            p.handle(PickerInput::Enter),
-            PickerOutcome::StartOptionalXaiLogin,
-            "model row {i} must not start the xAI login"
-        );
-    }
-    p.handle(PickerInput::SwitchTab);
-    assert_eq!(p.tab, PickerTab::Subscriptions);
-    assert!(p.auth_rows.last().is_some_and(ModelsRow::is_xai));
-    assert_eq!(p.rail_selected, 0, "never preselected");
-    let n = p.subscriptions_len();
+    assert!(p.rows.last().is_some_and(ModelsRow::is_xai), "xAI is last");
+    assert_eq!(p.selected, 0, "never preselected");
+    let n = p.visible_rows().len();
     for i in 0..n - 1 {
-        p.rail_selected = i;
-        p.detail_open = false;
+        p.submenu = None;
+        p.selected = i;
         p.xai_armed = false;
         assert_ne!(
             p.handle(PickerInput::Enter),
             PickerOutcome::StartOptionalXaiLogin,
-            "subscriptions entry {i} must not start the xAI login"
+            "row {i} must not start the xAI login"
         );
+        if p.submenu.is_some() {
+            for j in 0..p.visible_rows().len() {
+                p.selected = j;
+                assert_ne!(
+                    p.handle(PickerInput::Enter),
+                    PickerOutcome::StartOptionalXaiLogin,
+                    "row {i}/{j} must not start the xAI login"
+                );
+            }
+        }
     }
-    // The xAI card needs two explicit Enters.
-    p.rail_selected = n - 1;
-    p.detail_open = false;
+    // The xAI row needs two explicit Enters.
+    p.submenu = None;
+    p.selected = n - 1;
     p.xai_armed = false;
-    assert!(p.selected_auth_row().is_some_and(ModelsRow::is_xai));
+    assert!(p.selected_row().is_some_and(|r| r.is_xai()));
     assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
     assert_eq!(
         p.handle(PickerInput::Enter),

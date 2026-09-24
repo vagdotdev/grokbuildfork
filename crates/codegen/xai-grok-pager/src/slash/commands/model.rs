@@ -1,8 +1,11 @@
 //! `/model` (alias `/m`): switch the model and optionally its reasoning effort.
 //! Chained autocomplete: after picking a reasoning-supported model, the trailing space re-opens the dropdown into a `low|medium|high|xhigh` sub-menu.
 //!
-//! Workshop: bare `/model` opens the Models overlay (`views::connection_picker`) — the OpenCode
-//! free models, the Kilo pool, local servers and connected providers — instead of erroring.
+//! Workshop: bare `/model` opens the one connection picker (`views::connection_picker`) — the
+//! OpenCode free models, connected providers and the subscriptions — instead of erroring, and
+//! `/model <text>` that names no shell model opens it with `<text>` already in the filter. The
+//! argument dropdown lists real shell models only (the optional xAI account's, once signed in):
+//! never Workshop's session placeholder or the `No connection configured` stand-in.
 
 use agent_client_protocol as acp;
 use xai_grok_shell::sampling::types::{ReasoningEffortOption, supports_reasoning_effort_meta};
@@ -13,6 +16,16 @@ use crate::slash::command::{
     AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand, slash_meta,
 };
 use crate::slash::commands::effort_levels::build_effort_arg_items;
+
+/// Shell model ids that stand in for a Workshop connection rather than name a model a user can
+/// switch to: the Engine/Adapter session placeholder (`[model.workshop-connection]`) and the
+/// bundled `No connection configured` default.
+pub(crate) const WORKSHOP_STAND_IN_MODELS: [&str; 2] = ["workshop-connection", "workshop-unconfigured"];
+
+/// Whether a shell model is one of Workshop's stand-ins (see [`WORKSHOP_STAND_IN_MODELS`]).
+pub(crate) fn is_workshop_stand_in(id: &acp::ModelId) -> bool {
+    WORKSHOP_STAND_IN_MODELS.contains(&id.0.as_ref())
+}
 
 /// Switch the active model (and optionally its reasoning effort).
 pub struct ModelCommand;
@@ -40,7 +53,9 @@ impl SlashCommand for ModelCommand {
         if let Some(model_id) = detect_effort_phase(ctx.models, args_query) {
             return Some(build_effort_items(ctx.models, &model_id));
         }
-        Some(build_model_items(ctx.models))
+        // Workshop: with only stand-ins to list there is no dropdown; Enter opens the picker.
+        let items = build_model_items(ctx.models);
+        (!items.is_empty()).then_some(items)
     }
 
     fn preselected_arg(&self, ctx: &AppCtx, args_query: &str) -> Option<String> {
@@ -58,13 +73,19 @@ impl SlashCommand for ModelCommand {
         let trimmed = args.trim();
         if trimmed.is_empty() {
             return CommandResult::Action(Action::OpenConnectionPicker(
-                workshop_auth::PickerTab::Models,
+                workshop_auth::PickerFocus::Models {
+                    filter: String::new(),
+                },
             ));
         }
 
         // Prefer an exact full-string catalog match first. Model display names often contain spaces ("Grok 4.5").
         // If we split on the last token first, a shorter catalog entry ("Grok") would steal the prefix and treat "4.5" as an effort level
-        if let Some(id) = ctx.models.resolve_by_name_or_id(trimmed) {
+        if let Some(id) = ctx
+            .models
+            .resolve_by_name_or_id(trimmed)
+            .filter(|id| !is_workshop_stand_in(id))
+        {
             return CommandResult::Action(Action::SetDefaultModel(id));
         }
 
@@ -89,7 +110,13 @@ impl SlashCommand for ModelCommand {
             };
         }
 
-        CommandResult::Error(format!("Unknown model: {trimmed}"))
+        // Workshop: no shell model of that name — the picker, filtered to what was typed, lists
+        // the OpenCode models and the subscriptions that match.
+        CommandResult::Action(Action::OpenConnectionPicker(
+            workshop_auth::PickerFocus::Models {
+                filter: trimmed.to_owned(),
+            },
+        ))
     }
 }
 
@@ -141,10 +168,14 @@ fn detect_effort_phase(models: &ModelState, args_query: &str) -> Option<acp::Mod
 
 /// One row per logical model.
 /// Reasoning models get a trailing space in `insert_text` so the prompt widget chains into the effort sub-menu.
+/// Workshop's stand-in models are never rows (`GPT-6-Sol (current)` alone, or `No connection configured`).
 fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
     let current_id = models.current.as_ref();
     let mut items: Vec<ArgItem> = Vec::with_capacity(models.available.len());
     for (id, info) in &models.available {
+        if is_workshop_stand_in(id) {
+            continue;
+        }
         let is_current = current_id == Some(id);
         let supports = supports_reasoning_effort(info);
 
@@ -492,8 +523,70 @@ mod tests {
         state.available.insert(id, info);
         let mut ctx = dummy_exec_ctx(&state);
         let result = ModelCommand.run(&mut ctx, "Grok 4.5 high");
-        // Falls through to "is the whole string a model name?", which it isn't, so we get an Unknown error
-        assert!(matches!(result, CommandResult::Error(_)));
+        // Falls through to "is the whole string a model name?", which it isn't: Workshop opens
+        // the picker filtered to what was typed instead of an Unknown error.
+        assert!(matches!(
+            result,
+            CommandResult::Action(Action::OpenConnectionPicker(
+                workshop_auth::PickerFocus::Models { filter }
+            )) if filter == "Grok 4.5 high"
+        ));
+    }
+
+    /// Workshop's stand-in shell models are never dropdown rows and never a `/model` target: with
+    /// nothing else to list there is no dropdown at all, and a typed name opens the picker filtered.
+    #[test]
+    fn stand_in_models_are_hidden_from_the_dropdown_and_the_switch() {
+        let mut state = ModelState::default();
+        let (placeholder, info) = plain_model("workshop-connection", "GPT-6-Sol");
+        state.available.insert(placeholder.clone(), info);
+        let (unconfigured, info) = plain_model("workshop-unconfigured", "No connection configured");
+        state.available.insert(unconfigured, info);
+        state.current = Some(placeholder);
+        let cmd = ModelCommand;
+        let ctx = AppCtx {
+            models: &state,
+            cwd: std::path::Path::new("."),
+            has_session_announcements: false,
+            billing_surface_visible: true,
+            usage_command_visible: true,
+            workflows_available: true,
+            saved_workflows: &[],
+            workflow_runs: &[],
+            screen_mode: crate::app::ScreenMode::Fullscreen,
+            current_title: None,
+        };
+        assert!(cmd.suggest_args(&ctx, "").is_none(), "no lonely `(current)` row, no hint");
+        let mut exec = dummy_exec_ctx(&state);
+        assert!(matches!(
+            cmd.run(&mut exec, "GPT-6-Sol"),
+            CommandResult::Action(Action::OpenConnectionPicker(
+                workshop_auth::PickerFocus::Models { filter }
+            )) if filter == "GPT-6-Sol"
+        ));
+        // A real shell model beside them (the optional xAI account) still lists and switches.
+        let (grok, info) = plain_model("grok-4.5", "Grok 4.5");
+        state.available.insert(grok.clone(), info);
+        let ctx = AppCtx {
+            models: &state,
+            cwd: std::path::Path::new("."),
+            has_session_announcements: false,
+            billing_surface_visible: true,
+            usage_command_visible: true,
+            workflows_available: true,
+            saved_workflows: &[],
+            workflow_runs: &[],
+            screen_mode: crate::app::ScreenMode::Fullscreen,
+            current_title: None,
+        };
+        let items = cmd.suggest_args(&ctx, "").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].match_text, "Grok 4.5");
+        let mut exec = dummy_exec_ctx(&state);
+        assert!(matches!(
+            cmd.run(&mut exec, "Grok 4.5"),
+            CommandResult::Action(Action::SetDefaultModel(id)) if id == grok
+        ));
     }
 
     /// The bare `/model <name>` form dispatches `Action::SetDefaultModel(<ModelId>)` instead of the legacy `Action::SwitchModel { effort: None }`.
@@ -514,7 +607,8 @@ mod tests {
         }
     }
 
-    /// Workshop: bare `/model` opens the Models overlay instead of a usage error.
+    /// Workshop: bare `/model` opens the picker on the active model instead of a usage error;
+    /// text that names no shell model opens it with that text in the filter.
     #[test]
     fn run_bare_model_opens_the_models_overlay() {
         let state = ModelState::default();
@@ -522,8 +616,14 @@ mod tests {
         assert!(matches!(
             ModelCommand.run(&mut ctx, "  "),
             CommandResult::Action(Action::OpenConnectionPicker(
-                workshop_auth::PickerTab::Models
-            ))
+                workshop_auth::PickerFocus::Models { filter }
+            )) if filter.is_empty()
+        ));
+        assert!(matches!(
+            ModelCommand.run(&mut ctx, " claude "),
+            CommandResult::Action(Action::OpenConnectionPicker(
+                workshop_auth::PickerFocus::Models { filter }
+            )) if filter == "claude"
         ));
     }
 

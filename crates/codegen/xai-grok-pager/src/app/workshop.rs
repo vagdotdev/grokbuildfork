@@ -103,12 +103,14 @@ impl WorkshopConnection {
             ),
         }
     }
-    /// Picker row id of the active connection (Engine rows only; rails are not Models rows and a
-    /// Shell connection is the shell's own default model).
+    /// Picker row id of the active connection: the OpenCode model (at its picked level) or the
+    /// subscription model, so the picker marks it and its vendor; `None` for a Shell connection
+    /// (the shell's own default model).
     pub fn active_row_id(&self) -> Option<String> {
         match self {
             Self::Engine { model } => Some(model.row_id()),
-            Self::Shell | Self::Adapter { .. } => None,
+            Self::Adapter { rail, model } => Some(workshop_auth::rail_model_row_id(*rail, model)),
+            Self::Shell => None,
         }
     }
 }

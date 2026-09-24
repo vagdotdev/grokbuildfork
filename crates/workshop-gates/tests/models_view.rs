@@ -40,7 +40,8 @@ fn models_and_model_open_the_connection_view_without_grok_rows() {
     let mut j = spawn("models-view", &bin, &[], Some(fake.path()));
     connect_big_pickle(&mut j);
 
-    // The `/model` autocomplete dropdown: whatever the shell lists, no Grok row.
+    // The `/model` autocomplete dropdown: whatever the shell lists, no Grok row — and never the
+    // session placeholder as a lonely `(current)` row or the `No connection configured` hint.
     j.h.inject_keys(b"/model ").unwrap();
     j.h.update(Duration::from_millis(600));
     let dropdown = j.h.screen_contents();
@@ -49,6 +50,16 @@ fn models_and_model_open_the_connection_view_without_grok_rows() {
         assert!(
             !dropdown.contains(grok),
             "/model dropdown lists bundled Grok model {grok:?}\n{dropdown}"
+        );
+    }
+    for stand_in in [
+        "No connection configured",
+        "(current)",
+        "has no model connection",
+    ] {
+        assert!(
+            !dropdown.contains(stand_in),
+            "/model dropdown shows the stand-in {stand_in:?}\n{dropdown}"
         );
     }
     // Clear the composer.

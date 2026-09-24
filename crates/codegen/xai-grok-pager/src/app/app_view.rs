@@ -3474,9 +3474,10 @@ fn handle_connection_picker_input(
             let input = match key.code {
                 KeyCode::Up => PickerInput::Up,
                 KeyCode::Down => PickerInput::Down,
-                KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
-                    PickerInput::SwitchTab
-                }
+                KeyCode::Right => PickerInput::Open,
+                KeyCode::Left => PickerInput::Left,
+                // One list, no tabs: Tab is swallowed so it never reaches the composer.
+                KeyCode::Tab | KeyCode::BackTab => return InputOutcome::Changed,
                 KeyCode::Enter => PickerInput::Enter,
                 KeyCode::Esc => PickerInput::Back,
                 KeyCode::Backspace => PickerInput::Backspace,

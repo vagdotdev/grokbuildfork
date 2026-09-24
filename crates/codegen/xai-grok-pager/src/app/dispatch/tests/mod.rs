@@ -621,19 +621,22 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
     std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
     sess_dir
 }
-/// Workshop: `Action::Login` opens the connection picker (Subscriptions view) and never sends
-/// `Authenticate` by itself. The inherited interactive flow these tests exercise starts only from
-/// the picker's labeled optional xAI card — the last Subscriptions entry, two explicit Enters — so
-/// drive the picker there.
+/// Workshop: `Action::Login` opens the connection picker (on its Subscriptions section) and never
+/// sends `Authenticate` by itself. The inherited interactive flow these tests exercise starts only
+/// from the picker's labeled optional xAI row — the last row, two explicit Enters — so drive the
+/// picker there.
 pub(super) fn start_login_flow(app: &mut AppView) -> Vec<Effect> {
-    use workshop_auth::{PickerInput, PickerTab};
+    use workshop_auth::PickerInput;
     dispatch(Action::Login, app);
     let picker = app
         .connection_picker
         .as_ref()
         .expect("Login must open the connection picker");
-    assert_eq!(picker.tab, PickerTab::Subscriptions);
-    let entries = picker.subscriptions_len();
+    assert!(
+        picker.selected_row().is_some_and(|r| r.is_vendor()),
+        "/auth lands on the Subscriptions section"
+    );
+    let entries = picker.visible_rows().len();
     for _ in 0..entries {
         dispatch(Action::ConnectionPicker(PickerInput::Down), app);
     }

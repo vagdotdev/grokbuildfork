@@ -32,6 +32,8 @@ use xai_grok_pager_pty_harness::PtyHarness;
 /// The composer label on a first run: the model name only, no provider.
 const FIRST_RUN_LABEL: &str = "Big Pickle";
 const SEED_NOTE: &str = "cached list from 2026-09-21";
+/// The picker overlay is on screen (its search line starts with this glyph).
+const PICKER: &str = "\u{2315}";
 
 fn evidence_dir() -> PathBuf {
     let dir = std::env::var_os("WORKSHOP_PTY_EVIDENCE_DIR")
@@ -97,26 +99,50 @@ fn move_selection_to(h: &mut PtyHarness, needle: &str) {
     );
 }
 
-/// Rows of the open Models overlay whose provider column is `provider` (`OpenCode`, `Claude`):
-/// `name  provider  badge[ · active]` inside the box border. The overlay floats over the
+/// Rows of the open picker under the `group` header (`OpenCode`, `Claude`): the row lines
+/// between that header and the next one, inside the box border. The overlay floats over the
 /// transcript, so only the text between the box's first and last `│` counts — whatever the
 /// transcript shows to the left or right of the box (a timestamp, a tool row) is not the row.
-fn overlay_rows_for(h: &PtyHarness, provider: &str) -> Vec<String> {
-    h.screen_contents()
+/// Each row comes back as `name  state` with the `›` marker stripped.
+fn overlay_rows_for(h: &PtyHarness, group: &str) -> Vec<String> {
+    let inner: Vec<String> = h
+        .screen_contents()
         .lines()
         .map(|l| match (l.find('\u{2502}'), l.rfind('\u{2502}')) {
             (Some(first), Some(last)) if last > first => {
-                l[first + '\u{2502}'.len_utf8()..last].trim().to_owned()
+                l[first + '\u{2502}'.len_utf8()..last].to_owned()
             }
-            _ => l.trim().to_owned(),
+            _ => l.to_owned(),
         })
-        .filter(|l| {
-            l.contains(provider)
-                && ["free", "free · active", "free · key", "key", "key needed"]
-                    .iter()
-                    .any(|badge| l.ends_with(badge))
-        })
-        .collect()
+        .collect();
+    let mut rows = Vec::new();
+    let mut in_group = false;
+    for line in inner {
+        let trimmed = line.trim();
+        if trimmed == group {
+            in_group = true;
+            continue;
+        }
+        if !in_group {
+            continue;
+        }
+        // The next header is an unmarked, unindented word; rows are indented by their marker.
+        let is_row =
+            line.starts_with("  ") || line.starts_with(" \u{203a}") || line.starts_with('\u{203a}');
+        if !is_row || trimmed.starts_with('\u{2500}') || trimmed.is_empty() {
+            break;
+        }
+        let row = trimmed.trim_start_matches('\u{203a}').trim();
+        if ["free", "active", "key", "key needed", "\u{25b8}"]
+            .iter()
+            .any(|state| row.ends_with(state))
+        {
+            rows.push(row.to_owned());
+        } else {
+            break;
+        }
+    }
+    rows
 }
 
 fn quit(mut h: PtyHarness) {
@@ -344,27 +370,22 @@ fn catalogs_are_fetched_only_after_the_user_acts() {
         "the launch bring-up never shows on the composer:\n{screen}"
     );
 
-    // 2. `/auth`, and its Models view via Tab: still nothing more.
+    // 2. `/auth` (the same picker, with the models listed above the subscriptions): still
+    //    nothing more.
     slash(&mut run.h, "/auth");
-    wait_for(&mut run.h, "Tab: Models", 10);
-    run.h.inject_keys(b"\t").unwrap();
-    wait_for(&mut run.h, "Tab: Subscriptions", 5);
+    wait_for(&mut run.h, PICKER, 10);
     wait_for(&mut run.h, "OpenCode", 10);
     run.h.update(Duration::from_millis(2000));
-    snapshot(&run.h, &dir, "02-auth-then-tab-models-no-fetch");
-    assert_eq!(
-        proxy.remote_hosts(),
-        installer_only,
-        "/auth (even on its Models view) must not fetch"
-    );
+    snapshot(&run.h, &dir, "02-auth-no-fetch");
+    assert_eq!(proxy.remote_hosts(), installer_only, "/auth must not fetch");
     run.h.inject_keys(b"\x1b").unwrap();
-    wait_gone(&mut run.h, "Tab: Subscriptions", 5);
+    wait_gone(&mut run.h, PICKER, 5);
 
     // 3. `/model` on a fresh home lists OpenCode's models (the dated seed row until the first
     //    message) and the installed subscription CLIs — no hosted API-key provider has a key, so
     //    there is no list to fetch and the proxy is never asked. Kilo Gateway is never a row.
     slash(&mut run.h, "/model");
-    wait_for(&mut run.h, "Tab: Subscriptions", 10);
+    wait_for(&mut run.h, PICKER, 10);
     wait_gone(&mut run.h, "loading\u{2026}", 20);
     wait_gone(&mut run.h, "refreshing lists", 15);
     run.h.update(Duration::from_millis(2000));
@@ -376,10 +397,15 @@ fn catalogs_are_fetched_only_after_the_user_acts() {
     );
     assert!(
         selected_line(&run.h).is_some_and(|l| l.contains("Big Pickle"))
-            && screen.contains(SEED_NOTE)
-            && screen.contains("live list arrives once OpenCode has started"),
+            && screen.contains(SEED_NOTE),
         "the OpenCode seed row is highlighted and dated:\n{screen}"
     );
+    for plumbing in ["opencode serve", "opencode.ai", "CLI"] {
+        assert!(
+            !screen.contains(plumbing),
+            "no plumbing under a model ({plumbing:?}):\n{screen}"
+        );
+    }
     assert!(
         !screen.contains("Kilo")
             && !screen.contains("refresh failed")
@@ -440,7 +466,7 @@ fn catalogs_are_fetched_only_after_the_user_acts() {
         proxy.remote_hosts()
     );
     slash(&mut run.h, "/model");
-    wait_for(&mut run.h, "Tab: Subscriptions", 10);
+    wait_for(&mut run.h, PICKER, 10);
     wait_gone(&mut run.h, "loading\u{2026}", 20);
     wait_gone(&mut run.h, "refreshing lists", 15);
     wait_for(&mut run.h, "NVIDIA", 10);
@@ -541,7 +567,7 @@ fn model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up() {
     let mut run = spawn(&bin, home.path(), &offline, None);
     wait_for(&mut run.h, FIRST_RUN_LABEL, 30);
     slash(&mut run.h, "/model");
-    wait_for(&mut run.h, "Tab: Subscriptions", 10);
+    wait_for(&mut run.h, PICKER, 10);
     wait_for(&mut run.h, "OpenCode", 15);
     wait_gone(&mut run.h, "loading\u{2026}", 20);
     wait_gone(&mut run.h, "refreshing lists", 15);
@@ -551,7 +577,7 @@ fn model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up() {
     wait_for(&mut run.h, SEED_NOTE, 5);
     snapshot(&run.h, &dir, "10-model-before-engine-seed-only");
     run.h.inject_keys(b"\x1b").unwrap();
-    wait_gone(&mut run.h, "Tab: Subscriptions", 5);
+    wait_gone(&mut run.h, PICKER, 5);
     quit(run.h);
 
     // With the fake on PATH the engine starts at launch — nothing typed — and its free list is
@@ -577,22 +603,22 @@ fn model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up() {
     assert_eq!(cached[0]["model_ref"], "opencode/big-pickle");
     assert_eq!(cached[0]["is_default"], true);
     slash(&mut run.h, "/model");
-    wait_for(&mut run.h, "Tab: Subscriptions", 10);
+    wait_for(&mut run.h, PICKER, 10);
     wait_for(&mut run.h, "Nemotron 3 Ultra Free", 10);
     wait_gone(&mut run.h, "loading\u{2026}", 20);
     wait_gone(&mut run.h, "refreshing lists", 15);
-    // Models only (a model with effort levels adds one `Name (level)` row per level).
+    // One row per model (a model with effort levels opens into them; it is not a row per level).
     let at_launch = overlay_rows_for(&run.h, "OpenCode");
-    let at_launch_models = at_launch.iter().filter(|r| !r.contains(" (")).count();
     assert_eq!(
-        at_launch_models, 8,
+        at_launch.len(),
+        8,
         "the engine started at launch: its live list is there before the first message:\n{at_launch:#?}"
     );
     move_selection_to(&mut run.h, "Big Pickle");
-    wait_for(&mut run.h, "Model list fetched", 5);
+    wait_for(&mut run.h, "list fetched", 5);
     snapshot(&run.h, &dir, "11-model-at-launch-live-list");
     run.h.inject_keys(b"\x1b").unwrap();
-    wait_gone(&mut run.h, "Tab: Subscriptions", 5);
+    wait_gone(&mut run.h, PICKER, 5);
 
     // The first message goes through the engine that started at launch; its turn replays the
     // captured fixture.
@@ -604,31 +630,27 @@ fn model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up() {
 
     // After: `/model` still lists every free model the engine reports, dated from the fetch.
     slash(&mut run.h, "/model");
-    wait_for(&mut run.h, "Tab: Subscriptions", 10);
+    wait_for(&mut run.h, PICKER, 10);
     wait_for(&mut run.h, "Nemotron 3 Ultra Free", 10);
     wait_gone(&mut run.h, "loading\u{2026}", 20);
     wait_gone(&mut run.h, "refreshing lists", 15);
-    // Every model is a row; a model with effort levels adds one row per level (`Name (high)`),
-    // so count the models themselves and check the levels separately.
+    // Every model is one row; a model with effort levels is marked as opening into them.
     let after = overlay_rows_for(&run.h, "OpenCode");
-    let models: Vec<&String> = after.iter().filter(|r| !r.contains(" (")).collect();
     assert!(
-        models.len() > before.len() && models.len() == 8,
+        after.len() > before.len() && after.len() == 8,
         "live engine models {} vs seed {}:\n{after:#?}",
-        models.len(),
+        after.len(),
         before.len()
     );
-    for level in ["(low)", "(medium)", "(high)"] {
-        assert!(
-            after
-                .iter()
-                .any(|r| r.starts_with("Ling 3.0 Flash Fin Free ") && r.contains(level)),
-            "the catalog's effort levels are rows: {level} missing in {after:#?}"
-        );
-    }
     assert!(
-        !after.iter().any(|r| r.starts_with("Big Pickle (")),
-        "a model without levels has no level rows: {after:#?}"
+        after
+            .iter()
+            .any(|r| r.starts_with("Ling 3.0 Flash Fin Free") && r.ends_with('\u{25b8}')),
+        "a model with effort levels opens into them: {after:#?}"
+    );
+    assert!(
+        !after.iter().any(|r| r.contains(" (")),
+        "no `Name (level)` rows: {after:#?}"
     );
     for name in [
         "Big Pickle",
@@ -647,15 +669,15 @@ fn model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up() {
         "deprecated rows are not offered: {after:#?}"
     );
     move_selection_to(&mut run.h, "Big Pickle");
-    wait_for(
-        &mut run.h,
-        "Model list fetched just now from opencode serve",
-        5,
-    );
+    wait_for(&mut run.h, "list fetched just now", 5);
     let screen = run.h.screen_contents();
     assert!(
         selected_line(&run.h).is_some_and(|l| l.contains("active")),
         "the active default is still highlighted:\n{screen}"
+    );
+    assert!(
+        !screen.contains("opencode serve") && !screen.contains("/config/providers"),
+        "the freshness note names no endpoint:\n{screen}"
     );
     snapshot(&run.h, &dir, "13-model-after-engine-live-list");
     quit(run.h);
@@ -667,12 +689,12 @@ fn model_lists_more_opencode_rows_than_the_seed_when_opencode_serve_is_up() {
     wait_for(&mut run.h, "Nemotron 3 Ultra Free", 15);
     let rows = overlay_rows_for(&run.h, "OpenCode");
     assert_eq!(
-        rows.iter().filter(|r| !r.contains(" (")).count(),
+        rows.len(),
         8,
         "cached engine list on the next launch: {rows:#?}"
     );
     move_selection_to(&mut run.h, "Big Pickle");
-    wait_for(&mut run.h, "Model list fetched", 5);
+    wait_for(&mut run.h, "list fetched", 5);
     snapshot(&run.h, &dir, "14-model-next-launch-cached-live-list");
     quit(run.h);
     eprintln!("evidence: {}", dir.display());

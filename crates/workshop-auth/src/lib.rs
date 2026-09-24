@@ -1,26 +1,25 @@
-//! Workshop connection picker: the `/model` and `/auth` overlays.
+//! Workshop connection picker: the one overlay behind `/model` and `/auth`.
 //!
 //! Workshop starts with the OpenCode engine's default free model active, so the picker is never
-//! the first screen. `/model` opens the **Models** view (one line per usable model); `/auth`
-//! (alias `/login`) opens the **Subscriptions** view (the Claude / Codex / Cursor rails with a
-//! Detecting / Ready / Sign in pill, the API-key providers, and the optional xAI card last).
-//! `Tab` switches between the two; `Esc` closes.
+//! the first screen. `/model` opens it on the active model; `/auth` (alias `/login`) opens the
+//! same list on its Subscriptions section. There is one view: OpenCode's free models first (one
+//! row per model; a model with effort levels opens a sub-menu of its levels), then any API-key
+//! provider with a key configured (its own group), then the **Subscriptions** section — one row
+//! per vendor, Claude / Codex / Cursor, whose row styling carries the state (`sign in`,
+//! `install`, `✓ Max ▸`) and which opens into that vendor's real model list when signed in — then
+//! `API keys ▸` (the providers to connect) and the labelled optional xAI row last.
 //!
-//! The picker never starts an OAuth flow by itself. The optional xAI card is the single entry
+//! The picker never starts an OAuth flow by itself. The optional xAI row is the single entry
 //! point to the inherited xAI OIDC flow, and only after the user selects it twice.
 //!
-//! Models view layout (owner decision, v0.2.2): OpenCode's free models first, then every
-//! *installed* subscription CLI as its own group — Claude, Codex, Cursor — listing its models when
-//! it is signed in and one `Sign in` row when it is not (a CLI that is not installed is not on
-//! `/model` at all; it stays on `/auth`), then the API-key providers that have a key configured.
 //! Kilo Gateway is never listed ([`HIDDEN_PROVIDERS`]): it is Workshop's silent fallback when the
 //! OpenCode model cannot answer, and the user only ever sees the answering model's name.
 //!
-//! Data sources: Models rows come from [`workshop_providers`] (local servers, connected
-//! providers) plus the OpenCode free catalog; rail state comes from [`workshop_detect`] (the
-//! single detection source). This crate holds the pure picker policy and
-//! the `[model.<key>]` config writer; the host renders the state, feeds it [`PickerInput`], and
-//! executes [`PickerOutcome`]s.
+//! Data sources: model rows come from [`workshop_providers`] (local servers, connected
+//! providers) plus the OpenCode free catalog; vendor state comes from [`workshop_detect`] (the
+//! single detection source). This crate holds the pure picker policy and the `[model.<key>]`
+//! config writer; the host renders the state, feeds it [`PickerInput`], and executes
+//! [`PickerOutcome`]s.
 //!
 //! What this crate does **not** do (gate:no-theft): read any keychain item, any `auth.json`, any
 //! Cursor SDK auth file, or spawn a vendor CLI for a turn.
@@ -67,29 +66,31 @@ impl ConnectionClass {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PickerTab {
-    Models,
+/// Where the picker opens: `/model` lands on the active model (with any typed text already in
+/// the filter), `/auth` on the first subscription row. Same list either way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PickerFocus {
+    Models { filter: String },
     Subscriptions,
 }
 
-impl PickerTab {
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Models => "Models",
-            Self::Subscriptions => "Subscriptions",
-        }
-    }
-    pub fn other(self) -> Self {
-        match self {
-            Self::Models => Self::Subscriptions,
-            Self::Subscriptions => Self::Models,
+impl Default for PickerFocus {
+    fn default() -> Self {
+        Self::Models {
+            filter: String::new(),
         }
     }
 }
 
+/// The picker's title; a sub-menu appends its name (`Models › Claude`).
+pub const PICKER_TITLE: &str = "Models";
+/// Group header over the vendor rows.
+pub const SUBSCRIPTIONS_HEADER: &str = "Subscriptions";
+/// Title of the row that opens the API-key providers.
+pub const API_KEYS_TITLE: &str = "API keys";
+
 pub const XAI_ROW_ID: &str = "xai_optional";
-/// Copy on the optional xAI card, verbatim from the plan.
+/// Copy on the optional xAI row, verbatim from the plan.
 pub const XAI_CARD_COPY: &str = "Uses xAI accounts and auth.x.ai. Not required.";
 /// Provider id of the OpenCode engine rows (free tier reachable only through the genuine client).
 pub const ENGINE_PROVIDER_ID: &str = "opencode-engine";
@@ -97,6 +98,8 @@ pub const ENGINE_PROVIDER_ID: &str = "opencode-engine";
 pub const ENGINE_DISPLAY_NAME: &str = "OpenCode";
 /// Where the engine rows come from when they are live: the running `opencode serve`.
 pub const ENGINE_CATALOG_SOURCE: &str = "opencode serve /config/providers";
+/// The one footer line under an OpenCode model: what it costs and where prompts go, no plumbing.
+pub const ENGINE_ROW_NOTE: &str = "Free · no sign-in · the provider may log prompts";
 /// Providers that exist in the catalog code but are never listed on `/model` or `/auth` and never
 /// fetched for the picker (owner decision, v0.2.2): the Kilo Gateway community pool, which only
 /// serves as the silent fallback behind the OpenCode default.
@@ -202,6 +205,11 @@ impl EngineModel {
         }
     }
 
+    /// Row id of the model whatever level is picked (`opencode-engine:opencode/<id>`).
+    pub fn base_row_id(&self) -> String {
+        format!("{ENGINE_PROVIDER_ID}:{}", self.model_ref)
+    }
+
     /// The composer / row text, upstream's format: `Big Pickle`, `Ling 3.0 Flash Fin Free (high)`.
     pub fn display(&self) -> String {
         match &self.effort {
@@ -210,10 +218,10 @@ impl EngineModel {
         }
     }
 
-    /// This model at `effort` (a level of `variants`).
-    pub fn with_effort(&self, effort: &str) -> Self {
+    /// This model at `effort` (a level of `variants`), or at its own default for `None`.
+    pub fn with_effort(&self, effort: Option<&str>) -> Self {
         Self {
-            effort: Some(effort.to_owned()),
+            effort: effort.map(str::to_owned),
             ..self.clone()
         }
     }
@@ -231,42 +239,53 @@ impl EngineModel {
     }
 }
 
+/// Picker row id of a subscription model (`claude:anthropic:sonnet`); the active connection
+/// carries the same id so the picker can mark it.
+pub fn rail_model_row_id(rail: Rail, model: &workshop_detect::ModelRef) -> String {
+    format!("{}:{}", rail.vendor().id(), model.key())
+}
+
 /// One picker row.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RowKind {
     /// A Direct API / Local catalog row. `locked` means the provider still needs a credential.
     Catalog { model: CatalogModel, locked: bool },
-    /// A provider that has nothing selectable yet: connect it (sign in / paste key). Shown on the
-    /// Subscriptions view below the rails.
+    /// A provider that has nothing selectable yet: connect it (sign in / paste key). Lives in the
+    /// `API keys` sub-menu.
     ConnectProvider {
         provider_id: String,
         copy: String,
         credential_url: Option<String>,
     },
-    /// A free model behind the OpenCode engine.
+    /// A free model behind the OpenCode engine: one row per model (`effort` is `None` here; a
+    /// model with levels opens the [`RowKind::Effort`] sub-menu).
     Engine(EngineModel),
-    /// A model of an installed, signed-in subscription CLI (Models view group per rail).
+    /// One level of an OpenCode model's effort sub-menu (`effort` set), or its own default (`None`).
+    Effort(EngineModel),
+    /// A model of a signed-in subscription CLI (its vendor's sub-menu, or the filtered flat list).
     RailModel {
         rail: Rail,
         model: workshop_detect::ModelRef,
     },
-    /// The one row of an installed but signed-out subscription CLI: `Sign in`.
-    RailSignIn(Rail),
-    /// The one row of a signed-in subscription CLI whose own model list is not here (yet):
-    /// `Loading models…`, or the rail's failure copy. Not selectable; never a made-up model.
-    RailNote(Rail, String),
-    /// The labeled optional xAI card (Subscriptions view, last).
+    /// A subscription vendor — Claude / Codex / Cursor. Its state comes from the picker's rails;
+    /// signed in it opens into the CLI's own model list, signed out Enter runs the official login,
+    /// not installed Enter runs the official installer.
+    Vendor(Rail),
+    /// The row that opens the API-key providers to connect.
+    ApiKeys,
+    /// The labeled optional xAI row (last).
     XaiOptional,
 }
 
-/// What a signed-in rail shows while its CLI's model list has not arrived: the detect layer's
-/// own copy (it sets the rail's `empty_copy` to this, or to its failure copy).
+/// What a signed-in vendor shows while its CLI's model list has not arrived: the detect layer's
+/// own copy.
 pub const LOADING_MODELS: &str = workshop_detect::copy::LOADING_MODELS;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelsRow {
     pub kind: RowKind,
-    /// Provider display name; rows of one provider are contiguous.
+    /// Group header the row sits under (`OpenCode`, a provider name, `Subscriptions`); rows of
+    /// one group are contiguous.
     pub group: String,
     /// Full badge such as `Free · No sign-in · Shared pool · may log/train` (first detail line).
     pub badge: String,
@@ -278,27 +297,29 @@ impl ModelsRow {
         match &self.kind {
             RowKind::Catalog { model, .. } => model.key(),
             RowKind::ConnectProvider { provider_id, .. } => format!("connect:{provider_id}"),
-            RowKind::Engine(m) => m.row_id(),
-            RowKind::RailModel { rail, model } => {
-                format!("{}:{}", rail.vendor().id(), model.key())
-            }
-            RowKind::RailSignIn(rail) => format!("{}:sign-in", rail.vendor().id()),
-            RowKind::RailNote(rail, _) => format!("{}:note", rail.vendor().id()),
+            RowKind::Engine(m) => m.base_row_id(),
+            RowKind::Effort(m) => m.row_id(),
+            RowKind::RailModel { rail, model } => rail_model_row_id(*rail, model),
+            RowKind::Vendor(rail) => format!("vendor:{}", rail.vendor().id()),
+            RowKind::ApiKeys => "api-keys".into(),
             RowKind::XaiOptional => XAI_ROW_ID.into(),
         }
     }
-    /// Row name: the model name, or `Provider — Sign in` / `Provider — API key` for a provider
-    /// that still has to be connected (one vocabulary for every connect row, the xAI card included).
+    /// Row name: the model name; the vendor name; `Provider — Sign in` / `Provider — API key`
+    /// for a provider that still has to be connected; a level (`high`) or `Default` in an
+    /// effort sub-menu.
     pub fn title(&self) -> String {
         match &self.kind {
             RowKind::Catalog { model, .. } => model.display_name.clone(),
-            RowKind::ConnectProvider { .. } | RowKind::XaiOptional => {
+            RowKind::ConnectProvider { .. } => {
                 format!("{} \u{2014} {}", self.group, self.connect_action())
             }
-            RowKind::Engine(m) => m.display(),
+            RowKind::Engine(m) => m.name.clone(),
+            RowKind::Effort(m) => m.effort.clone().unwrap_or_else(|| "Default".into()),
             RowKind::RailModel { model, .. } => model.display().to_owned(),
-            RowKind::RailSignIn(_) => "Sign in".into(),
-            RowKind::RailNote(_, copy) => copy.clone(),
+            RowKind::Vendor(rail) => rail.display_name().to_owned(),
+            RowKind::ApiKeys => API_KEYS_TITLE.into(),
+            RowKind::XaiOptional => "xAI".into(),
         }
     }
     /// How a connect row is acted on: a browser sign-in, or a pasted API key.
@@ -308,19 +329,23 @@ impl ModelsRow {
                 "openrouter" | "opencode" => "Sign in",
                 _ => "API key",
             },
-            RowKind::XaiOptional | RowKind::RailSignIn(_) => "Sign in",
+            RowKind::XaiOptional | RowKind::Vendor(_) => "Sign in",
             RowKind::Catalog { .. }
             | RowKind::Engine(_)
+            | RowKind::Effort(_)
             | RowKind::RailModel { .. }
-            | RowKind::RailNote(..) => "",
+            | RowKind::ApiKeys => "",
         }
     }
-    /// Provider column of the row line.
+    /// Provider column of the flat (filtered) list: where the row comes from.
     pub fn provider(&self) -> &str {
-        &self.group
+        match &self.kind {
+            RowKind::Vendor(_) | RowKind::ApiKeys | RowKind::XaiOptional => "",
+            _ => &self.group,
+        }
     }
-    /// Short badge for the row line: `free` / `free · key` / `key` / `key needed` for models;
-    /// connect rows carry their action in the title and only the xAI card is badged `optional`.
+    /// Static badge of a model row: `free` / `free · key` / `key` / `key needed`. Rows whose state
+    /// is live (vendors) are described by [`PickerState::row_suffix`].
     pub fn short_badge(&self) -> &'static str {
         match &self.kind {
             RowKind::Catalog { model, locked } => {
@@ -335,10 +360,12 @@ impl ModelsRow {
                 }
             }
             RowKind::Engine(_) => "free",
-            RowKind::RailModel { .. } => "subscription",
-            RowKind::RailSignIn(_) => "sign in",
-            RowKind::RailNote(..) | RowKind::ConnectProvider { .. } => "",
             RowKind::XaiOptional => "optional",
+            RowKind::Effort(_)
+            | RowKind::RailModel { .. }
+            | RowKind::ConnectProvider { .. }
+            | RowKind::Vendor(_)
+            | RowKind::ApiKeys => "",
         }
     }
     /// Whether a model row is a chat model a user would pick to talk to. Classifiers, guard /
@@ -348,40 +375,42 @@ impl ModelsRow {
             RowKind::Catalog { model, .. } => {
                 is_chat_model_name(&model.display_name) && is_chat_model_name(&model.model_id)
             }
-            RowKind::Engine(m) => is_chat_model_name(&m.name) && is_chat_model_name(&m.model_ref),
+            RowKind::Engine(m) | RowKind::Effort(m) => {
+                is_chat_model_name(&m.name) && is_chat_model_name(&m.model_ref)
+            }
             RowKind::RailModel { .. }
-            | RowKind::RailSignIn(_)
-            | RowKind::RailNote(..)
+            | RowKind::Vendor(_)
+            | RowKind::ApiKeys
             | RowKind::ConnectProvider { .. }
             | RowKind::XaiOptional => true,
         }
     }
-    /// Whether the row belongs to the Models view (a model, or a subscription's `Sign in`) rather
-    /// than Subscriptions.
+    /// Whether the row is a model the user can pick (a leaf), as opposed to a row that opens a
+    /// sub-menu or connects something.
     pub fn is_model(&self) -> bool {
         matches!(
             self.kind,
             RowKind::Catalog { .. }
                 | RowKind::Engine(_)
+                | RowKind::Effort(_)
                 | RowKind::RailModel { .. }
-                | RowKind::RailSignIn(_)
-                | RowKind::RailNote(..)
         )
     }
     pub fn is_xai(&self) -> bool {
         matches!(self.kind, RowKind::XaiOptional)
     }
-    /// The provider whose model list this row belongs to (`opencode-engine` for engine rows);
-    /// `None` for the xAI card.
+    pub fn is_vendor(&self) -> bool {
+        matches!(self.kind, RowKind::Vendor(_))
+    }
+    /// The provider whose model list this row belongs to (`opencode-engine` for engine rows, the
+    /// vendor id for subscription rows); `None` for the xAI and API keys rows.
     pub fn provider_id(&self) -> Option<&str> {
         match &self.kind {
             RowKind::Catalog { model, .. } => Some(model.provider_id.as_str()),
             RowKind::ConnectProvider { provider_id, .. } => Some(provider_id.as_str()),
-            RowKind::Engine(_) => Some(ENGINE_PROVIDER_ID),
-            RowKind::RailModel { rail, .. }
-            | RowKind::RailSignIn(rail)
-            | RowKind::RailNote(rail, _) => Some(rail.vendor().id()),
-            RowKind::XaiOptional => None,
+            RowKind::Engine(_) | RowKind::Effort(_) => Some(ENGINE_PROVIDER_ID),
+            RowKind::RailModel { rail, .. } | RowKind::Vendor(rail) => Some(rail.vendor().id()),
+            RowKind::ApiKeys | RowKind::XaiOptional => None,
         }
     }
 }
@@ -389,8 +418,8 @@ impl ModelsRow {
 /// Everything the host feeds into the picker once its async loaders finish.
 #[derive(Debug, Clone, Default)]
 pub struct PickerSnapshot {
-    /// Local rows first, then hosted providers in manifest order (from `Catalog::picker_groups`),
-    /// then the engine rows, then the connect rows and the xAI card (see [`models_rows`]).
+    /// The engine rows, then hosted providers in manifest order (from `Catalog::picker_groups`),
+    /// then the vendor rows, the connect rows and the xAI row (see [`models_rows`]).
     pub rows: Vec<ModelsRow>,
     pub rails: Vec<RailState>,
     /// The plan's first-run default for Direct API connections (kept for the CLI text).
@@ -404,99 +433,49 @@ pub struct PickerSnapshot {
     pub live: bool,
 }
 
-/// Build every picker row for a snapshot; [`PickerState::apply_snapshot`] splits them into the
-/// Models view (OpenCode models, installed subscriptions, connected API-key providers) and the
-/// Subscriptions view (rails are drawn from `rails` there; connect rows + xAI card here).
+/// Build every picker row for a snapshot: OpenCode's models (one per model), the connected
+/// API-key / local providers' models, the three vendor rows, the connect rows (which
+/// [`PickerState::apply_snapshot`] moves into the `API keys` sub-menu) and the xAI row.
 ///
 /// `catalog` already contains detected local rows; `connected(provider_id)` comes from the broker;
-/// `engine_models` is the cached / live engine catalog (empty → the Big Pickle seed row); `rails`
-/// is the probed state of the Claude / Codex / Cursor CLIs.
+/// `engine_models` is the cached / live engine catalog (empty → the Big Pickle seed row). The
+/// vendors' models are not rows here: they are read from the picker's rails when a vendor opens.
 pub fn models_rows(
     catalog: &workshop_providers::Catalog,
     connected: impl Fn(&str) -> bool,
     engine_models: &[EngineModel],
-    rails: &[RailState],
+    _rails: &[RailState],
 ) -> Vec<ModelsRow> {
     let mut rows = Vec::new();
     // OpenCode free tier first: it is the first-run default. Only through the genuine client, so
-    // it is an engine group, not Direct API.
+    // it is an engine group, not Direct API. One row per model; its levels are a sub-menu.
     let engine: Vec<EngineModel> = if engine_models.is_empty() {
         vec![EngineModel::big_pickle_seed()]
     } else {
         engine_models.to_vec()
     };
-    // A model with effort levels is one row at its default plus one per level (`Name (high)`),
-    // so the composer can say exactly what was picked; a model without levels is one row.
     for m in engine {
-        let levels: Vec<EngineModel> = m.variants.iter().map(|v| m.with_effort(v)).collect();
-        for model in std::iter::once(m).chain(levels) {
-            rows.push(ModelsRow {
-                kind: RowKind::Engine(model),
-                group: ENGINE_DISPLAY_NAME.into(),
-                badge: "Free · no sign-in · OpenCode's shared pool".into(),
-                class: ConnectionClass::AgentAdapter,
-            });
-        }
+        rows.push(ModelsRow {
+            kind: RowKind::Engine(m.with_effort(None)),
+            group: ENGINE_DISPLAY_NAME.into(),
+            badge: "Free · no sign-in · OpenCode's shared pool".into(),
+            class: ConnectionClass::AgentAdapter,
+        });
     }
-    // Then each installed subscription CLI as its own group: its own models when signed in (the
-    // list the CLI reports, in its order), one `Loading models…` / failure row while that list is
-    // not here, one `Sign in` row when signed out. A CLI that is not installed stays on the
-    // Subscriptions view only. Never a made-up model.
-    for rail in rails.iter().filter(|r| r.installed) {
-        let group = rail.rail.display_name().to_owned();
-        if rail.is_ready() && !rail.models.is_empty() {
-            for model in &rail.models {
-                rows.push(ModelsRow {
-                    kind: RowKind::RailModel {
-                        rail: rail.rail,
-                        model: model.clone(),
-                    },
-                    group: group.clone(),
-                    badge: format!(
-                        "Subscription · through the official {} CLI",
-                        rail.rail.vendor().display_name()
-                    ),
-                    class: ConnectionClass::AgentAdapter,
-                });
-            }
-        } else if rail.is_ready() {
-            rows.push(ModelsRow {
-                kind: RowKind::RailNote(
-                    rail.rail,
-                    rail.empty_copy.unwrap_or(LOADING_MODELS).to_owned(),
-                ),
-                group: group.clone(),
-                badge: format!(
-                    "Signed in · the model list comes from the official {} CLI",
-                    rail.rail.vendor().display_name()
-                ),
-                class: ConnectionClass::AgentAdapter,
-            });
-        } else if rail.pill != Pill::Detecting {
-            rows.push(ModelsRow {
-                kind: RowKind::RailSignIn(rail.rail),
-                group: group.clone(),
-                badge: format!(
-                    "Installed, not signed in · Enter runs the official {} login",
-                    rail.rail.vendor().display_name()
-                ),
-                class: ConnectionClass::AgentAdapter,
-            });
-        }
-    }
+    let mut connect_rows = Vec::new();
     for group in catalog.picker_groups(&connected) {
         if is_hidden_provider(&group.provider_id) {
             continue;
         }
         let class = ConnectionClass::from_provider(group.class);
-        // Hosted API-key providers are listed on the Models view only once a key is configured;
-        // until then they are a connect row on the Subscriptions view.
+        // Hosted API-key providers are listed only once a key is configured; until then they
+        // are a connect row in the `API keys` sub-menu.
         let listed = class == ConnectionClass::Local || connected(&group.provider_id);
         if group.rows.is_empty() || !listed {
             if let Some(copy) = group.connect_copy.clone() {
                 let credential_url = workshop_providers::manifest(&group.provider_id)
                     .and_then(|m| m.credential_url.clone());
-                rows.push(ModelsRow {
+                connect_rows.push(ModelsRow {
                     kind: RowKind::ConnectProvider {
                         provider_id: group.provider_id.clone(),
                         copy,
@@ -525,7 +504,7 @@ pub fn models_rows(
         {
             let credential_url = workshop_providers::manifest(&group.provider_id)
                 .and_then(|m| m.credential_url.clone());
-            rows.push(ModelsRow {
+            connect_rows.push(ModelsRow {
                 kind: RowKind::ConnectProvider {
                     provider_id: group.provider_id.clone(),
                     copy: format!("{copy} ({} more models)", group.locked_rows),
@@ -537,9 +516,31 @@ pub fn models_rows(
             });
         }
     }
+    // The Subscriptions section: every vendor, installed or not (a missing CLI is one keypress
+    // from its official installer), then the API-key providers to connect, then xAI last.
+    for rail in Rail::ALL {
+        rows.push(ModelsRow {
+            kind: RowKind::Vendor(rail),
+            group: SUBSCRIPTIONS_HEADER.into(),
+            badge: format!(
+                "Subscription · through the official {} CLI",
+                rail.vendor().display_name()
+            ),
+            class: ConnectionClass::AgentAdapter,
+        });
+    }
+    if !connect_rows.is_empty() {
+        rows.push(ModelsRow {
+            kind: RowKind::ApiKeys,
+            group: SUBSCRIPTIONS_HEADER.into(),
+            badge: "Your own key or account with a hosted provider".into(),
+            class: ConnectionClass::DirectApi,
+        });
+        rows.extend(connect_rows);
+    }
     rows.push(ModelsRow {
         kind: RowKind::XaiOptional,
-        group: "xAI".into(),
+        group: SUBSCRIPTIONS_HEADER.into(),
         badge: XAI_CARD_COPY.into(),
         class: ConnectionClass::OptionalXai,
     });
@@ -551,27 +552,41 @@ pub fn models_rows(
 pub enum PickerInput {
     Up,
     Down,
-    /// Switch views (Tab / Left / Right).
-    SwitchTab,
+    /// Open the highlighted row's sub-menu (`→`); nothing on a row without one.
+    Open,
+    /// Leave the open sub-menu (`←`); nothing at the top level.
+    Left,
     Enter,
-    /// Close the detail panel / cancel key entry, or the picker when nothing is open.
+    /// Clear the filter, disarm the xAI row, leave the sub-menu, or close the picker (`Esc`), in
+    /// that order; cancels an open key-entry prompt.
     Back,
-    /// Text typed: a key-entry prompt takes it as the key, the Models view as its filter.
+    /// Text typed: a key-entry prompt takes it as the key, the list as its filter.
     Char(char),
     Backspace,
     /// Paste while a key-entry prompt is open.
     Paste(String),
     /// Refresh live catalogs / re-probe rails (`Ctrl+R`).
     Refresh,
-    /// Show / hide the non-chat models (classifiers, routers…) on the Models view (`Ctrl+A`).
+    /// Show / hide the non-chat models (classifiers, routers…) (`Ctrl+A`).
     ToggleShowAll,
 }
 
-/// One line of the Models view as rendered: a group header or a selectable row.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ModelsLine<'a> {
-    Header(&'a str),
-    Row(&'a ModelsRow),
+/// One line of the list as rendered: a group header or a selectable row.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModelsLine {
+    Header(String),
+    Row(ModelsRow),
+}
+
+/// How a piece of a row's state suffix is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    /// Signed in, free, active: the success colour.
+    Good,
+    /// A state that asks for something (`sign in`, `install`), `optional`, the `▸` marker.
+    Dim,
+    /// The plan name and other plain facts.
+    Plain,
 }
 
 /// What the host must do after a key press.
@@ -581,7 +596,7 @@ pub enum PickerOutcome {
     Changed,
     /// Picker closed (Esc); host returns to the previous view.
     Close,
-    /// User explicitly selected the labeled optional xAI card twice: the host may start the
+    /// User explicitly selected the labeled optional xAI row twice: the host may start the
     /// inherited xAI OIDC flow. This is the only outcome that leads to `auth.x.ai`.
     StartOptionalXaiLogin,
     /// A Direct API / Local row: write `[model.<key>]`, make it active.
@@ -591,18 +606,19 @@ pub enum PickerOutcome {
     ConnectProvider(String),
     /// The user pasted a key for `provider_id` (never logged; host saves it in the broker).
     SaveKey { provider_id: String, key: String },
-    /// A free model behind the OpenCode engine: route turns through the engine.
+    /// A free model behind the OpenCode engine (at the picked level, or its default): route turns
+    /// through the engine.
     SelectEngine(EngineModel),
-    /// A subscription rail's Connect: run the official CLI login in the user's terminal.
+    /// A signed-out vendor's Enter: run the official CLI login in the user's terminal.
     RailConnect(Rail),
-    /// Enter on a rail whose official CLI is not installed: run the vendor's official installer,
+    /// Enter on a vendor whose official CLI is not installed: run the vendor's official installer,
     /// then its sign-in (`RailConnect`). Never started on its own.
     RailInstall(Rail),
-    /// A model on a Ready rail: route turns through that vendor's adapter.
+    /// A model of a signed-in vendor: route turns through that vendor's adapter.
     SelectRailModel(Rail, workshop_detect::ModelRef),
     /// Re-run the loaders.
     Refresh,
-    /// Enter on a signed-in rail whose CLI could not list its models: ask the CLIs again (child
+    /// Enter on a signed-in vendor whose CLI could not list its models: ask the CLIs again (child
     /// processes only; the hosted lists are left alone).
     RetryRailModels,
 }
@@ -615,24 +631,32 @@ pub struct KeyEntry {
     pub buffer: String,
 }
 
+/// The open sub-menu, one level below the list.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Submenu {
+    /// A signed-in vendor's own model list.
+    Vendor(Rail),
+    /// An OpenCode model's effort levels.
+    Effort(EngineModel),
+    /// The API-key providers to connect.
+    ApiKeys,
+}
+
 /// Picker state. Pure; the host renders it and feeds it [`PickerInput`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct PickerState {
-    pub tab: PickerTab,
-    /// Models view: one row per usable model (catalog + engine).
+    /// The list: OpenCode models, connected providers' models, the vendor rows, `API keys`, xAI.
     pub rows: Vec<ModelsRow>,
-    /// Subscriptions view, below the rails: providers to connect and the optional xAI card.
-    pub auth_rows: Vec<ModelsRow>,
+    /// The `API keys` sub-menu: providers to connect (sign in / paste key).
+    pub connect_rows: Vec<ModelsRow>,
     pub rails: Vec<RailState>,
-    /// Selected index into `rows`.
-    pub models_selected: usize,
-    /// Selected index on the Subscriptions view: `0..rails.len()` is a rail, then `auth_rows`.
-    pub rail_selected: usize,
-    /// Selected model radio of a Ready rail.
-    pub rail_model_selected: usize,
-    /// A Ready rail's model radios are open (↑/↓ move between them).
-    pub detail_open: bool,
-    /// The user acknowledged the xAI card once; a second Enter starts the flow.
+    /// The open sub-menu, if any.
+    pub submenu: Option<Submenu>,
+    /// Selected index into [`Self::visible_rows`].
+    pub selected: usize,
+    /// Row id of the list row the open sub-menu came from (reselected on the way back).
+    pub parent_id: Option<String>,
+    /// The user acknowledged the xAI row once; a second Enter starts the flow.
     pub xai_armed: bool,
     /// Loaders still running (rows may be partial).
     pub loading: bool,
@@ -645,17 +669,19 @@ pub struct PickerState {
     /// Transient status line (errors, progress).
     pub status: Option<String>,
     pub key_entry: Option<KeyEntry>,
-    /// Row id of the active connection (marked `active`, preselected on the Models view).
+    /// Row id of the active connection (marked `active`, preselected).
     pub active_id: Option<String>,
     pub default_selection: Option<DefaultSelection>,
     pub secret_backend: Option<&'static str>,
-    /// Freshness of every model list on the Models view (see [`Self::catalog_note`]).
+    /// Freshness of every model list (see [`Self::catalog_note`]).
     pub catalog_status: Vec<CatalogStatus>,
-    /// Type-to-filter text on the Models view (case-insensitive, matched against name and
-    /// provider). Esc clears it before it closes the picker.
+    /// Type-to-filter text (case-insensitive, matched against name and provider). Esc clears it
+    /// before it leaves the sub-menu or closes the picker.
     pub filter: String,
     /// Show every model row, including the non-chat ones hidden by default (`Ctrl+A`).
     pub show_all: bool,
+    /// Opened by `/auth`: the first load keeps the selection on the Subscriptions section.
+    pub focus_subscriptions: bool,
 }
 
 impl Default for PickerState {
@@ -665,17 +691,16 @@ impl Default for PickerState {
 }
 
 impl PickerState {
-    /// Fresh picker before any loader ran: the engine seed row, the connect rows, rails Detecting.
+    /// Fresh picker before any loader ran: the engine seed row, the vendor rows (detecting), the
+    /// connect rows, xAI.
     pub fn new() -> Self {
         let mut s = Self {
-            tab: PickerTab::Models,
             rows: Vec::new(),
-            auth_rows: Vec::new(),
+            connect_rows: Vec::new(),
             rails: Rail::ALL.iter().map(|r| RailState::detecting(*r)).collect(),
-            models_selected: 0,
-            rail_selected: 0,
-            rail_model_selected: 0,
-            detail_open: false,
+            submenu: None,
+            selected: 0,
+            parent_id: None,
             xai_armed: false,
             loading: true,
             refresh_pending: false,
@@ -688,6 +713,7 @@ impl PickerState {
             catalog_status: Vec::new(),
             filter: String::new(),
             show_all: false,
+            focus_subscriptions: false,
         };
         s.set_rows(models_rows(
             &workshop_providers::Catalog::default(),
@@ -698,10 +724,31 @@ impl PickerState {
         s
     }
 
-    /// Open directly on a view (`/model` → Models, `/auth` → Subscriptions).
-    pub fn with_tab(mut self, tab: PickerTab) -> Self {
-        self.tab = tab;
+    /// Open on the active model (`/model`, with any typed filter) or on the first subscription
+    /// row (`/auth`).
+    pub fn with_focus(mut self, focus: PickerFocus) -> Self {
+        self.focus(focus);
         self
+    }
+
+    /// Move an open picker to `focus` (a second `/auth` or `/model` while it is open).
+    pub fn focus(&mut self, focus: PickerFocus) {
+        self.submenu = None;
+        self.parent_id = None;
+        self.xai_armed = false;
+        match focus {
+            PickerFocus::Models { filter } => {
+                self.focus_subscriptions = false;
+                self.filter = filter;
+                self.selected = 0;
+                self.select_active();
+            }
+            PickerFocus::Subscriptions => {
+                self.focus_subscriptions = true;
+                self.filter.clear();
+                self.select_first_vendor();
+            }
+        }
     }
 
     /// Mark (and preselect) the row of the active connection.
@@ -712,60 +759,172 @@ impl PickerState {
     }
 
     fn set_rows(&mut self, all: Vec<ModelsRow>) {
-        let (models, auth): (Vec<_>, Vec<_>) = all.into_iter().partition(ModelsRow::is_model);
+        let (connect, list): (Vec<_>, Vec<_>) = all
+            .into_iter()
+            .partition(|r| matches!(r.kind, RowKind::ConnectProvider { .. }));
         // A refresh that lands while the list is on screen must not reshuffle what the user is
-        // reading: rows already shown keep their order, new rows join their provider's band.
+        // reading: rows already shown keep their order, new rows join their group's band.
         self.rows = if self.loading || self.rows.is_empty() {
-            models
+            list
         } else {
-            stable_merge(&self.rows, models)
+            stable_merge(&self.rows, list)
         };
-        self.auth_rows = auth;
+        self.connect_rows = connect;
+    }
+
+    /// Index in [`Self::visible_rows`] of the active connection's row (an OpenCode model at any
+    /// level, a vendor holding the active model, a catalog model).
+    fn active_index(&self) -> Option<usize> {
+        self.active_id.as_ref()?;
+        self.visible_rows().iter().position(|r| self.is_active(r))
     }
 
     fn select_active(&mut self) {
-        if let Some(id) = self.active_id.clone()
-            && let Some(idx) = self.visible_models().iter().position(|r| r.id() == id)
-        {
-            self.models_selected = idx;
+        if let Some(idx) = self.active_index() {
+            self.selected = idx;
         }
     }
 
-    /// The Models view's rows in display order (the stable order of `rows`: OpenCode first, then
-    /// each installed subscription, then connected providers). Non-chat rows are hidden unless
-    /// `show_all` (the active row is always shown); a non-empty `filter` narrows by name /
-    /// provider substring.
-    pub fn visible_models(&self) -> Vec<&ModelsRow> {
-        let filter = self.filter.trim().to_ascii_lowercase();
-        self.rows
+    fn select_first_vendor(&mut self) {
+        if let Some(idx) = self.visible_rows().iter().position(ModelsRow::is_vendor) {
+            self.selected = idx;
+        }
+    }
+
+    fn rail(&self, rail: Rail) -> Option<&RailState> {
+        self.rails.iter().find(|r| r.rail == rail)
+    }
+
+    /// The rows of a signed-in vendor's sub-menu: the CLI's list, in its order.
+    fn vendor_rows(&self, rail: Rail) -> Vec<ModelsRow> {
+        let Some(state) = self.rail(rail) else {
+            return Vec::new();
+        };
+        if !state.is_ready() {
+            return Vec::new();
+        }
+        state
+            .models
             .iter()
-            .filter(|row| {
-                (self.show_all || self.is_active(row) || row.is_chat_model())
-                    && (filter.is_empty() || {
-                        let hay =
-                            format!("{} {}", row.title(), row.provider()).to_ascii_lowercase();
-                        filter.split_whitespace().all(|word| hay.contains(word))
-                    })
+            .map(|model| ModelsRow {
+                kind: RowKind::RailModel {
+                    rail,
+                    model: model.clone(),
+                },
+                group: rail.display_name().to_owned(),
+                badge: format!(
+                    "Subscription · through the official {} CLI",
+                    rail.vendor().display_name()
+                ),
+                class: ConnectionClass::AgentAdapter,
             })
             .collect()
     }
 
-    /// The Models view as lines: one quiet header per group (`OpenCode`, `Claude`, `Codex`,
-    /// `Cursor`, a connected provider) when no filter is typed, else the flat filtered list. Rows
-    /// appear in [`Self::visible_models`] order, so `models_selected` indexes the `Row` lines.
-    pub fn models_lines(&self) -> Vec<ModelsLine<'_>> {
-        let rows = self.visible_models();
-        let grouped = self.filter.trim().is_empty();
+    /// The rows of an OpenCode model's effort sub-menu: `Default`, then each level the catalog
+    /// offers, lowest first.
+    fn effort_rows(&self, model: &EngineModel) -> Vec<ModelsRow> {
+        std::iter::once(None)
+            .chain(model.variants.iter().map(|v| Some(v.as_str())))
+            .map(|level| ModelsRow {
+                kind: RowKind::Effort(model.with_effort(level)),
+                group: ENGINE_DISPLAY_NAME.into(),
+                badge: ENGINE_ROW_NOTE.into(),
+                class: ConnectionClass::AgentAdapter,
+            })
+            .collect()
+    }
+
+    fn submenu_rows(&self, submenu: &Submenu) -> Vec<ModelsRow> {
+        match submenu {
+            Submenu::Vendor(rail) => self.vendor_rows(*rail),
+            Submenu::Effort(model) => self.effort_rows(model),
+            Submenu::ApiKeys => self.connect_rows.clone(),
+        }
+    }
+
+    /// Whether Enter / `→` on `row` opens a sub-menu.
+    pub fn is_expandable(&self, row: &ModelsRow) -> bool {
+        match &row.kind {
+            RowKind::Engine(m) => !m.variants.is_empty(),
+            RowKind::Vendor(rail) => self
+                .rail(*rail)
+                .is_some_and(|r| r.is_ready() && !r.models.is_empty()),
+            RowKind::ApiKeys => true,
+            _ => false,
+        }
+    }
+
+    fn matches_filter(&self, row: &ModelsRow) -> bool {
+        let filter = self.filter.trim().to_ascii_lowercase();
+        if filter.is_empty() {
+            return true;
+        }
+        let hay = format!("{} {}", row.title(), row.provider()).to_ascii_lowercase();
+        filter.split_whitespace().all(|word| hay.contains(word))
+    }
+
+    fn shown_by_default(&self, row: &ModelsRow) -> bool {
+        self.show_all || self.is_active(row) || row.is_chat_model()
+    }
+
+    /// The rows in display order. At the top level without a filter: the list (non-chat models
+    /// hidden unless `show_all`; the active row is always shown). Inside a sub-menu: its rows. With
+    /// a filter typed: the flat list of everything that matches — the list rows plus every
+    /// signed-in vendor's models and the connect rows — so a model is found wherever it lives.
+    pub fn visible_rows(&self) -> Vec<ModelsRow> {
+        let filtered = !self.filter.trim().is_empty();
+        match &self.submenu {
+            Some(submenu) => self
+                .submenu_rows(submenu)
+                .into_iter()
+                .filter(|r| self.matches_filter(r))
+                .collect(),
+            None if !filtered => self
+                .rows
+                .iter()
+                .filter(|r| self.shown_by_default(r))
+                .cloned()
+                .collect(),
+            None => {
+                let mut out = Vec::new();
+                for row in self.rows.iter().filter(|r| self.shown_by_default(r)) {
+                    if self.matches_filter(row) {
+                        out.push(row.clone());
+                    }
+                    let children = match &row.kind {
+                        RowKind::Vendor(rail) => self.vendor_rows(*rail),
+                        RowKind::ApiKeys => self.connect_rows.clone(),
+                        _ => Vec::new(),
+                    };
+                    out.extend(children.into_iter().filter(|r| self.matches_filter(r)));
+                }
+                out
+            }
+        }
+    }
+
+    /// The list as lines: one quiet header per group (`OpenCode`, a connected provider,
+    /// `Subscriptions`) at the top level when no filter is typed, else the plain rows. Rows appear
+    /// in [`Self::visible_rows`] order, so `selected` indexes the `Row` lines.
+    pub fn models_lines(&self) -> Vec<ModelsLine> {
+        let rows = self.visible_rows();
+        let grouped = self.filter.trim().is_empty() && self.submenu.is_none();
         let mut lines = Vec::with_capacity(rows.len() + 4);
-        let mut current: Option<&str> = None;
+        let mut current: Option<String> = None;
         for row in rows {
-            if grouped && current != Some(row.provider()) {
-                lines.push(ModelsLine::Header(row.provider()));
-                current = Some(row.provider());
+            if grouped && current.as_deref() != Some(row.group.as_str()) {
+                lines.push(ModelsLine::Header(row.group.clone()));
+                current = Some(row.group.clone());
             }
             lines.push(ModelsLine::Row(row));
         }
         lines
+    }
+
+    /// Whether the rows are drawn with their provider column (the flat filtered list).
+    pub fn shows_provider_column(&self) -> bool {
+        !self.filter.trim().is_empty() && self.submenu.is_none()
     }
 
     /// How many model rows the default view hides (non-chat rows behind `Ctrl+A`).
@@ -779,12 +938,129 @@ impl PickerState {
             .count()
     }
 
+    /// The overlay title: `Models`, or `Models › <sub-menu>`.
+    pub fn title(&self) -> String {
+        match &self.submenu {
+            None => PICKER_TITLE.to_owned(),
+            Some(Submenu::Vendor(rail)) => format!("{PICKER_TITLE} › {}", rail.display_name()),
+            Some(Submenu::Effort(m)) => format!("{PICKER_TITLE} › {}", m.name),
+            Some(Submenu::ApiKeys) => format!("{PICKER_TITLE} › {API_KEYS_TITLE}"),
+        }
+    }
+
+    /// The state drawn after a row's name, in pieces the host colours by [`Tone`]: `free`,
+    /// `sign in`, `install`, `✓ Max ▸`, `optional · sign in`; ` · active` on the active row; ` ▸`
+    /// on a row that opens a sub-menu.
+    pub fn row_suffix(&self, row: &ModelsRow) -> Vec<(Tone, String)> {
+        let mut out: Vec<(Tone, String)> = Vec::new();
+        match &row.kind {
+            RowKind::Engine(_) => out.push((Tone::Good, "free".into())),
+            RowKind::Catalog { model, locked } => {
+                let tone = if !*locked && model.is_keyless() {
+                    Tone::Good
+                } else {
+                    Tone::Plain
+                };
+                out.push((tone, row.short_badge().into()));
+            }
+            RowKind::Vendor(rail) => {
+                let Some(state) = self.rail(*rail) else {
+                    return out;
+                };
+                if state.pill == Pill::Detecting {
+                    out.push((Tone::Dim, "detecting\u{2026}".into()));
+                } else if !state.installed {
+                    out.push((Tone::Dim, "install".into()));
+                } else if !state.is_ready() {
+                    out.push((Tone::Dim, "sign in".into()));
+                } else {
+                    out.push((Tone::Good, "\u{2713}".into()));
+                    match &state.subscription {
+                        workshop_detect::RailModels::Loading => {
+                            out.push((Tone::Dim, format!(" \u{b7} {LOADING_MODELS}")));
+                        }
+                        workshop_detect::RailModels::Failed { .. } => {
+                            out.push((
+                                Tone::Dim,
+                                format!(" \u{b7} {}", workshop_detect::copy::MODELS_FAILED),
+                            ));
+                        }
+                        workshop_detect::RailModels::Listed { list, .. } => {
+                            if let Some(plan) =
+                                list.account.as_ref().and_then(|a| a.plan.as_deref())
+                            {
+                                out.push((Tone::Plain, format!(" {}", plan_name(plan))));
+                            }
+                        }
+                        workshop_detect::RailModels::NotReady => {
+                            if let Some(copy) = state.empty_copy {
+                                out.push((Tone::Dim, format!(" \u{b7} {copy}")));
+                            }
+                        }
+                    }
+                }
+            }
+            RowKind::XaiOptional => out.push((Tone::Dim, "optional \u{b7} sign in".into())),
+            RowKind::ApiKeys
+            | RowKind::Effort(_)
+            | RowKind::RailModel { .. }
+            | RowKind::ConnectProvider { .. } => {}
+        }
+        if self.is_active(row) {
+            out.push((Tone::Good, " \u{b7} active".into()));
+        }
+        if self.is_expandable(row) {
+            out.push((Tone::Dim, " \u{25b8}".into()));
+        }
+        // No leading space on the first piece.
+        if let Some((_, first)) = out.first_mut() {
+            let trimmed = first
+                .trim_start_matches([' ', '\u{b7}'])
+                .trim_start()
+                .to_owned();
+            *first = trimmed;
+        }
+        out
+    }
+
+    /// The verb after `Enter` in the key line, for the highlighted row.
+    pub fn enter_verb(&self) -> &'static str {
+        let Some(row) = self.selected_row() else {
+            return "select";
+        };
+        match &row.kind {
+            RowKind::Engine(m) if !m.variants.is_empty() => "open",
+            RowKind::Engine(_) | RowKind::Effort(_) | RowKind::RailModel { .. } => "select",
+            RowKind::Catalog { locked, .. } => {
+                if *locked {
+                    "connect"
+                } else {
+                    "select"
+                }
+            }
+            RowKind::ConnectProvider { .. } => "connect",
+            RowKind::ApiKeys => "open",
+            RowKind::XaiOptional => "sign in",
+            RowKind::Vendor(rail) => match self.rail(*rail) {
+                Some(s) if s.pill == Pill::Detecting => "select",
+                Some(s) if !s.installed => "install",
+                Some(s) if !s.is_ready() => "sign in",
+                Some(s) if !s.models.is_empty() => "open",
+                Some(s) if matches!(s.subscription, workshop_detect::RailModels::Failed { .. }) => {
+                    "retry"
+                }
+                Some(s) if s.show_connect => "sign in",
+                _ => "select",
+            },
+        }
+    }
+
     /// Replace rows and rails with a finished snapshot. Keeps the selection on the same row id
-    /// when possible (first load: the active row), and never lands on the xAI card.
+    /// when possible (first load: the active row, or the Subscriptions section for `/auth`), and
+    /// never lands on the xAI row by itself.
     pub fn apply_snapshot(&mut self, snap: PickerSnapshot) {
         let first_load = self.loading;
-        let prev_model = self.selected_row().map(ModelsRow::id);
-        let prev_auth = self.selected_auth_row().map(ModelsRow::id);
+        let prev = self.selected_row().map(|r| r.id());
         self.set_rows(snap.rows);
         if !snap.rails.is_empty() {
             self.rails = snap.rails;
@@ -797,57 +1073,42 @@ impl PickerState {
             self.refresh_in_flight = false;
         }
         self.loading = false;
-        self.models_selected = prev_model
-            .filter(|_| !first_load)
-            .and_then(|id| self.visible_models().iter().position(|r| r.id() == id))
-            .unwrap_or(0);
-        if first_load {
-            self.select_active();
+        // A vendor sub-menu whose list went away (signed out meanwhile) falls back to the list,
+        // on the vendor's row.
+        if self.submenu.is_some() && self.visible_rows().is_empty() {
+            self.close_submenu();
+        } else {
+            let kept = prev.and_then(|id| self.visible_rows().iter().position(|r| r.id() == id));
+            self.selected = if first_load && !self.focus_subscriptions {
+                self.active_index().or(kept).unwrap_or(0)
+            } else {
+                kept.unwrap_or(0)
+            };
         }
-        if let Some(id) = prev_auth
-            && let Some(idx) = self.auth_rows.iter().position(|r| r.id() == id)
-        {
-            self.rail_selected = self.rails.len() + idx;
+        if first_load && self.focus_subscriptions {
+            self.select_first_vendor();
         }
-        self.rail_selected = self
-            .rail_selected
-            .min(self.subscriptions_len().saturating_sub(1));
-        if self.selected_auth_row().is_some_and(ModelsRow::is_xai) && first_load {
-            self.rail_selected = 0;
-        }
-        self.rail_model_selected = 0;
+        self.selected = self
+            .selected
+            .min(self.visible_rows().len().saturating_sub(1));
         self.xai_armed = false;
     }
 
-    pub fn selected_row(&self) -> Option<&ModelsRow> {
-        self.visible_models().get(self.models_selected).copied()
+    pub fn selected_row(&self) -> Option<ModelsRow> {
+        self.visible_rows().get(self.selected).cloned()
     }
 
-    /// Number of entries on the Subscriptions view (rails + connect rows + xAI).
-    pub fn subscriptions_len(&self) -> usize {
-        self.rails.len() + self.auth_rows.len()
-    }
-
-    /// The selected rail, when the Subscriptions selection is on one.
-    pub fn selected_rail(&self) -> Option<&RailState> {
-        self.rails.get(self.rail_selected)
-    }
-
-    /// The selected connect row / xAI card, when the Subscriptions selection is below the rails.
-    pub fn selected_auth_row(&self) -> Option<&ModelsRow> {
-        self.rail_selected
-            .checked_sub(self.rails.len())
-            .and_then(|i| self.auth_rows.get(i))
-    }
-
-    pub fn selected_rail_model(&self) -> Option<&workshop_detect::ModelRef> {
-        self.selected_rail()
-            .and_then(|r| r.models.get(self.rail_model_selected))
-    }
-
-    /// Whether `row` is the active connection.
+    /// Whether `row` is (or holds) the active connection.
     pub fn is_active(&self, row: &ModelsRow) -> bool {
-        self.active_id.as_deref() == Some(row.id().as_str())
+        let Some(active) = self.active_id.as_deref() else {
+            return false;
+        };
+        match &row.kind {
+            // The list row of an OpenCode model is active whatever level was picked.
+            RowKind::Engine(m) => active.split('@').next().unwrap_or(active) == m.base_row_id(),
+            RowKind::Vendor(rail) => active.starts_with(&format!("{}:", rail.vendor().id())),
+            _ => active == row.id(),
+        }
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
@@ -870,7 +1131,7 @@ impl PickerState {
 
     /// One line naming every *listed* model list and its freshness, engine first, in snapshot
     /// order: `Lists: OpenCode fetched just now · OpenRouter fetched 2 min ago · …`. Hidden
-    /// providers and providers without a row on the Models view are left out.
+    /// providers and providers without a row are left out.
     pub fn catalog_summary(&self) -> Option<String> {
         if self.catalog_status.is_empty() {
             return None;
@@ -909,6 +1170,24 @@ impl PickerState {
         });
     }
 
+    fn open_submenu(&mut self, from: &ModelsRow, submenu: Submenu) {
+        self.parent_id = Some(from.id());
+        self.submenu = Some(submenu);
+        self.filter.clear();
+        self.xai_armed = false;
+        self.selected = 0;
+        self.select_active();
+    }
+
+    fn close_submenu(&mut self) {
+        self.submenu = None;
+        self.filter.clear();
+        let parent = self.parent_id.take();
+        self.selected = parent
+            .and_then(|id| self.visible_rows().iter().position(|r| r.id() == id))
+            .unwrap_or(0);
+    }
+
     pub fn handle(&mut self, input: PickerInput) -> PickerOutcome {
         if let Some(entry) = self.key_entry.as_mut() {
             return match input {
@@ -940,128 +1219,83 @@ impl PickerState {
                 _ => PickerOutcome::Changed,
             };
         }
-        match (self.tab, input) {
-            (_, PickerInput::Refresh) => PickerOutcome::Refresh,
-            // Type-to-filter on the Models view; every printable key is consumed here and none
-            // reaches the composer behind the overlay.
-            (PickerTab::Models, PickerInput::Char(c)) if !c.is_control() => {
+        match input {
+            PickerInput::Refresh => PickerOutcome::Refresh,
+            // Type-to-filter; every printable key is consumed here and none reaches the composer
+            // behind the overlay.
+            PickerInput::Char(c) if !c.is_control() => {
                 self.filter.push(c);
-                self.models_selected = 0;
+                self.selected = 0;
+                self.xai_armed = false;
                 PickerOutcome::Changed
             }
-            (PickerTab::Models, PickerInput::Backspace) => {
+            PickerInput::Backspace => {
                 self.filter.pop();
-                self.models_selected = 0;
+                self.selected = 0;
                 PickerOutcome::Changed
             }
-            (PickerTab::Models, PickerInput::ToggleShowAll) => {
-                let keep = self.selected_row().map(ModelsRow::id);
+            PickerInput::ToggleShowAll => {
+                let keep = self.selected_row().map(|r| r.id());
                 self.show_all = !self.show_all;
-                self.models_selected = keep
-                    .and_then(|id| self.visible_models().iter().position(|r| r.id() == id))
+                self.selected = keep
+                    .and_then(|id| self.visible_rows().iter().position(|r| r.id() == id))
                     .unwrap_or(0);
                 PickerOutcome::Changed
             }
-            (
-                _,
-                PickerInput::Char(_)
-                | PickerInput::Backspace
-                | PickerInput::Paste(_)
-                | PickerInput::ToggleShowAll,
-            ) => PickerOutcome::Changed,
-            (_, PickerInput::SwitchTab) => {
-                self.tab = self.tab.other();
-                self.detail_open = false;
+            PickerInput::Char(_) | PickerInput::Paste(_) => PickerOutcome::Changed,
+            PickerInput::Up => {
+                self.selected = self.selected.saturating_sub(1);
                 self.xai_armed = false;
                 PickerOutcome::Changed
             }
-            (PickerTab::Models, PickerInput::Up) => {
-                self.models_selected = self.models_selected.saturating_sub(1);
-                PickerOutcome::Changed
-            }
-            (PickerTab::Models, PickerInput::Down) => {
-                if self.models_selected + 1 < self.visible_models().len() {
-                    self.models_selected += 1;
-                }
-                PickerOutcome::Changed
-            }
-            (PickerTab::Subscriptions, PickerInput::Up) => {
-                if self.detail_open && self.rail_model_selected > 0 {
-                    self.rail_model_selected -= 1;
-                } else {
-                    self.rail_selected = self.rail_selected.saturating_sub(1);
-                    self.rail_model_selected = 0;
-                    self.detail_open = false;
+            PickerInput::Down => {
+                if self.selected + 1 < self.visible_rows().len() {
+                    self.selected += 1;
                 }
                 self.xai_armed = false;
                 PickerOutcome::Changed
             }
-            (PickerTab::Subscriptions, PickerInput::Down) => {
-                let models = self.selected_rail().map(|r| r.models.len()).unwrap_or(0);
-                if self.detail_open && self.rail_model_selected + 1 < models {
-                    self.rail_model_selected += 1;
-                } else if !self.detail_open && self.rail_selected + 1 < self.subscriptions_len() {
-                    self.rail_selected += 1;
-                    self.rail_model_selected = 0;
+            PickerInput::Left => {
+                if self.submenu.is_some() {
+                    self.close_submenu();
                 }
                 self.xai_armed = false;
                 PickerOutcome::Changed
             }
-            (PickerTab::Models, PickerInput::Back) if !self.filter.is_empty() => {
-                self.filter.clear();
-                self.models_selected = 0;
-                self.select_active();
+            PickerInput::Open => {
+                if let Some(row) = self.selected_row()
+                    && self.is_expandable(&row)
+                {
+                    return self.enter_row(row);
+                }
                 PickerOutcome::Changed
             }
-            (_, PickerInput::Back) => {
-                if self.detail_open || self.xai_armed {
-                    self.detail_open = false;
+            PickerInput::Back => {
+                if !self.filter.is_empty() {
+                    self.filter.clear();
+                    self.selected = 0;
+                    self.select_active();
+                    PickerOutcome::Changed
+                } else if self.xai_armed {
                     self.xai_armed = false;
+                    PickerOutcome::Changed
+                } else if self.submenu.is_some() {
+                    self.close_submenu();
                     PickerOutcome::Changed
                 } else {
                     PickerOutcome::Close
                 }
             }
-            (PickerTab::Models, PickerInput::Enter) => match self.selected_row().cloned() {
+            PickerInput::Enter => match self.selected_row() {
                 Some(row) => self.enter_row(row),
                 None => PickerOutcome::Changed,
             },
-            (PickerTab::Subscriptions, PickerInput::Enter) => {
-                if let Some(row) = self.selected_auth_row().cloned() {
-                    return self.enter_row(row);
-                }
-                let Some(rail) = self.selected_rail().cloned() else {
-                    return PickerOutcome::Changed;
-                };
-                if !rail.installed && rail.pill == Pill::Install {
-                    return PickerOutcome::RailInstall(rail.rail);
-                }
-                if rail.is_ready() && !rail.models.is_empty() {
-                    if !self.detail_open {
-                        self.detail_open = true;
-                        return PickerOutcome::Changed;
-                    }
-                    match rail.models.get(self.rail_model_selected) {
-                        Some(m) => PickerOutcome::SelectRailModel(rail.rail, m.clone()),
-                        None => PickerOutcome::Changed,
-                    }
-                } else if matches!(
-                    rail.subscription,
-                    workshop_detect::RailModels::Failed { .. }
-                ) {
-                    PickerOutcome::RetryRailModels
-                } else if rail.show_connect {
-                    PickerOutcome::RailConnect(rail.rail)
-                } else {
-                    PickerOutcome::Changed
-                }
-            }
         }
     }
 
-    /// Enter on a model / connect / xAI row (same rules on both views).
+    /// Enter on a row (the same rules at the top level, in a sub-menu and in the filtered list).
     fn enter_row(&mut self, row: ModelsRow) -> PickerOutcome {
-        match row.kind {
+        match row.kind.clone() {
             RowKind::XaiOptional => {
                 // Two-step: first Enter shows the labeled copy, second Enter starts the flow.
                 if self.xai_armed {
@@ -1081,18 +1315,36 @@ impl PickerState {
             RowKind::ConnectProvider { provider_id, .. } => {
                 PickerOutcome::ConnectProvider(provider_id)
             }
-            RowKind::Engine(m) => PickerOutcome::SelectEngine(m),
+            RowKind::Engine(m) => {
+                if m.variants.is_empty() {
+                    PickerOutcome::SelectEngine(m)
+                } else {
+                    self.open_submenu(&row, Submenu::Effort(m));
+                    PickerOutcome::Changed
+                }
+            }
+            RowKind::Effort(m) => PickerOutcome::SelectEngine(m),
             RowKind::RailModel { rail, model } => PickerOutcome::SelectRailModel(rail, model),
-            RowKind::RailSignIn(rail) => PickerOutcome::RailConnect(rail),
-            // Signed in, list not here: a failed list is asked for again; a loading one has
-            // nothing to pick yet.
-            RowKind::RailNote(rail, _) => {
-                let failed = self.rails.iter().any(|r| {
-                    r.rail == rail
-                        && matches!(r.subscription, workshop_detect::RailModels::Failed { .. })
-                });
-                if failed {
+            RowKind::ApiKeys => {
+                self.open_submenu(&row, Submenu::ApiKeys);
+                PickerOutcome::Changed
+            }
+            RowKind::Vendor(rail) => {
+                let Some(state) = self.rail(rail).cloned() else {
+                    return PickerOutcome::Changed;
+                };
+                if !state.installed && state.pill == Pill::Install {
+                    PickerOutcome::RailInstall(rail)
+                } else if state.is_ready() && !state.models.is_empty() {
+                    self.open_submenu(&row, Submenu::Vendor(rail));
+                    PickerOutcome::Changed
+                } else if matches!(
+                    state.subscription,
+                    workshop_detect::RailModels::Failed { .. }
+                ) {
                     PickerOutcome::RetryRailModels
+                } else if state.show_connect {
+                    PickerOutcome::RailConnect(rail)
                 } else {
                     PickerOutcome::Changed
                 }
@@ -1100,8 +1352,8 @@ impl PickerState {
         }
     }
 
-    /// One to three lines about the highlighted entry (what happens, where traffic goes).
-    /// Never a secret.
+    /// One to three lines about the highlighted row: what it is, who is signed in, what Enter
+    /// does — model names and accounts, never a transport or an endpoint. Never a secret.
     pub fn detail_lines(&self) -> Vec<String> {
         if let Some(entry) = &self.key_entry {
             let masked = if entry.buffer.is_empty() {
@@ -1115,27 +1367,206 @@ impl PickerState {
             };
             return vec![entry.label.clone(), masked];
         }
-        let note = |row: &ModelsRow| row.provider_id().and_then(|id| self.catalog_note(id));
-        let lines = match self.tab {
-            PickerTab::Models => self
-                .selected_row()
-                .map(|row| row_detail_lines(row, self.xai_armed, note(row)))
-                .unwrap_or_default(),
-            PickerTab::Subscriptions => match self.selected_auth_row() {
-                Some(row) => row_detail_lines(row, self.xai_armed, note(row)),
-                None => self
-                    .selected_rail()
-                    .map(|r| rail_detail_lines(r, self.rail_model_selected))
-                    .unwrap_or_default(),
-            },
+        let Some(row) = self.selected_row() else {
+            return Vec::new();
         };
+        let mut lines = Vec::new();
+        match &row.kind {
+            RowKind::Engine(_) => {
+                lines.push(match self.catalog_note(ENGINE_PROVIDER_ID) {
+                    Some(note) if note.starts_with("fetched") => {
+                        format!("{ENGINE_ROW_NOTE} \u{b7} list {note}")
+                    }
+                    Some(note) => format!("{ENGINE_ROW_NOTE} \u{b7} {note}"),
+                    None => ENGINE_ROW_NOTE.to_owned(),
+                });
+            }
+            RowKind::Effort(m) => lines.push(match &m.effort {
+                Some(level) => format!("{} at effort {level}", m.name),
+                None => format!("{} at its default effort", m.name),
+            }),
+            RowKind::Catalog { model, locked } => {
+                lines.push(
+                    match row.provider_id().and_then(|id| self.catalog_note(id)) {
+                        Some(note) => format!("{} \u{b7} {note}", row.badge),
+                        None => row.badge.clone(),
+                    },
+                );
+                if *locked {
+                    lines.push("Needs a credential first — Enter connects the provider.".into());
+                } else if let Some(note) = &model.note {
+                    lines.push(note.clone());
+                }
+            }
+            RowKind::ConnectProvider {
+                provider_id,
+                credential_url,
+                copy,
+            } => {
+                lines.push(format!("{copy} \u{b7} {}", row.badge));
+                match provider_id.as_str() {
+                    "openrouter" => lines.push(
+                        "Enter starts OpenRouter's sign-in in your browser; the key it issues goes to your OS keyring."
+                            .into(),
+                    ),
+                    _ => lines.push(
+                        "Enter opens a key prompt; the key goes to your OS keyring, never to config.toml."
+                            .into(),
+                    ),
+                }
+                if let Some(url) = credential_url {
+                    lines.push(format!("Get a key: {url}"));
+                }
+            }
+            RowKind::RailModel { rail, .. } => {
+                let mut line = format!("Your {} subscription", rail.display_name());
+                match self.account(*rail) {
+                    (Some(email), Some(plan)) => {
+                        line.push_str(&format!(" \u{b7} signed in as {email} ({plan})"));
+                    }
+                    (Some(email), None) => line.push_str(&format!(" \u{b7} signed in as {email}")),
+                    (None, Some(plan)) => line.push_str(&format!(" \u{b7} {plan}")),
+                    (None, None) => {}
+                }
+                lines.push(line);
+            }
+            RowKind::Vendor(rail) => lines.extend(self.vendor_detail_lines(*rail)),
+            RowKind::ApiKeys => {
+                let providers: Vec<&str> =
+                    self.connect_rows.iter().map(|r| r.group.as_str()).collect();
+                lines.push(format!(
+                    "Your own key or account with a provider: {}",
+                    providers.join(", ")
+                ));
+            }
+            RowKind::XaiOptional => {
+                lines.push(XAI_CARD_COPY.into());
+                lines.push(
+                    "Enter opens auth.x.ai in your browser (the only Workshop path that contacts x.ai)."
+                        .into(),
+                );
+                if self.xai_armed {
+                    lines.push(
+                        "Press Enter again to continue to auth.x.ai, or Esc to go back.".into(),
+                    );
+                }
+            }
+        }
         lines.into_iter().take(3).collect()
     }
+
+    /// The email and plan name a listed vendor's CLI reported, when it did.
+    fn account(&self, rail: Rail) -> (Option<String>, Option<String>) {
+        let Some(workshop_detect::RailModels::Listed { list, .. }) =
+            self.rail(rail).map(|r| &r.subscription)
+        else {
+            return (None, None);
+        };
+        let Some(account) = &list.account else {
+            return (None, None);
+        };
+        (
+            account.email.clone(),
+            account.plan.as_deref().map(plan_name),
+        )
+    }
+
+    fn vendor_detail_lines(&self, rail: Rail) -> Vec<String> {
+        let Some(state) = self.rail(rail) else {
+            return Vec::new();
+        };
+        let mut lines = Vec::new();
+        if state.pill == Pill::Detecting {
+            lines.push(
+                "Looking for the official CLI on PATH and in the usual install folders…".into(),
+            );
+        } else if !state.installed {
+            // Three short lines: the detail area must not wrap the command.
+            lines.push(state.empty_copy.map(str::to_owned).unwrap_or_else(|| {
+                format!(
+                    "Enter installs {}, then signs you in",
+                    rail.vendor().display_name()
+                )
+            }));
+            match workshop_detect::official_install_command(rail.vendor()) {
+                Some(cmd) => lines.push(format!("  {cmd}")),
+                None => lines.push(format!(
+                    "Workshop looks for `{}`.",
+                    rail.vendor().binary_names().join("` or `")
+                )),
+            }
+            lines.push(
+                "Nothing installs on its own; Workshop never reads another app's login files."
+                    .into(),
+            );
+        } else if !state.is_ready() {
+            lines.push(format!(
+                "Enter runs the official login in your terminal:  {}",
+                login_command(rail.vendor())
+            ));
+        } else {
+            match &state.subscription {
+                workshop_detect::RailModels::Listed { list, .. } => {
+                    let n = list.models.len();
+                    let mut line = String::from("Signed in");
+                    let (email, plan) = self.account(rail);
+                    if let Some(email) = email {
+                        line.push_str(&format!(" as {email}"));
+                    }
+                    if let Some(plan) = plan {
+                        line.push_str(&format!(" \u{b7} {plan}"));
+                    }
+                    line.push_str(&format!(
+                        " \u{b7} {n} model{}",
+                        if n == 1 { "" } else { "s" }
+                    ));
+                    lines.push(line);
+                }
+                workshop_detect::RailModels::Loading => {
+                    lines.push(format!("Signed in \u{b7} {LOADING_MODELS}"));
+                }
+                workshop_detect::RailModels::Failed { .. } => {
+                    lines.push(format!(
+                        "Signed in \u{b7} {}",
+                        workshop_detect::copy::MODELS_FAILED
+                    ));
+                }
+                workshop_detect::RailModels::NotReady => {
+                    lines.push(match state.empty_copy {
+                        Some(copy) => format!("Signed in \u{b7} {copy}"),
+                        None => "Signed in".into(),
+                    });
+                    if state.show_connect {
+                        lines.push(format!(
+                            "Enter runs the official login in your terminal:  {}",
+                            login_command(rail.vendor())
+                        ));
+                    }
+                }
+            }
+        }
+        lines
+    }
+}
+
+/// The plan as a name: `max` → `Max`, `pro` → `Pro`.
+fn plan_name(plan: &str) -> String {
+    let mut chars = plan.trim().chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// The documented login command as the user would type it (`claude auth login`, `codex login`).
+fn login_command(vendor: workshop_detect::Vendor) -> String {
+    let bin = vendor.binary_names().first().copied().unwrap_or("the CLI");
+    format!("{bin} {}", workshop_detect::login_argv(vendor).join(" "))
 }
 
 /// Merge a refreshed row list into the one on screen: rows the user can already see keep their
 /// relative order (updated in place from `fresh`), rows that disappeared are dropped, and new rows
-/// are inserted after the last shown row of the same provider (else appended).
+/// are inserted after the last shown row of the same group (else appended).
 fn stable_merge(shown: &[ModelsRow], fresh: Vec<ModelsRow>) -> Vec<ModelsRow> {
     let mut out: Vec<ModelsRow> = shown
         .iter()
@@ -1161,174 +1592,10 @@ pub fn config_path() -> PathBuf {
         .join("config.toml")
 }
 
-/// `list_note` is the freshness of the row's model list (`fetched 3 min ago` / `cached list from
-/// <date>`), shown with the badge so every row says where and when its list came from.
-fn row_detail_lines(row: &ModelsRow, xai_armed: bool, list_note: Option<String>) -> Vec<String> {
-    let mut lines = Vec::new();
-    match &row.kind {
-        RowKind::Catalog { model, locked } => {
-            lines.push(match &list_note {
-                Some(note) => format!("{} · {note}", row.badge),
-                None => row.badge.clone(),
-            });
-            let mut facts = vec![format!("Endpoint: {}", model.endpoint())];
-            if let Some(tools) = model.tools {
-                facts.push(format!(
-                    "tool calling: {}",
-                    if tools { "yes" } else { "not advertised" }
-                ));
-            }
-            if let Some(ctx) = model.context_window {
-                facts.push(format!("{ctx} tokens"));
-            }
-            lines.push(facts.join(" · "));
-            if *locked {
-                lines.push("Needs a credential first — Enter connects the provider.".into());
-            } else if let Some(note) = &model.note {
-                lines.push(note.clone());
-            }
-        }
-        RowKind::ConnectProvider {
-            provider_id,
-            credential_url,
-            copy,
-        } => {
-            lines.push(format!("{copy} \u{b7} {}", row.badge));
-            match provider_id.as_str() {
-                "openrouter" => lines.push(
-                    "Enter starts OpenRouter's sign-in in your browser; the key it issues goes to your OS keyring."
-                        .into(),
-                ),
-                _ => lines.push(
-                    "Enter opens a key prompt; the key goes to your OS keyring, never to config.toml."
-                        .into(),
-                ),
-            }
-            if let Some(url) = credential_url {
-                lines.push(format!("Get a key: {url}"));
-            }
-        }
-        RowKind::Engine(m) => {
-            lines.push(match &m.effort {
-                Some(effort) => format!(
-                    "Free model from OpenCode's shared pool at effort {effort} (of {}); no sign-in, no key.",
-                    m.variants.join(" / ")
-                ),
-                None => "Free model from OpenCode's shared pool; no sign-in, no key.".into(),
-            });
-            // One line at the overlay's width: the detail area is three rows tall.
-            lines.push(
-                "Via the official opencode CLI, started at launch; prompts go to opencode.ai and may be logged."
-                    .into(),
-            );
-            if let Some(note) = &list_note {
-                lines.push(match note.starts_with("fetched") {
-                    true => format!("Model list {note} from {ENGINE_CATALOG_SOURCE}."),
-                    false => {
-                        format!(
-                            "Model list: {note}; the live list arrives once OpenCode has started."
-                        )
-                    }
-                });
-            }
-        }
-        RowKind::RailModel { rail, .. } => {
-            lines.push(row.badge.clone());
-            lines.push(format!(
-                "Enter picks it; turns run through `{}` on your subscription, in an isolated worktree.",
-                rail.vendor().binary_names().first().copied().unwrap_or("the CLI")
-            ));
-        }
-        RowKind::RailSignIn(rail) => {
-            lines.push(row.badge.clone());
-            lines.push(format!(
-                "Enter runs the official login in your terminal:  {}",
-                login_command(rail.vendor())
-            ));
-        }
-        RowKind::RailNote(..) => {
-            lines.push(row.badge.clone());
-            lines.push("Nothing to pick until the list arrives; Ctrl+R asks again.".into());
-        }
-        RowKind::XaiOptional => {
-            lines.push(XAI_CARD_COPY.into());
-            lines.push(
-                "Enter opens auth.x.ai in your browser (the only Workshop path that contacts x.ai)."
-                    .into(),
-            );
-            if xai_armed {
-                lines.push("Press Enter again to continue to auth.x.ai, or Esc to go back.".into());
-            }
-        }
-    }
-    lines
-}
-
-/// The documented login command as the user would type it (`claude auth login`, `codex login`).
-fn login_command(vendor: workshop_detect::Vendor) -> String {
-    let bin = vendor.binary_names().first().copied().unwrap_or("the CLI");
-    format!("{bin} {}", workshop_detect::login_argv(vendor).join(" "))
-}
-
-fn rail_detail_lines(rail: &RailState, selected_model: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    if rail.pill == Pill::Detecting {
-        lines.push("Looking for the official CLI on PATH and in the usual install folders…".into());
-    } else if !rail.installed {
-        // Three short lines: the detail area is three rows tall and must not wrap the command.
-        match workshop_detect::official_install_command(rail.rail.vendor()) {
-            Some(cmd) => {
-                lines.push(format!(
-                    "Enter runs {}'s official installer, then its sign-in.",
-                    rail.rail.vendor().display_name()
-                ));
-                lines.push(format!("  {cmd}"));
-            }
-            None => lines.push(format!(
-                "Workshop looks for `{}`.",
-                rail.rail.vendor().binary_names().join("` or `")
-            )),
-        }
-        lines.push(
-            "Nothing installs on its own; Workshop never reads another app's login files.".into(),
-        );
-    } else if !rail.is_ready() {
-        lines.push(format!(
-            "Enter runs the official login in your terminal:  {}",
-            login_command(rail.rail.vendor())
-        ));
-    } else if !rail.models.is_empty() {
-        let radios: Vec<String> = rail
-            .models
-            .iter()
-            .enumerate()
-            .map(|(i, m)| {
-                format!(
-                    "{} {}",
-                    if i == selected_model { "(•)" } else { "( )" },
-                    m.display()
-                )
-            })
-            .collect();
-        lines.push(radios.join("  "));
-        lines.push(
-            "Enter picks the model; turns run through the official CLI in an isolated worktree."
-                .into(),
-        );
-    } else if rail.empty_copy.is_none() {
-        // Signed in, but the CLI's own model list is not here (yet): say that, never a radio
-        // line with nothing in it or a made-up model.
-        lines.push(LOADING_MODELS.to_owned());
-    }
-    if let Some(copy) = rail.empty_copy {
-        lines.push(copy.to_owned());
-    }
-    lines
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use workshop_detect::{RailModels, copy};
 
     fn loaded() -> PickerState {
         let mut p = PickerState::new();
@@ -1344,11 +1611,477 @@ mod tests {
     }
 
     fn select_row(p: &mut PickerState, needle: &str) {
-        p.models_selected = p
-            .visible_models()
+        p.selected = p
+            .visible_rows()
             .iter()
             .position(|r| r.title().contains(needle))
             .unwrap_or_else(|| panic!("row {needle:?}"));
+    }
+
+    fn titles(p: &PickerState) -> Vec<String> {
+        p.visible_rows().iter().map(ModelsRow::title).collect()
+    }
+
+    fn rendered(p: &PickerState) -> Vec<String> {
+        p.models_lines()
+            .iter()
+            .map(|l| match l {
+                ModelsLine::Header(h) => format!("# {h}"),
+                ModelsLine::Row(r) => r.title(),
+            })
+            .collect()
+    }
+
+    fn suffix_text(p: &PickerState, row: &ModelsRow) -> String {
+        p.row_suffix(row).into_iter().map(|(_, s)| s).collect()
+    }
+
+    fn engine(name: &str, model_ref: &str, is_default: bool, tool_call: bool) -> EngineModel {
+        EngineModel {
+            model_ref: model_ref.into(),
+            name: name.into(),
+            is_default,
+            tool_call,
+            context_limit: None,
+            variants: Vec::new(),
+            effort: None,
+            image_input: false,
+        }
+    }
+
+    fn loaded_with_engine(models: &[EngineModel]) -> PickerState {
+        let mut p = PickerState::new().with_active(Some(EngineModel::big_pickle_seed().row_id()));
+        let rows = models_rows(
+            &workshop_providers::Catalog::builtin(),
+            |_| false,
+            models,
+            &[],
+        );
+        p.apply_snapshot(PickerSnapshot {
+            rows,
+            ..PickerSnapshot::default()
+        });
+        p
+    }
+
+    /// A rail as the detect layer reports it; a Ready rail carries the models its CLI listed
+    /// (here: three Claude aliases, as a CLI would report them) and the account.
+    fn rail(rail: Rail, installed: bool, ready: bool) -> RailState {
+        let mut st = RailState::detecting(rail);
+        st.installed = installed;
+        st.pill = if ready {
+            Pill::Ready
+        } else if installed {
+            Pill::SignIn
+        } else {
+            Pill::Install
+        };
+        st.models = if ready {
+            let p = rail.provider_id();
+            ["Claude Opus", "Claude Sonnet", "Claude Haiku"]
+                .iter()
+                .map(|name| {
+                    workshop_detect::ModelRef::new(
+                        p,
+                        name.rsplit(' ').next().unwrap().to_ascii_lowercase(),
+                    )
+                    .with_display_name(*name)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        st.subscription = if ready {
+            RailModels::Listed {
+                list: workshop_detect::models::SubscriptionModels {
+                    rail,
+                    models: st
+                        .models
+                        .iter()
+                        .map(|m| workshop_detect::models::SubscriptionModel {
+                            id: m.model.clone(),
+                            label: m.display().to_owned(),
+                            is_default: false,
+                        })
+                        .collect(),
+                    account: Some(workshop_detect::models::Account {
+                        email: Some("user@example.com".into()),
+                        plan: Some("max".into()),
+                    }),
+                    documented_aliases: false,
+                    fetched_at_secs: 0,
+                },
+                cached: false,
+                error: None,
+            }
+        } else {
+            RailModels::NotReady
+        };
+        st.empty_copy = (!ready).then(|| copy::empty_rail_copy(rail, installed, ready, false));
+        st.show_connect = !ready;
+        st
+    }
+
+    fn loaded_with_rails(rails: &[RailState]) -> PickerState {
+        let mut p = PickerState::new().with_active(Some(EngineModel::big_pickle_seed().row_id()));
+        let rows = models_rows(
+            &workshop_providers::Catalog::builtin(),
+            |_| false,
+            &[
+                engine("Big Pickle", "opencode/big-pickle", true, true),
+                engine("MiMo Free", "opencode/mimo", false, true),
+            ],
+            rails,
+        );
+        p.apply_snapshot(PickerSnapshot {
+            rows,
+            rails: rails.to_vec(),
+            ..PickerSnapshot::default()
+        });
+        p
+    }
+
+    /// The owner's layout: OpenCode's models, then the Subscriptions section — every vendor as
+    /// one row whose suffix is its state, `API keys`, xAI last. No pills, no vendor models inline.
+    #[test]
+    fn one_list_opencode_then_subscriptions_with_state_suffixes() {
+        let rails = [
+            rail(Rail::Claude, true, true),
+            rail(Rail::Codex, true, false),
+            rail(Rail::Cursor, false, false),
+        ];
+        let p = loaded_with_rails(&rails);
+        assert_eq!(
+            rendered(&p),
+            vec![
+                "# OpenCode",
+                "Big Pickle",
+                "MiMo Free",
+                "# Subscriptions",
+                "Claude",
+                "Codex",
+                "Cursor",
+                "API keys",
+                "xAI",
+            ],
+            "{:?}",
+            rendered(&p)
+        );
+        let by_title = |t: &str| {
+            p.visible_rows()
+                .into_iter()
+                .find(|r| r.title() == t)
+                .unwrap()
+        };
+        assert_eq!(
+            suffix_text(&p, &by_title("Big Pickle")),
+            "free \u{b7} active"
+        );
+        assert_eq!(suffix_text(&p, &by_title("MiMo Free")), "free");
+        assert_eq!(
+            suffix_text(&p, &by_title("Claude")),
+            "\u{2713} Max \u{25b8}"
+        );
+        assert_eq!(suffix_text(&p, &by_title("Codex")), "sign in");
+        assert_eq!(suffix_text(&p, &by_title("Cursor")), "install");
+        assert_eq!(suffix_text(&p, &by_title("API keys")), "\u{25b8}");
+        assert_eq!(suffix_text(&p, &by_title("xAI")), "optional \u{b7} sign in");
+        assert!(
+            !rendered(&p)
+                .iter()
+                .any(|l| l.contains("Opus") || l.contains("Sign in") || l.contains('[')),
+            "no vendor model inline, no pill: {:?}",
+            rendered(&p)
+        );
+        assert_eq!(p.title(), "Models");
+        // The active model is preselected.
+        assert_eq!(
+            p.selected_row().map(|r| r.title()),
+            Some("Big Pickle".into())
+        );
+    }
+
+    /// Enter on a signed-in vendor opens its sub-menu with the CLI's list; Enter picks a model;
+    /// Left / Esc go back to the vendor row.
+    #[test]
+    fn a_signed_in_vendor_opens_into_its_real_models() {
+        let rails = [
+            rail(Rail::Claude, true, true),
+            rail(Rail::Codex, true, false),
+            rail(Rail::Cursor, false, false),
+        ];
+        let mut p = loaded_with_rails(&rails);
+        select_row(&mut p, "Claude");
+        assert_eq!(p.enter_verb(), "open");
+        assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
+        assert_eq!(p.submenu, Some(Submenu::Vendor(Rail::Claude)));
+        assert_eq!(p.title(), "Models › Claude");
+        assert_eq!(
+            titles(&p),
+            vec!["Claude Opus", "Claude Sonnet", "Claude Haiku"]
+        );
+        assert!(
+            !p.models_lines()
+                .iter()
+                .any(|l| matches!(l, ModelsLine::Header(_))),
+            "a sub-menu has no group headers"
+        );
+        assert_eq!(
+            p.detail_lines(),
+            vec!["Your Claude subscription \u{b7} signed in as user@example.com (Max)"]
+        );
+        p.handle(PickerInput::Down);
+        assert!(matches!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::SelectRailModel(Rail::Claude, m) if m.display() == "Claude Sonnet"
+        ));
+        // Back lands on the vendor row again.
+        p.handle(PickerInput::Left);
+        assert_eq!(p.submenu, None);
+        assert_eq!(p.selected_row().map(|r| r.title()), Some("Claude".into()));
+        // `→` opens too; Esc leaves the sub-menu before it closes the picker.
+        assert_eq!(p.handle(PickerInput::Open), PickerOutcome::Changed);
+        assert_eq!(p.submenu, Some(Submenu::Vendor(Rail::Claude)));
+        assert_eq!(p.handle(PickerInput::Back), PickerOutcome::Changed);
+        assert_eq!(p.submenu, None);
+        assert_eq!(p.handle(PickerInput::Back), PickerOutcome::Close);
+    }
+
+    /// Enter on a signed-out vendor runs the official login; on a missing CLI the official
+    /// installer; `→` does neither.
+    #[test]
+    fn signed_out_and_missing_vendors_sign_in_or_install_on_enter_only() {
+        let rails = [
+            rail(Rail::Claude, true, true),
+            rail(Rail::Codex, true, false),
+            rail(Rail::Cursor, false, false),
+        ];
+        let mut p = loaded_with_rails(&rails);
+        select_row(&mut p, "Codex");
+        assert_eq!(p.enter_verb(), "sign in");
+        assert_eq!(p.handle(PickerInput::Open), PickerOutcome::Changed);
+        assert_eq!(p.submenu, None);
+        assert!(
+            p.detail_lines()
+                .iter()
+                .any(|l| l.contains("in your terminal:  codex login")),
+            "{:?}",
+            p.detail_lines()
+        );
+        assert_eq!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::RailConnect(Rail::Codex)
+        );
+        select_row(&mut p, "Cursor");
+        assert_eq!(p.enter_verb(), "install");
+        let detail = p.detail_lines().join("\n");
+        assert!(
+            detail.contains(copy::INSTALL_CURSOR) && detail.contains("Nothing installs on its own"),
+            "{detail}"
+        );
+        assert_eq!(p.handle(PickerInput::Open), PickerOutcome::Changed);
+        assert_eq!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::RailInstall(Rail::Cursor)
+        );
+    }
+
+    /// A signed-in vendor whose CLI has not listed its models (yet) says so on its row and
+    /// offers nothing to pick; a failed list retries on Enter. Never an invented model.
+    #[test]
+    fn a_signed_in_vendor_without_its_list_shows_loading_or_retry() {
+        let ready = |rail: Rail, subscription: RailModels, empty_copy| RailState {
+            pill: Pill::Ready,
+            installed: true,
+            empty_copy: Some(empty_copy),
+            subscription,
+            ..RailState::detecting(rail)
+        };
+        let rails = vec![
+            ready(Rail::Claude, RailModels::Loading, copy::LOADING_MODELS),
+            ready(
+                Rail::Codex,
+                RailModels::Failed {
+                    reason: "the CLI did not answer in time".into(),
+                },
+                copy::MODELS_FAILED,
+            ),
+            rail(Rail::Cursor, false, false),
+        ];
+        let mut p = loaded_with_rails(&rails);
+        let claude = p
+            .visible_rows()
+            .into_iter()
+            .find(|r| r.title() == "Claude")
+            .unwrap();
+        assert_eq!(
+            suffix_text(&p, &claude),
+            format!("\u{2713} \u{b7} {}", copy::LOADING_MODELS)
+        );
+        select_row(&mut p, "Claude");
+        assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
+        assert_eq!(p.submenu, None, "nothing to open while loading");
+        assert_eq!(
+            p.detail_lines(),
+            vec![format!("Signed in \u{b7} {}", copy::LOADING_MODELS)]
+        );
+        select_row(&mut p, "Codex");
+        let codex = p.selected_row().unwrap();
+        assert!(suffix_text(&p, &codex).ends_with(copy::MODELS_FAILED));
+        assert_eq!(p.enter_verb(), "retry");
+        assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::RetryRailModels);
+        assert!(
+            !rendered(&p)
+                .iter()
+                .any(|l| l.contains("Opus") || l.contains("Sign in")),
+            "signed in is never `Sign in`, and no placeholder model: {:?}",
+            rendered(&p)
+        );
+    }
+
+    /// One row per OpenCode model; a model with levels opens its effort sub-menu (`Default`, then
+    /// the levels), and picking a level carries it on the model. A model without levels selects
+    /// at once.
+    #[test]
+    fn effort_levels_are_a_sub_menu_not_rows() {
+        let mut ling = engine("Ling Free", "opencode/ling", false, true);
+        ling.variants = vec!["low".into(), "medium".into(), "high".into()];
+        let mut p = loaded_with_engine(&[
+            engine("Big Pickle", "opencode/big-pickle", true, true),
+            ling.clone(),
+        ]);
+        let opencode: Vec<String> = p
+            .rows
+            .iter()
+            .filter(|r| matches!(r.kind, RowKind::Engine(_)))
+            .map(ModelsRow::title)
+            .collect();
+        assert_eq!(opencode, ["Big Pickle", "Ling Free"]);
+        select_row(&mut p, "Big Pickle");
+        assert_eq!(p.enter_verb(), "select");
+        assert!(matches!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::SelectEngine(m) if m.name == "Big Pickle" && m.effort.is_none()
+        ));
+        select_row(&mut p, "Ling Free");
+        let row = p.selected_row().unwrap();
+        assert_eq!(suffix_text(&p, &row), "free \u{25b8}");
+        assert_eq!(p.enter_verb(), "open");
+        assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
+        assert_eq!(p.title(), "Models › Ling Free");
+        assert_eq!(titles(&p), vec!["Default", "low", "medium", "high"]);
+        assert_eq!(p.detail_lines(), vec!["Ling Free at its default effort"]);
+        for _ in 0..3 {
+            p.handle(PickerInput::Down);
+        }
+        assert_eq!(p.detail_lines(), vec!["Ling Free at effort high"]);
+        let picked = match p.handle(PickerInput::Enter) {
+            PickerOutcome::SelectEngine(m) => m,
+            other => panic!("expected SelectEngine, got {other:?}"),
+        };
+        assert_eq!(picked.effort.as_deref(), Some("high"));
+        assert_eq!(picked.display(), "Ling Free (high)");
+        assert_eq!(picked.row_id(), "opencode-engine:opencode/ling@high");
+        assert_eq!(EngineModel::big_pickle_seed().display(), "Big Pickle");
+
+        // With that pick active, the list row and the level row are both marked; the list row
+        // still reads as one model.
+        p.active_id = Some(picked.row_id());
+        p.handle(PickerInput::Left);
+        select_row(&mut p, "Ling Free");
+        let row = p.selected_row().unwrap();
+        assert!(p.is_active(&row));
+        assert_eq!(suffix_text(&p, &row), "free \u{b7} active \u{25b8}");
+        p.handle(PickerInput::Open);
+        assert_eq!(
+            p.selected_row().map(|r| r.title()),
+            Some("high".into()),
+            "the sub-menu opens on the picked level"
+        );
+
+        // The live catalog re-reports the model: the pick survives while the level exists.
+        let fresh = ling.clone().carrying_effort_from(&picked);
+        assert_eq!(fresh.effort.as_deref(), Some("high"));
+        let mut without_high = ling.clone();
+        without_high.variants = vec!["low".into()];
+        assert_eq!(without_high.carrying_effort_from(&picked).effort, None);
+        assert_eq!(
+            engine("Other", "opencode/other", false, true)
+                .carrying_effort_from(&picked)
+                .effort,
+            None,
+            "another model never inherits a level"
+        );
+    }
+
+    /// `/auth` opens the same list on the first vendor row; the first load keeps it there.
+    #[test]
+    fn auth_focus_lands_on_the_subscriptions_section() {
+        let mut p = PickerState::new()
+            .with_active(Some(EngineModel::big_pickle_seed().row_id()))
+            .with_focus(PickerFocus::Subscriptions);
+        assert_eq!(p.selected_row().map(|r| r.title()), Some("Claude".into()));
+        let rails = [
+            rail(Rail::Claude, true, false),
+            rail(Rail::Codex, true, false),
+            rail(Rail::Cursor, false, false),
+        ];
+        p.apply_snapshot(PickerSnapshot {
+            rows: models_rows(
+                &workshop_providers::Catalog::builtin(),
+                |_| false,
+                &[],
+                &rails,
+            ),
+            rails: rails.to_vec(),
+            ..PickerSnapshot::default()
+        });
+        assert_eq!(p.selected_row().map(|r| r.title()), Some("Claude".into()));
+        assert_eq!(p.title(), "Models", "one picker, one title");
+        // `/model` afterwards goes back to the active model, with a typed filter kept.
+        p.focus(PickerFocus::Models {
+            filter: "pick".into(),
+        });
+        assert_eq!(p.filter, "pick");
+        assert_eq!(titles(&p), vec!["Big Pickle"]);
+    }
+
+    /// The `API keys` row opens the connect rows (one vocabulary: `Provider — API key` /
+    /// `Provider — Sign in`); Enter on one connects that provider.
+    #[test]
+    fn api_keys_open_the_connect_rows() {
+        let mut p = loaded();
+        select_row(&mut p, API_KEYS_TITLE);
+        assert!(
+            p.detail_lines()[0].contains("OpenRouter") && p.detail_lines()[0].contains("OpenAI"),
+            "{:?}",
+            p.detail_lines()
+        );
+        assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
+        assert_eq!(p.submenu, Some(Submenu::ApiKeys));
+        assert_eq!(p.title(), "Models › API keys");
+        let titles = titles(&p);
+        assert!(
+            titles.iter().any(|t| t == "OpenRouter \u{2014} Sign in"),
+            "{titles:?}"
+        );
+        assert!(
+            titles.iter().any(|t| t == "OpenAI \u{2014} API key"),
+            "{titles:?}"
+        );
+        assert!(
+            titles.iter().all(|t| t.contains(" \u{2014} ")),
+            "{titles:?}"
+        );
+        assert!(
+            !titles.iter().any(|t| t.contains("xAI")),
+            "xAI is not an API key"
+        );
+        select_row(&mut p, "OpenAI");
+        assert_eq!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::ConnectProvider("openai".into())
+        );
     }
 
     #[test]
@@ -1391,30 +2124,34 @@ mod tests {
             live: true,
             ..PickerSnapshot::default()
         });
-        // Engine seed: dated, and honest about when the live list comes.
+        // Engine seed: one line, dated, no plumbing.
         select_row(&mut p, "Big Pickle");
         let lines = p.detail_lines();
-        assert_eq!(lines.len(), 3, "{lines:?}");
-        assert!(
-            lines[2].contains("cached list from 2026-09-21")
-                && lines[2].contains("live list arrives once OpenCode has started"),
-            "{lines:?}"
+        assert_eq!(
+            lines,
+            vec![format!(
+                "{ENGINE_ROW_NOTE} \u{b7} cached list from 2026-09-21"
+            )]
         );
-        assert!(
-            !lines
-                .iter()
-                .any(|l| l.to_ascii_lowercase().contains("engine")),
-            "no plumbing words on the row: {lines:?}"
-        );
-        // Live rows of a connected provider: the badge line carries the age.
+        for word in ["engine", "opencode serve", "CLI", "endpoint", "opencode.ai"] {
+            assert!(
+                !lines.join(" ").to_ascii_lowercase().contains(word),
+                "no plumbing word {word:?} under a model: {lines:?}"
+            );
+        }
+        // Live rows of a connected provider: the badge line carries the age, no endpoint.
         let openrouter = p
-            .visible_models()
+            .visible_rows()
             .iter()
             .position(|r| r.provider_id() == Some("openrouter"))
             .expect("a connected provider's row is listed");
-        p.models_selected = openrouter;
+        p.selected = openrouter;
         let lines = p.detail_lines();
         assert!(lines[0].ends_with("· fetched 3 min ago"), "{lines:?}");
+        assert!(
+            !lines.iter().any(|l| l.contains("Endpoint")),
+            "no endpoint under a model: {lines:?}"
+        );
         assert_eq!(
             p.catalog_note("openrouter").as_deref(),
             Some("fetched 3 min ago")
@@ -1431,7 +2168,7 @@ mod tests {
             summary, "Lists: OpenCode cached list from 2026-09-21 · OpenRouter fetched 3 min ago",
             "{summary}"
         );
-        // An engine list that was fetched names its source.
+        // An engine list that was fetched says so, briefly.
         p.catalog_status = vec![CatalogStatus {
             provider_id: ENGINE_PROVIDER_ID.into(),
             freshness: Freshness::Cached,
@@ -1440,10 +2177,9 @@ mod tests {
             error: None,
         }];
         select_row(&mut p, "Big Pickle");
-        let lines = p.detail_lines();
         assert_eq!(
-            lines[2],
-            format!("Model list fetched just now from {ENGINE_CATALOG_SOURCE}.")
+            p.detail_lines(),
+            vec![format!("{ENGINE_ROW_NOTE} \u{b7} list fetched just now")]
         );
     }
 
@@ -1467,164 +2203,52 @@ mod tests {
     }
 
     fn goto_xai(p: &mut PickerState) {
-        if p.tab != PickerTab::Subscriptions {
-            p.handle(PickerInput::SwitchTab);
-        }
-        for _ in 0..p.subscriptions_len() {
-            p.handle(PickerInput::Down);
-        }
-        assert!(p.selected_auth_row().is_some_and(ModelsRow::is_xai));
+        p.selected = p.visible_rows().len().saturating_sub(1);
+        assert!(p.selected_row().is_some_and(|r| r.is_xai()));
     }
 
     #[test]
-    fn models_view_lists_models_only_and_engine_default_first() {
+    fn list_is_engine_default_first_vendors_then_xai_last() {
         let p = loaded();
-        assert!(p.rows.iter().all(ModelsRow::is_model));
         assert!(
             matches!(p.rows.first().map(|r| &r.kind), Some(RowKind::Engine(m)) if m.is_default),
-            "the engine default heads the Models view"
+            "the engine default heads the list"
         );
-        assert!(!p.rows.iter().any(ModelsRow::is_xai));
-        // Fresh (unloaded) state: the seed row is already there for the overlay.
+        let vendors: Vec<_> = p
+            .rows
+            .iter()
+            .filter_map(|r| match r.kind {
+                RowKind::Vendor(rail) => Some(rail),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(vendors, vec![Rail::Claude, Rail::Codex, Rail::Cursor]);
+        assert!(p.rails.iter().all(|r| r.pill == Pill::Detecting));
+        assert!(p.rows.last().is_some_and(ModelsRow::is_xai));
+        assert!(
+            p.connect_rows.iter().any(|r| matches!(&r.kind, RowKind::ConnectProvider { provider_id, .. } if provider_id == "openrouter")),
+            "openrouter shows a connect row when no key is connected"
+        );
+        assert!(
+            !p.rows
+                .iter()
+                .any(|r| matches!(r.kind, RowKind::ConnectProvider { .. })),
+            "connect rows live in the API keys sub-menu"
+        );
+        assert_eq!(p.selected, 0, "never preselects the xAI row");
+        // Fresh (unloaded) state: the seed row and the vendors are already there for the overlay.
         let fresh = PickerState::new();
         assert!(matches!(
             fresh.rows.first().map(|r| &r.kind),
             Some(RowKind::Engine(_))
         ));
+        assert!(fresh.rows.iter().any(ModelsRow::is_vendor));
+        let detecting = fresh.rows.iter().find(|r| r.is_vendor()).unwrap();
+        assert_eq!(suffix_text(&fresh, detecting), "detecting\u{2026}");
     }
 
-    #[test]
-    fn subscriptions_view_is_rails_then_connect_rows_then_xai_last() {
-        let p = loaded();
-        let ids: Vec<_> = p.rails.iter().map(|r| r.rail).collect();
-        assert_eq!(ids, vec![Rail::Claude, Rail::Codex, Rail::Cursor]);
-        assert!(p.rails.iter().all(|r| r.pill == Pill::Detecting));
-        assert!(p.auth_rows.last().is_some_and(ModelsRow::is_xai));
-        assert!(
-            p.auth_rows.iter().any(|r| matches!(&r.kind, RowKind::ConnectProvider { provider_id, .. } if provider_id == "openrouter")),
-            "openrouter shows a connect row when no key is connected"
-        );
-        assert_eq!(p.subscriptions_len(), 3 + p.auth_rows.len());
-        assert_eq!(p.rail_selected, 0, "never preselects the xAI card");
-    }
-
-    /// A signed-in rail whose CLI could not list its models says "press Enter to retry", and Enter
-    /// there asks the CLIs again; a rail still loading offers nothing to pick and neither connects
-    /// nor retries.
-    #[test]
-    fn enter_on_a_rail_that_failed_to_list_models_retries() {
-        use workshop_detect::{RailModels, copy};
-        let ready = |subscription: RailModels, empty_copy| RailState {
-            pill: Pill::Ready,
-            installed: true,
-            empty_copy: Some(empty_copy),
-            subscription,
-            ..RailState::detecting(Rail::Claude)
-        };
-        let failed = RailModels::Failed {
-            reason: "the CLI did not answer in time".into(),
-        };
-        let mut p = PickerState::new().with_tab(PickerTab::Subscriptions);
-        p.apply_snapshot(PickerSnapshot {
-            rails: vec![ready(failed, copy::MODELS_FAILED)],
-            ..PickerSnapshot::default()
-        });
-        assert!(copy::MODELS_FAILED.ends_with("press Enter to retry"));
-        let detail = p.detail_lines().join("\n");
-        assert!(detail.contains(copy::MODELS_FAILED), "{detail}");
-        assert!(!detail.contains("Enter picks the model"), "{detail}");
-        assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::RetryRailModels);
-
-        p.apply_snapshot(PickerSnapshot {
-            rails: vec![ready(RailModels::Loading, copy::LOADING_MODELS)],
-            ..PickerSnapshot::default()
-        });
-        assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
-    }
-
-    /// On the Models view a signed-in rail whose list is still loading or failed to load is its
-    /// own status row (`Loading models…` / `Couldn't load models — press Enter to retry`), never
-    /// a sign-in row; Enter on the failed one asks the CLIs again, on the loading one does nothing.
-    #[test]
-    fn models_view_shows_a_signed_in_rails_status_never_a_sign_in_row() {
-        use workshop_detect::{RailModels, copy};
-        let ready = |rail: Rail, subscription: RailModels, empty_copy| RailState {
-            pill: Pill::Ready,
-            installed: true,
-            empty_copy: Some(empty_copy),
-            subscription,
-            ..RailState::detecting(rail)
-        };
-        let rails = vec![
-            ready(Rail::Claude, RailModels::Loading, copy::LOADING_MODELS),
-            ready(
-                Rail::Codex,
-                RailModels::Failed {
-                    reason: "the CLI did not answer in time".into(),
-                },
-                copy::MODELS_FAILED,
-            ),
-        ];
-        let rows = models_rows(
-            &workshop_providers::Catalog::builtin(),
-            |_| false,
-            &[],
-            &rails,
-        );
-        let claude: Vec<&ModelsRow> = rows
-            .iter()
-            .filter(|r| r.provider_id() == Some(Rail::Claude.vendor().id()))
-            .collect();
-        let codex: Vec<&ModelsRow> = rows
-            .iter()
-            .filter(|r| r.provider_id() == Some(Rail::Codex.vendor().id()))
-            .collect();
-        assert!(
-            matches!(claude.as_slice(), [row] if matches!(&row.kind, RowKind::RailNote(Rail::Claude, c) if c == copy::LOADING_MODELS)),
-            "one Loading status row for Claude: {claude:?}"
-        );
-        assert!(
-            matches!(codex.as_slice(), [row] if matches!(&row.kind, RowKind::RailNote(Rail::Codex, c) if c == copy::MODELS_FAILED)),
-            "one Failed status row for Codex: {codex:?}"
-        );
-        for row in claude.iter().chain(&codex) {
-            assert!(
-                !matches!(row.kind, RowKind::RailSignIn(_)) && !row.badge.contains("not signed in"),
-                "a signed-in rail never reads as signed out: {row:?}"
-            );
-            assert!(row.badge.starts_with("Signed in"), "{row:?}");
-        }
-
-        let mut p = PickerState::new().with_tab(PickerTab::Models);
-        p.apply_snapshot(PickerSnapshot {
-            rows,
-            rails,
-            ..PickerSnapshot::default()
-        });
-        let mut outcomes = std::collections::BTreeMap::new();
-        for _ in 0..p.visible_models().len() {
-            if let Some(row) = p.selected_row()
-                && let RowKind::RailNote(rail, _) = &row.kind
-            {
-                let rail = *rail;
-                outcomes.insert(rail.vendor().id(), p.handle(PickerInput::Enter));
-            }
-            p.handle(PickerInput::Down);
-        }
-        assert_eq!(
-            outcomes.get(Rail::Codex.vendor().id()),
-            Some(&PickerOutcome::RetryRailModels),
-            "Enter on the failed list asks the CLIs again: {outcomes:?}"
-        );
-        assert_eq!(
-            outcomes.get(Rail::Claude.vendor().id()),
-            Some(&PickerOutcome::Changed),
-            "Enter on a loading list has nothing to pick yet: {outcomes:?}"
-        );
-    }
-
-    /// Kilo Gateway is the silent fallback, never a row: not on `/model`, not on `/auth`, and no
-    /// unconnected API-key provider is listed on `/model` either.
+    /// Kilo Gateway is the silent fallback, never a row, and no unconnected API-key provider is
+    /// listed as a model.
     #[test]
     fn kilo_is_never_listed_and_key_providers_wait_for_a_key() {
         let p = loaded();
@@ -1636,25 +2260,28 @@ mod tests {
             "the catalog code still knows Kilo"
         );
         assert!(
-            !p.rows.iter().any(|r| r.provider_id() == Some("kilo")),
-            "Kilo is not on the Models view: {:?}",
-            p.rows.iter().map(ModelsRow::title).collect::<Vec<_>>()
-        );
-        assert!(
-            !p.auth_rows.iter().any(|r| r.provider_id() == Some("kilo")),
-            "Kilo is not on the Subscriptions view"
-        );
-        assert!(
-            p.rows.iter().all(|r| matches!(r.kind, RowKind::Engine(_))),
-            "with nothing connected and no CLI installed, only OpenCode's models are listed: {:?}",
-            p.rows.iter().map(ModelsRow::title).collect::<Vec<_>>()
+            !p.rows.iter().any(|r| r.provider_id() == Some("kilo"))
+                && !p
+                    .connect_rows
+                    .iter()
+                    .any(|r| r.provider_id() == Some("kilo")),
+            "Kilo is never a row: {:?}",
+            titles(&p)
         );
         assert!(is_hidden_provider("kilo") && !is_hidden_provider("openrouter"));
+        assert!(
+            p.rows
+                .iter()
+                .filter(|r| r.is_model())
+                .all(|r| matches!(r.kind, RowKind::Engine(_))),
+            "with nothing connected, only OpenCode's models are listed: {:?}",
+            titles(&p)
+        );
         let engine = p.rows.first().expect("engine seed row");
         assert_eq!(engine.class, ConnectionClass::AgentAdapter);
-        assert_eq!(engine.provider(), "OpenCode");
+        assert_eq!(engine.group, "OpenCode");
         assert_eq!(engine.title(), "Big Pickle");
-        // Once a key is configured, that provider's rows appear.
+        // Once a key is configured, that provider's rows appear as their own group.
         let connected = models_rows(
             &workshop_providers::Catalog::builtin(),
             |id| id == "openrouter",
@@ -1696,14 +2323,44 @@ mod tests {
             rows,
             ..PickerSnapshot::default()
         });
-        assert_eq!(p.selected_row().map(ModelsRow::id), Some(active));
-        assert!(p.selected_row().is_some_and(|r| p.is_active(r)));
+        assert_eq!(p.selected_row().map(|r| r.id()), Some(active));
+        assert!(p.selected_row().is_some_and(|r| p.is_active(&r)));
+    }
+
+    /// The active subscription model marks its vendor row and, inside the sub-menu, itself.
+    #[test]
+    fn an_active_subscription_model_marks_its_vendor() {
+        let rails = [
+            rail(Rail::Claude, true, true),
+            rail(Rail::Codex, true, false),
+            rail(Rail::Cursor, false, false),
+        ];
+        let sonnet = rails[0].models[1].clone();
+        let mut p = loaded_with_rails(&rails);
+        p.active_id = Some(rail_model_row_id(Rail::Claude, &sonnet));
+        p.selected = 0;
+        p.select_active();
+        assert_eq!(p.selected_row().map(|r| r.title()), Some("Claude".into()));
+        let claude = p.selected_row().unwrap();
+        assert_eq!(
+            suffix_text(&p, &claude),
+            "\u{2713} Max \u{b7} active \u{25b8}"
+        );
+        p.handle(PickerInput::Enter);
+        assert_eq!(
+            p.selected_row().map(|r| r.title()),
+            Some("Claude Sonnet".into()),
+            "the sub-menu opens on the active model"
+        );
+        let row = p.selected_row().unwrap();
+        assert_eq!(suffix_text(&p, &row), "active");
     }
 
     #[test]
     fn xai_login_requires_two_explicit_enters_and_disarms_on_move() {
         let mut p = loaded();
         goto_xai(&mut p);
+        assert_eq!(p.enter_verb(), "sign in");
         assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
         assert!(p.xai_armed);
         assert!(
@@ -1731,26 +2388,50 @@ mod tests {
         assert_eq!(p.handle(PickerInput::Back), PickerOutcome::Close);
     }
 
+    /// Every row but the xAI one yields something other than the xAI login — at the top level,
+    /// in every sub-menu and in the filtered list.
     #[test]
     fn non_xai_rows_never_start_a_login() {
-        let mut p = loaded();
+        let rails = [
+            rail(Rail::Claude, true, true),
+            rail(Rail::Codex, true, false),
+            rail(Rail::Cursor, false, false),
+        ];
+        let mut p = loaded_with_rails(&rails);
         p.show_all = true;
-        for i in 0..p.visible_models().len() {
-            p.models_selected = i;
+        for i in 0..p.visible_rows().len() {
+            p.submenu = None;
+            p.selected = i;
             p.xai_armed = false;
-            let out = p.handle(PickerInput::Enter);
-            assert_ne!(out, PickerOutcome::StartOptionalXaiLogin, "row {i}");
-        }
-        p.handle(PickerInput::SwitchTab);
-        for i in 0..p.subscriptions_len() {
-            p.rail_selected = i;
-            p.detail_open = false;
-            p.xai_armed = false;
-            if p.selected_auth_row().is_some_and(ModelsRow::is_xai) {
+            if p.selected_row().is_some_and(|r| r.is_xai()) {
                 continue;
             }
             let out = p.handle(PickerInput::Enter);
-            assert_ne!(out, PickerOutcome::StartOptionalXaiLogin, "entry {i}");
+            assert_ne!(out, PickerOutcome::StartOptionalXaiLogin, "row {i}");
+            if p.submenu.is_some() {
+                for j in 0..p.visible_rows().len() {
+                    p.selected = j;
+                    let out = p.handle(PickerInput::Enter);
+                    assert_ne!(out, PickerOutcome::StartOptionalXaiLogin, "row {i}/{j}");
+                }
+                p.handle(PickerInput::Left);
+            }
+        }
+        p.filter = "a".into();
+        for i in 0..p.visible_rows().len() {
+            p.selected = i;
+            p.xai_armed = false;
+            if p.selected_row().is_some_and(|r| r.is_xai()) {
+                continue;
+            }
+            let out = p.handle(PickerInput::Enter);
+            assert_ne!(
+                out,
+                PickerOutcome::StartOptionalXaiLogin,
+                "filtered row {i}"
+            );
+            p.submenu = None;
+            p.filter = "a".into();
         }
     }
 
@@ -1760,22 +2441,6 @@ mod tests {
         let json = serde_json::to_string(&sel).unwrap();
         assert!(!json.contains("xai") && !json.contains("opencode"));
         assert!(matches!(sel, DefaultSelection::KiloFree { .. }));
-    }
-
-    #[test]
-    fn first_run_default_mirrors_the_engine_catalog() {
-        assert_eq!(
-            EngineModel::first_run_default(&[]),
-            EngineModel::big_pickle_seed()
-        );
-        let live = vec![
-            engine("Other", "opencode/other", false, true),
-            engine("New Default", "opencode/new-default", true, true),
-        ];
-        assert_eq!(
-            EngineModel::first_run_default(&live).model_ref,
-            "opencode/new-default"
-        );
     }
 
     #[test]
@@ -1799,36 +2464,26 @@ mod tests {
     }
 
     #[test]
-    fn connect_row_on_subscriptions_opens_provider_connect() {
-        let mut p = loaded();
-        p.handle(PickerInput::SwitchTab);
-        for _ in 0..p.rails.len() {
-            p.handle(PickerInput::Down);
-        }
-        let row = p.selected_auth_row().expect("first connect row").clone();
-        let RowKind::ConnectProvider { provider_id, .. } = &row.kind else {
-            panic!("expected a connect row, got {row:?}");
-        };
-        assert_eq!(
-            p.handle(PickerInput::Enter),
-            PickerOutcome::ConnectProvider(provider_id.clone())
-        );
-    }
-
-    #[test]
-    fn detail_is_at_most_three_lines_everywhere() {
-        let mut p = loaded();
+    fn detail_is_one_to_three_lines_everywhere() {
+        let rails = [
+            rail(Rail::Claude, true, true),
+            rail(Rail::Codex, true, false),
+            rail(Rail::Cursor, false, false),
+        ];
+        let mut p = loaded_with_rails(&rails);
         p.show_all = true;
-        for i in 0..p.visible_models().len() {
-            p.models_selected = i;
+        for i in 0..p.visible_rows().len() {
+            p.selected = i;
             let n = p.detail_lines().len();
             assert!((1..=3).contains(&n), "row {i}: {n} lines");
         }
-        p.handle(PickerInput::SwitchTab);
-        for i in 0..p.subscriptions_len() {
-            p.rail_selected = i;
-            let n = p.detail_lines().len();
-            assert!((1..=3).contains(&n), "entry {i}: {n} lines");
+        for submenu in [Submenu::Vendor(Rail::Claude), Submenu::ApiKeys] {
+            p.submenu = Some(submenu.clone());
+            for i in 0..p.visible_rows().len() {
+                p.selected = i;
+                let n = p.detail_lines().len();
+                assert!((1..=3).contains(&n), "{submenu:?} row {i}: {n} lines");
+            }
         }
     }
 
@@ -1838,124 +2493,50 @@ mod tests {
         assert_eq!(p.handle(PickerInput::Back), PickerOutcome::Close);
     }
 
-    fn engine(name: &str, model_ref: &str, is_default: bool, tool_call: bool) -> EngineModel {
-        EngineModel {
-            model_ref: model_ref.into(),
-            name: name.into(),
-            is_default,
-            tool_call,
-            context_limit: None,
-            variants: Vec::new(),
-            effort: None,
-            image_input: false,
-        }
-    }
-
-    /// A model with effort levels becomes its default row plus one row per level, titled the
-    /// way the composer will read (`Ling Free (high)`); picking a level carries it on the model
-    /// (`effort`), and a newer catalog entry keeps a picked level only while it is still offered.
+    /// Typing flattens everything that matches into one list — including a signed-in vendor's
+    /// models and the connect rows — with the provider column; Esc clears the filter first.
     #[test]
-    fn effort_levels_are_rows_and_travel_with_the_picked_model() {
-        let mut ling = engine("Ling Free", "opencode/ling", false, true);
-        ling.variants = vec!["low".into(), "medium".into(), "high".into()];
-        let p = loaded_with_engine(&[
-            engine("Big Pickle", "opencode/big-pickle", true, true),
-            ling.clone(),
-        ]);
-        let titles: Vec<String> = p
-            .rows
-            .iter()
-            .filter(|r| matches!(r.kind, RowKind::Engine(_)))
-            .map(ModelsRow::title)
-            .collect();
-        assert_eq!(
-            titles,
-            [
-                "Big Pickle",
-                "Ling Free",
-                "Ling Free (low)",
-                "Ling Free (medium)",
-                "Ling Free (high)"
-            ]
-        );
-        let high = p
-            .rows
-            .iter()
-            .find(|r| r.title() == "Ling Free (high)")
-            .expect("level row");
-        assert_eq!(high.id(), "opencode-engine:opencode/ling@high");
-        let RowKind::Engine(picked) = &high.kind else {
-            panic!("engine row")
-        };
-        assert_eq!(picked.effort.as_deref(), Some("high"));
-        assert_eq!(picked.display(), "Ling Free (high)");
-        assert_eq!(EngineModel::big_pickle_seed().display(), "Big Pickle");
-
-        // The live catalog re-reports the model: the pick survives while the level exists.
-        let fresh = ling.clone().carrying_effort_from(picked);
-        assert_eq!(fresh.effort.as_deref(), Some("high"));
-        let mut without_high = ling.clone();
-        without_high.variants = vec!["low".into()];
-        assert_eq!(without_high.carrying_effort_from(picked).effort, None);
-        assert_eq!(
-            engine("Other", "opencode/other", false, true)
-                .carrying_effort_from(picked)
-                .effort,
-            None,
-            "another model never inherits a level"
-        );
-    }
-
-    fn loaded_with_engine(models: &[EngineModel]) -> PickerState {
-        let mut p = PickerState::new().with_active(Some(EngineModel::big_pickle_seed().row_id()));
-        let rows = models_rows(
-            &workshop_providers::Catalog::builtin(),
-            |_| false,
-            models,
-            &[],
-        );
-        p.apply_snapshot(PickerSnapshot {
-            rows,
-            ..PickerSnapshot::default()
-        });
-        p
-    }
-
-    #[test]
-    fn typing_filters_the_models_view_and_never_closes_it() {
-        let mut p = loaded_with_engine(&[
-            engine("Big Pickle", "opencode/big-pickle", true, true),
-            engine("Qwen3.8 27B Free", "opencode/qwen", false, true),
-            engine("MiMo Free", "opencode/mimo", false, true),
-        ]);
-        let all = p.visible_models().len();
-        for c in "qwen".chars() {
+    fn typing_filters_the_whole_tree_and_never_closes_it() {
+        let rails = [
+            rail(Rail::Claude, true, true),
+            rail(Rail::Codex, true, false),
+            rail(Rail::Cursor, false, false),
+        ];
+        let mut p = loaded_with_rails(&rails);
+        let all = p.visible_rows().len();
+        assert!(!p.shows_provider_column());
+        for c in "sonnet".chars() {
             assert_eq!(
                 p.handle(PickerInput::Char(c)),
                 PickerOutcome::Changed,
                 "{c}"
             );
         }
-        assert_eq!(p.filter, "qwen");
-        let shown = p.visible_models();
-        assert!(shown.len() < all);
-        assert!(
-            shown
-                .iter()
-                .all(|r| r.title().to_ascii_lowercase().contains("qwen")),
-            "{:?}",
-            shown.iter().map(|r| r.title()).collect::<Vec<_>>()
-        );
+        assert_eq!(p.filter, "sonnet");
+        assert!(p.shows_provider_column());
+        assert_eq!(titles(&p), vec!["Claude Sonnet"]);
+        assert_eq!(p.visible_rows()[0].provider(), "Claude");
         assert!(
             !p.models_lines()
                 .iter()
                 .any(|l| matches!(l, ModelsLine::Header(_))),
             "a search result has no groups"
         );
+        assert!(matches!(
+            p.handle(PickerInput::Enter),
+            PickerOutcome::SelectRailModel(Rail::Claude, _)
+        ));
+        // A vendor is found by its name (to sign in), a provider by its connect row.
+        p.filter = "codex".into();
+        assert_eq!(titles(&p), vec!["Codex"]);
+        p.filter = "openai".into();
+        assert_eq!(titles(&p), vec!["OpenAI \u{2014} API key"]);
+        p.filter = "pickle".into();
+        assert_eq!(titles(&p), vec!["Big Pickle"]);
         // Esc clears the filter first; only an empty filter closes the picker.
         assert_eq!(p.handle(PickerInput::Back), PickerOutcome::Changed);
         assert!(p.filter.is_empty());
-        assert_eq!(p.visible_models().len(), all);
+        assert_eq!(p.visible_rows().len(), all);
         assert_eq!(p.handle(PickerInput::Back), PickerOutcome::Close);
         // Backspace edits the filter; `q` is a letter, not a close key.
         p.handle(PickerInput::Char('q'));
@@ -1984,12 +2565,6 @@ mod tests {
         ];
         let baseline_hidden = loaded_with_engine(&[]).hidden_models();
         let mut p = loaded_with_engine(&models);
-        let titles = |p: &PickerState| {
-            p.visible_models()
-                .iter()
-                .map(|r| r.title())
-                .collect::<Vec<_>>()
-        };
         assert!(
             !titles(&p)
                 .iter()
@@ -2006,236 +2581,19 @@ mod tests {
         ));
     }
 
-    /// A rail as the detect layer reports it; a Ready rail carries the models its CLI listed
-    /// (here: three Claude aliases, as a CLI would report them).
-    fn rail(rail: Rail, installed: bool, ready: bool) -> RailState {
-        let mut st = RailState::detecting(rail);
-        st.installed = installed;
-        st.pill = if ready {
-            Pill::Ready
-        } else if installed {
-            Pill::SignIn
-        } else {
-            Pill::Install
-        };
-        st.models = if ready {
-            let p = rail.provider_id();
-            ["Claude Opus", "Claude Sonnet", "Claude Haiku"]
-                .iter()
-                .map(|name| {
-                    workshop_detect::ModelRef::new(
-                        p,
-                        name.rsplit(' ').next().unwrap().to_ascii_lowercase(),
-                    )
-                    .with_display_name(*name)
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        st.show_connect = !ready;
-        st
-    }
-
-    /// A signed-in CLI whose own model list has not arrived (or failed) is one row carrying the
-    /// rail's copy — `Loading models…` by default — never `Sign in` and never a made-up model;
-    /// Enter does nothing there, and the Subscriptions detail says the same.
     #[test]
-    fn a_signed_in_rail_without_its_list_shows_loading_not_placeholders() {
-        let mut loading = rail(Rail::Claude, true, true);
-        loading.models.clear();
-        let mut failed = rail(Rail::Codex, true, true);
-        failed.models.clear();
-        failed.empty_copy = Some("Couldn't load models — press Ctrl+R to retry");
-        let rails = [loading, failed, rail(Rail::Cursor, false, false)];
-        let mut p = PickerState::new().with_active(Some(EngineModel::big_pickle_seed().row_id()));
-        let rows = models_rows(
-            &workshop_providers::Catalog::builtin(),
-            |_| false,
-            &[],
-            &rails,
-        );
-        p.apply_snapshot(PickerSnapshot {
-            rows,
-            rails: rails.to_vec(),
-            ..PickerSnapshot::default()
-        });
-        let rendered: Vec<String> = p
-            .models_lines()
-            .iter()
-            .map(|l| match l {
-                ModelsLine::Header(h) => format!("# {h}"),
-                ModelsLine::Row(r) => r.title(),
-            })
-            .collect();
+    fn first_run_default_mirrors_the_engine_catalog() {
         assert_eq!(
-            rendered,
-            vec![
-                "# OpenCode",
-                "Big Pickle",
-                "# Claude",
-                "Loading models\u{2026}",
-                "# Codex",
-                "Couldn't load models — press Ctrl+R to retry",
-            ],
-            "{rendered:?}"
+            EngineModel::first_run_default(&[]),
+            EngineModel::big_pickle_seed()
         );
-        assert!(
-            !rendered
-                .iter()
-                .any(|l| l.contains("Sign in") || l.contains("Opus")),
-            "signed in is never `Sign in`, and no placeholder model: {rendered:?}"
-        );
-        p.models_selected = p
-            .visible_models()
-            .iter()
-            .position(|r| r.title().starts_with("Loading"))
-            .unwrap();
-        assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Changed);
-        assert!(
-            p.detail_lines()
-                .iter()
-                .any(|l| l.contains("Nothing to pick until the list arrives")),
-            "{:?}",
-            p.detail_lines()
-        );
-        // Subscriptions view: the same copy under the rail, no empty radio line.
-        p.tab = PickerTab::Subscriptions;
-        p.rail_selected = 0;
-        let detail = p.detail_lines();
-        assert_eq!(detail[0], "Loading models\u{2026}");
-        assert!(
-            !detail.iter().any(|l| l.contains("Enter picks the model")),
-            "{detail:?}"
-        );
-    }
-
-    /// The owner's layout: OpenCode's models first, then each *installed* subscription as its own
-    /// group — signed in lists its models, signed out is one `Sign in` row, not installed is absent.
-    #[test]
-    fn models_view_is_opencode_then_each_installed_subscription() {
-        let rails = [
-            rail(Rail::Claude, true, true),
-            rail(Rail::Codex, true, false),
-            rail(Rail::Cursor, false, false),
+        let live = vec![
+            engine("Other", "opencode/other", false, true),
+            engine("New Default", "opencode/new-default", true, true),
         ];
-        let mut p = PickerState::new().with_active(Some(EngineModel::big_pickle_seed().row_id()));
-        let rows = models_rows(
-            &workshop_providers::Catalog::builtin(),
-            |_| false,
-            &[
-                engine("Big Pickle", "opencode/big-pickle", true, true),
-                engine("MiMo Free", "opencode/mimo", false, true),
-            ],
-            &rails,
-        );
-        p.apply_snapshot(PickerSnapshot {
-            rows,
-            rails: rails.to_vec(),
-            ..PickerSnapshot::default()
-        });
-        let lines = p.models_lines();
-        let rendered: Vec<String> = lines
-            .iter()
-            .map(|l| match l {
-                ModelsLine::Header(h) => format!("# {h}"),
-                ModelsLine::Row(r) => r.title(),
-            })
-            .collect();
         assert_eq!(
-            rendered,
-            vec![
-                "# OpenCode",
-                "Big Pickle",
-                "MiMo Free",
-                "# Claude",
-                "Claude Opus",
-                "Claude Sonnet",
-                "Claude Haiku",
-                "# Codex",
-                "Sign in",
-            ],
-            "{rendered:?}"
-        );
-        assert!(
-            !rendered.iter().any(|l| l.contains("Cursor")),
-            "a CLI that is not installed is not on /model"
-        );
-        // Enter on a subscription model routes to that rail; Enter on `Sign in` runs its login.
-        p.models_selected = p
-            .visible_models()
-            .iter()
-            .position(|r| r.title() == "Claude Sonnet")
-            .unwrap();
-        assert!(matches!(
-            p.handle(PickerInput::Enter),
-            PickerOutcome::SelectRailModel(Rail::Claude, m) if m.display() == "Claude Sonnet"
-        ));
-        p.models_selected = p
-            .visible_models()
-            .iter()
-            .position(|r| r.title() == "Sign in")
-            .unwrap();
-        assert_eq!(
-            p.handle(PickerInput::Enter),
-            PickerOutcome::RailConnect(Rail::Codex)
-        );
-        // The active row is preselected under its header.
-        p.models_selected = 0;
-        p.select_active();
-        assert_eq!(
-            p.selected_row().map(|r| r.title()),
-            Some("Big Pickle".into())
-        );
-        assert_eq!(p.models_selected, 0);
-        // The Subscriptions view still lists every rail, installed or not.
-        assert_eq!(p.rails.len(), 3);
-    }
-
-    /// A rail whose CLI is not installed offers one action: Enter runs the vendor's official
-    /// installer (`RailInstall`), and the detail names that installer and promises nothing runs
-    /// on its own. Signed-out-but-installed still offers `Sign in` (`RailConnect`).
-    #[test]
-    fn a_missing_cli_is_one_install_keypress_never_manual_steps() {
-        let rails = [
-            rail(Rail::Claude, false, false),
-            rail(Rail::Codex, true, false),
-            rail(Rail::Cursor, false, false),
-        ];
-        assert_eq!(rails[0].pill, Pill::Install);
-        assert_eq!(rails[0].pill.label(), "Install");
-        let mut p = PickerState::new();
-        p.apply_snapshot(PickerSnapshot {
-            rows: models_rows(
-                &workshop_providers::Catalog::builtin(),
-                |_| false,
-                &[],
-                &rails,
-            ),
-            rails: rails.to_vec(),
-            ..PickerSnapshot::default()
-        });
-        p.tab = PickerTab::Subscriptions;
-        p.rail_selected = 0;
-        let detail = p.detail_lines().join("\n");
-        assert!(
-            detail.contains("curl -fsSL https://claude.ai/install.sh | bash")
-                && detail.contains("Nothing installs on its own"),
-            "{detail}"
-        );
-        assert_eq!(
-            p.handle(PickerInput::Enter),
-            PickerOutcome::RailInstall(Rail::Claude)
-        );
-        p.rail_selected = 2;
-        assert_eq!(
-            p.handle(PickerInput::Enter),
-            PickerOutcome::RailInstall(Rail::Cursor)
-        );
-        p.rail_selected = 1;
-        assert_eq!(
-            p.handle(PickerInput::Enter),
-            PickerOutcome::RailConnect(Rail::Codex)
+            EngineModel::first_run_default(&live).model_ref,
+            "opencode/new-default"
         );
     }
 
@@ -2280,28 +2638,39 @@ mod tests {
         assert_eq!(before.len(), after.len(), "one row left, one row joined");
     }
 
+    /// A vendor that signs out while its sub-menu is open falls back to the list.
     #[test]
-    fn connect_rows_share_one_vocabulary() {
-        let p = loaded();
-        let titles: Vec<String> = p.auth_rows.iter().map(ModelsRow::title).collect();
-        assert!(
-            titles.iter().any(|t| t == "OpenRouter \u{2014} Sign in"),
-            "{titles:?}"
-        );
-        assert!(
-            titles.iter().any(|t| t == "OpenAI \u{2014} API key"),
-            "{titles:?}"
-        );
-        assert!(
-            titles.iter().any(|t| t == "Anthropic \u{2014} API key"),
-            "{titles:?}"
-        );
-        let xai = p.auth_rows.last().unwrap();
-        assert_eq!(xai.title(), "xAI \u{2014} Sign in");
-        assert_eq!(xai.short_badge(), "optional");
-        assert!(
-            titles.iter().all(|t| t.contains(" \u{2014} ")),
-            "{titles:?}"
-        );
+    fn a_vendor_sub_menu_closes_when_its_list_goes_away() {
+        let mut rails = [
+            rail(Rail::Claude, true, true),
+            rail(Rail::Codex, true, false),
+            rail(Rail::Cursor, false, false),
+        ];
+        let mut p = loaded_with_rails(&rails);
+        select_row(&mut p, "Claude");
+        p.handle(PickerInput::Enter);
+        assert_eq!(p.submenu, Some(Submenu::Vendor(Rail::Claude)));
+        rails[0] = rail(Rail::Claude, true, false);
+        p.apply_snapshot(PickerSnapshot {
+            rows: models_rows(
+                &workshop_providers::Catalog::builtin(),
+                |_| false,
+                &[],
+                &rails,
+            ),
+            rails: rails.to_vec(),
+            ..PickerSnapshot::default()
+        });
+        assert_eq!(p.submenu, None);
+        assert_eq!(p.selected_row().map(|r| r.title()), Some("Claude".into()));
+        assert_eq!(suffix_text(&p, &p.selected_row().unwrap()), "sign in");
+    }
+
+    #[test]
+    fn plan_names_are_capitalised() {
+        assert_eq!(plan_name("max"), "Max");
+        assert_eq!(plan_name("pro"), "Pro");
+        assert_eq!(plan_name("Plus"), "Plus");
+        assert_eq!(plan_name(""), "");
     }
 }

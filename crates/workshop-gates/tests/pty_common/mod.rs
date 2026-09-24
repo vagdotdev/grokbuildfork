@@ -41,6 +41,15 @@ pub fn wait_for(h: &mut PtyHarness, text: &str, secs: u64) {
     }
 }
 
+pub fn wait_gone(h: &mut PtyHarness, text: &str, secs: u64) {
+    if let Err(e) = h.wait_for_text_absent(text, Duration::from_secs(secs)) {
+        panic!(
+            "timed out waiting for {text:?} to disappear: {e}\nscreen:\n{}",
+            h.screen_contents()
+        );
+    }
+}
+
 /// Press Down until the `›`-marked row contains `needle`.
 pub fn move_selection_to(h: &mut PtyHarness, needle: &str) {
     for _ in 0..40 {
@@ -279,6 +288,33 @@ pub fn connect_big_pickle(j: &mut Journey) {
 
 /// Test hook read by the binary: the silent fallback's base URL (see `workshop::KILO_BASE_URL_ENV`).
 pub const KILO_BASE_URL_ENV: &str = "WORKSHOP_KILO_BASE_URL";
+
+/// The one picker overlay (`/model`, `/auth`) is on screen: its search line starts with this
+/// glyph whatever is typed into the filter.
+pub const PICKER_OPEN: &str = "\u{2315}";
+/// The row marker of a row that opens a sub-menu (a signed-in vendor, a model with effort levels,
+/// `API keys`).
+pub const OPENS_SUBMENU: &str = "\u{25b8}";
+/// A signed-in vendor's row mark.
+pub const SIGNED_IN: &str = "\u{2713}";
+
+/// The `›`-marked (highlighted) line of the screen.
+pub fn selected_line(h: &PtyHarness) -> Option<String> {
+    h.screen_contents()
+        .lines()
+        .find(|l| l.contains('\u{203a}'))
+        .map(str::to_owned)
+}
+
+/// Wait until the picker overlay is gone.
+pub fn wait_picker_closed(h: &mut PtyHarness, secs: u64) {
+    if let Err(e) = h.wait_for_text_absent(PICKER_OPEN, Duration::from_secs(secs)) {
+        panic!(
+            "the picker did not close: {e}\nscreen:\n{}",
+            h.screen_contents()
+        );
+    }
+}
 
 /// Words a first-time user must never read on screen: runtime and fallback plumbing.
 pub const PLUMBING_WORDS: [&str; 6] = [

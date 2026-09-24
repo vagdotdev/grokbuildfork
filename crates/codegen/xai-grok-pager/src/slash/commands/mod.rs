@@ -432,8 +432,8 @@ mod tests {
                 matches!(
                     result,
                     CommandResult::Action(Action::OpenConnectionPicker(
-                        workshop_auth::PickerTab::Models
-                    ))
+                        workshop_auth::PickerFocus::Models { ref filter }
+                    )) if filter.is_empty()
                 ),
                 "{args:?}: {result:?}"
             );
