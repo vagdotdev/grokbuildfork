@@ -2226,10 +2226,10 @@ index 00000000..63741ede
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs b/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs
 new file mode 100644
-index 00000000..e12673a6
+index 00000000..fdb7cfa5
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs
-@@ -0,0 +1,539 @@
+@@ -0,0 +1,544 @@
 +//! Workshop overlay: engine conversations on disk, so they can be resumed.
 +//!
 +//! An Engine (OpenCode) turn never enters the shell's session store — the shell session behind
@@ -2465,6 +2465,11 @@ index 00000000..e12673a6
 +    if !plausible_id(id) {
 +        return;
 +    }
++    // Turns are recorded from blocking tasks; one read-modify-write of a session file at a time.
++    static RECORD: std::sync::Mutex<()> = std::sync::Mutex::new(());
++    let _one_at_a_time = RECORD
++        .lock()
++        .unwrap_or_else(|poisoned| poisoned.into_inner());
 +    let now = now_unix();
 +    let mut session = load_in(root, id).unwrap_or_else(|| EngineSession {
 +        id: id.to_owned(),
