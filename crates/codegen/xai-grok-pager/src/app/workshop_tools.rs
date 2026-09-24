@@ -185,8 +185,15 @@ pub fn finished_row(
             if let Some(desc) = str_of(input, "description").filter(|d| !d.trim().is_empty()) {
                 block = block.with_description(desc);
             }
-            let body = str_of(metadata, "output").unwrap_or(output);
-            let body = tail(body);
+            let full = str_of(metadata, "output").unwrap_or(output);
+            // A call that did not simply finish gets a neutral badge on the row, so a cut-off call
+            // is not indistinguishable from a successful one (finding F3): the engine-shell
+            // backgrounds a still-running command (its marker), and OpenCode's own timeout kills
+            // one and notes it only to the model.
+            if let Some(note) = row_note(full) {
+                block = block.with_note(note);
+            }
+            let body = tail(full);
             if !body.trim().is_empty() && body.trim() != "(no output)" {
                 block = block.with_output(body);
             }
@@ -292,6 +299,19 @@ fn tc_set_error(tc: &mut ToolCallBlock, error: Option<&str>) {
         ToolCallBlock::WebSearch(b) => b.set_error(error),
         ToolCallBlock::Other(b) => b.set_error(error),
         _ => {}
+    }
+}
+
+/// The neutral header badge for a command that did not simply finish, or `None` for one that did.
+/// Workshop's engine-shell backgrounds a still-running command (its own marker); OpenCode's bash
+/// tool kills one that exceeds its timeout and notes it in the output as `<shell_metadata>`.
+fn row_note(output: &str) -> Option<&'static str> {
+    if crate::app::workshop_engine_shell::is_background_marker(output) {
+        Some("moved to background")
+    } else if output.contains("terminated command after exceeding timeout") {
+        Some("timed out")
+    } else {
+        None
     }
 }
 
@@ -549,6 +569,60 @@ mod tests {
             panic!("run row");
         };
         assert!(quiet.output.is_none() && quiet.is_success());
+    }
+
+    #[test]
+    fn bash_row_is_badged_when_backgrounded_or_timed_out() {
+        // The engine-shell backgrounded a still-running command (exit 0, its marker in the output):
+        // a neutral badge, not an error.
+        let backgrounded = finished_row(
+            "bash",
+            &json!({"command": "./app --serve"}),
+            true,
+            "starting…\n",
+            Some("./app --serve"),
+            &json!({
+                "output": format!("starting…\n{}", crate::app::workshop_engine_shell::BACKGROUND_MARKER),
+                "exit": 0
+            }),
+        );
+        let RenderBlock::ToolCall(ToolCallBlock::Execute(backgrounded)) = backgrounded else {
+            panic!("run row");
+        };
+        assert_eq!(backgrounded.note.as_deref(), Some("moved to background"));
+        assert!(backgrounded.is_success(), "backgrounding is not a failure");
+
+        // OpenCode's own timeout killed it (exit null, its note only to the model): badge it so the
+        // row is not indistinguishable from a clean finish (finding F3).
+        let timed_out = finished_row(
+            "bash",
+            &json!({"command": "./hang"}),
+            true,
+            "",
+            Some("./hang"),
+            &json!({
+                "output": "\n\n<shell_metadata>\nshell tool terminated command after exceeding timeout 30000 ms.\n</shell_metadata>",
+                "exit": Value::Null
+            }),
+        );
+        let RenderBlock::ToolCall(ToolCallBlock::Execute(timed_out)) = timed_out else {
+            panic!("run row");
+        };
+        assert_eq!(timed_out.note.as_deref(), Some("timed out"));
+
+        // An ordinary command carries no badge.
+        let plain = finished_row(
+            "bash",
+            &json!({"command": "ls"}),
+            true,
+            "a\nb\n",
+            Some("ls"),
+            &json!({"output": "a\nb\n", "exit": 0}),
+        );
+        let RenderBlock::ToolCall(ToolCallBlock::Execute(plain)) = plain else {
+            panic!("run row");
+        };
+        assert!(plain.note.is_none());
     }
 
     #[test]

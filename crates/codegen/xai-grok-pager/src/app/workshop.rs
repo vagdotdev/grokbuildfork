@@ -12,6 +12,7 @@
 //! only after the user acted — an active connection at startup, `/model`, the picker's `r` — so
 //! the first-run, `/login` and `/auth` screens stay hermetic.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
@@ -1404,16 +1405,20 @@ above.\n"
     )
 }
 
-/// The engine's inline config: Workshop's base prompt for the agents its turns run on, and the
-/// identity file for this launch. A home that cannot be written drops only the file; the cause
-/// goes to the engine log.
-fn engine_config(log: &Path) -> serde_json::Value {
+/// The engine's inline config: Workshop's base prompt for the agents its turns run on, the identity
+/// file for this launch, and the shell OpenCode runs commands through (Workshop's engine-shell,
+/// when it was written). A home that cannot be written drops only the file; the cause goes to the
+/// engine log.
+fn engine_config(log: &Path, shell: Option<&Path>) -> serde_json::Value {
     let mut config = match write_engine_instructions(log) {
         Some(path) => instructions_config(&[path]),
         None => serde_json::json!({}),
     };
     if let Some(fields) = config.as_object_mut() {
         fields.insert("agent".into(), agent_prompts(WORKSHOP_AGENT_PROMPT));
+        if let Some(shell) = shell {
+            fields.insert("shell".into(), serde_json::json!(shell.to_string_lossy()));
+        }
     }
     config
 }
@@ -1560,6 +1565,7 @@ async fn start_engine(
     // The engine asks before edits and commands; what happens next is the agent's permission
     // mode (Plan/Normal prompt, Auto/Always-approve allow), decided on the UI thread per ask.
     opts.permission = Some(ask_before_edit_and_bash());
+    let mut extra_env: Vec<(OsString, OsString)> = Vec::new();
     // `sudo` in the engine's commands has no terminal to ask on. Grok Build's shell tool defers
     // to the user's own `SUDO_ASKPASS` helper when one is set; so does the engine (the variable
     // passes through). With none, Workshop is the helper: `SUDO_ASKPASS` → this process's socket
@@ -1567,19 +1573,33 @@ async fn start_engine(
     if std::env::var_os(crate::app::workshop_askpass::HELPER_ENV).is_none_or(|v| v.is_empty())
         && let Some(askpass) = askpass_server(slot, &ui_tx)
     {
-        opts.extra_env = askpass.env();
+        extra_env.extend(askpass.env());
     }
+    // The `sudo` shim (Grok Build's `sudo -A`) and the engine shell (background budget + detach for
+    // GUIs/daemons). The shim wins by being first on the engine's PATH; the shell is named in the
+    // engine config below. A home that cannot hold them just runs without them.
+    let engine_shell = match crate::app::workshop_engine_shell::prepare(&home) {
+        Ok(shims) => {
+            let base = std::env::var_os("PATH").unwrap_or_default();
+            extra_env.push((OsString::from("PATH"), shims.path_with_shims(&base)));
+            Some(shims.shell)
+        }
+        Err(e) => {
+            state::append_log(&log, &format!("engine-shell: cannot write shims: {e}"));
+            None
+        }
+    };
     // The engine's scratch space (OpenCode keeps it at `<tmpdir>/opencode`) lives under the
     // Workshop home, and the tool rows show it as `~/.workshop/tmp` (see `scrub_scratch_paths`).
     let scratch = engine_scratch_dir();
     if std::fs::create_dir_all(&scratch).is_ok() {
-        opts.extra_env
-            .push(("TMPDIR".into(), scratch.into_os_string()));
+        extra_env.push((OsString::from("TMPDIR"), scratch.into_os_string()));
     }
+    opts.extra_env = extra_env;
     opts.permission_handler = Some(engine_permission_handler(ui_tx.clone()));
     opts.question_handler = Some(engine_question_handler(ui_tx));
     // The models answer as Workshop's assistant, not as "opencode".
-    opts.config = Some(engine_config(&log));
+    opts.config = Some(engine_config(&log, engine_shell.as_deref()));
     let sink_path = log.clone();
     opts.log_sink = Some(Arc::new(move |line: &str| {
         state::append_log(&sink_path, line)

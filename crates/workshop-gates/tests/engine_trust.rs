@@ -2146,7 +2146,12 @@ fn password_sinks(j: &Journey, fx: &Fixture, screens: &[String]) -> String {
 fn sudo_password_is_asked_in_workshop_never_the_model() {
     let Some(bin) = bin_from_env() else { return };
     let fx = fixture();
-    let mut j = launch("engine-trust/sudo-askpass", &bin, &fx);
+    // No DISPLAY (as over SSH, on a fresh account, or in CI): sudo cannot reach an askpass helper
+    // on its own, so this exercises Workshop's `sudo -A` shim rather than the X11 fallback. Empty
+    // rather than merely unset so a desktop runner cannot let sudo use DISPLAY behind the test.
+    let env: Vec<(&str, &str)> = OFFLINE.iter().copied().chain([("DISPLAY", "")]).collect();
+    let mut j = pty_common::spawn("engine-trust/sudo-askpass", &bin, &env, Some(&fx.bin));
+    pty_common::connect_big_pickle(&mut j);
     let installed = j.cwd.path().join("installed-htop.txt");
     let mut screens: Vec<String> = Vec::new();
 
@@ -2180,6 +2185,16 @@ fn sudo_password_is_asked_in_workshop_never_the_model() {
     snapshot(&j.h, &j.dir, "03-command-ran");
     screens.push(j.h.screen_contents());
     assert!(installed.exists(), "sudo ran the command with the password");
+    // The command only reached the askpass helper because Workshop's `sudo` shim injected `-A`:
+    // this session has no DISPLAY, and the fake sudo (like real sudo 1.9.15) refuses the helper
+    // without `-A`. The shim is first on the engine's PATH and execs the real sudo with `-A`.
+    let sudo_shim = j.workshop_home().join("bin").join("shims").join("sudo");
+    let shim = std::fs::read_to_string(&sudo_shim)
+        .unwrap_or_else(|e| panic!("{}: {e}", sudo_shim.display()));
+    assert!(
+        shim.contains("-A"),
+        "the sudo shim forces the askpass path (`sudo -A`):\n{shim}"
+    );
     let sinks = password_sinks(&j, &fx, &screens);
     assert!(
         !sinks.contains("hunter2"),

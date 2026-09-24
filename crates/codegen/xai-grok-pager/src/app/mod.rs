@@ -16,6 +16,7 @@ pub mod app_view;
 /// Workshop overlay: connection picker loading and activation.
 pub mod workshop;
 pub mod workshop_askpass;
+pub mod workshop_engine_shell;
 pub mod workshop_engine_state;
 pub mod workshop_permissions;
 pub mod workshop_sessions;
