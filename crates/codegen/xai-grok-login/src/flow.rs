@@ -1391,7 +1391,8 @@ mod tests {
             !cli_should_use_device(&cfg, None, LoginTransportOverride::ForceDevice, "").await,
             "enterprise OIDC must stay on loopback"
         );
-        let xai = GrokComConfig::default();
+        // Workshop: the xAI OAuth2 provider is attached only on explicit opt-in.
+        let xai = GrokComConfig::default().with_xai_first_party_oauth2();
         assert!(xai.oauth2.is_some() && xai.oidc.is_none());
         assert!(cli_should_use_device(&xai, None, LoginTransportOverride::ForceDevice, "").await);
     }
@@ -1535,12 +1536,13 @@ mod tests {
     }
     #[test]
     fn weblogin_cred_is_never_compatible() {
-        let cfg = GrokComConfig::default();
+        // Against a configured (opted-in xAI) provider a legacy WebLogin credential has no issuer to match.
+        let cfg = GrokComConfig::default().with_xai_first_party_oauth2();
         assert!(!is_cached_credential_compatible(&legacy_auth(), &cfg));
     }
     #[test]
     fn oidc_cred_with_matching_issuer_is_compatible() {
-        let cfg = GrokComConfig::default();
+        let cfg = GrokComConfig::default().with_xai_first_party_oauth2();
         assert!(is_cached_credential_compatible(
             &oidc_auth(XAI_OAUTH2_ISSUER),
             &cfg,
@@ -1548,7 +1550,7 @@ mod tests {
     }
     #[test]
     fn external_cred_compatibility_follows_issuer() {
-        let cfg = GrokComConfig::default();
+        let cfg = GrokComConfig::default().with_xai_first_party_oauth2();
         assert!(is_cached_credential_compatible(
             &GrokAuth {
                 auth_mode: AuthMode::External,
@@ -1728,7 +1730,7 @@ mod tests {
     #[tokio::test]
     async fn run_auth_flow_falls_through_when_no_refresh_token() {
         let dir = tempfile::tempdir().unwrap();
-        let mut cfg = GrokComConfig::default();
+        let mut cfg = GrokComConfig::default().with_xai_first_party_oauth2();
         cfg.oauth2.as_mut().unwrap().issuer = "http://127.0.0.1:1".into();
         let writer = Arc::new(
             AuthManager::new(dir.path(), cfg.clone()).with_proxy_base_url("http://127.0.0.1:1"),

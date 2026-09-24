@@ -155,7 +155,13 @@ fn has_usable_token_covers_memory_and_disk() {
 }
 #[test]
 fn auth_scope_uses_oauth2_when_present() {
+    // Workshop: the xAI provider is attached only on explicit opt-in; the default scope is neutral.
     let cfg = GrokComConfig::default();
+    assert_eq!(
+        cfg.auth_scope(),
+        crate::config::WORKSHOP_NO_PROVIDER_AUTH_SCOPE
+    );
+    let cfg = cfg.with_xai_first_party_oauth2();
     assert_eq!(
         cfg.auth_scope(),
         format!(
