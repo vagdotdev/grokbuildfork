@@ -41,6 +41,64 @@ fn voice_slash_submit_starts_recording_in_plan_mode() {
     );
 }
 
+/// Workshop: `// start · // stop`. Through the real input path, a second `/` on the empty composer
+/// starts recording (no `//` left behind); once a final has landed, `/` then `/` again stops it,
+/// the first slash is taken back out and the transcript stays in the composer.
+#[test]
+fn double_slash_starts_and_stops_dictation_through_the_input_path() {
+    use crate::app::app_view::InputOutcome;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    if !xai_grok_voice::AUDIO_SUPPORTED {
+        return;
+    }
+    let mut app = test_app_with_agent();
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    app.voice_cmd_tx = Some(tx);
+    app.apply_voice_mode_enabled(true);
+    let id = AgentId(0);
+    app.agents
+        .get_mut(&id)
+        .unwrap()
+        .set_active_pane(crate::views::agent::ActivePane::Prompt, false);
+    let slash = || Event::Key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    let text = |app: &AppView| app.agents.get(&id).unwrap().prompt.text().to_owned();
+
+    let out = app.handle_input(&slash());
+    assert!(!matches!(out, InputOutcome::Action(_)), "first slash: {out:?}");
+    assert_eq!(text(&app), "/");
+    let out = app.handle_input(&slash());
+    let InputOutcome::Action(action) = out else {
+        panic!("the second slash must run /voice, got {out:?}");
+    };
+    assert!(matches!(action, Action::VoiceToggle), "got {action:?}");
+    dispatch(action, &mut app);
+    assert!(app.voice_listening(), "`//` starts recording");
+    assert_eq!(text(&app), "", "`//` never lands in the composer");
+
+    crate::voice::handle_voice_event(
+        &mut app,
+        xai_grok_voice::VoiceEvent::UtteranceFinal {
+            text: "hello there".into(),
+        },
+    );
+    assert_eq!(text(&app), "hello there");
+    let out = app.handle_input(&slash());
+    assert!(!matches!(out, InputOutcome::Action(_)), "first slash: {out:?}");
+    assert_eq!(text(&app), "hello there/", "the first slash is typed");
+    let out = app.handle_input(&slash());
+    let InputOutcome::Action(action) = out else {
+        panic!("`//` while recording must stop it, got {out:?}");
+    };
+    assert!(matches!(action, Action::VoiceToggle), "got {action:?}");
+    dispatch(action, &mut app);
+    assert!(!app.voice_listening(), "`//` again stops recording");
+    assert_eq!(
+        text(&app),
+        "hello there",
+        "the transcript stays, the slashes are gone"
+    );
+}
+
 #[test]
 fn voice_on_welcome_noop_when_startup_gated() {
     // Auth or folder trust unresolved: voice must not create a session (that would bypass the startup gate)

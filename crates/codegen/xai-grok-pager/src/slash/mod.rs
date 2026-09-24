@@ -91,6 +91,17 @@ pub fn is_advanced_command(canonical: &str) -> bool {
     ADVANCED_COMMANDS.contains(&canonical)
 }
 
+/// Workshop: the composer shortcut for `/voice` — a second `/` on a composer holding exactly `/`
+/// starts dictation, and `//` again while recording stops it (`AgentView::handle_prompt_key`,
+/// `AppView::voice_double_slash_stop_outcome`). Shown as the `/voice` row's bracketed hint and in
+/// the shortcuts cheatsheet.
+pub const VOICE_DOUBLE_SLASH_HINT: &str = "// start \u{b7} // stop";
+
+/// Workshop: the bracketed hint a command row carries when the tag map has nothing for it.
+fn workshop_default_tag(canonical: &str) -> Option<String> {
+    (canonical == "voice").then(|| VOICE_DOUBLE_SLASH_HINT.to_owned())
+}
+
 /// Grouping for the bare `/` menu, ordered top to bottom: the common eight, the everyday
 /// commands, the advanced tools, then skills (which sink below the commands because there can be
 /// far more of them than fit on screen).
@@ -1121,13 +1132,16 @@ impl SlashController {
                 }
             }
             // Tag from the data map in one scoped borrow; key off canonical (never the alias/display).
-            // Workshop: the power tools carry a visible `[advanced]` tag when nothing else tags them.
+            // Workshop: `/voice` shows its `//` shortcut and the power tools carry a visible `[advanced]` tag when nothing else tags them.
             {
                 let command_tags = self.command_tags.borrow();
                 for ((row, canonical), group) in
                     rows.iter_mut().zip(canonicals.iter()).zip(groups.iter())
                 {
-                    row.tag = command_tags.get(*canonical).cloned();
+                    row.tag = command_tags
+                        .get(*canonical)
+                        .cloned()
+                        .or_else(|| workshop_default_tag(canonical));
                     if row.tag.is_none() && *group == MenuGroup::Advanced {
                         row.tag = Some("advanced".to_owned());
                     }
@@ -1236,7 +1250,10 @@ impl SlashController {
         {
             let command_tags = self.command_tags.borrow();
             for (row, (canonical, _)) in rows.iter_mut().zip(sort_meta.iter()) {
-                row.tag = command_tags.get(canonical.as_str()).cloned();
+                row.tag = command_tags
+                    .get(canonical.as_str())
+                    .cloned()
+                    .or_else(|| workshop_default_tag(canonical));
             }
         }
         // Resolve all recency scores under a single borrow (one keystroke means one borrow, not one per candidate)

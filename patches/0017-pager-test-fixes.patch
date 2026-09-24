@@ -76,10 +76,10 @@ index 5a5de0d0..5c5c4e98 100644
      );
  }
 diff --git a/crates/codegen/xai-grok-pager/src/slash/mod.rs b/crates/codegen/xai-grok-pager/src/slash/mod.rs
-index 32d1a5fa..0e683bb3 100644
+index 32d1a5fa..d7d52a24 100644
 --- a/crates/codegen/xai-grok-pager/src/slash/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/slash/mod.rs
-@@ -38,17 +38,74 @@ pub use mode_support::{ModeSupport, Remedy};
+@@ -38,17 +38,85 @@ pub use mode_support::{ModeSupport, Remedy};
  /// Maximum number of visible rows in the dropdown (scroll beyond this).
  pub const MAX_VISIBLE_SUGGESTIONS: usize = 8;
  
@@ -137,6 +137,17 @@ index 32d1a5fa..0e683bb3 100644
 +    ADVANCED_COMMANDS.contains(&canonical)
 +}
 +
++/// Workshop: the composer shortcut for `/voice` — a second `/` on a composer holding exactly `/`
++/// starts dictation, and `//` again while recording stops it (`AgentView::handle_prompt_key`,
++/// `AppView::voice_double_slash_stop_outcome`). Shown as the `/voice` row's bracketed hint and in
++/// the shortcuts cheatsheet.
++pub const VOICE_DOUBLE_SLASH_HINT: &str = "// start \u{b7} // stop";
++
++/// Workshop: the bracketed hint a command row carries when the tag map has nothing for it.
++fn workshop_default_tag(canonical: &str) -> Option<String> {
++    (canonical == "voice").then(|| VOICE_DOUBLE_SLASH_HINT.to_owned())
++}
++
 +/// Grouping for the bare `/` menu, ordered top to bottom: the common eight, the everyday
 +/// commands, the advanced tools, then skills (which sink below the commands because there can be
 +/// far more of them than fit on screen).
@@ -156,7 +167,7 @@ index 32d1a5fa..0e683bb3 100644
          match provenance {
              // A skill's source is its plugin name when it has one, else its scope, and bundled skills never come from a plugin.
              CommandProvenance::Skill { source }
-@@ -57,7 +114,15 @@ impl MenuGroup {
+@@ -57,7 +125,15 @@ impl MenuGroup {
                  Self::BundledSkill
              }
              CommandProvenance::Skill { .. } => Self::OtherSkill,
@@ -173,7 +184,7 @@ index 32d1a5fa..0e683bb3 100644
          }
      }
  }
-@@ -82,7 +147,18 @@ impl MenuKey {
+@@ -82,7 +158,18 @@ impl MenuKey {
          mru: &mut mru::SlashMru,
      ) -> Self {
          let (recency, name) = match group {
@@ -193,7 +204,7 @@ index 32d1a5fa..0e683bb3 100644
              // Nothing ranks skills, so alphabetical is the only order predictable enough to find one in.
              _ => (0, row.display.to_lowercase()),
          };
-@@ -1041,14 +1117,20 @@ impl SlashController {
+@@ -1041,14 +1128,23 @@ impl SlashController {
                          colliding_command_indices.contains(&trigger.command_index),
                      ));
                      canonicals.push(trigger.canonical.as_str());
@@ -203,21 +214,37 @@ index 32d1a5fa..0e683bb3 100644
              }
 -            // Tag from the data map in one scoped borrow; key off canonical (never the alias/display)
 +            // Tag from the data map in one scoped borrow; key off canonical (never the alias/display).
-+            // Workshop: the power tools carry a visible `[advanced]` tag when nothing else tags them.
++            // Workshop: `/voice` shows its `//` shortcut and the power tools carry a visible `[advanced]` tag when nothing else tags them.
              {
                  let command_tags = self.command_tags.borrow();
 -                for (row, canonical) in rows.iter_mut().zip(canonicals.iter()) {
+-                    row.tag = command_tags.get(*canonical).cloned();
 +                for ((row, canonical), group) in
 +                    rows.iter_mut().zip(canonicals.iter()).zip(groups.iter())
 +                {
-                     row.tag = command_tags.get(*canonical).cloned();
++                    row.tag = command_tags
++                        .get(*canonical)
++                        .cloned()
++                        .or_else(|| workshop_default_tag(canonical));
 +                    if row.tag.is_none() && *group == MenuGroup::Advanced {
 +                        row.tag = Some("advanced".to_owned());
 +                    }
                  }
              }
  
-@@ -1701,9 +1783,12 @@ mod tests {
+@@ -1154,7 +1250,10 @@ impl SlashController {
+         {
+             let command_tags = self.command_tags.borrow();
+             for (row, (canonical, _)) in rows.iter_mut().zip(sort_meta.iter()) {
+-                row.tag = command_tags.get(canonical.as_str()).cloned();
++                row.tag = command_tags
++                    .get(canonical.as_str())
++                    .cloned()
++                    .or_else(|| workshop_default_tag(canonical));
+             }
+         }
+         // Resolve all recency scores under a single borrow (one keystroke means one borrow, not one per candidate)
+@@ -1701,9 +1800,12 @@ mod tests {
      #[test]
      fn required_arg_command_blocks_without_args() {
          let reg = test_registry();
@@ -233,7 +260,7 @@ index 32d1a5fa..0e683bb3 100644
          assert!(is_command_complete("/model grok-4", &reg));
      }
  
-@@ -3004,6 +3089,35 @@ mod tests {
+@@ -3004,6 +3106,35 @@ mod tests {
          assert_eq!(order, vec!["/alpha", "/zulu"]);
      }
  
