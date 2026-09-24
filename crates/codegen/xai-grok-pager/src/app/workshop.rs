@@ -2064,17 +2064,20 @@ async fn build_stream(
     }
 }
 
-/// The vendor CLI verified for each adapter, with the identity (modification time, size) of the
-/// binary it was verified from. Reused for the next turn while that file is unchanged, so a turn
-/// on a subscription rail starts the CLI once — not `--version` first (a Node CLI start of its
-/// own) and then the run.
-static ADAPTER_CLI_CACHE: std::sync::Mutex<
-    Vec<(
-        AdapterId,
-        workshop_adapters::InstalledCli,
-        Option<(std::time::SystemTime, u64)>,
-    )>,
-> = std::sync::Mutex::new(Vec::new());
+/// The vendor CLI verified for one adapter, with the identity (modification time, size) of the
+/// binary it was verified from.
+#[derive(Clone)]
+struct VerifiedAdapterCli {
+    adapter: AdapterId,
+    cli: workshop_adapters::InstalledCli,
+    identity: Option<(std::time::SystemTime, u64)>,
+}
+
+/// The CLIs verified so far, reused for the next turn while their file is unchanged, so a turn on
+/// a subscription rail starts the CLI once — not `--version` first (a Node CLI start of its own)
+/// and then the run.
+static ADAPTER_CLI_CACHE: std::sync::Mutex<Vec<VerifiedAdapterCli>> =
+    std::sync::Mutex::new(Vec::new());
 
 fn binary_identity(path: &Path) -> Option<(std::time::SystemTime, u64)> {
     let meta = std::fs::metadata(path).ok()?;
@@ -2088,19 +2091,23 @@ async fn detect_adapter_cli(adapter: &dyn workshop_adapters::Adapter) -> Detecti
     let cached = ADAPTER_CLI_CACHE
         .lock()
         .ok()
-        .and_then(|cache| cache.iter().find(|(a, ..)| *a == id).cloned());
-    if let Some((_, cli, identity)) = cached
-        && identity.is_some()
-        && binary_identity(&cli.path) == identity
+        .and_then(|cache| cache.iter().find(|v| v.adapter == id).cloned());
+    if let Some(verified) = cached
+        && verified.identity.is_some()
+        && binary_identity(&verified.cli.path) == verified.identity
     {
-        return Detection::Installed(cli);
+        return Detection::Installed(verified.cli);
     }
     let detection = detect(adapter, &DetectOptions::default()).await;
     if let Detection::Installed(cli) = &detection
         && let Ok(mut cache) = ADAPTER_CLI_CACHE.lock()
     {
-        cache.retain(|(a, ..)| *a != id);
-        cache.push((id, cli.clone(), binary_identity(&cli.path)));
+        cache.retain(|v| v.adapter != id);
+        cache.push(VerifiedAdapterCli {
+            adapter: id,
+            cli: cli.clone(),
+            identity: binary_identity(&cli.path),
+        });
     }
     detection
 }
