@@ -41,6 +41,7 @@ pub mod env;
 pub mod event;
 pub mod opencode_engine;
 pub mod probe;
+mod spawn;
 pub mod status;
 pub mod supervisor;
 pub mod vendors;
