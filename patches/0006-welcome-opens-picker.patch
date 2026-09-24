@@ -159,7 +159,7 @@ index f1602289..7300f065 100644
      ChangelogFetched {
          markdown: Option<String>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..01a08827 100644
+index fc9a4553..79d8e8d2 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -216,7 +216,7 @@ index fc9a4553..01a08827 100644
      /// The environment gates are process-constant, so one evaluation decides the run.
      pub ssh_wrap_tip_evaluated: bool,
      /// State for the clipboard-image tip, polled opportunistically and only while the terminal is focused.
-@@ -1009,6 +1025,90 @@ pub struct AppView {
+@@ -1009,6 +1025,94 @@ pub struct AppView {
      pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
      /// Whether deferred welcome-screen login should force OAuth.
      pub auth_use_oauth: bool,
@@ -276,6 +276,10 @@ index fc9a4553..01a08827 100644
 +    /// start or answer); holds the answering model's plain name for the composer. Cleared when the
 +    /// user picks a connection or the fallback fails too.
 +    pub workshop_fallback: Option<String>,
++    /// Workshop: when the original engine turn started, captured as it hands over to the silent
++    /// fallback so the resent turn's `Worked for …` counts from the user's prompt, not from the
++    /// fallback. Consumed by the resent turn's `PromptResponse`.
++    pub workshop_fallback_prompt_at: Option<std::time::Instant>,
 +    /// Workshop: this launch created the home (nothing was ever connected before), so the composer
 +    /// carries the `/model to switch · /auth to connect subscriptions` hint.
 +    pub workshop_first_launch: bool,
@@ -307,7 +311,7 @@ index fc9a4553..01a08827 100644
      /// Delivery state from the last clipboard copy during auth.
      pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
      /// Generation of the current auth copy feedback and its clear timer.
-@@ -1076,6 +1176,9 @@ pub struct AppView {
+@@ -1076,6 +1180,9 @@ pub struct AppView {
      /// Latest version string from a background update check.
      /// Set when a newer version is detected; rendered as a notification on the welcome screen.
      pub pending_update_version: Option<String>,
@@ -317,7 +321,7 @@ index fc9a4553..01a08827 100644
      /// When true, the event loop should exit so the user can relaunch to pick up the downloaded update.
      pub quit_for_update: bool,
      /// Printed to stderr after terminal restore when Welcome yes could not save trust.
-@@ -1429,11 +1532,16 @@ impl AppView {
+@@ -1429,11 +1536,16 @@ impl AppView {
              pending_effects: Vec::new(),
              pending_editor: None,
              pending_pager_path: None,
@@ -334,7 +338,7 @@ index fc9a4553..01a08827 100644
              welcome_import_banner_rect: None,
              last_mouse_pos: None,
              last_scroll_pos: None,
-@@ -1543,6 +1651,34 @@ impl AppView {
+@@ -1543,6 +1655,35 @@ impl AppView {
              auth_url_poll_handle: None,
              deferred_startup: Default::default(),
              auth_use_oauth: false,
@@ -365,11 +369,12 @@ index fc9a4553..01a08827 100644
 +            workshop_turn_prompt_text: None,
 +            workshop_resend: None,
 +            workshop_fallback: None,
++            workshop_fallback_prompt_at: None,
 +            workshop_first_launch: false,
              auth_clipboard_delivery: None,
              auth_clipboard_feedback_generation: 0,
              team_id: None,
-@@ -1573,6 +1709,7 @@ impl AppView {
+@@ -1573,6 +1714,7 @@ impl AppView {
              startup_warnings: Vec::new(),
              is_api_key_auth: false,
              pending_update_version: None,
@@ -377,7 +382,7 @@ index fc9a4553..01a08827 100644
              foreign_resume_launch_generation: 0,
              foreign_resume_launch: None,
              quit_for_update: false,
-@@ -1709,11 +1846,15 @@ impl AppView {
+@@ -1709,11 +1851,15 @@ impl AppView {
      pub(super) fn consumer_account(&self) -> bool {
          !self.backend_billed && !self.is_api_key_auth && !self.has_external_auth_provider
      }
@@ -396,7 +401,7 @@ index fc9a4553..01a08827 100644
      }
      /// Draw-time expiry can flip the live-announcement predicate between pushes.
      /// Resync the slash gate only when it diverges from the stored flags (checked per frame, fan-out runs only on change).
-@@ -1891,6 +2032,37 @@ impl AppView {
+@@ -1891,6 +2037,37 @@ impl AppView {
              None
          }
      }
@@ -434,7 +439,7 @@ index fc9a4553..01a08827 100644
      /// Commit interim on real send keys only (not multiline bare Enter).
      fn maybe_commit_voice_interim_before_submit_key(&mut self, key: &crossterm::event::KeyEvent) {
          if self.registry.matches_id(ActionId::InterjectPrompt, key) {
-@@ -2404,6 +2576,20 @@ impl AppView {
+@@ -2404,6 +2581,20 @@ impl AppView {
              }
              return InputOutcome::Changed;
          }
@@ -455,7 +460,7 @@ index fc9a4553..01a08827 100644
          let zdr_blocked = self.is_zdr_blocked();
          let has_access = self.has_access();
          let welcome_pinned_upgrade_cta = crate::views::announcements::promo_cta(
-@@ -2442,7 +2628,12 @@ impl AppView {
+@@ -2442,7 +2633,12 @@ impl AppView {
                      menu_count: if zdr_blocked {
                          2
                      } else {
@@ -469,7 +474,7 @@ index fc9a4553..01a08827 100644
                              + if self.welcome_show_changelog_action {
                                  1
                              } else {
-@@ -2483,6 +2674,7 @@ impl AppView {
+@@ -2483,6 +2679,7 @@ impl AppView {
                      welcome_doc_viewer: &mut self.welcome_doc_viewer,
                      changelog_markdown: &self.changelog_markdown,
                      show_changelog_action: self.welcome_show_changelog_action,
@@ -477,7 +482,7 @@ index fc9a4553..01a08827 100644
                      has_pending_update: self.pending_update_version.is_some(),
                      has_foreign_resume,
                      cwd_has_git_ancestor: self.cwd_has_git_ancestor,
-@@ -2672,6 +2864,9 @@ impl AppView {
+@@ -2672,6 +2869,9 @@ impl AppView {
                  if let Some(outcome) = self.voice_esc_outcome(key_event) {
                      return outcome;
                  }
@@ -487,7 +492,7 @@ index fc9a4553..01a08827 100644
                  if let Event::Key(key) = ev
                      && key.kind != KeyEventKind::Release
                  {
-@@ -3143,8 +3338,10 @@ struct WelcomeInputCtx<'a> {
+@@ -3143,8 +3343,10 @@ struct WelcomeInputCtx<'a> {
      import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
      welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
      changelog_markdown: &'a Option<String>,
@@ -499,7 +504,7 @@ index fc9a4553..01a08827 100644
      has_pending_update: bool,
      /// A recent foreign session is available to resume when no update is pending.
      has_foreign_resume: bool,
-@@ -3171,6 +3368,119 @@ struct WelcomeInputCtx<'a> {
+@@ -3171,6 +3373,119 @@ struct WelcomeInputCtx<'a> {
      #[cfg(feature = "local-workspace")]
      session_picker_open: bool,
  }
@@ -619,7 +624,7 @@ index fc9a4553..01a08827 100644
  /// Welcome view input: overlays first, then composer, then the menu.
  fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
      if let Some(modal) = ctx.import_claude_modal.as_mut() {
-@@ -3750,6 +4060,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3750,6 +4065,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                  return dispatch_menu_action(
                      idx,
                      ctx.has_claude_import,
@@ -627,7 +632,7 @@ index fc9a4553..01a08827 100644
                      ctx.show_changelog_action,
                      ctx.changelog_markdown.as_deref(),
                  );
-@@ -3888,6 +4199,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3888,6 +4204,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                          return dispatch_menu_action(
                              i,
                              ctx.has_claude_import,
@@ -635,7 +640,7 @@ index fc9a4553..01a08827 100644
                              ctx.show_changelog_action,
                              ctx.changelog_markdown.as_deref(),
                          );
-@@ -4138,39 +4450,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
+@@ -4138,39 +4455,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
      }
  }
  /// Dispatch an action for a welcome menu item by index.
@@ -694,7 +699,7 @@ index fc9a4553..01a08827 100644
      }
      if index == quit_idx {
          return InputOutcome::Action(Action::Quit);
-@@ -4477,11 +4792,39 @@ impl AppView {
+@@ -4477,11 +4797,39 @@ impl AppView {
                              } else {
                                  self.tip.as_deref()
                              };
@@ -739,7 +744,7 @@ index fc9a4553..01a08827 100644
                              };
                              let hero_cta = crate::views::announcements::promo_cta(
                                  &self.active_announcements,
-@@ -4495,7 +4838,14 @@ impl AppView {
+@@ -4495,7 +4843,14 @@ impl AppView {
                                          &self.hidden_announcement_ids,
                                      )
                                  })
@@ -755,7 +760,7 @@ index fc9a4553..01a08827 100644
                              let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                  prompt_focus: if self.welcome_prompt_focused {
                                      WelcomePromptFocus::Focused
-@@ -4508,6 +4858,7 @@ impl AppView {
+@@ -4508,6 +4863,7 @@ impl AppView {
                                  consent_state: &self.consent_state,
                                  consent_hover_link: self.welcome_consent_hover_link,
                                  login_label: self.login_label.as_deref(),
@@ -763,7 +768,7 @@ index fc9a4553..01a08827 100644
                                  auth_code_input: self.auth_code_input.text(),
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
-@@ -4520,6 +4871,7 @@ impl AppView {
+@@ -4520,6 +4876,7 @@ impl AppView {
                                  team_name: self.team_name.as_deref(),
                                  has_access,
                                  has_claude_import: self.has_claude_import,
@@ -771,7 +776,7 @@ index fc9a4553..01a08827 100644
                                  mouse_pos: self.last_mouse_pos,
                                  is_zdr_blocked: zdr_blocked_for_draw,
                                  session_picker: self.session_picker_entries.as_deref(),
-@@ -4534,6 +4886,7 @@ impl AppView {
+@@ -4534,6 +4891,7 @@ impl AppView {
                                  pending_hint,
                                  startup_warnings: &self.startup_warnings,
                                  pending_update_version: self.pending_update_version.as_deref(),
@@ -779,7 +784,7 @@ index fc9a4553..01a08827 100644
                                  foreign_resume_hint: foreign_resume_hint.as_ref(),
                                  session_picker_content_results: self
                                      .session_picker_content_results
-@@ -4577,6 +4930,7 @@ impl AppView {
+@@ -4577,6 +4935,7 @@ impl AppView {
                              );
                              self.welcome_menu_rects = result.menu_rects;
                              self.welcome_show_changelog_action = result.changelog_action_present;
@@ -787,7 +792,7 @@ index fc9a4553..01a08827 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4824,6 +5178,44 @@ impl AppView {
+@@ -4824,6 +5183,44 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -832,7 +837,7 @@ index fc9a4553..01a08827 100644
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5224,17 @@ impl AppView {
+@@ -4832,13 +5229,17 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
@@ -851,7 +856,7 @@ index fc9a4553..01a08827 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5516,7 @@ impl AppView {
+@@ -5120,6 +5521,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -859,7 +864,7 @@ index fc9a4553..01a08827 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5564,7 @@ impl AppView {
+@@ -5167,7 +5569,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -868,7 +873,7 @@ index fc9a4553..01a08827 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5679,7 @@ impl AppView {
+@@ -5282,6 +5684,7 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
@@ -876,7 +881,7 @@ index fc9a4553..01a08827 100644
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5355,7 +5753,10 @@ impl AppView {
+@@ -5355,7 +5758,10 @@ impl AppView {
              }
              let spinner_frame_tick =
                  agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
@@ -888,7 +893,7 @@ index fc9a4553..01a08827 100644
              needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
                  && spinner_frame_tick;
              needs_redraw |= matches!(
-@@ -5637,6 +6038,15 @@ impl AppView {
+@@ -5637,6 +6043,15 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -904,7 +909,7 @@ index fc9a4553..01a08827 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5784,6 +6194,59 @@ impl AppView {
+@@ -5784,6 +6199,59 @@ impl AppView {
              ActiveView::Welcome => TickDemand::Slow,
          }
      }
@@ -964,7 +969,7 @@ index fc9a4553..01a08827 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6268,9 @@ impl AppView {
+@@ -5805,7 +6273,9 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -976,10 +981,10 @@ index fc9a4553..01a08827 100644
              } else {
                  (None, None, None, false, None, false)
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-index 483296d4..f0dc43ad 100644
+index 483296d4..b1900443 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-@@ -169,6 +169,34 @@ pub(crate) fn test_app() -> AppView {
+@@ -169,6 +169,35 @@ pub(crate) fn test_app() -> AppView {
          auth_url_poll_handle: None,
          deferred_startup: Default::default(),
          auth_use_oauth: false,
@@ -1005,6 +1010,7 @@ index 483296d4..f0dc43ad 100644
 +        workshop_turn_prompt_text: None,
 +        workshop_resend: None,
 +        workshop_fallback: None,
++        workshop_fallback_prompt_at: None,
 +        workshop_first_launch: false,
 +        workshop_engine_slot: crate::app::workshop::new_engine_slot(),
 +        workshop_engine_warm_started: false,
@@ -1014,7 +1020,7 @@ index 483296d4..f0dc43ad 100644
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -210,6 +238,8 @@ pub(crate) fn test_app() -> AppView {
+@@ -210,6 +239,8 @@ pub(crate) fn test_app() -> AppView {
          welcome_menu_index: None,
          welcome_menu_rects: Vec::new(),
          welcome_show_changelog_action: false,
@@ -1023,7 +1029,7 @@ index 483296d4..f0dc43ad 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -265,6 +295,7 @@ pub(crate) fn test_app() -> AppView {
+@@ -265,6 +296,7 @@ pub(crate) fn test_app() -> AppView {
          startup_warnings: Vec::new(),
          is_api_key_auth: false,
          pending_update_version: None,
@@ -1031,7 +1037,7 @@ index 483296d4..f0dc43ad 100644
          foreign_resume_launch_generation: 0,
          foreign_resume_launch: None,
          quit_for_update: false,
-@@ -278,6 +309,9 @@ pub(crate) fn test_app() -> AppView {
+@@ -278,6 +310,9 @@ pub(crate) fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -1041,7 +1047,7 @@ index 483296d4..f0dc43ad 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -616,6 +650,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
+@@ -616,6 +651,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
      );
  }
  #[test]
@@ -1049,7 +1055,7 @@ index 483296d4..f0dc43ad 100644
  fn needs_animation_gates_prompt_history_tick_delivery() {
      let mut app = test_app_with_agent();
      let id = super::super::agent::AgentId(0);
-@@ -2268,16 +2303,26 @@ fn is_restricted_tier_classification() {
+@@ -2268,16 +2304,26 @@ fn is_restricted_tier_classification() {
      assert!(!is_restricted_tier(Some("X Premium+")));
      assert!(!is_restricted_tier(Some("SomeFutureTier")));
  }
@@ -1080,7 +1086,7 @@ index 483296d4..f0dc43ad 100644
      let meta = xai_grok_login::AuthMeta {
          subscription_tier: Some("SuperGrok".into()),
          ..Default::default()
-@@ -3198,15 +3243,15 @@ fn welcome_ctrl_d_requires_confirmation() {
+@@ -3198,15 +3244,15 @@ fn welcome_ctrl_d_requires_confirmation() {
  #[test]
  fn menu_action_indices_without_changelog() {
      assert!(matches!(
@@ -1099,7 +1105,7 @@ index 483296d4..f0dc43ad 100644
          InputOutcome::Action(Action::Quit)
      ));
  }
-@@ -3214,46 +3259,69 @@ fn menu_action_indices_without_changelog() {
+@@ -3214,46 +3260,69 @@ fn menu_action_indices_without_changelog() {
  fn menu_action_changelog_sits_above_quit() {
      let md = Some("# notes");
      assert!(matches!(
@@ -1830,6 +1836,34 @@ index 769d63a9..d0345b4e 100644
              for agent in app.agents.values_mut() {
                  strip_trailing_auth_error_blocks(agent);
                  // Auto-resubmit the prompt that failed on the expired login so the user doesn't have to retype it
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/billing.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/billing.rs
+index 658d7468..1d13309c 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/billing.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/billing.rs
+@@ -379,7 +379,11 @@ pub(super) fn handle_check_subscription_complete(
+ ) -> Vec<Effect> {
+     let was_blocked = !app.has_access();
+     let applied = match meta {
+-        Some(meta_val) => {
++        // A JSON `null` meta is the shell reporting "no subscription / not authenticated" — the
++        // normal, expected case for Workshop (no xAI account), which the watch fires every
++        // interval. Treat it like `None`; only a genuinely malformed (non-null) meta is a
++        // protocol bug worth an error line, so the log stays quiet when nothing is wrong.
++        Some(meta_val) if !meta_val.is_null() => {
+             match serde_json::from_value::<xai_grok_login::AuthMeta>(meta_val) {
+                 Ok(auth_meta) => {
+                     app.apply_auth_meta(&auth_meta);
+@@ -400,8 +404,8 @@ pub(super) fn handle_check_subscription_complete(
+                 }
+             }
+         }
+-        // A `None` meta means the shell reports "not authenticated" or the check RPC failed (already logged as subscription.check.rpc_failed)
+-        None => false,
++        // A `None` (or `null`) meta means the shell reports "not authenticated" or the check RPC failed (already logged as subscription.check.rpc_failed)
++        _ => false,
+     };
+     if !applied && let Some(generation) = verify {
+         app.promote_deferred_gate(generation, "check_failed");
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
 index 42279599..e023ec86 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
@@ -2783,10 +2817,10 @@ index 2049a2d9..3ec2aebf 100644
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-index bf64193d..bb255135 100644
+index bf64193d..76205479 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-@@ -181,6 +181,34 @@ fn test_app() -> AppView {
+@@ -181,6 +181,35 @@ fn test_app() -> AppView {
          auth_url_poll_handle: None,
          deferred_startup: Default::default(),
          auth_use_oauth: false,
@@ -2812,6 +2846,7 @@ index bf64193d..bb255135 100644
 +        workshop_turn_prompt_text: None,
 +        workshop_resend: None,
 +        workshop_fallback: None,
++        workshop_fallback_prompt_at: None,
 +        workshop_first_launch: false,
 +        workshop_engine_slot: crate::app::workshop::new_engine_slot(),
 +        workshop_engine_warm_started: false,
@@ -2821,7 +2856,7 @@ index bf64193d..bb255135 100644
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -222,6 +250,8 @@ fn test_app() -> AppView {
+@@ -222,6 +251,8 @@ fn test_app() -> AppView {
          welcome_menu_index: None,
          welcome_menu_rects: Vec::new(),
          welcome_show_changelog_action: false,
@@ -2830,7 +2865,7 @@ index bf64193d..bb255135 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -277,6 +307,7 @@ fn test_app() -> AppView {
+@@ -277,6 +308,7 @@ fn test_app() -> AppView {
          startup_warnings: Vec::new(),
          is_api_key_auth: false,
          pending_update_version: None,
@@ -2838,7 +2873,7 @@ index bf64193d..bb255135 100644
          foreign_resume_launch_generation: 0,
          foreign_resume_launch: None,
          quit_for_update: false,
-@@ -289,6 +320,9 @@ fn test_app() -> AppView {
+@@ -289,6 +321,9 @@ fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -2848,7 +2883,7 @@ index bf64193d..bb255135 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -585,6 +619,25 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
+@@ -585,6 +620,25 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
      std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
      sess_dir
  }
@@ -3194,7 +3229,7 @@ index 1c507697..89312ddd 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..91806bba 100644
+index eda61b3c..c26cb38f 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -3576,7 +3611,7 @@ index eda61b3c..91806bba 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4110,559 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4110,582 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -3641,6 +3676,13 @@ index eda61b3c..91806bba 100644
 +        agent.scrollback.finish_running(id);
 +    }
 +    if let M::EngineUnavailable { reason, text } = msg {
++        // The resent turn runs on the shell fallback, whose clock starts now; remember when the
++        // user's original turn started so its `Worked for …` counts from the prompt, not the
++        // fallback (its `PromptResponse` consumes this).
++        app.workshop_fallback_prompt_at = app
++            .agents
++            .get(&agent_id)
++            .and_then(|a| a.workshop_turn_started_at);
 +        let effects = dispatch::dispatch(
 +            Action::WorkshopEngineUnavailable {
 +                agent_id,
@@ -3662,6 +3704,12 @@ index eda61b3c..91806bba 100644
 +        // rail — the user gets one plain line and Enter retries.
 +        let reason = format!("{model} stopped responding");
 +        if engine && crate::app::workshop::kilo_fallback_model().is_some() {
++            // As with EngineUnavailable: the resent turn's `Worked for …` counts from the user's
++            // prompt, not from the fallback that follows the stall.
++            app.workshop_fallback_prompt_at = app
++                .agents
++                .get(&agent_id)
++                .and_then(|a| a.workshop_turn_started_at);
 +            let effects = dispatch::dispatch(
 +                Action::WorkshopEngineUnavailable {
 +                    agent_id,
@@ -3842,6 +3890,16 @@ index eda61b3c..91806bba 100644
 +                && let Some(agent) = app.agents.get_mut(&agent_id)
 +            {
 +                agent.scrollback.finish_running(id);
++            }
++            // A to-do update feeds the upstream task list (the Ctrl+T pane), not a scrollback row,
++            // exactly as Grok Build does — no empty `todowrite` row is ever left in the transcript.
++            if crate::app::workshop_tools::is_todo_tool(&name) {
++                if let Some(items) = crate::app::workshop_tools::todo_items_from_input(&input)
++                    && let Some(agent) = app.agents.get_mut(&agent_id)
++                {
++                    agent.todo.update_todos(items);
++                }
++                return (true, vec![]);
 +            }
 +            // The turn-status row reads `Run <command>` with the call's own timer while it runs,
 +            // as it does for a shell turn's tool, so a long command never looks frozen.
@@ -4315,10 +4373,10 @@ index 60fe34f9..8b49336e 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..b22ab778
+index 00000000..e654f8b1
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,2777 @@
+@@ -0,0 +1,2856 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -5694,19 +5752,33 @@ index 00000000..b22ab778
 +/// What the engine's models are told about where they run. Appended by OpenCode to every system
 +/// prompt it builds for Workshop's server (all agents), like a project `AGENTS.md` — but kept
 +/// under `$WORKSHOP_HOME`, so nothing is written into the user's project. It follows OpenCode's
-+/// environment block, which names the model by its provider-qualified id (`opencode/big-pickle`).
-+pub const ENGINE_INSTRUCTIONS: &str = "\
-+# Workshop
-+
-+You are Workshop's coding assistant. Workshop is the terminal application the user launched; you \
-+are the model working inside it. When asked who or what you are, or who made you, say you are \
-+Workshop's coding assistant and call the model you are running as by its short name only: for a \
-+model ID of the form provider/name, say just the name. The provider part of the model ID only says \
-+where the model is hosted, not who made you or Workshop, so never mention it. Do not describe the \
-+software you run on and do not introduce yourself by any other product name.
-+
-+Everything else about how you work — tools, conventions, permissions — is as instructed above.
-+";
++/// environment block, which names the model by its provider-qualified id (`opencode/big-pickle`);
++/// `model_display` is the friendly name Workshop shows for it (`Big Pickle`), so the model can
++/// introduce itself the way the user sees it instead of by the raw id.
++pub fn engine_instructions(model_display: Option<&str>) -> String {
++    let identity = match model_display {
++        Some(name) => format!(
++            "When asked who or what you are, or who made you, say \"I'm Workshop's assistant, \
++running as {name}.\" Introduce yourself as Workshop's assistant, never by a company's or a \
++product's name, and never by a raw model id."
++        ),
++        None => "When asked who or what you are, or who made you, say you are Workshop's assistant \
++and call the model you are running as by its short name only: for a model id of the form \
++provider/name, say just the name. Never introduce yourself by a company's or a product's name."
++            .to_owned(),
++    };
++    format!(
++        "# Workshop\n\nYou are Workshop's assistant. Workshop is the terminal application the user \
++launched; you are the model working inside it, and you help with anything on the user's computer \
++or in code. {identity} The provider part of a model id only says where the model is hosted, not \
++who made you or Workshop, so never mention it. Do not describe the software you run on.\n\n\
++# Viewing images\nYou can look at an image by opening the file with your read tool — Workshop \
++shows the picture to a model that can see it. Never say you cannot see or view images, and never \
++sort or judge images by their file names: open each one with your read tool and use what you \
++see.\n\nEverything else about how you work — tools, conventions, permissions — is as instructed \
++above.\n"
++    )
++}
 +
 +/// The engine's inline config: Workshop's base prompt for the agents its turns run on, and the
 +/// identity file for this launch. A home that cannot be written drops only the file; the cause
@@ -5722,7 +5794,9 @@ index 00000000..b22ab778
 +    config
 +}
 +
-+/// Write the identity file (idempotent); `None` when the home cannot be written.
++/// Write the identity file (idempotent); `None` when the home cannot be written. The friendly
++/// model name (`Big Pickle`) comes from the active connection so the model introduces itself the
++/// way the user sees it, not by its raw id.
 +fn write_engine_instructions(log: &Path) -> Option<PathBuf> {
 +    let path = engine_instructions_path();
 +    if let Some(parent) = path.parent()
@@ -5731,8 +5805,9 @@ index 00000000..b22ab778
 +        state::append_log(log, &format!("instructions: cannot create {}: {e}", parent.display()));
 +        return None;
 +    }
-+    if std::fs::read_to_string(&path).ok().as_deref() != Some(ENGINE_INSTRUCTIONS)
-+        && let Err(e) = workshop_providers::atomic_write_private(&path, ENGINE_INSTRUCTIONS.as_bytes())
++    let contents = engine_instructions(load_active_connection().model_display_name().as_deref());
++    if std::fs::read_to_string(&path).ok().as_deref() != Some(contents.as_str())
++        && let Err(e) = workshop_providers::atomic_write_private(&path, contents.as_bytes())
 +    {
 +        state::append_log(log, &format!("instructions: cannot write {}: {e}", path.display()));
 +        return None;
@@ -6050,6 +6125,37 @@ index 00000000..b22ab778
 +read tool, check that it is a real photo of what I asked for and that no two are the same picture \
 +(an edited, cropped or resized version of one photo counts as the same), replace any that fail, \
 +then finish.";
++
++/// The follow-up sent (never shown) when a model that cannot see images said so instead of looking:
++/// a model that can redoes the request from what it actually sees, never from file names.
++const VISION_REDO_PROMPT: &str = "Continue my request. You can see images: open each relevant image \
++file with your read tool and use what you actually see in the pictures — never sort or judge them \
++by their file names.";
++
++/// Whether the model's closing text begged off looking at images ("this model doesn't support
++/// image input", "I can't visually distinguish…") rather than reading them. Only consulted for a
++/// text-only model on a write turn, so a redo on a vision model is safe.
++fn claims_cannot_see_images(tail: &str) -> bool {
++    let t = tail.to_lowercase();
++    const NEG: [&str; 8] = [
++        "can't see",
++        "cannot see",
++        "can't view",
++        "cannot view",
++        "can't visually",
++        "cannot visually",
++        "unable to see",
++        "unable to view",
++    ];
++    if NEG.iter().any(|p| t.contains(p)) {
++        return true;
++    }
++    // "doesn't support image input", "no image input", "don't support image input".
++    t.contains("image input")
++        && ["support", "can't", "cannot", "don't", "do not", "no ", "not "]
++            .iter()
++            .any(|q| t.contains(q))
++}
 +
 +/// A tool call that fetches image files (a `curl`/`wget`/script download of .jpg/.png/…).
 +fn downloads_images(tool: &str, input: &serde_json::Value) -> bool {
@@ -6685,10 +6791,11 @@ index 00000000..b22ab778
 +                            }
 +                        }
 +                    }
-+                    // Images a model that cannot see downloaded are checked by one that can.
-+                    let mut checking = false;
++                    // A model that cannot see images either downloaded some (check them) or said
++                    // outright that it cannot see them (redo the request on a model that can).
++                    // Both hand the rest of the turn to a vision model on the same session, once.
++                    let mut vision_prompt = VISION_CONTINUE_PROMPT;
 +                    if vision_switch.is_none()
-+                        && downloaded_images
 +                        && !switched
 +                        && !aborted_by_us
 +                        && !errored
@@ -6697,26 +6804,33 @@ index 00000000..b22ab778
 +                        && !f.image_input
 +                        && let Some(vision) = vision_model(&cached_engine_models())
 +                    {
-+                        state::append_log(
-+                            &engine_log_path(),
-+                            &format!(
-+                                "vision: {} downloaded images it cannot see on {}; {} checks them",
-+                                f.model_ref, f.session, vision.model_ref
-+                            ),
-+                        );
-+                        vision_switch = Some(vision);
-+                        checking = true;
++                        if downloaded_images {
++                            state::append_log(
++                                &engine_log_path(),
++                                &format!(
++                                    "vision: {} downloaded images it cannot see on {}; {} checks them",
++                                    f.model_ref, f.session, vision.model_ref
++                                ),
++                            );
++                            vision_switch = Some(vision);
++                            vision_prompt = VISION_CHECK_PROMPT;
++                        } else if claims_cannot_see_images(&tail) {
++                            state::append_log(
++                                &engine_log_path(),
++                                &format!(
++                                    "vision: {} said it cannot see images on {}; {} redoes the turn",
++                                    f.model_ref, f.session, vision.model_ref
++                                ),
++                            );
++                            vision_switch = Some(vision);
++                            vision_prompt = VISION_REDO_PROMPT;
++                        }
 +                    }
 +                    if let Some(vision) = vision_switch.take()
 +                        && !aborted_by_us
 +                        && let Some(f) = follow_up.as_mut()
 +                    {
-+                        let prompt = if checking {
-+                            VISION_CHECK_PROMPT
-+                        } else {
-+                            VISION_CONTINUE_PROMPT
-+                        };
-+                        let mut req = TurnRequest::new(prompt);
++                        let mut req = TurnRequest::new(vision_prompt);
 +                        req.model = Some(vision.model_ref.clone());
 +                        req.permission = permission;
 +                        match f.engine.prompt(&f.session, req).await {
@@ -6954,9 +7068,32 @@ index 00000000..b22ab778
 +#[cfg(test)]
 +mod tests {
 +    use super::{
-+        announces_unfinished_action, asks_to_write_files, downloads_images, ends_with_code_block,
-+        engine_question_answers, engine_questions,
++        announces_unfinished_action, asks_to_write_files, claims_cannot_see_images,
++        downloads_images, ends_with_code_block, engine_question_answers, engine_questions,
 +    };
++
++    #[test]
++    fn a_model_begging_off_images_is_detected() {
++        // The exact repro line, plus the other phrasings a text-only model uses.
++        for tail in [
++            "I can't visually distinguish image content (this model doesn't support image input), so I'll sort them by their filenames",
++            "This model does not support image input.",
++            "I cannot see images, so I'll go by the file names.",
++            "I'm unable to view the photos.",
++            "no image input is available to me",
++        ] {
++            assert!(claims_cannot_see_images(tail), "{tail:?}");
++        }
++        // A turn that actually looked, or one unrelated to images, never triggers a redo.
++        for tail in [
++            "The photo shows a snow leopard.",
++            "Sorted all 15 photos into ~/Desktop/Panthera.",
++            "Done — the tests pass.",
++            "",
++        ] {
++            assert!(!claims_cannot_see_images(tail), "{tail:?}");
++        }
++    }
 +
 +    #[test]
 +    fn image_downloads_are_recognised() {

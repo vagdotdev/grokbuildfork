@@ -11,6 +11,49 @@ index a06a65ab..982e38c1 100644
  
  pub(crate) use routing::task_view_by_session_id;
  use routing::{
+diff --git a/crates/codegen/xai-grok-pager/src/app/acp_handler/prompt_origin.rs b/crates/codegen/xai-grok-pager/src/app/acp_handler/prompt_origin.rs
+index 7c41a29c..690ac9cc 100644
+--- a/crates/codegen/xai-grok-pager/src/app/acp_handler/prompt_origin.rs
++++ b/crates/codegen/xai-grok-pager/src/app/acp_handler/prompt_origin.rs
+@@ -201,6 +201,20 @@ pub(super) struct WakeTerminal<'a> {
+     pub error_kind: Option<crate::app::error_display::WireErrorType>,
+ }
+ 
++/// Whether the most recent turn-terminal marker in `agent`'s scrollback is a `TurnCompleted`
++/// ("Worked for …") — a real turn's done line a wake turn must not stack a second one onto.
++fn last_turn_terminal_is_completed(agent: &AgentView) -> bool {
++    use crate::scrollback::block::RenderBlock;
++    for i in (0..agent.scrollback.len()).rev() {
++        if let Some(RenderBlock::SessionEvent(b)) = agent.scrollback.get(i).map(|e| &e.block)
++            && b.event.is_turn_terminal()
++        {
++            return matches!(b.event, SessionEvent::TurnCompleted { .. });
++        }
++    }
++    false
++}
++
+ /// Close out a wake turn. This is the only place that flushes its streamed entries still in flight, because wake turns skip `PromptResponse`.
+ /// Failures are the exception and still get a marker when silent, because the user's standing instruction stopped executing invisibly.
+ /// The `HookAnnotation` warning attributes the deny but is not turn output, so a silently blocked wake closes without a marker.
+@@ -276,6 +290,17 @@ pub(super) fn finish_wake_turn(
+             },
+         ),
+     };
++    // A synthetic wake turn (a background command or subagent completing) must never stack a
++    // second "Worked for …" onto a real turn's done line — the user would read the wake's short
++    // time as the turn's. Drop the wake's `TurnCompleted` when the last done line is already one;
++    // the wake's own output still renders, and failures / cancels still push their marker.
++    let event = if matches!(&event, Some(SessionEvent::TurnCompleted { .. }))
++        && last_turn_terminal_is_completed(agent)
++    {
++        None
++    } else {
++        event
++    };
+     let notify = matches!(&event, Some(SessionEvent::TurnCompleted { .. }));
+     crate::app::turn_completion::push_turn_terminal_marker(agent, event);
+     crate::app::turn_completion::note_hook_blocked_turn(
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
 index f968c838..af1f7d97 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
@@ -278,7 +321,7 @@ index 59bf6734..4f85ad00 100644
      if agent.permission_queue.is_empty() {
          return;
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-index a4d77733..3a86d3a5 100644
+index a4d77733..e5e7988d 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 @@ -82,6 +82,7 @@ pub(super) fn collect_live_doctor_report_for_terminal(
@@ -510,10 +553,15 @@ index a4d77733..3a86d3a5 100644
                  agent.session.enqueue_command(cmd_text);
              }
              CommandResult::InjectSkill {
-@@ -1413,7 +1607,23 @@ pub(super) fn handle_prompt_response(
+@@ -1413,7 +1607,28 @@ pub(super) fn handle_prompt_response(
      // The leader's `running_prompt_id` broadcast can arrive before this `PromptResponse`
      // Take any stashed adoption now; it is applied after `finish_turn` clears `current_prompt_id` below
      let pending_adoption = app.pending_running_adoptions.remove(&agent_id);
++    // Workshop: a fallback turn (the resent one) times its `Worked for …` from the user's original
++    // prompt, not from the fallback that started 90 s+ later. `workshop_fallback` is set for the
++    // whole fallback session, but only the resent turn carries the captured prompt time.
++    let is_fallback_turn = app.workshop_fallback.is_some();
++    let fallback_prompt_at = app.workshop_fallback_prompt_at.take();
 +    // Workshop: while the silent fallback carries the session, a failed turn is reported as the
 +    // one plain line (the technical cause goes to the log) and ends the fallback, so Enter retries
 +    // from the top: the user's own model first, the fallback behind it.
@@ -534,7 +582,24 @@ index a4d77733..3a86d3a5 100644
          // Discard PromptResponses that don't belong to the currently active prompt
          // They belong to a turn the user rewound, or to a queued prompt that never became the running turn
          // Without the `Err` fallback, a queued prompt's RPC error has no id to gate on and is misattributed to the running turn
-@@ -1642,6 +1852,17 @@ pub(super) fn handle_prompt_response(
+@@ -1583,7 +1798,15 @@ pub(super) fn handle_prompt_response(
+             || context_overflow
+             || disk_full
+             || request_failed_shown;
+-        let elapsed = agent.turn_elapsed();
++        // Workshop fallback: count from the user's original prompt so a slow model that fell over
++        // after 12 min doesn't read as the fallback's short answer time.
++        let elapsed = if is_fallback_turn {
++            fallback_prompt_at
++                .map(|t| t.elapsed())
++                .or_else(|| agent.turn_elapsed())
++        } else {
++            agent.turn_elapsed()
++        };
+ 
+         {
+             let sid = agent.session.session_id.as_ref().map(|s| s.0.as_ref());
+@@ -1642,6 +1865,17 @@ pub(super) fn handle_prompt_response(
          // Insert the session event message (skip TurnCompleted for bash-mode, which has no agent turn)
          let event = match (&result, was_cancelling) {
              (Ok(_), false) if agent.bash_turn => None,
@@ -552,7 +617,7 @@ index a4d77733..3a86d3a5 100644
              (Err(_), _) if dedicated_ux_shown => None,
              // `err` is already banner-formatted by `format_acp_error` at the producer, the single formatting owner
              // Don't re-format here
-@@ -1682,9 +1903,13 @@ pub(super) fn handle_prompt_response(
+@@ -1682,9 +1916,13 @@ pub(super) fn handle_prompt_response(
                  };
                  Some((NotificationEventKind::TurnComplete, body))
              }
@@ -2679,10 +2744,10 @@ index 00000000..e12673a6
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs b/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs
 new file mode 100644
-index 00000000..c3852bef
+index 00000000..c9dc7ba0
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs
-@@ -0,0 +1,505 @@
+@@ -0,0 +1,645 @@
 +//! Workshop overlay: the engine's tool calls as the pager's own tool rows, with the work inside
 +//! them once the result lands — the diff an edit applied, the output and exit code of a command,
 +//! the text a read returned — so a row can be opened (`Enter`, fold keys) like any ACP tool row.
@@ -2695,10 +2760,12 @@ index 00000000..c3852bef
 +use xai_grok_pager_diff::{DiffHunk, diff_hunks_from_strings};
 +
 +use crate::scrollback::block::RenderBlock;
++use crate::scrollback::blocks::tool::{WebFetchToolCallBlock, WebSearchToolCallBlock};
 +use crate::scrollback::blocks::{
 +    EditToolCallBlock, ExecuteToolCallBlock, ListDirToolCallBlock, OtherToolCallBlock,
 +    ReadToolCallBlock, ToolCallBlock,
 +};
++use xai_grok_shell::tools::{TodoItem, TodoPriority, TodoStatus};
 +
 +/// Longest command output kept in a row (the tail); the model saw the whole thing anyway.
 +const OUTPUT_TAIL_BYTES: usize = 16 * 1024;
@@ -2769,13 +2836,66 @@ index 00000000..c3852bef
 +    crate::acp::tracker::TurnActivity::ToolRunning { title, description }
 +}
 +
++/// Whether the engine's tool `name` is a to-do update (`todowrite`), which Workshop maps onto the
++/// upstream todo list (the Ctrl+T pane) rather than a scrollback row, as Grok Build does.
++pub fn is_todo_tool(name: &str) -> bool {
++    matches!(name, "todowrite" | "todo_write" | "todoread" | "todo_read")
++}
++
++/// The to-do items an engine `todowrite` call carries, as the pager's canonical `TodoItem`s, so a
++/// to-do update renders as the upstream task list instead of an empty `todowrite` row. `None` when
++/// the input has no `todos` array (a `todoread`, or a shape we don't recognise).
++pub fn todo_items_from_input(input: &Value) -> Option<Vec<TodoItem>> {
++    let todos = input.get("todos").and_then(Value::as_array)?;
++    Some(
++        todos
++            .iter()
++            .filter_map(|t| {
++                let content = str_of(t, "content")
++                    .or_else(|| str_of(t, "text"))
++                    .map(str::to_owned)?;
++                if content.trim().is_empty() {
++                    return None;
++                }
++                let status = match str_of(t, "status") {
++                    Some("in_progress") | Some("in-progress") | Some("active") => {
++                        TodoStatus::InProgress
++                    }
++                    Some("completed") | Some("done") => TodoStatus::Completed,
++                    Some("cancelled") | Some("canceled") => TodoStatus::Cancelled,
++                    _ => TodoStatus::Pending,
++                };
++                let priority = match str_of(t, "priority") {
++                    Some("high") => TodoPriority::High,
++                    Some("low") => TodoPriority::Low,
++                    _ => TodoPriority::Medium,
++                };
++                Some(TodoItem {
++                    content,
++                    priority,
++                    status,
++                    meta: None,
++                })
++            })
++            .collect(),
++    )
++}
++
 +/// The row shown while the call runs: the pager's own verb rows (`◆ Run`, `◆ Edit`,
-+/// `◆ Creating`, `◈ Read`, …) so engine turns read like shell turns.
++/// `◆ Creating`, `◈ Read`, …) so engine turns read like shell turns. The engine's `webfetch` /
++/// `websearch` ids map onto the upstream Fetch / Web Search blocks (bare `webfetch` never reaches
++/// `from_name`, which only knows the underscored upstream ids).
 +pub fn running_row(name: &str, input: &Value) -> RenderBlock {
 +    let input = &crate::app::workshop::scrub_scratch_json(input);
 +    let summary = summary(input);
 +    match name {
-+        "list" => RenderBlock::list_dir(summary),
++        "list" | "ls" | "list_dir" => RenderBlock::list_dir(summary),
++        "webfetch" | "web_fetch" | "fetch" => {
++            RenderBlock::ToolCall(ToolCallBlock::WebFetch(WebFetchToolCallBlock::new(summary)))
++        }
++        "websearch" | "web_search" => {
++            RenderBlock::ToolCall(ToolCallBlock::WebSearch(WebSearchToolCallBlock::new(summary)))
++        }
 +        _ => RenderBlock::tool_call(name, summary, true),
 +    }
 +}
@@ -2871,7 +2991,29 @@ index 00000000..c3852bef
 +            }
 +            RenderBlock::ToolCall(ToolCallBlock::ListDir(block))
 +        }
-+        "glob" | "grep" | "webfetch" | "websearch" => {
++        "webfetch" | "web_fetch" | "fetch" => {
++            let mut block = WebFetchToolCallBlock::new(summary);
++            let body = tail(output);
++            if !body.trim().is_empty() {
++                block = block.with_output(body);
++            }
++            if error.is_some() {
++                block.set_error(error);
++            }
++            RenderBlock::ToolCall(ToolCallBlock::WebFetch(block))
++        }
++        "websearch" | "web_search" => {
++            let mut block = WebSearchToolCallBlock::new(summary);
++            let body = tail(output);
++            if !body.trim().is_empty() {
++                block.content = Some(body);
++            }
++            if error.is_some() {
++                block.set_error(error);
++            }
++            RenderBlock::ToolCall(ToolCallBlock::WebSearch(block))
++        }
++        "glob" | "grep" => {
 +            // Keep the pager's own verb row for these; the result text is the body.
 +            let mut block = match RenderBlock::tool_call(name, summary.clone(), true) {
 +                RenderBlock::ToolCall(tc) => tc,
@@ -3186,6 +3328,69 @@ index 00000000..c3852bef
 +        assert!(t.starts_with("…\nline "));
 +        assert!(t.ends_with("line 4999\n"));
 +        assert!(t.len() <= OUTPUT_TAIL_BYTES + 8);
++    }
++
++    #[test]
++    fn engine_web_tools_map_onto_the_upstream_blocks() {
++        // The bare `webfetch` / `websearch` ids the engine sends become Fetch / Web Search blocks,
++        // never a raw-named Other row.
++        assert!(matches!(
++            running_row("webfetch", &json!({"url": "https://ghostty.org/docs/install"})),
++            RenderBlock::ToolCall(ToolCallBlock::WebFetch(_))
++        ));
++        assert!(matches!(
++            running_row("websearch", &json!({"query": "ghostty ubuntu"})),
++            RenderBlock::ToolCall(ToolCallBlock::WebFetch(_) | ToolCallBlock::WebSearch(_))
++        ));
++        let fetched = finished_row(
++            "webfetch",
++            &json!({"url": "https://ghostty.org/docs/install"}),
++            true,
++            "# Install\nUse apt.",
++            None,
++            &json!({}),
++        );
++        let RenderBlock::ToolCall(ToolCallBlock::WebFetch(f)) = fetched else {
++            panic!("webfetch row");
++        };
++        assert_eq!(f.url, "https://ghostty.org/docs/install");
++        assert!(f.output.as_deref().unwrap_or_default().contains("Use apt."));
++        let searched = finished_row(
++            "websearch",
++            &json!({"query": "ghostty ubuntu"}),
++            true,
++            "result one\nresult two",
++            None,
++            &json!({}),
++        );
++        let RenderBlock::ToolCall(ToolCallBlock::WebSearch(s)) = searched else {
++            panic!("websearch row");
++        };
++        assert_eq!(s.query, "ghostty ubuntu");
++        assert!(s.content.as_deref().unwrap_or_default().contains("result two"));
++    }
++
++    #[test]
++    fn todowrite_input_parses_into_todo_items() {
++        assert!(is_todo_tool("todowrite"));
++        assert!(is_todo_tool("todoread"));
++        assert!(!is_todo_tool("bash"));
++        let items = todo_items_from_input(&json!({
++            "todos": [
++                {"content": "download books", "status": "completed", "priority": "high"},
++                {"content": "install ghostty", "status": "in_progress", "priority": "medium"},
++                {"content": "verify", "status": "pending", "priority": "low"},
++                {"content": "", "status": "pending"},
++            ]
++        }))
++        .expect("todos array");
++        assert_eq!(items.len(), 3, "empty content is dropped");
++        assert_eq!(items[0].content, "download books");
++        assert_eq!(items[0].status, TodoStatus::Completed);
++        assert_eq!(items[0].priority, TodoPriority::High);
++        assert_eq!(items[1].status, TodoStatus::InProgress);
++        assert_eq!(items[2].status, TodoStatus::Pending);
++        assert!(todo_items_from_input(&json!({"other": true})).is_none());
 +    }
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/scrollback/block.rs b/crates/codegen/xai-grok-pager/src/scrollback/block.rs

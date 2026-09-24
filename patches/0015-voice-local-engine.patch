@@ -1,5 +1,5 @@
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
-index d9583697..5d6d4c84 100644
+index d9583697..24541f79 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
 @@ -741,7 +741,9 @@ impl AgentView {
@@ -54,7 +54,22 @@ index d9583697..5d6d4c84 100644
          if let Some(ctx_line) = context_bar::context_bar_line_for_session(
              ctx_used,
              ctx_total,
-@@ -2252,18 +2265,26 @@ impl AgentView {
+@@ -2109,7 +2122,13 @@ impl AgentView {
+                             watching_hovered: self.hit_watching_cue.hovered,
+                         }),
+                         has_running_execute,
+-                        total_tokens: self.context_state.as_ref().map(|c| c.used),
++                        // Workshop: the `⇣Nk` counter reads the live Engine/Adapter model's usage
++                        // (the same source as the header's context meter), not the frozen shell
++                        // placeholder; unknown stays hidden.
++                        total_tokens: match self.workshop_context {
++                            Some((used, _)) => used,
++                            None => self.context_state.as_ref().map(|c| c.used),
++                        },
+                         session_starting_since: self.session_starting_since,
+                         is_bash_turn: self.bash_turn,
+                         is_pending_user_input,
+@@ -2252,18 +2271,26 @@ impl AgentView {
                  dot,
                  Style::default().fg(dot_color).bg(bg),
              );
@@ -87,7 +102,7 @@ index d9583697..5d6d4c84 100644
              let stop_fg = if self.hit_voice_stop_button.hovered {
                  theme.accent_error
              } else {
-@@ -2338,9 +2359,13 @@ impl AgentView {
+@@ -2338,9 +2365,13 @@ impl AgentView {
          let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
          let usage_warning = usage_warning_text.as_deref();
          let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
