@@ -575,7 +575,7 @@ pub enum PickerInput {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModelsLine {
     Header(String),
-    Row(ModelsRow),
+    Row(Box<ModelsRow>),
 }
 
 /// How a piece of a row's state suffix is drawn.
@@ -917,7 +917,7 @@ impl PickerState {
                 lines.push(ModelsLine::Header(row.group.clone()));
                 current = Some(row.group.clone());
             }
-            lines.push(ModelsLine::Row(row));
+            lines.push(ModelsLine::Row(Box::new(row)));
         }
         lines
     }

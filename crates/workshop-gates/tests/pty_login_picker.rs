@@ -49,7 +49,7 @@ fn assert_no_xai(h: &PtyHarness, step: &str) {
 fn selected_line(h: &PtyHarness) -> Option<String> {
     h.screen_contents()
         .lines()
-        .find(|l| l.contains('\u{203a}'))
+        .find(|l| l.contains('\u{203a}') && !l.contains("Models \u{203a}"))
         .map(str::to_owned)
 }
 
@@ -212,10 +212,19 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
         o < s,
         "OpenCode's models come first, the subscriptions below:\n{screen}"
     );
-    assert!(
-        !screen.contains("Tab:") && !screen.contains('['),
-        "one picker: no tabs, no pills:\n{screen}"
-    );
+    for pill in [
+        "Tab: Models",
+        "Tab: Subscriptions",
+        "[Install]",
+        "[Sign in]",
+        "[Detecting]",
+        "[Ready]",
+    ] {
+        assert!(
+            !screen.contains(pill),
+            "one picker: no tabs, no pills ({pill}):\n{screen}"
+        );
+    }
     assert_no_xai(&h, "/model overlay");
     snapshot(&h, &dir, "02-model-overlay");
     h.inject_keys(b"\x1b").unwrap();
@@ -253,7 +262,14 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
         screen.contains("OpenCode") && screen.contains("Big Pickle"),
         "the same picker: the models are still listed above:\n{screen}"
     );
-    for pill in ["[Install]", "[Sign in]", "[Detecting]", "[Ready]", "Tab:"] {
+    for pill in [
+        "[Install]",
+        "[Sign in]",
+        "[Detecting]",
+        "[Ready]",
+        "Tab: Models",
+        "Tab: Subscriptions",
+    ] {
         assert!(
             !screen.contains(pill),
             "no pill, no tab ({pill}):\n{screen}"

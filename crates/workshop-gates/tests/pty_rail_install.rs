@@ -185,7 +185,13 @@ fn a_missing_cli_installs_and_signs_in_on_one_keypress() {
         row_state("Codex").is_some() && row_state("Cursor").is_some(),
         "the CLIs that are still missing keep their one install action:\n{screen}"
     );
-    for pill in ["[Ready]", "[Install]", "[Sign in]", "Tab:"] {
+    for pill in [
+        "[Ready]",
+        "[Install]",
+        "[Sign in]",
+        "Tab: Models",
+        "Tab: Subscriptions",
+    ] {
         assert!(
             !screen.contains(pill),
             "no pill, no tab ({pill}):\n{screen}"

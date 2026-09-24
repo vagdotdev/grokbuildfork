@@ -50,17 +50,18 @@ pub fn wait_gone(h: &mut PtyHarness, text: &str, secs: u64) {
     }
 }
 
-/// Press Down until the `›`-marked row contains `needle`.
+/// Press Down (then Up) until the `›`-marked row contains `needle`.
 pub fn move_selection_to(h: &mut PtyHarness, needle: &str) {
-    for _ in 0..40 {
-        if h.screen_contents()
-            .lines()
-            .any(|l| l.contains('\u{203a}') && l.contains(needle))
-        {
-            return;
+    for key in [b"\x1b[B", b"\x1b[A"] {
+        for _ in 0..40 {
+            if h.screen_contents().lines().any(|l| {
+                l.contains('\u{203a}') && !l.contains("Models \u{203a}") && l.contains(needle)
+            }) {
+                return;
+            }
+            h.inject_keys(key).unwrap();
+            h.update(Duration::from_millis(80));
         }
-        h.inject_keys(b"\x1b[B").unwrap();
-        h.update(Duration::from_millis(80));
     }
     panic!(
         "never reached a selected row containing {needle:?}\nscreen:\n{}",
@@ -181,7 +182,9 @@ fn spawn_journey(
         ("TERM", "xterm-256color"),
         ("GROK_DISABLE_AUTOUPDATER", "1"),
     ];
-    if !color {
+    // Text assertions want a colourless screen; `WORKSHOP_PTY_COLOR=1` on the test process keeps
+    // the colours for the HTML screenshots that become the project's evidence.
+    if !color && std::env::var_os("WORKSHOP_PTY_COLOR").is_none() {
         env.push(("NO_COLOR", "1"));
     }
     env.extend_from_slice(extra_env);
@@ -336,7 +339,7 @@ pub const SIGNED_IN: &str = "\u{2713}";
 pub fn selected_line(h: &PtyHarness) -> Option<String> {
     h.screen_contents()
         .lines()
-        .find(|l| l.contains('\u{203a}'))
+        .find(|l| l.contains('\u{203a}') && !l.contains("Models \u{203a}"))
         .map(str::to_owned)
 }
 

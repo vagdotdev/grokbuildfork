@@ -317,7 +317,7 @@ pub(super) fn dispatch_workshop_set_effort(app: &mut AppView, level: String) -> 
             let wanted = level.trim().to_ascii_lowercase();
             if wanted.is_empty() {
                 Some(format!("Usage: /effort <default|{offered}>{current}"))
-            } else if wanted == "default" || model.variants.iter().any(|v| *v == wanted) {
+            } else if wanted == "default" || model.variants.contains(&wanted) {
                 let picked = model.with_effort((wanted != "default").then_some(wanted.as_str()));
                 let label = picked.display();
                 set_workshop_connection(app, WorkshopConnection::Engine { model: picked });

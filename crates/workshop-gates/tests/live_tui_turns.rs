@@ -612,6 +612,8 @@ fn open_subscriptions(j: &mut Journey) {
     wait_for(&mut j.h, "Claude", 10);
     wait_for(&mut j.h, "Codex", 5);
     wait_for(&mut j.h, "Cursor", 5);
+    // The rows carry a real state once the CLI probe has finished.
+    wait_gone(&mut j.h, "detecting", 20);
     assert!(
         selected_line(&j.h).is_some_and(|l| l.contains("Claude")),
         "/auth lands on the Claude row:\n{}",
@@ -643,7 +645,13 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
         !screen.contains("Opus (1M context)"),
         "a vendor's models live in its sub-menu, not inline:\n{screen}"
     );
-    for pill in ["[Ready]", "[Sign in]", "[Install]", "Tab:"] {
+    for pill in [
+        "[Ready]",
+        "[Sign in]",
+        "[Install]",
+        "Tab: Models",
+        "Tab: Subscriptions",
+    ] {
         assert!(
             !screen.contains(pill),
             "no pill, no tab ({pill}):\n{screen}"
@@ -1055,7 +1063,7 @@ fn rails_failed_models_retry_on_enter() {
 fn selected_line(h: &PtyHarness) -> Option<String> {
     h.screen_contents()
         .lines()
-        .find(|l| l.contains('\u{203a}'))
+        .find(|l| l.contains('\u{203a}') && !l.contains("Models \u{203a}"))
         .map(str::to_owned)
 }
 

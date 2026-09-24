@@ -11,7 +11,7 @@ index aa5bae4b..d1f1629b 100644
          use crate::terminal::image::{GraphicsProtocol, set_protocol_for_test};
          let _g = set_protocol_for_test(GraphicsProtocol::Kitty);
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/router.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/router.rs
-index a73f2642..35422389 100644
+index a73f2642..0ff716fe 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/router.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/router.rs
 @@ -1168,14 +1168,25 @@ fn slash_model_invalid_arg_produces_scrollback_error() {
@@ -37,8 +37,8 @@ index a73f2642..35422389 100644
 +    );
 +    assert_eq!(agent_ref(&app, id).scrollback.len(), initial_scrollback);
 +    assert_eq!(
-+        app.connection_picker.as_ref().map(|p| p.tab),
-+        Some(workshop_auth::PickerTab::Models)
++        app.connection_picker.as_ref().map(|p| p.title()),
++        Some("Models".to_owned())
 +    );
  }
  #[test]

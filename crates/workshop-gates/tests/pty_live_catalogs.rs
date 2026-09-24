@@ -78,7 +78,7 @@ fn slash(h: &mut PtyHarness, cmd: &str) {
 fn selected_line(h: &PtyHarness) -> Option<String> {
     h.screen_contents()
         .lines()
-        .find(|l| l.contains('\u{203a}'))
+        .find(|l| l.contains('\u{203a}') && !l.contains("Models \u{203a}"))
         .map(str::to_owned)
 }
 

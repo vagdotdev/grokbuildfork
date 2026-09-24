@@ -176,13 +176,34 @@ fn command(bin: &Path, args: &[&str], cwd: Option<&Path>, env: &[(OsString, OsSt
     cmd
 }
 
+/// Attempts before an `ETXTBSY` is reported as the spawn error it is.
+const ETXTBSY_ATTEMPTS: u32 = 8;
+/// Backoff between attempts, growing linearly (25, 50, … ms).
+const ETXTBSY_BACKOFF: Duration = Duration::from_millis(25);
+
+/// `execve` fails with `ETXTBSY` ("Text file busy") while any process holds the program open for
+/// writing. A binary that was just written — a vendor CLI the installer put in place, a test's
+/// fake — is exactly that for a moment; the window is microseconds to a few milliseconds, so a
+/// short retry closes it. Nothing else is retried.
 fn spawn(mut cmd: Command, label: &str) -> Result<Child, RunError> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "probe child is its own process group, waited on with a hard timeout, and torn down by `teardown` on expiry"
-    )]
-    cmd.spawn()
-        .map_err(|e| RunError::Spawn(label.to_owned(), e))
+    let mut attempt = 0u32;
+    loop {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "probe child is its own process group, waited on with a hard timeout, and torn down by `teardown` on expiry"
+        )]
+        match cmd.spawn() {
+            Ok(child) => return Ok(child),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && attempt + 1 < ETXTBSY_ATTEMPTS =>
+            {
+                attempt += 1;
+                std::thread::sleep(ETXTBSY_BACKOFF * attempt);
+            }
+            Err(e) => return Err(RunError::Spawn(label.to_owned(), e)),
+        }
+    }
 }
 
 /// Run `bin args…` with a cleared environment replaced by `env`, no stdin, and a hard timeout.
@@ -542,6 +563,39 @@ pub fn strip_ansi(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A script still open for writing cannot be exec'd (`ETXTBSY`); the probe waits it out, so a
+    /// binary an installer just finished writing (or a fixture another test thread is still
+    /// closing) probes fine.
+    #[cfg(unix)]
+    #[test]
+    fn a_briefly_busy_executable_is_retried() {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("busy.sh");
+        let mut writer = std::fs::File::create(&script).unwrap();
+        writer.write_all(b"#!/bin/sh\necho ok\n").unwrap();
+        writer.flush().unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            drop(writer);
+        });
+        let out = run(&script, &[], None, &[], Duration::from_secs(10)).expect("waits out ETXTBSY");
+        assert_eq!(out.stdout.trim(), "ok");
+        release.join().unwrap();
+        // Any other spawn error is reported at once.
+        let err = run(
+            &dir.path().join("missing"),
+            &[],
+            None,
+            &[],
+            Duration::from_secs(1),
+        )
+        .expect_err("missing program fails");
+        assert!(matches!(err, RunError::Spawn(..)), "{err}");
+    }
 
     #[test]
     fn strips_csi_and_osc() {
