@@ -95,6 +95,50 @@ pub struct DiagnosticFacts {
     /// Passive mic enumeration when voice capture is available.
     /// `None` omits the Voice section (no-audio builds, or TUI when voice mode is off).
     pub voice: Option<VoiceFacts>,
+    /// Workshop overlay: the local speech-to-text engine and its model (`None` when voice is off).
+    pub voice_engine: Option<VoiceEngineFacts>,
+    /// Workshop overlay: the OpenCode engine (`opencode serve`) behind the free models.
+    pub engine: Option<OpenCodeEngineFacts>,
+}
+
+/// Workshop overlay: `/doctor` facts for the OpenCode engine — enough to explain a first message
+/// that never answered on a machine we cannot see: binary, version, quarantine flag, the phase and
+/// error of the last start, and where the server log went.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenCodeEngineFacts {
+    /// The active connection as the composer shows it (`Big Pickle · OpenCode`, or `shell`).
+    pub connection: String,
+    /// Resolved `opencode` binary, or `None` when none is installed.
+    pub binary: Option<String>,
+    pub version: Option<String>,
+    /// `ok`, `not installed`, or `not runnable: …`.
+    pub binary_status: String,
+    /// macOS `com.apple.quarantine` value when the binary carries it (Gatekeeper would block it).
+    pub quarantined: Option<String>,
+    pub last_phase: Option<String>,
+    /// Unix seconds of the last start attempt, rendered by the caller.
+    pub last_start_unix: Option<u64>,
+    pub last_error: Option<String>,
+    pub log_path: String,
+}
+
+/// Workshop overlay: `/doctor` facts for the local voice engine. Paths and statuses only.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VoiceEngineFacts {
+    /// `local` (default) or `xai` (opt-in).
+    pub provider: String,
+    /// Resolved `voice-engine` path, or `None` when it is not installed.
+    pub engine_path: Option<String>,
+    pub engine_version: Option<String>,
+    pub engine_error: Option<String>,
+    /// Selected model tier and where the selection came from.
+    pub model_tier: String,
+    pub model_tier_source: String,
+    pub model_path: String,
+    /// `ok`, `missing`, `wrong size (…)`, `checksum mismatch (…)`.
+    pub model_status: String,
+    pub model_ok: bool,
+    pub last_error: Option<String>,
 }
 
 /// Result of a passive input-device lookup (does not open a capture stream).
@@ -122,7 +166,7 @@ pub struct TmuxFacts {
 pub enum TmuxColorPassthrough {
     /// The client advertises `RGB`, so truecolor SGR reaches the terminal.
     Forwarded,
-    /// tmux reduces 24-bit color to the client terminfo's palette, which is what makes themes look washed out even when Grok emits truecolor.
+    /// tmux reduces 24-bit color to the client terminfo's palette, which is what makes themes look washed out even when Workshop emits truecolor.
     Reduced,
     /// No usable evidence: tmux predates `terminal-features` (3.2), no client is attached, or the query failed. Never treated as a problem.
     Unknown,

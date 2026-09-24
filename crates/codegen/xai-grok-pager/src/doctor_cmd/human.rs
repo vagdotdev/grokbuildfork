@@ -5,11 +5,12 @@ use crate::diagnostics::{
 };
 use crate::host::{DisplayServer, HostOs};
 
-const LIVE_TUI_PROBE_CTA: &str = "Some checks only run in Grok. Start Grok and run /doctor.";
+const LIVE_TUI_PROBE_CTA: &str =
+    "Some checks only run in Workshop. Start Workshop and run /doctor.";
 
 pub(super) fn format(report: &DiagnosticReport) -> String {
     let facts = &report.facts;
-    let mut out = String::from("Grok Doctor\n\nEnvironment\n");
+    let mut out = String::from("Workshop Doctor\n\nEnvironment\n");
 
     fact(&mut out, "terminal", &facts.terminal.to_string());
     match &facts.xtversion {
@@ -126,8 +127,10 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
     };
     fact(&mut out, "status", status);
 
-    if let Some(voice) = &facts.voice {
+    if facts.voice.is_some() || facts.voice_engine.is_some() {
         out.push_str("\nVoice\n");
+    }
+    if let Some(voice) = &facts.voice {
         match voice {
             VoiceFacts::Device { name, detail } => {
                 fact(&mut out, "microphone", &format!("{name} ({detail})"));
@@ -136,6 +139,79 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
                 fact(&mut out, "microphone", &format!("none detected ({error})"));
             }
         }
+    }
+    if let Some(engine) = &facts.voice_engine {
+        fact(&mut out, "provider", &engine.provider);
+        match (&engine.engine_path, &engine.engine_version) {
+            (Some(path), Some(version)) => fact(&mut out, "engine", &format!("{path} ({version})")),
+            (Some(path), None) => fact(
+                &mut out,
+                "engine",
+                &format!(
+                    "{path} (not runnable: {})",
+                    engine.engine_error.as_deref().unwrap_or("unknown error")
+                ),
+            ),
+            (None, _) => fact(
+                &mut out,
+                "engine",
+                &format!(
+                    "not installed ({})",
+                    engine
+                        .engine_error
+                        .as_deref()
+                        .unwrap_or("voice-engine missing")
+                ),
+            ),
+        }
+        fact(
+            &mut out,
+            "model",
+            &format!(
+                "{} ({}, {})",
+                engine.model_path, engine.model_tier, engine.model_tier_source
+            ),
+        );
+        fact(&mut out, "checksum", &engine.model_status);
+        if let Some(err) = &engine.last_error {
+            fact(&mut out, "last error", err);
+        }
+    }
+
+    if let Some(engine) = &facts.engine {
+        out.push_str("\nOpenCode (free models)\n");
+        fact(&mut out, "connection", &engine.connection);
+        match (&engine.binary, &engine.version) {
+            (Some(path), Some(version)) => fact(&mut out, "binary", &format!("{path} ({version})")),
+            (Some(path), None) => fact(
+                &mut out,
+                "binary",
+                &format!("{path} ({})", engine.binary_status),
+            ),
+            (None, _) => fact(&mut out, "binary", &engine.binary_status),
+        }
+        if let Some(flag) = &engine.quarantined {
+            fact(
+                &mut out,
+                "quarantine",
+                &format!(
+                    "{flag} — macOS Gatekeeper blocks this binary; Workshop clears it on the next start"
+                ),
+            );
+        }
+        match (&engine.last_phase, engine.last_start_unix) {
+            (Some(phase), Some(at)) => fact(
+                &mut out,
+                "last start",
+                &format!("reached `{phase}` ({})", unix_to_utc(at)),
+            ),
+            (Some(phase), None) => fact(&mut out, "last start", &format!("reached `{phase}`")),
+            _ => fact(&mut out, "last start", "never"),
+        }
+        if let Some(err) = &engine.last_error {
+            fact(&mut out, "last error", err);
+        }
+        fact(&mut out, "log", &engine.log_path);
     }
 
     if !report.findings.is_empty() {
@@ -242,6 +318,13 @@ fn format_newline(newline: &NewlineFact) -> String {
         }
     };
     format!("Alt+Enter ({detail})")
+}
+
+/// `2026-09-22 22:10 UTC` for an engine-state timestamp; the raw seconds when out of range.
+fn unix_to_utc(secs: u64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0)
+        .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| format!("{secs}s"))
 }
 
 fn plural<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {

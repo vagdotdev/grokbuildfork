@@ -12,10 +12,12 @@ use tokio::task::JoinHandle;
 
 use crate::auth::SharedVoiceAuth;
 use crate::config::VoiceConfig;
+#[cfg(feature = "audio")]
+use crate::config::VoiceProvider;
 use crate::error::VoiceError;
 use crate::event::VoiceEvent;
 #[cfg(feature = "audio")]
-use crate::stt::{StreamingSttEvent, StreamingSttSession};
+use crate::stt::{LocalSttSession, StreamingSttEvent, StreamingSttSession, SttSession};
 
 /// Commands from the pager event loop (toggle start/stop, or F12 push-to-talk).
 #[derive(Debug)]
@@ -86,6 +88,8 @@ pub async fn run_voice_pipeline(
     if let Some(session) = active {
         session.reader.abort();
     }
+    // Workshop overlay: the warm local engine holds the model weights; release them with the pipeline.
+    workshop_voice::engine::shutdown().await;
 }
 
 /// Open a capture session, emitting a `VoiceEvent::Error` (and returning `None`) on failure.
@@ -199,9 +203,19 @@ async fn start_capture_session(
     let (audio_tx_tx, audio_tx_rx) = tokio::sync::oneshot::channel::<mpsc::Sender<Vec<u8>>>();
     tokio::spawn(forward_pcm(mic_rx, audio_tx_rx));
 
+    // Workshop overlay: the local engine is the default; the xAI socket (and its bearer) only when opted in
     let connect = async {
-        let bearer = crate::auth::require_bearer(auth).await?;
-        StreamingSttSession::connect(config, &bearer).await
+        match config.provider {
+            VoiceProvider::Local => LocalSttSession::open(config, event_tx)
+                .await
+                .map(SttSession::Local),
+            VoiceProvider::Xai => {
+                let bearer = crate::auth::require_bearer(auth).await?;
+                StreamingSttSession::connect(config, &bearer)
+                    .await
+                    .map(SttSession::Xai)
+            }
+        }
     };
     let (connect_res, capture_res) = tokio::join!(connect, capture_task);
 

@@ -735,7 +735,9 @@ impl AgentView {
             } else {
                 None
             },
-            placeholder_when_focused: false,
+            // Workshop: the empty composer reads its invitation whenever nothing is running; a
+            // turn in flight leaves it blank until the turn ends.
+            placeholder_when_focused: !self.stoppable_activity_running(),
             placeholder_override: if let Some(ph) = self
                 .prompt_input_mode
                 .placeholder_override(self.multiline_mode)
@@ -1039,7 +1041,10 @@ impl AgentView {
         };
         let turn_status_parked = if dock_covers_cues { false } else { parked };
         let wake_display_state = self.wake_display_state();
-        let display_state = wake_display_state.unwrap_or(&self.session.state);
+        // Workshop: an Engine/Adapter turn shows the same turn-status row a shell turn does.
+        let display_state = wake_display_state
+            .or_else(|| self.workshop_display_state())
+            .unwrap_or(&self.session.state);
         let send_now_gap = self.send_now_awaiting_current() && display_state.is_idle();
         let status_state = if send_now_gap {
             crate::app::agent::AgentState::TurnRunning
@@ -1293,13 +1298,21 @@ impl AgentView {
                 Line::from(Span::styled(label, mode_style)),
             );
         }
-        let ctx_used = self.context_state.as_ref().map(|c| c.used);
-        let model_window = self.session.models.get_context_window();
-        let ctx_total = self
-            .context_state
-            .as_ref()
-            .and_then(|c| (c.total > 0).then_some(c.total))
-            .or(model_window);
+        // Workshop: an Engine/Adapter connection meters the live model (its own usage and
+        // context window), never the shell placeholder model's numbers; unknown stays hidden.
+        let (ctx_used, ctx_total) = match self.workshop_context {
+            Some((used, limit)) => (used, limit),
+            None => {
+                let model_window = self.session.models.get_context_window();
+                (
+                    self.context_state.as_ref().map(|c| c.used),
+                    self.context_state
+                        .as_ref()
+                        .and_then(|c| (c.total > 0).then_some(c.total))
+                        .or(model_window),
+                )
+            }
+        };
         if let Some(ctx_line) = context_bar::context_bar_line_for_session(
             ctx_used,
             ctx_total,
@@ -2205,18 +2218,26 @@ impl AgentView {
                 dot,
                 Style::default().fg(dot_color).bg(bg),
             );
-            buf.set_string(
-                content_x + 2,
-                rec_area.y,
-                "Recording",
-                Style::default().fg(theme.accent_error).bg(bg),
-            );
             let stop_str = "[stop]";
             let stop_w = unicode_width::UnicodeWidthStr::width(stop_str) as u16;
             let stop_x = rec_area.x
                 + rec_area
                     .width
                     .saturating_sub(layout_cfg.block_pad_right + stop_w);
+            // Workshop overlay: while the local engine downloads or loads its model the row carries
+            // that one progress line (voice-spec §5 rule 6); otherwise the plain "Recording".
+            let label_avail = stop_x.saturating_sub(content_x + 3) as usize;
+            let (label, label_style) = match crate::voice::banner_status() {
+                Some(status) if label_avail > 0 => (
+                    crate::render::line_utils::truncate_str(&status, label_avail),
+                    Style::default().fg(theme.accent_running).bg(bg),
+                ),
+                _ => (
+                    "Recording".to_owned(),
+                    Style::default().fg(theme.accent_error).bg(bg),
+                ),
+            };
+            buf.set_string(content_x + 2, rec_area.y, &label, label_style);
             let stop_fg = if self.hit_voice_stop_button.hovered {
                 theme.accent_error
             } else {
@@ -2291,9 +2312,13 @@ impl AgentView {
         let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
         let usage_warning = usage_warning_text.as_deref();
         let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
-        let model_label = match self.session.models.reasoning_effort {
-            Some(eff) => format!("{model_id} ({eff})"),
-            None => model_id,
+        let model_label = match &self.workshop_model_label {
+            // Workshop Engine/Adapter connection: name the runtime, not a shell model.
+            Some(label) => label.clone(),
+            None => match self.session.models.reasoning_effort {
+                Some(eff) => format!("{model_id} ({eff})"),
+                None => model_id,
+            },
         };
         let info = match &self.prompt_mode {
             PromptMode::Normal => PromptInfo {

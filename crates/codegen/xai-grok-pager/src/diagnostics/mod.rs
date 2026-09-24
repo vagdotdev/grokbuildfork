@@ -39,16 +39,23 @@ pub(crate) use model::{
 pub use model::{
     ClipboardFacts, ColorFacts, DataControlFact, DiagnosticFacts, DiagnosticFinding, DiagnosticId,
     DiagnosticReport, FindingDisposition, KeyboardFact, ManualRemediation, NewlineFact, ProbeNote,
-    ProbeStatus, RuntimeFact, TmuxColorPassthrough, TmuxFacts, TmuxOptionFact, TmuxSupportFact,
-    VoiceFacts,
+    OpenCodeEngineFacts, ProbeStatus, RuntimeFact, TmuxColorPassthrough, TmuxFacts,
+    TmuxOptionFact, TmuxSupportFact, VoiceEngineFacts, VoiceFacts,
 };
 pub use view::{DiagnosticSnapshot, view};
 
-/// Passive input-device probe for `grok doctor` / `/doctor`. The TUI passes true only while voice mode is enabled.
+/// Passive input-device probe for `workshop doctor` / `/doctor`. The TUI passes true only while voice mode is enabled.
 pub fn apply_voice_probe(report: &mut DiagnosticReport, emit_missing_issue: bool) {
     if !xai_grok_voice::AUDIO_SUPPORTED {
         return;
     }
+    apply_voice_engine_probe(report, &xai_grok_voice::VoiceConfig::from_config_table(
+        &xai_grok_shell::config::load_effective_config()
+            .ok()
+            .and_then(|v| v.as_table().cloned())
+            .unwrap_or_default(),
+        None,
+    ));
     match xai_grok_voice::input_device_info() {
         Ok(device) => {
             report.facts.voice = Some(VoiceFacts::Device {
@@ -71,6 +78,103 @@ pub fn apply_voice_probe(report: &mut DiagnosticReport, emit_missing_issue: bool
     }
 }
 
+/// Workshop overlay: the OpenCode engine as `workshop doctor` sees it — detected binary and
+/// version (a `--version` probe, a few hundred ms), macOS quarantine flag, and the last start
+/// attempt recorded in `$WORKSHOP_HOME/engine/state.json` with its log path.
+pub fn apply_engine_probe(report: &mut DiagnosticReport) {
+    use crate::app::workshop_engine_state::{self as state, EngineState};
+    use workshop_adapters::opencode_engine::{detect_opencode, quarantine_flag};
+    use workshop_adapters::{DetectOptions, Detection};
+
+    let home = crate::app::workshop::workshop_home();
+    let saved = EngineState::load(&home).unwrap_or_default();
+    let detection = block_on_detached(async {
+        detect_opencode(&DetectOptions::default(), None).await
+    });
+    let (binary, version, binary_status) = match detection {
+        Detection::Installed(cli) => (
+            Some(cli.path.display().to_string()),
+            Some(cli.version),
+            "ok".to_owned(),
+        ),
+        Detection::Unverified { path, reason } => (
+            Some(path.display().to_string()),
+            None,
+            format!("not runnable: {reason}"),
+        ),
+        Detection::NotInstalled => (None, None, "not installed (installs on first use)".to_owned()),
+    };
+    let quarantined = binary
+        .as_deref()
+        .and_then(|p| quarantine_flag(std::path::Path::new(p)));
+    report.facts.engine = Some(model::OpenCodeEngineFacts {
+        connection: crate::app::workshop::load_active_connection()
+            .composer_label()
+            .unwrap_or_else(|| "shell (Direct API / Local model)".to_owned()),
+        binary,
+        version,
+        binary_status,
+        quarantined,
+        last_phase: saved.last_phase,
+        last_start_unix: saved.last_start_unix,
+        last_error: saved.last_error,
+        log_path: state::log_path(&home).display().to_string(),
+    });
+}
+
+/// Run a short async probe from sync doctor code, inside or outside a Tokio runtime.
+fn block_on_detached<F: std::future::Future + Send + 'static>(fut: F) -> F::Output
+where
+    F::Output: Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            // `block_in_place` needs a multi-thread worker; a dedicated thread is always safe.
+            std::thread::scope(|s| {
+                s.spawn(move || handle.block_on(fut))
+                    .join()
+                    .expect("engine probe thread")
+            })
+        }
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime for doctor probe")
+            .block_on(fut),
+    }
+}
+
+/// Workshop overlay: helper present, model path, checksum status, last error (voice-spec §6.4).
+/// Hashes the selected model (one to two seconds); `/doctor` is a debugging aid, not a startup step.
+pub fn apply_voice_engine_probe(report: &mut DiagnosticReport, voice: &xai_grok_voice::VoiceConfig) {
+    let dir = workshop_voice::store::default_dir();
+    let facts = workshop_voice::doctor::probe(
+        &dir,
+        voice.model.as_deref(),
+        voice.engine_path.as_deref().map(std::path::Path::new),
+        true,
+    );
+    let model_ok = facts.model_status.is_ready();
+    report.facts.voice_engine = Some(model::VoiceEngineFacts {
+        provider: match voice.provider {
+            xai_grok_voice::VoiceProvider::Local => "local".to_owned(),
+            xai_grok_voice::VoiceProvider::Xai => "xai".to_owned(),
+        },
+        engine_path: facts
+            .engine_path
+            .as_ref()
+            .map(|p| p.display().to_string()),
+        engine_version: facts.engine_version,
+        engine_error: facts.engine_error,
+        model_tier: facts.tier,
+        model_tier_source: facts.tier_source.to_owned(),
+        model_path: facts.model_path.display().to_string(),
+        model_status: facts.model_status.describe(),
+        model_ok,
+        last_error: facts.last_error.or(facts.engine_note),
+    });
+}
+
 fn voice_missing_finding(error: String) -> DiagnosticFinding {
     DiagnosticFinding {
         id: VOICE_NO_INPUT_DEVICE_ID,
@@ -80,7 +184,7 @@ fn voice_missing_finding(error: String) -> DiagnosticFinding {
         automatic_remediation: None,
         note: Some(
             "Connect or select a microphone in your system sound settings. On Linux, install a \
-             supported audio recorder if none was found on PATH. Then run `/doctor` or `grok \
+             supported audio recorder if none was found on PATH. Then run `/doctor` or `workshop \
              doctor` again. Doctor can't detect denied macOS microphone access when the system \
              returns silence; follow the message shown when dictation fails."
                 .to_owned(),
@@ -120,7 +224,7 @@ pub enum WarningCategory {
     /// tmux is attached to a client it believes cannot render 24-bit color, so it rewrites every truecolor cell to the client terminfo's palette.
     TmuxColorReduced,
     SandboxProfileConflict,
-    /// The session runs over SSH without `grok wrap` on the local end.
+    /// The session runs over SSH without `workshop wrap` on the local end.
     /// Clipboard forwarding and terminal-mode restore on dropped connections are then not guaranteed.
     /// An informational recommendation, not a breakage.
     SshWithoutWrap,
@@ -229,8 +333,8 @@ pub(crate) fn collect_startup_warnings_from(
             None,
         );
         warning.note = Some(
-            "Grok also saves each copy to the backup file shown in the copy message. To copy \
-             directly, run `grok wrap ssh <host>` on your local computer or use a terminal that \
+            "Workshop also saves each copy to the backup file shown in the copy message. To copy \
+             directly, run `workshop wrap ssh <host>` on your local computer or use a terminal that \
              supports OSC 52. You can also use `/copy <file>` or `/minimal`."
                 .to_owned(),
         );
@@ -260,7 +364,7 @@ pub(crate) fn collect_startup_warnings_from(
     {
         let message = match fullscreen_active {
             Some(true) => "Fullscreen may be unreliable in tmux control mode",
-            Some(false) => "Grok is using inline mode because tmux control mode limits fullscreen",
+            Some(false) => "Workshop is using inline mode because tmux control mode limits fullscreen",
             None => "Display may be limited in tmux control mode",
         };
         let mut warning = TerminalWarning::new(WarningCategory::ControlMode, message, None, None);
@@ -354,7 +458,7 @@ pub(crate) fn wezterm_kitty_keyboard_warning_from(
             None,
         );
         warning.note = Some(
-            "For this session, type `\\` and then press Enter. Grok can't negotiate the Kitty \
+            "For this session, type `\\` and then press Enter. Workshop can't negotiate the Kitty \
              keyboard protocol over SSH yet. `enable_kitty_keyboard = true` applies only to \
              local WezTerm sessions."
                 .to_string(),
@@ -396,7 +500,7 @@ fn sandbox_profile_conflict_warning_from(conflicts: Vec<String>) -> Option<Termi
         fix: None,
         config_path: None,
         note: Some(format!(
-            "Grok is using the user profile. Compare `.grok/sandbox.toml` with {}, then rename \
+            "Workshop is using the user profile. Compare `.grok/sandbox.toml` with {}, then rename \
              or remove the conflicting project profile. Project settings can add profile names \
              but can't redefine a user profile.",
             crate::util::display_user_grok_path(xai_grok_config::SANDBOX_CONFIG_FILENAME)
@@ -404,7 +508,7 @@ fn sandbox_profile_conflict_warning_from(conflicts: Vec<String>) -> Option<Termi
     })
 }
 
-/// Pure SSH `grok wrap` recommendation: suggests launching the session through `grok wrap ssh <host>` on the user's
+/// Pure SSH `workshop wrap` recommendation: suggests launching the session through `workshop wrap ssh <host>` on the user's
 /// local machine. Gates (all must hold). This detector only describes the environment. All inputs are injected so
 /// tests never touch ambient env (pattern: [`diagnose_wayland_data_control`]).
 pub fn ssh_wrap_hint(
@@ -418,7 +522,7 @@ pub fn ssh_wrap_hint(
     let mut warning = TerminalWarning::new(
         WarningCategory::SshWithoutWrap,
         "Use local SSH wrapping for more reliable clipboard copy and terminal recovery",
-        Some("grok wrap ssh <host>"),
+        Some("workshop wrap ssh <host>"),
         None,
     );
     warning.note = Some(
@@ -526,7 +630,7 @@ pub(crate) fn collect_notification_warnings_with_method(
     {
         let mut warning = TerminalWarning::new(
             WarningCategory::NotificationProtocolFallback,
-            "Grok is using the terminal bell because the terminal was not recognized",
+            "Workshop is using the terminal bell because the terminal was not recognized",
             None,
             None,
         );
@@ -865,13 +969,13 @@ pub fn color_support_warning(
             None,
             None,
         );
-        warning.note = Some("Unset `NO_COLOR`, then restart Grok.".to_string());
+        warning.note = Some("Unset `NO_COLOR`, then restart Workshop.".to_string());
         return Some(warning);
     }
 
-    // Checked before the detected level is consulted at all: the level says what Grok emits, which is a different question from what survives tmux
+    // Checked before the detected level is consulted at all: the level says what Workshop emits, which is a different question from what survives tmux
     // A truecolor detection is not evidence that truecolor reaches the terminal
-    // A session with no color evidence (piped `grok doctor`) still has a clamping client worth reporting
+    // A session with no color evidence (piped `workshop doctor`) still has a clamping client worth reporting
     if color_passthrough == TmuxColorPassthrough::Reduced {
         let mut warning = TerminalWarning::new(
             WarningCategory::TmuxColorReduced,
@@ -882,7 +986,7 @@ pub fn color_support_warning(
         warning.note = Some(format!(
             "Run `tmux source-file {tmux_config_path}`, then detach and reattach: the server \
              reads the option only on reload, and a client fixes its color depth only at attach. \
-             If Grok still reports less than truecolor afterwards, also add `set -g \
+             If Workshop still reports less than truecolor afterwards, also add `set -g \
              default-terminal \"tmux-256color\"` and `export COLORTERM=truecolor` to your shell \
              startup file."
         ));
@@ -921,7 +1025,7 @@ pub fn color_support_warning(
         warning.note = Some(format!(
             "In the same tmux config, also add `set -g default-terminal \"tmux-256color\"`. Add \
              `export COLORTERM=truecolor` to your shell startup file. Then reload tmux with \
-             `tmux source-file {tmux_config_path}`, then detach and reattach, and restart Grok."
+             `tmux source-file {tmux_config_path}`, then detach and reattach, and restart Workshop."
         ));
         return Some(warning);
     }
@@ -934,7 +1038,7 @@ pub fn color_support_warning(
     );
     warning.note = Some(
         "Add this export to your shell startup file, such as `~/.zshrc` or `~/.bashrc`, then \
-         restart Grok."
+         restart Workshop."
             .to_string(),
     );
     Some(warning)
@@ -2061,7 +2165,7 @@ mod tests {
         // is_ssh, no sink, not VS Code remote: recommend wrap
         let w = ssh_wrap_hint(true, false, false).expect("hint must fire");
         assert_eq!(w.category, WarningCategory::SshWithoutWrap);
-        assert_eq!(w.fix.as_deref(), Some("grok wrap ssh <host>"));
+        assert_eq!(w.fix.as_deref(), Some("workshop wrap ssh <host>"));
         assert!(
             w.config_path.is_none(),
             "fix is a command, not a config line"
@@ -2082,7 +2186,7 @@ mod tests {
 
     #[test]
     fn ssh_wrap_hint_suppressed_when_sink_active() {
-        // An active OSC 52 sink means the session already runs under `grok wrap`; adoption silences the hint by itself
+        // An active OSC 52 sink means the session already runs under `workshop wrap`; adoption silences the hint by itself
         assert!(ssh_wrap_hint(true, true, false).is_none());
     }
 
@@ -2431,7 +2535,7 @@ mod tests {
         assert!(finding.automatic_remediation.is_none());
         assert!(finding.note.as_deref().is_some_and(|note| {
             note.contains("install a supported audio recorder")
-                && note.contains("grok doctor")
+                && note.contains("workshop doctor")
                 && note.contains("can't detect denied macOS microphone access")
         }));
     }
@@ -2911,7 +3015,7 @@ mod tests {
         );
     }
 
-    /// Piped `grok doctor` has no color evidence, but the tmux client is still measurable, and `doctor fix` needs the finding to plan against.
+    /// Piped `workshop doctor` has no color evidence, but the tmux client is still measurable, and `doctor fix` needs the finding to plan against.
     #[test]
     fn color_support_warning_reports_tmux_clamp_without_color_evidence() {
         let w = color_support_warning(
