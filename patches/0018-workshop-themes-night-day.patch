@@ -1,5 +1,5 @@
 diff --git a/crates/codegen/xai-grok-pager-render/src/theme/mod.rs b/crates/codegen/xai-grok-pager-render/src/theme/mod.rs
-index a32853ed..84494959 100644
+index a32853ed18683ee0d30f34f1f261367e15247e15..84494959ceff6921386027830093e88270ec813b 100644
 --- a/crates/codegen/xai-grok-pager-render/src/theme/mod.rs
 +++ b/crates/codegen/xai-grok-pager-render/src/theme/mod.rs
 @@ -96,9 +96,9 @@ impl ThemeKind {
@@ -54,10 +54,10 @@ index a32853ed..84494959 100644
              ("grok-night", ThemeKind::GrokNight),
              ("dark", ThemeKind::GrokNight),
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/settings.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/settings.rs
-index 4fec06be..f5811957 100644
+index 494a20ea5768a70e7ee038517e09125660a15a21..1a175796266f49843d40bbd9707ead32f5100c84 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/settings.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/settings.rs
-@@ -955,7 +955,7 @@ fn deep_link_preview_esc_closes_modal_and_forwards_revert_action() {
+@@ -958,7 +958,7 @@ fn deep_link_preview_esc_closes_modal_and_forwards_revert_action() {
      );
      match outcome {
          InputOutcome::Action(Action::PreviewTheme(name)) => {
@@ -66,7 +66,7 @@ index 4fec06be..f5811957 100644
          }
          other => panic!("expected Action(PreviewTheme), got {other:?}"),
      }
-@@ -3082,9 +3082,9 @@ fn dispatch_cycle_mode_refreshes_open_modal_snapshot() {
+@@ -3183,9 +3183,9 @@ fn dispatch_cycle_mode_refreshes_open_modal_snapshot() {
          "current_value_for must read the refreshed snapshot",
      );
  }
@@ -78,7 +78,7 @@ index 4fec06be..f5811957 100644
  #[test]
  fn set_theme_emits_persist_setting_with_correct_payload() {
      use crate::settings::SettingValue;
-@@ -3092,7 +3092,7 @@ fn set_theme_emits_persist_setting_with_correct_payload() {
+@@ -3193,7 +3193,7 @@ fn set_theme_emits_persist_setting_with_correct_payload() {
          let mut app = test_app_with_agent();
          assert_eq!(app.current_ui.theme, None);
          crate::theme::cache::set(crate::theme::ThemeKind::GrokNight);
@@ -87,7 +87,7 @@ index 4fec06be..f5811957 100644
          assert_eq!(effects.len(), 1);
          match effects.first() {
              Some(Effect::PersistSetting {
-@@ -3101,12 +3101,12 @@ fn set_theme_emits_persist_setting_with_correct_payload() {
+@@ -3202,12 +3202,12 @@ fn set_theme_emits_persist_setting_with_correct_payload() {
                  rollback_value,
              }) => {
                  assert_eq!(*key, "theme");
@@ -103,7 +103,7 @@ index 4fec06be..f5811957 100644
          assert!(
              !crate::theme::cache::is_auto_mode(),
              "concrete theme commit must disable AUTO_MODE",
-@@ -3114,14 +3114,14 @@ fn set_theme_emits_persist_setting_with_correct_payload() {
+@@ -3215,14 +3215,14 @@ fn set_theme_emits_persist_setting_with_correct_payload() {
      });
  }
  /// Same payload contract as `set_theme_emits_persist_setting_with_correct_payload` for the auto-dark sibling.
@@ -120,7 +120,7 @@ index 4fec06be..f5811957 100644
          assert_eq!(effects.len(), 1);
          match effects.first() {
              Some(Effect::PersistSetting {
-@@ -3130,12 +3130,12 @@ fn set_auto_dark_theme_emits_persist_setting_with_correct_payload() {
+@@ -3231,12 +3231,12 @@ fn set_auto_dark_theme_emits_persist_setting_with_correct_payload() {
                  rollback_value,
              }) => {
                  assert_eq!(*key, "auto_dark_theme");
@@ -136,7 +136,7 @@ index 4fec06be..f5811957 100644
      });
  }
  #[test]
-@@ -3143,7 +3143,7 @@ fn set_auto_light_theme_emits_persist_setting_with_correct_payload() {
+@@ -3244,7 +3244,7 @@ fn set_auto_light_theme_emits_persist_setting_with_correct_payload() {
      use crate::settings::SettingValue;
      with_theme_test_env(|| {
          let mut app = test_app_with_agent();
@@ -145,7 +145,7 @@ index 4fec06be..f5811957 100644
          assert_eq!(effects.len(), 1);
          match effects.first() {
              Some(Effect::PersistSetting {
-@@ -3152,14 +3152,14 @@ fn set_auto_light_theme_emits_persist_setting_with_correct_payload() {
+@@ -3253,14 +3253,14 @@ fn set_auto_light_theme_emits_persist_setting_with_correct_payload() {
                  rollback_value,
              }) => {
                  assert_eq!(*key, "auto_light_theme");
@@ -163,7 +163,7 @@ index 4fec06be..f5811957 100644
          );
      });
  }
-@@ -3209,7 +3209,7 @@ fn preview_auto_light_theme_emits_no_persist_and_no_current_ui_mutation() {
+@@ -3310,7 +3310,7 @@ fn preview_auto_light_theme_emits_no_persist_and_no_current_ui_mutation() {
      });
  }
  /// Auto-theme commit applies the live theme **only** when `theme="auto"` AND the system is in the matching mode.
@@ -172,7 +172,7 @@ index 4fec06be..f5811957 100644
  /// The setting is dormant (parent theme is concrete, not auto), so the live display must stay on GrokNight.
  #[test]
  fn set_auto_dark_theme_does_not_apply_when_theme_is_not_auto() {
-@@ -3218,18 +3218,18 @@ fn set_auto_dark_theme_does_not_apply_when_theme_is_not_auto() {
+@@ -3319,18 +3319,18 @@ fn set_auto_dark_theme_does_not_apply_when_theme_is_not_auto() {
              crate::theme::system_appearance::SystemAppearance::Dark,
          ));
          let mut app = test_app_with_agent();
@@ -194,7 +194,7 @@ index 4fec06be..f5811957 100644
      });
  }
  /// Auto-theme commit DOES apply the live theme when both (a) the parent theme is auto AND (b) the system matches.
-@@ -3248,7 +3248,7 @@ fn set_auto_dark_theme_applies_when_theme_is_auto_and_system_is_dark() {
+@@ -3349,7 +3349,7 @@ fn set_auto_dark_theme_applies_when_theme_is_auto_and_system_is_dark() {
              crate::theme::cache::current_kind(),
              crate::theme::ThemeKind::GrokNight,
          );
@@ -203,7 +203,7 @@ index 4fec06be..f5811957 100644
          assert_eq!(
              crate::theme::cache::current_kind(),
              crate::theme::ThemeKind::GrokDay,
-@@ -3257,7 +3257,7 @@ fn set_auto_dark_theme_applies_when_theme_is_auto_and_system_is_dark() {
+@@ -3358,7 +3358,7 @@ fn set_auto_dark_theme_applies_when_theme_is_auto_and_system_is_dark() {
      });
  }
  /// Auto-theme commit does NOT apply when system is in the non-matching mode (auto_dark_theme while the system is Light).
@@ -212,7 +212,7 @@ index 4fec06be..f5811957 100644
  /// We want a concrete kind that's clearly different from GrokDay, the active resolved theme.
  #[test]
  fn set_auto_dark_theme_does_not_apply_when_system_is_light() {
-@@ -3271,17 +3271,17 @@ fn set_auto_dark_theme_does_not_apply_when_system_is_light() {
+@@ -3372,17 +3372,17 @@ fn set_auto_dark_theme_does_not_apply_when_system_is_light() {
              crate::theme::cache::current_kind(),
              crate::theme::ThemeKind::GrokDay,
          );
@@ -233,7 +233,7 @@ index 4fec06be..f5811957 100644
  #[test]
  fn set_auto_light_theme_applies_when_theme_is_auto_and_system_is_light() {
      with_theme_test_env(|| {
-@@ -3294,7 +3294,7 @@ fn set_auto_light_theme_applies_when_theme_is_auto_and_system_is_light() {
+@@ -3395,7 +3395,7 @@ fn set_auto_light_theme_applies_when_theme_is_auto_and_system_is_light() {
              crate::theme::cache::current_kind(),
              crate::theme::ThemeKind::GrokDay,
          );
@@ -242,7 +242,7 @@ index 4fec06be..f5811957 100644
          assert_eq!(
              crate::theme::cache::current_kind(),
              crate::theme::ThemeKind::GrokNight,
-@@ -3367,15 +3367,15 @@ fn set_auto_light_theme_rejects_auto_value() {
+@@ -3468,15 +3468,15 @@ fn set_auto_light_theme_rejects_auto_value() {
  fn set_theme_toast_format_uses_display_name() {
      with_theme_test_env(|| {
          let mut app = test_app_with_agent();
@@ -261,7 +261,7 @@ index 4fec06be..f5811957 100644
          );
          assert!(toast.contains('\u{2713}'), "toast must contain the ✓ glyph");
      });
-@@ -3384,10 +3384,10 @@ fn set_theme_toast_format_uses_display_name() {
+@@ -3485,10 +3485,10 @@ fn set_theme_toast_format_uses_display_name() {
  fn set_auto_dark_theme_toast_format_uses_display_name() {
      with_theme_test_env(|| {
          let mut app = test_app_with_agent();
@@ -274,7 +274,7 @@ index 4fec06be..f5811957 100644
          assert!(toast.contains('\u{2713}'));
      });
  }
-@@ -3395,22 +3395,22 @@ fn set_auto_dark_theme_toast_format_uses_display_name() {
+@@ -3496,22 +3496,22 @@ fn set_auto_dark_theme_toast_format_uses_display_name() {
  fn set_auto_light_theme_toast_format_uses_display_name() {
      with_theme_test_env(|| {
          let mut app = test_app_with_agent();
@@ -302,7 +302,7 @@ index 4fec06be..f5811957 100644
          assert_eq!(
              crate::theme::cache::current_kind(),
              crate::theme::ThemeKind::GrokDay,
-@@ -3418,14 +3418,14 @@ fn rollback_theme_reverts_current_ui_and_cache() {
+@@ -3519,14 +3519,14 @@ fn rollback_theme_reverts_current_ui_and_cache() {
          let _ = dispatch(
              Action::TaskComplete(TaskResult::SettingPersistFailed {
                  key: "theme",
@@ -319,7 +319,7 @@ index 4fec06be..f5811957 100644
              "rollback must update app.current_ui.theme",
          );
          assert_eq!(
-@@ -3440,17 +3440,17 @@ fn rollback_auto_dark_theme_reverts_current_ui() {
+@@ -3541,17 +3541,17 @@ fn rollback_auto_dark_theme_reverts_current_ui() {
      use crate::settings::SettingValue;
      with_theme_test_env(|| {
          let mut app = test_app_with_agent();
@@ -341,7 +341,7 @@ index 4fec06be..f5811957 100644
      });
  }
  #[test]
-@@ -3458,20 +3458,20 @@ fn rollback_auto_light_theme_reverts_current_ui() {
+@@ -3559,20 +3559,20 @@ fn rollback_auto_light_theme_reverts_current_ui() {
      use crate::settings::SettingValue;
      with_theme_test_env(|| {
          let mut app = test_app_with_agent();
@@ -366,7 +366,7 @@ index 4fec06be..f5811957 100644
      });
  }
  /// Edge case: if the rollback value is `"auto"` (corrupted hand-edit), `apply_setting_rollback` clears `app.current_ui.auto_dark_theme` to `None`.
-@@ -3482,8 +3482,8 @@ fn rollback_auto_dark_theme_with_auto_value_clears_to_none() {
+@@ -3583,8 +3583,8 @@ fn rollback_auto_dark_theme_with_auto_value_clears_to_none() {
      use crate::settings::SettingValue;
      with_theme_test_env(|| {
          let mut app = test_app_with_agent();
@@ -377,7 +377,7 @@ index 4fec06be..f5811957 100644
          let _ = dispatch(
              Action::TaskComplete(TaskResult::SettingPersistFailed {
                  key: "auto_dark_theme",
-@@ -3504,10 +3504,10 @@ fn rollback_auto_light_theme_with_auto_value_clears_to_none() {
+@@ -3605,10 +3605,10 @@ fn rollback_auto_light_theme_with_auto_value_clears_to_none() {
      use crate::settings::SettingValue;
      with_theme_test_env(|| {
          let mut app = test_app_with_agent();
@@ -391,10 +391,10 @@ index 4fec06be..f5811957 100644
          let _ = dispatch(
              Action::TaskComplete(TaskResult::SettingPersistFailed {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/status.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/status.rs
-index 2d8e1168..552e47f0 100644
+index e5a1b78b533275aea3da918c0365d278f0509429..816618ec3706659921ca03b9a44beb364578b02e 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/status.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/status.rs
-@@ -1564,16 +1564,16 @@ fn dispatch_confirm_reset_setting_reset_dispatches_typed_setter_for_shared_enum(
+@@ -1776,16 +1776,16 @@ fn dispatch_confirm_reset_setting_reset_dispatches_typed_setter_for_shared_enum(
              &mut app,
          );
  
@@ -415,7 +415,7 @@ index 2d8e1168..552e47f0 100644
  }
  
 diff --git a/crates/codegen/xai-grok-pager/src/settings/defs.rs b/crates/codegen/xai-grok-pager/src/settings/defs.rs
-index 671138df..90071e16 100644
+index 7aa00e1e14301b86dd30d87f795ca3ce097c1591..026d6ba90b1c23e12e5be1108d254cd39b024f35 100644
 --- a/crates/codegen/xai-grok-pager/src/settings/defs.rs
 +++ b/crates/codegen/xai-grok-pager/src/settings/defs.rs
 @@ -34,13 +34,13 @@ const THEME_CHOICES: &[EnumChoice] = &[
@@ -478,7 +478,7 @@ index 671138df..90071e16 100644
                            Minimal. Writes [ui] screen_mode in config.toml. Restart required. \
                            Switch this session only with /minimal or /fullscreen.",
              keywords: &[
-@@ -701,8 +701,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
+@@ -700,8 +700,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
                  "light",
              ],
              kind: SettingKind::Enum {
@@ -489,7 +489,7 @@ index 671138df..90071e16 100644
                  choices: THEME_CHOICES,
                  supports_preview: true,
              },
-@@ -717,8 +717,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
+@@ -716,8 +716,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
              description: "Theme to use when the system is in dark mode (only with theme=auto).",
              keywords: &["auto", "dark", "theme", "system", "appearance", "night"],
              kind: SettingKind::Enum {
@@ -500,7 +500,7 @@ index 671138df..90071e16 100644
                  choices: CONCRETE_THEME_CHOICES,
                  supports_preview: true,
              },
-@@ -733,8 +733,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
+@@ -732,8 +732,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
              description: "Theme to use when the system is in light mode (only with theme=auto).",
              keywords: &["auto", "light", "theme", "system", "appearance", "day"],
              kind: SettingKind::Enum {
@@ -511,7 +511,7 @@ index 671138df..90071e16 100644
                  choices: CONCRETE_THEME_CHOICES,
                  supports_preview: true,
              },
-@@ -883,7 +883,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
+@@ -917,7 +917,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
              restart_required: false,
              hidden_in_minimal: false,
          },
@@ -520,7 +520,7 @@ index 671138df..90071e16 100644
          SettingMeta {
              key: "show_thinking_blocks",
              category: SettingCategory::Appearance,
-@@ -899,7 +899,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
+@@ -933,7 +933,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
                  "hide",
              ],
              kind: SettingKind::Bool {
@@ -529,7 +529,7 @@ index 671138df..90071e16 100644
              },
              restart_required: false,
              hidden_in_minimal: false,
-@@ -1143,10 +1143,10 @@ pub fn default_settings() -> Vec<SettingMeta> {
+@@ -1177,10 +1177,10 @@ pub fn default_settings() -> Vec<SettingMeta> {
              category: SettingCategory::Privacy,
              owner: SettingOwner::Shell,
              label: "Coding data, retention, and training",
@@ -544,7 +544,7 @@ index 671138df..90071e16 100644
              keywords: &[
                  "privacy",
                  "data",
-@@ -1407,7 +1407,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
+@@ -1441,7 +1441,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
              category: SettingCategory::Editor,
              owner: SettingOwner::Shell,
              label: "Voice language",
@@ -553,7 +553,7 @@ index 671138df..90071e16 100644
                            English by default; System uses your locale when supported. \
                            Sets formatting language for numbers and currencies.",
              keywords: &["voice", "language", "locale", "dictation", "stt", "speech"],
-@@ -1542,7 +1542,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
+@@ -1576,7 +1576,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
              category: SettingCategory::Advanced,
              owner: SettingOwner::Shell,
              label: "SSH wrap",
@@ -563,10 +563,10 @@ index 671138df..90071e16 100644
                  "ssh",
                  "wrap",
 diff --git a/crates/codegen/xai-grok-pager/src/settings/registry.rs b/crates/codegen/xai-grok-pager/src/settings/registry.rs
-index fbaebaa3..6569987d 100644
+index 481b1722b5ab9e1d153a7f25f1b0a3fe9715cd80..3bf309baa1faea7e545feb4cc175880c8d7d0f19 100644
 --- a/crates/codegen/xai-grok-pager/src/settings/registry.rs
 +++ b/crates/codegen/xai-grok-pager/src/settings/registry.rs
-@@ -67,9 +67,9 @@ impl SettingCategory {
+@@ -70,9 +70,9 @@ impl SettingCategory {
  /// One choice in an `Enum` setting.
  #[derive(Debug, Clone, Copy)]
  pub struct EnumChoice {
@@ -578,7 +578,7 @@ index fbaebaa3..6569987d 100644
      pub display: &'static str,
      /// Sub-text shown in the chooser sheet (e.g. `"Dark + magenta accent"`).
      pub description: &'static str,
-@@ -574,21 +574,21 @@ pub fn current_value_for(
+@@ -679,21 +679,21 @@ pub fn current_value_for(
              ui.theme
                  .as_deref()
                  .and_then(crate::theme::canonical_name)
@@ -603,7 +603,7 @@ index fbaebaa3..6569987d 100644
          )),
          // render_mermaid: SHELL-owned (persisted to `[ui].render_mermaid`).
          // Read from the process-wide cache mirror, which reflects the live value the render path uses
-@@ -836,7 +836,7 @@ mod tests {
+@@ -945,7 +945,7 @@ mod tests {
                          .theme
                          .as_deref()
                          .and_then(crate::theme::canonical_name)
@@ -612,7 +612,7 @@ index fbaebaa3..6569987d 100644
                      assert_eq!(
                          *default, expected,
                          "theme default drifts from UiConfig::default()",
-@@ -852,7 +852,7 @@ mod tests {
+@@ -961,7 +961,7 @@ mod tests {
                          .as_deref()
                          .and_then(crate::theme::canonical_name)
                          .filter(|s| *s != "auto")
@@ -621,7 +621,7 @@ index fbaebaa3..6569987d 100644
                      assert_eq!(
                          *default, expected,
                          "auto_dark_theme default drifts from UiConfig::default()",
-@@ -868,7 +868,7 @@ mod tests {
+@@ -977,7 +977,7 @@ mod tests {
                          .as_deref()
                          .and_then(crate::theme::canonical_name)
                          .filter(|s| *s != "auto")
@@ -630,7 +630,7 @@ index fbaebaa3..6569987d 100644
                      assert_eq!(
                          *default, expected,
                          "auto_light_theme default drifts from UiConfig::default()",
-@@ -953,11 +953,11 @@ mod tests {
+@@ -1070,11 +1070,11 @@ mod tests {
                           shared resolver const in xai-grok-tools"
                      );
                  }
@@ -644,7 +644,7 @@ index fbaebaa3..6569987d 100644
                          "show_thinking_blocks default drifts from UiConfig::default()"
                      );
                  }
-@@ -1395,7 +1395,7 @@ mod tests {
+@@ -1512,7 +1512,7 @@ mod tests {
          let value = current_value_for("auto_dark_theme", &ui, &pager).expect("must resolve");
          assert_eq!(
              value,
@@ -653,7 +653,7 @@ index fbaebaa3..6569987d 100644
              "corrupted `auto_dark_theme = \"auto\"` must fall back to canonical default",
          );
      }
-@@ -1410,7 +1410,7 @@ mod tests {
+@@ -1527,7 +1527,7 @@ mod tests {
          let value = current_value_for("auto_light_theme", &ui, &pager).expect("must resolve");
          assert_eq!(
              value,
@@ -662,7 +662,7 @@ index fbaebaa3..6569987d 100644
              "corrupted `auto_light_theme = \"auto\"` must fall back to canonical default",
          );
      }
-@@ -1424,7 +1424,7 @@ mod tests {
+@@ -1541,7 +1541,7 @@ mod tests {
          };
          let pager = PagerLocalSnapshot::default();
          let value = current_value_for("auto_dark_theme", &ui, &pager).expect("must resolve");
@@ -672,7 +672,7 @@ index fbaebaa3..6569987d 100644
  
      /// The persisted `fork_secondary_model` slug resolves to the catalog display name.
 diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/theme.rs b/crates/codegen/xai-grok-pager/src/slash/commands/theme.rs
-index 53b62d0d..f8eb684c 100644
+index 53b62d0de2848a20557f94b096ddbbe7037982ac..f8eb684c7e93635d04d1e5fae70650ba3d94b6a1 100644
 --- a/crates/codegen/xai-grok-pager/src/slash/commands/theme.rs
 +++ b/crates/codegen/xai-grok-pager/src/slash/commands/theme.rs
 @@ -270,8 +270,8 @@ mod tests {
@@ -741,12 +741,12 @@ index 53b62d0d..f8eb684c 100644
                  Theme::current_kind(),
                  ThemeKind::GrokNight,
 diff --git a/crates/codegen/xai-grok-pager/tests/settings_e2e.rs b/crates/codegen/xai-grok-pager/tests/settings_e2e.rs
-index 02692458..8d4655dd 100644
+index d8ab36e087e3e32e4d5d977a71d1c826026a18ea..a40a035443ffa798708839e533cb5f06d09cf781 100644
 --- a/crates/codegen/xai-grok-pager/tests/settings_e2e.rs
 +++ b/crates/codegen/xai-grok-pager/tests/settings_e2e.rs
-@@ -1999,9 +1999,9 @@ fn defaults_round_trip_through_registry() {
-             "remember_tool_approvals" => SettingValue::Bool(true),
+@@ -2032,9 +2032,9 @@ fn defaults_round_trip_through_registry() {
              "toolset.ask_user_question.timeout_enabled" => SettingValue::Bool(true),
+             "subagent_model_inheritance" => SettingValue::Bool(false),
              "keep_text_selection" => SettingValue::Enum("flash"),
 -            "theme" => SettingValue::Enum("groknight"),
 -            "auto_dark_theme" => SettingValue::Enum("groknight"),
@@ -757,7 +757,7 @@ index 02692458..8d4655dd 100644
              "render_mermaid" => SettingValue::Enum("auto"),
              "multiline_mode" => SettingValue::Bool(false),
              "permission_mode" => SettingValue::Enum("ask"),
-@@ -3691,7 +3691,7 @@ fn docs_footer_renders_for_browse_and_picker() {
+@@ -3725,7 +3725,7 @@ fn docs_footer_renders_for_browse_and_picker() {
               {all_text}"
          );
          assert!(

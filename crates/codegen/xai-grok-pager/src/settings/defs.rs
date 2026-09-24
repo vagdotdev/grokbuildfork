@@ -34,13 +34,13 @@ const THEME_CHOICES: &[EnumChoice] = &[
         description: "Follow system dark/light appearance.",
     },
     EnumChoice {
-        canonical: "groknight",
-        display: "Grok Night",
+        canonical: "night",
+        display: "Night",
         description: "Neutral dark with magenta accent.",
     },
     EnumChoice {
-        canonical: "grokday",
-        display: "Grok Day",
+        canonical: "day",
+        display: "Day",
         description: "Light theme for bright environments.",
     },
     EnumChoice {
@@ -258,12 +258,12 @@ const SCREEN_MODE_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "fullscreen",
         display: "Fullscreen",
-        description: "Open plain grok in the standard fullscreen TUI. Default when unset.",
+        description: "Open plain workshop in the standard fullscreen TUI. Default when unset.",
     },
     EnumChoice {
         canonical: "minimal",
         display: "Minimal",
-        description: "Open plain grok in scrollback-native (minimal) mode.",
+        description: "Open plain workshop in scrollback-native (minimal) mode.",
     },
 ];
 
@@ -422,13 +422,13 @@ const VOICE_STT_LANGUAGE_CHOICES: &[EnumChoice] = &[
 /// There is no dark/light filtering: the user can pair any theme with any system-appearance bucket.
 const CONCRETE_THEME_CHOICES: &[EnumChoice] = &[
     EnumChoice {
-        canonical: "groknight",
-        display: "Grok Night",
+        canonical: "night",
+        display: "Night",
         description: "Neutral dark with magenta accent.",
     },
     EnumChoice {
-        canonical: "grokday",
-        display: "Grok Day",
+        canonical: "day",
+        display: "Day",
         description: "Light theme for bright environments.",
     },
     EnumChoice {
@@ -493,7 +493,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Appearance,
             owner: SettingOwner::Shell,
             label: "Default screen mode",
-            description: "How plain grok opens next time: Fullscreen (default when unset) or \
+            description: "How Workshop opens next time: Fullscreen (default when unset) or \
                           Minimal. Writes [ui] screen_mode in config.toml. Restart required. \
                           Switch this session only with /minimal or /fullscreen.",
             keywords: &[
@@ -700,8 +700,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "light",
             ],
             kind: SettingKind::Enum {
-                // `Option<String>`: `None` resolves to "groknight"
-                default: "groknight",
+                // `Option<String>`: `None` resolves to "night"
+                default: "night",
                 choices: THEME_CHOICES,
                 supports_preview: true,
             },
@@ -716,8 +716,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
             description: "Theme to use when the system is in dark mode (only with theme=auto).",
             keywords: &["auto", "dark", "theme", "system", "appearance", "night"],
             kind: SettingKind::Enum {
-                // `Option<String>`: `None` falls back to "groknight"
-                default: "groknight",
+                // `Option<String>`: `None` falls back to "night"
+                default: "night",
                 choices: CONCRETE_THEME_CHOICES,
                 supports_preview: true,
             },
@@ -732,8 +732,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
             description: "Theme to use when the system is in light mode (only with theme=auto).",
             keywords: &["auto", "light", "theme", "system", "appearance", "day"],
             kind: SettingKind::Enum {
-                // `Option<String>`: `None` falls back to "grokday"
-                default: "grokday",
+                // `Option<String>`: `None` falls back to "day"
+                default: "day",
                 choices: CONCRETE_THEME_CHOICES,
                 supports_preview: true,
             },
@@ -917,7 +917,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             hidden_in_minimal: false,
         },
-        // SHELL-owned: `[ui].show_thinking_blocks` with a process-wide cache. Default ON.
+        // SHELL-owned: `[ui].show_thinking_blocks` with a process-wide cache. Default OFF.
         SettingMeta {
             key: "show_thinking_blocks",
             category: SettingCategory::Appearance,
@@ -933,7 +933,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "hide",
             ],
             kind: SettingKind::Bool {
-                default: ui_default.show_thinking_blocks.unwrap_or(true),
+                default: ui_default.show_thinking_blocks.unwrap_or(false),
             },
             restart_required: false,
             hidden_in_minimal: false,
@@ -1177,10 +1177,10 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Privacy,
             owner: SettingOwner::Shell,
             label: "Coding data, retention, and training",
-            description: "Opt-in to provide SpaceXAI the ability to retain and train on \
-                          coding data, e.g., prompts, traces, & metrics, for training and \
-                          debugging purposes. We may still collect simple user metrics, \
-                          e.g. how many times you use the product or a feature.",
+            description: "Whether the optional xAI account connection may retain and train on \
+                          your coding data (prompts, traces, metrics). Workshop itself sends \
+                          nothing anywhere; other connections follow their own provider's \
+                          terms.",
             keywords: &[
                 "privacy",
                 "data",
@@ -1441,7 +1441,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Editor,
             owner: SettingOwner::Shell,
             label: "Voice language",
-            description: "Speech-to-text language for voice dictation (Grok STT). \
+            description: "Speech-to-text language for voice dictation. \
                           English by default; System uses your locale when supported. \
                           Sets formatting language for numbers and currencies.",
             keywords: &["voice", "language", "locale", "dictation", "stt", "speech"],
@@ -1576,7 +1576,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Advanced,
             owner: SettingOwner::Shell,
             label: "SSH wrap",
-            description: "Show a `/doctor` tip when an SSH session is not using `grok wrap`.",
+            description: "Show a `/doctor` tip when an SSH session is not using `workshop wrap`.",
             keywords: &[
                 "ssh",
                 "wrap",
