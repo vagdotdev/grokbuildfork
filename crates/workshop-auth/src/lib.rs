@@ -759,6 +759,11 @@ impl PickerState {
     }
 
     fn set_rows(&mut self, all: Vec<ModelsRow>) {
+        // A snapshot without rows (rails only) leaves the list as it is: the vendor rows live in
+        // the list too, and a load never has nothing to show.
+        if all.is_empty() {
+            return;
+        }
         let (connect, list): (Vec<_>, Vec<_>) = all
             .into_iter()
             .partition(|r| matches!(r.kind, RowKind::ConnectProvider { .. }));

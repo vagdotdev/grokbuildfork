@@ -404,20 +404,19 @@ mod tests {
             other => panic!("expected Action(SetDefaultModel), got {other:?}"),
         }
     }
+    /// Workshop: a name no shell model carries opens the picker with the text in its filter, so
+    /// the OpenCode models and subscriptions that match are one keypress away.
     #[test]
-    fn model_invalid_arg_returns_error() {
+    fn model_invalid_arg_opens_the_picker_filtered() {
         let models = sample_models();
         let mut ctx = make_ctx(&models);
         let cmd = model::ModelCommand;
         let result = cmd.run(&mut ctx, "nonexistent-model");
         match result {
-            CommandResult::Error(msg) => {
-                assert!(
-                    msg.contains("nonexistent-model"),
-                    "error should contain the arg"
-                );
-            }
-            other => panic!("expected Error, got {other:?}"),
+            CommandResult::Action(Action::OpenConnectionPicker(
+                workshop_auth::PickerFocus::Models { filter },
+            )) => assert_eq!(filter, "nonexistent-model"),
+            other => panic!("expected the filtered picker, got {other:?}"),
         }
     }
     /// Workshop: bare `/model` (no args, or whitespace) opens the Models overlay instead of erroring.

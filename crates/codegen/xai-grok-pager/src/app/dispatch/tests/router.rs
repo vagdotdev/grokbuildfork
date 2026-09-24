@@ -1158,15 +1158,27 @@ fn slash_new_uses_active_agent_cwd() {
     let new_id = AgentId(1);
     assert!(!agent_ref(&app, new_id).session.is_worktree);
 }
+/// Workshop: `/model <name>` that names no shell model opens the picker filtered to the name
+/// (no scrollback error).
 #[test]
-fn slash_model_invalid_arg_produces_scrollback_error() {
+fn slash_model_invalid_arg_opens_the_picker_filtered() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let initial_scrollback = agent_ref(&app, id).scrollback.len();
     let effects = dispatch(Action::SendPrompt("/model nonexistent".into()), &mut app);
-    assert!(effects.is_empty(), "error should not produce effects");
-    assert_eq!(agent_ref(&app, id).scrollback.len(), initial_scrollback + 1);
+    assert!(
+        effects.iter().all(|e| matches!(
+            e,
+            Effect::WorkshopLoadPicker | Effect::WorkshopRefreshCatalogs { force: false, .. }
+        )),
+        "only the picker load and the live-list refresh, got {effects:?}"
+    );
+    assert_eq!(agent_ref(&app, id).scrollback.len(), initial_scrollback);
     assert!(agent_ref(&app, id).prompt.text().is_empty());
+    assert_eq!(
+        app.connection_picker.as_ref().map(|p| p.filter.as_str()),
+        Some("nonexistent")
+    );
 }
 /// Workshop: bare `/model` opens the Models overlay (loads its rows) instead of a scrollback error.
 #[test]
