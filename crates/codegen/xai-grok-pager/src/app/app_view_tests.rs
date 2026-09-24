@@ -191,6 +191,7 @@ pub(crate) fn test_app() -> AppView {
         workshop_turn_prompt_text: None,
         workshop_resend: None,
         workshop_fallback: None,
+        workshop_fallback_prompt_at: None,
         workshop_first_launch: false,
         workshop_engine_slot: crate::app::workshop::new_engine_slot(),
         workshop_engine_warm_started: false,

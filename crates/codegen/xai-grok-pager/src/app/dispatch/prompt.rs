@@ -1607,6 +1607,11 @@ pub(super) fn handle_prompt_response(
     // The leader's `running_prompt_id` broadcast can arrive before this `PromptResponse`
     // Take any stashed adoption now; it is applied after `finish_turn` clears `current_prompt_id` below
     let pending_adoption = app.pending_running_adoptions.remove(&agent_id);
+    // Workshop: a fallback turn (the resent one) times its `Worked for …` from the user's original
+    // prompt, not from the fallback that started 90 s+ later. `workshop_fallback` is set for the
+    // whole fallback session, but only the resent turn carries the captured prompt time.
+    let is_fallback_turn = app.workshop_fallback.is_some();
+    let fallback_prompt_at = app.workshop_fallback_prompt_at.take();
     // Workshop: while the silent fallback carries the session, a failed turn is reported as the
     // one plain line (the technical cause goes to the log) and ends the fallback, so Enter retries
     // from the top: the user's own model first, the fallback behind it.
@@ -1793,7 +1798,15 @@ pub(super) fn handle_prompt_response(
             || context_overflow
             || disk_full
             || request_failed_shown;
-        let elapsed = agent.turn_elapsed();
+        // Workshop fallback: count from the user's original prompt so a slow model that fell over
+        // after 12 min doesn't read as the fallback's short answer time.
+        let elapsed = if is_fallback_turn {
+            fallback_prompt_at
+                .map(|t| t.elapsed())
+                .or_else(|| agent.turn_elapsed())
+        } else {
+            agent.turn_elapsed()
+        };
 
         {
             let sid = agent.session.session_id.as_ref().map(|s| s.0.as_ref());
