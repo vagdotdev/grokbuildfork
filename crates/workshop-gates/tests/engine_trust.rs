@@ -155,7 +155,10 @@ impl Drop for SetuidRevert {
         // SAFETY: getuid/getgid take no arguments.
         let owner = unsafe { format!("{}:{}", libc::getuid(), libc::getgid()) };
         let run = |args: &[&str]| {
-            let _ = std::process::Command::new("sudo").args(args).arg(&self.0).status();
+            let _ = std::process::Command::new("sudo")
+                .args(args)
+                .arg(&self.0)
+                .status();
         };
         run(&["-n", "chmod", "0755"]);
         run(&["-n", "chown", &owner]);
