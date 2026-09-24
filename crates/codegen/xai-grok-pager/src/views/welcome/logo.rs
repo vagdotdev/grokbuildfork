@@ -146,31 +146,43 @@ fn anim_phase_secs() -> f32 {
 /// The sweep is slow, so a few fps looks smooth while sparing the long-lived welcome screen from full-rate repaints.
 const SHIMMER_FPS: f32 = 12.0;
 
+/// Seconds for one sweep plus its rest.
+const CYCLE: f32 = 4.0;
+/// Portion of the cycle spent sweeping (~1.3s glint, rest idles).
+const SWEEP_FRAC: f32 = 0.32;
+
 /// Quantized shimmer frame for the current wall-clock phase.
-/// The welcome screen redraws only when this advances, throttling the animation to ~`SHIMMER_FPS` rather than the full event-loop tick rate.
+/// The welcome screen redraws only when this advances: at ~`SHIMMER_FPS` while the band sweeps, and not at all while it rests
+/// (the frame holds one value for the whole rest), so an idle welcome screen paints nothing between glints —
+/// a remote desktop or SSH session sees no traffic from a screen where nothing moves.
 /// The frame is pinned to 0 when the logo is hidden.
 pub fn shimmer_frame() -> u64 {
     if logo_hidden() {
         return 0;
     }
-    (anim_phase_secs() * SHIMMER_FPS) as u64
+    shimmer_frame_at(anim_phase_secs())
+}
+
+fn shimmer_frame_at(secs: f32) -> u64 {
+    let in_cycle = secs % CYCLE;
+    if in_cycle / CYCLE < SWEEP_FRAC {
+        (secs * SHIMMER_FPS) as u64
+    } else {
+        // The rest holds the frame the next sweep opens with (its band still parked off-screen).
+        ((secs - in_cycle + CYCLE) * SHIMMER_FPS) as u64
+    }
 }
 
 /// Per-glyph shine opacity in `[0, 1]` at normalized diagonal position `diag` (0 is bottom-left, 1 is top-right) and animation time `secs`.
-/// A raised-cosine band sweeps from bottom-left to top-right and parks off-screen between sweeps; a gentle global pulse breathes underneath it.
+/// A raised-cosine band sweeps from bottom-left to top-right and parks off-screen between sweeps, where the art rests at its plain shades.
 /// 0 keeps the resting gray, 1 is full bright.
 fn shine_opacity(diag: f32, secs: f32) -> f32 {
     const BAND: f32 = 0.38; // half-width of the shine band; wider means a more gradual falloff
-    const CYCLE: f32 = 4.0; // seconds for one sweep plus its rest
-    const SWEEP_FRAC: f32 = 0.32; // portion of the cycle spent sweeping (~1.3s glint, rest idles)
     const SHINE: f32 = 0.33; // peak shine strength
-    const PULSE: f32 = 0.06; // global breathing amount
-    const PULSE_SECS: f32 = 5.0; // breathing period
 
     let p = (secs % CYCLE) / CYCLE;
     let q = (p / SWEEP_FRAC).min(1.0); // parks the band off-screen during the rest
     let band_pos = -BAND + q * (1.0 + 2.0 * BAND);
-    let pulse = PULSE * (0.5 - 0.5 * (std::f32::consts::TAU * secs / PULSE_SECS).cos());
 
     let d = (diag - band_pos).abs();
     let shine = if d < BAND {
@@ -178,7 +190,7 @@ fn shine_opacity(diag: f32, secs: f32) -> f32 {
     } else {
         0.0
     };
-    (pulse + SHINE * shine).clamp(0.0, 1.0)
+    (SHINE * shine).clamp(0.0, 1.0)
 }
 
 /// How far the weak shade sinks from the resting gray toward the background, and the strong shade rises toward the text color.
@@ -431,9 +443,25 @@ mod tests {
 
     #[test]
     fn shine_rests_dim_between_sweeps() {
-        // During the rest phase the band is parked off-screen, so an interior glyph falls back to at most the gentle pulse, never full bright
+        // During the rest phase the band is parked off-screen, so an interior glyph falls back to its plain shade, never full bright
         let op = shine_opacity(0.5, 6.0); // secs % 4.0 = 2.0, past SWEEP_FRAC, in the rest phase
-        assert!(op < 0.2, "resting opacity {op} should stay dim");
+        assert_eq!(op, 0.0, "resting opacity {op} should be the plain shade");
+    }
+
+    #[test]
+    fn shimmer_frame_holds_still_while_resting() {
+        // The frame advances through the sweep and then holds one value until the next sweep starts,
+        // so `tick` asks for no redraw while nothing on the logo moves.
+        assert_ne!(shimmer_frame_at(0.1), shimmer_frame_at(0.4));
+        let rest_start = CYCLE * SWEEP_FRAC + 0.05;
+        let held = shimmer_frame_at(rest_start);
+        let mut secs = rest_start;
+        while secs < CYCLE {
+            assert_eq!(shimmer_frame_at(secs), held, "rest frame moved at {secs}s");
+            secs += 0.05;
+        }
+        // The next cycle's sweep resumes advancing.
+        assert_ne!(shimmer_frame_at(CYCLE + 0.2), shimmer_frame_at(CYCLE + 0.5));
     }
 
     fn luminance(color: Color) -> f32 {
