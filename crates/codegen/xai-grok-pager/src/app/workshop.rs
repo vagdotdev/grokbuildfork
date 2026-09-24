@@ -2032,7 +2032,7 @@ async fn build_stream(
             model,
         } => {
             let adapter = workshop_adapters::vendors::by_id(*adapter_id);
-            let cli = match detect(&*adapter, &DetectOptions::default()).await {
+            let cli = match detect_adapter_cli(&*adapter).await {
                 Detection::Installed(cli) => cli,
                 Detection::Unverified { reason, .. } => {
                     log_failure_cause(&format!("{} could not be verified: {reason}", adapter.id()));
@@ -2062,6 +2062,47 @@ async fn build_stream(
             Ok((TurnStream::Adapter(handle), None))
         }
     }
+}
+
+/// The vendor CLI verified for each adapter, with the identity (modification time, size) of the
+/// binary it was verified from. Reused for the next turn while that file is unchanged, so a turn
+/// on a subscription rail starts the CLI once — not `--version` first (a Node CLI start of its
+/// own) and then the run.
+static ADAPTER_CLI_CACHE: std::sync::Mutex<
+    Vec<(
+        AdapterId,
+        workshop_adapters::InstalledCli,
+        Option<(std::time::SystemTime, u64)>,
+    )>,
+> = std::sync::Mutex::new(Vec::new());
+
+fn binary_identity(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// [`detect`] for a turn: the adapter's CLI as verified on the last turn while its binary is the
+/// same file, else a fresh detection (the vendor updated or moved it).
+async fn detect_adapter_cli(adapter: &dyn workshop_adapters::Adapter) -> Detection {
+    let id = adapter.id();
+    let cached = ADAPTER_CLI_CACHE
+        .lock()
+        .ok()
+        .and_then(|cache| cache.iter().find(|(a, ..)| *a == id).cloned());
+    if let Some((_, cli, identity)) = cached
+        && identity.is_some()
+        && binary_identity(&cli.path) == identity
+    {
+        return Detection::Installed(cli);
+    }
+    let detection = detect(adapter, &DetectOptions::default()).await;
+    if let Detection::Installed(cli) = &detection
+        && let Ok(mut cache) = ADAPTER_CLI_CACHE.lock()
+    {
+        cache.retain(|(a, ..)| *a != id);
+        cache.push((id, cli.clone(), binary_identity(&cli.path)));
+    }
+    detection
 }
 
 /// Drive one turn on the chosen backend, forwarding stream events to the UI over `tx` and honoring
