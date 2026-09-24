@@ -8,7 +8,9 @@
 //! * `message.part.delta { sessionID, messageID, partID, field, delta }` —
 //!   streamed text (`field: "text"`) or reasoning.
 //! * `message.part.updated { part }` — `tool` parts move
-//!   `pending -> running -> completed | error`; `text`/`reasoning` parts carry
+//!   `pending -> running -> completed | error` (`pending` is published once, when the model
+//!   starts composing the call; the input streams with no further event — 1.18.31's processor
+//!   publishes nothing on `tool-input-delta`); `text`/`reasoning` parts carry
 //!   the full text once `time.end` is set; `step-finish` carries `tokens`/`cost`.
 //! * `message.updated { info }` — assistant `info.error` (e.g.
 //!   `MessageAbortedError`) and `info.finish`.
@@ -148,6 +150,10 @@ pub struct ServeTurn {
     /// for both kinds on 1.18.31, so the part type is what tells them apart.
     reasoning_parts: HashSet<String>,
     announced_calls: HashSet<String>,
+    /// Tool calls the model is still composing (`pending`: the server publishes the part once at
+    /// `tool-input-start` and nothing more while the call's input streams — verified in 1.18.31's
+    /// processor). A whole file in one `write` at high effort is minutes of that silence.
+    pending_calls: HashSet<String>,
     /// Tool calls announced and not yet finished: while one runs (a long `apt install`, a test
     /// suite) the server has nothing to say, and that silence is not a stall.
     running_calls: HashSet<String>,
@@ -168,6 +174,7 @@ impl ServeTurn {
             streamed_parts: HashSet::new(),
             reasoning_parts: HashSet::new(),
             announced_calls: HashSet::new(),
+            pending_calls: HashSet::new(),
             running_calls: HashSet::new(),
             saw_busy: false,
             last_text: None,
@@ -191,6 +198,31 @@ impl ServeTurn {
     /// Tool calls the server announced and has not finished yet.
     pub fn tools_running(&self) -> usize {
         self.running_calls.len()
+    }
+
+    /// Tool calls the model is still composing (announced `pending`, not yet running).
+    pub fn tools_composing(&self) -> usize {
+        self.pending_calls.len()
+    }
+
+    /// Whether `event` is this turn's: its own session, a subagent session it started, or the
+    /// announcement of one. Any such event is the engine at work on this turn — activity, even
+    /// when it adds nothing to the transcript (a pending tool part, a step boundary, a touch).
+    pub fn concerns_turn(&self, event: &Value) -> bool {
+        let props = event.get("properties").unwrap_or(&Value::Null);
+        if matches!(
+            json::str(event, "type"),
+            Some("session.created") | Some("session.updated")
+        ) {
+            let info = props.get("info").unwrap_or(&Value::Null);
+            return json::str(info, "id").is_some_and(|id| self.is_ours(id))
+                || json::str(info, "parentID").is_some_and(|parent| self.is_ours(parent));
+        }
+        session_of(event).is_some_and(|s| self.is_ours(s))
+    }
+
+    fn is_ours(&self, session: &str) -> bool {
+        session == self.session_id || self.child_sessions.contains(session)
     }
 
     /// Permission requests seen since the last drain.
@@ -316,12 +348,19 @@ impl ServeTurn {
                             }
                         };
                         match status {
+                            // The model is composing the call's input; nothing else will be
+                            // heard from the server until the call is complete.
+                            "pending" => {
+                                self.pending_calls.insert(call_id);
+                            }
                             "running" => {
                                 announce(self, &mut out);
+                                self.pending_calls.remove(&call_id);
                                 self.running_calls.insert(call_id);
                             }
                             "completed" => {
                                 announce(self, &mut out);
+                                self.pending_calls.remove(&call_id);
                                 self.running_calls.remove(&call_id);
                                 detail(&mut out);
                                 out.push(AdapterEvent::ToolResult {
@@ -334,6 +373,7 @@ impl ServeTurn {
                             }
                             "error" => {
                                 announce(self, &mut out);
+                                self.pending_calls.remove(&call_id);
                                 self.running_calls.remove(&call_id);
                                 detail(&mut out);
                                 out.push(AdapterEvent::ToolResult {
@@ -344,7 +384,6 @@ impl ServeTurn {
                                     is_error: true,
                                 });
                             }
-                            // pending: arguments still streaming
                             _ => {}
                         }
                     }
@@ -702,6 +741,82 @@ mod tests {
             json!({"id": "x", "sessionID": "other", "permission": "bash", "patterns": []}),
         ));
         assert!(turn.take_permissions().is_empty());
+    }
+
+    /// A tool call being composed is neither running nor silence: the `pending` part counts as
+    /// composing until the call runs (or fails), and every event of the turn's session — a
+    /// pending part, a step boundary, a child session's touch — is the turn's activity, while
+    /// another session's is not.
+    #[test]
+    fn composing_a_tool_call_is_tracked_and_every_own_event_is_activity() {
+        let mut turn = ServeTurn::new(SID);
+        let busy = ev(
+            "session.status",
+            json!({"sessionID": SID, "status": {"type": "busy"}}),
+        );
+        assert!(turn.concerns_turn(&busy));
+        turn.on_event(&busy);
+        let step = ev(
+            "message.part.updated",
+            json!({"part": {"id": "p0", "sessionID": SID, "type": "step-start"}}),
+        );
+        assert!(turn.concerns_turn(&step));
+        assert!(
+            turn.on_event(&step).is_empty(),
+            "a step boundary shows nothing"
+        );
+        let pending = ev(
+            "message.part.updated",
+            json!({"part": {"id": "p1", "sessionID": SID, "type": "tool",
+            "tool": "write", "callID": "call_w", "state": {"status": "pending", "input": {}, "raw": ""}}}),
+        );
+        assert!(turn.concerns_turn(&pending));
+        assert!(
+            turn.on_event(&pending).is_empty(),
+            "a pending call is not announced yet"
+        );
+        assert_eq!(turn.tools_composing(), 1);
+        assert_eq!(turn.tools_running(), 0);
+        let running = ev(
+            "message.part.updated",
+            json!({"part": {"id": "p1", "sessionID": SID, "type": "tool",
+            "tool": "write", "callID": "call_w", "state": {"status": "running", "input": {"filePath": "/w/page.html", "content": "<html>"}}}}),
+        );
+        assert_eq!(turn.on_event(&running).len(), 1, "announced once it runs");
+        assert_eq!(turn.tools_composing(), 0);
+        assert_eq!(turn.tools_running(), 1);
+        let done = ev(
+            "message.part.updated",
+            json!({"part": {"id": "p1", "sessionID": SID, "type": "tool",
+            "tool": "write", "callID": "call_w", "state": {"status": "completed", "input": {"filePath": "/w/page.html"}, "output": "ok"}}}),
+        );
+        turn.on_event(&done);
+        assert_eq!(turn.tools_running(), 0);
+        // A call that fails while composing (the server reports the error) is not composing.
+        turn.on_event(&ev("message.part.updated", json!({"part": {"id": "p2", "sessionID": SID, "type": "tool",
+            "tool": "bash", "callID": "call_b", "state": {"status": "pending", "input": {}, "raw": ""}}})));
+        assert_eq!(turn.tools_composing(), 1);
+        turn.on_event(&ev("message.part.updated", json!({"part": {"id": "p2", "sessionID": SID, "type": "tool",
+            "tool": "bash", "callID": "call_b", "state": {"status": "error", "input": {}, "error": "Tool execution aborted"}}})));
+        assert_eq!(turn.tools_composing(), 0);
+        // Another session is not this turn's activity; a heartbeat names no session at all.
+        assert!(!turn.concerns_turn(&ev(
+            "message.part.delta",
+            json!({"sessionID": "other", "messageID": "m", "partID": "p", "field": "text", "delta": "x"})
+        )));
+        assert!(!turn.concerns_turn(&ev("server.heartbeat", json!({}))));
+        // A child session's announcement and its events are.
+        let created = ev(
+            "session.created",
+            json!({"sessionID": "ses_c", "info": {"id": "ses_c", "parentID": SID}}),
+        );
+        assert!(turn.concerns_turn(&created));
+        turn.on_event(&created);
+        assert!(turn.concerns_turn(&ev(
+            "session.updated",
+            json!({"sessionID": "ses_c", "info": {"id": "ses_c", "parentID": SID, "time": {"updated": 2}}})
+        )));
+        assert!(turn.concerns_turn(&ev("session.idle", json!({"sessionID": "ses_c"}))));
     }
 
     /// The `task` tool's subagent runs in a child session (`session.created` with `parentID` =

@@ -49,6 +49,10 @@ from the real server:
     8 s of silence, the completed part, "Done waiting." (silence while a tool runs is not a stall).
   * "go silent"                       -> starts an answer ("Let me look at that") and then never
     sends another event; the turn only ends when the host aborts it (logged as `aborted`).
+  * "whole page"                      -> one large `write`, streamed as 1.18.31 streams a tool call:
+    the part is published once as `pending`, then nothing for "(Ns)" seconds (default 8) while the
+    input streams, then the call runs, page.html is written, "Wrote the whole page to page.html.".
+    With "never finish" the pending part is all there ever is (a dead stream mid-call).
   * "photo candidates"                -> the `task` tool with the built-in `explore` subagent: a
     `running` task part, then a child session (session.created, parentID = the turn's session;
     logged as `{"created", "parent"}`) that reads a file and asks permission for a bash command
@@ -66,6 +70,7 @@ conversation each prompt went to.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -390,6 +395,31 @@ def run_turn(sid, agent, text, model=None):
         else:
             emit_part(tool_part(sid, mid, "bash", call_id, {"command": "sleep 8"}, "The user rejected permission to use this specific tool call.", "sleep 8", {}, status="error"))
             answer = "Understood."
+    elif "whole page" in text_l:
+        # A large single-file write, streamed the way 1.18.31 streams it: the tool part is
+        # published once, `pending`, when the model starts composing the call, then *nothing*
+        # while the input streams — "(8s)" in the prompt is how long — then the call runs and
+        # completes. "never finish" is the model dying mid-call: the pending part is all there
+        # ever is, and the turn ends only when the host aborts it.
+        call_id = next_id("call")
+        path = os.path.join(CWD, "page.html")
+        emit_part(part(sid, mid, "tool", {"tool": "write", "callID": call_id,
+                                          "state": {"status": "pending", "input": {}, "raw": ""}}))
+        if "never finish" in text_l:
+            stalled_sessions.add(sid)
+            return
+        m = re.search(r"\((\d+)s\)", text_l)
+        time.sleep(float(m.group(1)) if m else 8.0)
+        content = "<!doctype html>\n<html><body>\n" + "".join(
+            "<section class=\"stage\"><h2>Stage %d</h2><p>Lorem ipsum dolor sit amet.</p></section>\n" % i
+            for i in range(1, 41)) + "</body></html>\n"
+        with open(path, "w") as f:
+            f.write(content)
+        inp = {"filePath": path, "content": content}
+        emit_part(tool_part(sid, mid, "write", call_id, inp, "", path, {}, status="running"))
+        emit_part(tool_part(sid, mid, "write", call_id, inp, "Wrote page.html", path,
+                            {"filepath": path, "exists": False}))
+        answer = "Wrote the whole page to page.html."
     elif "photo candidates" in text_l:
         # The `task` tool with a built-in subagent, as 1.18.31 runs it: the subagent gets a child
         # session (`session.created`, parentID = this session) and works there; its bash needs

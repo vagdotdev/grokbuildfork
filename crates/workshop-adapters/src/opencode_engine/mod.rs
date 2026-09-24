@@ -132,10 +132,16 @@ pub struct EngineOptions {
     /// them.
     pub extra_env: Vec<(OsString, OsString)>,
     pub startup_timeout: Duration,
-    /// How long a turn may stay silent — after its first output, with no tool running and no
+    /// How long a turn may stay silent — after its first event, with no tool running and no
     /// permission waiting on the user — before it is aborted as stalled ([`TurnHandle::stalled`]).
-    /// The server's heartbeats do not count as output.
+    /// Every event of the turn's session counts as activity (a pending tool part, a step
+    /// boundary, a subagent's touch), not only what reaches the transcript; the server's
+    /// heartbeats do not.
     pub idle_timeout: Option<Duration>,
+    /// The ceiling instead of `idle_timeout` while the model is composing a tool call (a
+    /// `pending` tool part): the server publishes nothing while the call's input streams, and a
+    /// whole file in one `write` is minutes of that. Only a dead stream lasts longer.
+    pub compose_timeout: Option<Duration>,
     /// After `abort`, how long to wait for the server to report idle.
     pub cancel_grace: Duration,
     pub permission_handler: Option<PermissionHandler>,
@@ -164,6 +170,7 @@ impl EngineOptions {
             extra_env: Vec::new(),
             startup_timeout: Duration::from_secs(60),
             idle_timeout: Some(Duration::from_secs(600)),
+            compose_timeout: Some(Duration::from_secs(600)),
             cancel_grace: Duration::from_secs(10),
             permission_handler: None,
             question_handler: None,
@@ -212,6 +219,7 @@ impl std::fmt::Debug for EngineOptions {
             .field("workspace", &self.workspace)
             .field("startup_timeout", &self.startup_timeout)
             .field("idle_timeout", &self.idle_timeout)
+            .field("compose_timeout", &self.compose_timeout)
             .field("cancel_grace", &self.cancel_grace)
             .field("permission_handler", &self.permission_handler.is_some())
             .field("permission", &self.permission)
@@ -289,6 +297,7 @@ pub struct OpenCodeEngine {
     permission_handler: Option<PermissionHandler>,
     question_handler: Option<QuestionHandler>,
     idle_timeout: Option<Duration>,
+    compose_timeout: Option<Duration>,
     cancel_grace: Duration,
 }
 
@@ -478,6 +487,7 @@ impl OpenCodeEngine {
             permission_handler: opts.permission_handler,
             question_handler: opts.question_handler,
             idle_timeout: opts.idle_timeout,
+            compose_timeout: opts.compose_timeout,
             cancel_grace: opts.cancel_grace,
         })
     }
@@ -505,6 +515,7 @@ impl OpenCodeEngine {
             permission_handler: opts.permission_handler,
             question_handler: opts.question_handler,
             idle_timeout: opts.idle_timeout,
+            compose_timeout: opts.compose_timeout,
             cancel_grace: opts.cancel_grace,
         })
     }
@@ -674,6 +685,7 @@ impl OpenCodeEngine {
         let (events_tx, events_rx) = mpsc::channel(256);
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let stalled = Arc::new(AtomicBool::new(false));
+        let composing = Arc::new(AtomicBool::new(false));
         let driver = TurnDriver {
             client: self.client.clone(),
             session_id: session_id.to_string(),
@@ -686,8 +698,10 @@ impl OpenCodeEngine {
             permission_handler: self.permission_handler.clone(),
             question_handler: self.question_handler.clone(),
             idle_timeout: self.idle_timeout,
+            compose_timeout: self.compose_timeout,
             cancel_grace: self.cancel_grace,
             stalled: stalled.clone(),
+            composing: composing.clone(),
         };
         let outcome = tokio::spawn(driver.run());
         Ok(TurnHandle {
@@ -696,6 +710,7 @@ impl OpenCodeEngine {
             cancel: cancel_tx,
             outcome,
             stalled,
+            composing,
         })
     }
 
@@ -827,6 +842,7 @@ pub struct TurnHandle {
     cancel: watch::Sender<bool>,
     outcome: tokio::task::JoinHandle<RunOutcome>,
     stalled: Arc<AtomicBool>,
+    composing: Arc<AtomicBool>,
 }
 
 impl TurnHandle {
@@ -835,6 +851,13 @@ impl TurnHandle {
     /// and no permission was waiting on the user. Set before the final `Error` event is emitted.
     pub fn stalled(&self) -> bool {
         self.stalled.load(Ordering::SeqCst)
+    }
+
+    /// True while the model is composing a tool call (the server announced a `pending` tool part
+    /// and has nothing more to say until the call is complete). Nothing reaches the event stream
+    /// meanwhile, so a host waiting for the first event should not read that as no answer.
+    pub fn composing(&self) -> bool {
+        self.composing.load(Ordering::SeqCst)
     }
 
     /// The OpenCode session id — pass it back to [`OpenCodeEngine::prompt`]
@@ -874,10 +897,13 @@ struct TurnDriver {
     permission_handler: Option<PermissionHandler>,
     question_handler: Option<QuestionHandler>,
     idle_timeout: Option<Duration>,
+    compose_timeout: Option<Duration>,
     cancel_grace: Duration,
     /// Set when the idle ceiling ended the turn, so the host can tell a stall from any other
     /// failure (the stream still ends with an `Error`).
     stalled: Arc<AtomicBool>,
+    /// Mirrors [`ServeTurn::tools_composing`] for the host ([`TurnHandle::composing`]).
+    composing: Arc<AtomicBool>,
 }
 
 impl TurnDriver {
@@ -902,21 +928,30 @@ impl TurnDriver {
         const NEVER: Duration = Duration::from_secs(86_400 * 365);
         let mut cancel_requested = false;
         let mut abort_deadline: Option<tokio::time::Instant> = None;
-        let idle = self.idle_timeout.unwrap_or(NEVER);
+        let idle_ceiling = self.idle_timeout.unwrap_or(NEVER);
+        let compose_ceiling = self.compose_timeout.unwrap_or(NEVER);
         // Asks the host answers later (its user is looking at a prompt): one task per ask
         // resolves to `((session id, permission id), reply)`; the ids are kept so a cancel can
         // reject them all before aborting. The event loop keeps running meanwhile, so Esc/Ctrl-C
         // still work while a prompt is up and the model's other output keeps streaming.
         let mut pending: JoinSet<((String, String), PermissionReply)> = JoinSet::new();
         let mut pending_ids: HashMap<tokio::task::Id, (String, String)> = HashMap::new();
-        // The idle ceiling counts from the turn's last real activity — output, a tool starting or
-        // finishing, a permission answered — never from the server's 10 s heartbeats, and only
-        // once the model has said something (the host owns the wait for the first event).
+        // The idle ceiling counts from the turn's last activity — any event of its session (or a
+        // subagent's), a permission answered — never from the server's 10 s heartbeats, and only
+        // once the engine has said something about this turn (the host owns the wait for the
+        // first event). While the model is composing a tool call the server is silent by design
+        // (nothing is published as the call's input streams), so the compose ceiling applies.
         let mut last_activity: Option<tokio::time::Instant> = None;
         // Questions the user is answering, the same way: `(question id, answers)`.
         let mut questions: JoinSet<(String, QuestionAnswers)> = JoinSet::new();
         let mut question_ids: HashMap<tokio::task::Id, String> = HashMap::new();
         let outcome = loop {
+            let composing = self.turn.tools_composing() > 0;
+            let idle = if composing {
+                compose_ceiling
+            } else {
+                idle_ceiling
+            };
             let idle_at = last_activity.map(|at| at + idle);
             let grace = match abort_deadline {
                 Some(deadline) => deadline.saturating_duration_since(tokio::time::Instant::now()),
@@ -979,12 +1014,22 @@ impl TurnDriver {
                         break RunOutcome::Failed { reason, stderr_tail: String::new() };
                     }
                     Some(ev) => {
+                        let ours = self.turn.concerns_turn(&ev);
                         let outputs = self.turn.on_event(&ev);
                         let permissions = self.turn.take_permissions();
                         let asked = self.turn.take_questions();
-                        if !outputs.is_empty() || !permissions.is_empty() || !asked.is_empty() {
+                        // The ceiling starts once the model is generating (a word, a thought, a
+                        // tool call it is composing or has made, an ask); from then on any event
+                        // about this turn is activity — the bookkeeping before the first token
+                        // (`busy`, the echoed prompt) stays the host's wait.
+                        let generating = !outputs.is_empty()
+                            || !permissions.is_empty()
+                            || !asked.is_empty()
+                            || self.turn.tools_composing() > 0;
+                        if generating || (ours && last_activity.is_some()) {
                             last_activity = Some(tokio::time::Instant::now());
                         }
+                        self.composing.store(self.turn.tools_composing() > 0, Ordering::SeqCst);
                         for out in outputs {
                             self.emit(out).await;
                         }
@@ -1033,12 +1078,17 @@ impl TurnDriver {
                     break RunOutcome::Cancelled;
                 }
                 // A turn waiting on the user's answer, or on a tool the server is running, is not
-                // idle: that silence is expected. Anything else this long is a stall.
+                // idle: that silence is expected. Anything else this long is a stall — a tool
+                // call still being composed gets the longer compose ceiling.
                 _ = tokio::time::sleep_until(idle_at.unwrap_or_else(|| tokio::time::Instant::now() + NEVER)),
                     if self.idle_timeout.is_some() && idle_at.is_some() && !cancel_requested
                         && pending.is_empty() && questions.is_empty() && self.turn.tools_running() == 0 =>
                 {
-                    let reason = format!("no output for {}s", idle.as_secs());
+                    let reason = if composing {
+                        format!("no output for {}s while composing a tool call", idle.as_secs())
+                    } else {
+                        format!("no output for {}s", idle.as_secs())
+                    };
                     self.stalled.store(true, Ordering::SeqCst);
                     let _ = self.client.call(Method::POST, &self.abort_path(), None).await;
                     self.emit(AdapterEvent::Error { message: reason.clone() }).await;

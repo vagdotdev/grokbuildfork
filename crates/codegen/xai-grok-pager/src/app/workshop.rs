@@ -666,6 +666,13 @@ impl TurnStream {
             Self::Adapter(_) => false,
         }
     }
+    /// The model is composing a tool call (the engine said so and is silent until it is done).
+    pub fn composing(&self) -> bool {
+        match self {
+            Self::Engine(t) => t.composing(),
+            Self::Adapter(_) => false,
+        }
+    }
 }
 
 /// What the UI thread learns as a turn streams. Mapped to scrollback `RenderBlock`s by the event
@@ -846,20 +853,34 @@ const RECENT_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 /// Hard ceiling on a turn's silence before its first event: past this the engine is up but the
 /// model never answered, and the user gets the cause plus a way out instead of a spinner.
 pub const FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
-/// Mid-turn ceiling: once the model has started answering, this long without any output, tool
-/// activity or permission traffic means it stopped (an upstream 504 the engine retries silently,
-/// a dropped stream). The engine aborts the turn and Workshop recovers. `WORKSHOP_STALL_TIMEOUT_SECS`
-/// overrides it (gates run it in seconds).
+/// Mid-turn ceiling: once the model has started answering, this long without any event from the
+/// engine about the turn (output, a tool starting or finishing, a step boundary, permission
+/// traffic) means it stopped (an upstream 504 the engine retries silently, a dropped stream). The
+/// engine aborts the turn and Workshop recovers. `WORKSHOP_STALL_TIMEOUT_SECS` overrides it (gates
+/// run it in seconds).
 pub const STALL_TIMEOUT: Duration = Duration::from_secs(90);
+/// The ceiling while the model is composing a tool call: the engine publishes the call once, when
+/// it starts, and nothing more until its input is complete — a whole page in one `write` at high
+/// effort is minutes of that silence, and cutting it hands the turn to another model mid-file.
+/// Only a dead stream lasts this long. `WORKSHOP_COMPOSE_TIMEOUT_SECS` overrides it.
+pub const COMPOSE_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// [`STALL_TIMEOUT`], or the `WORKSHOP_STALL_TIMEOUT_SECS` override.
 pub fn stall_timeout() -> Duration {
-    std::env::var("WORKSHOP_STALL_TIMEOUT_SECS")
+    seconds_from_env("WORKSHOP_STALL_TIMEOUT_SECS").unwrap_or(STALL_TIMEOUT)
+}
+
+/// [`COMPOSE_TIMEOUT`], or the `WORKSHOP_COMPOSE_TIMEOUT_SECS` override.
+pub fn compose_timeout() -> Duration {
+    seconds_from_env("WORKSHOP_COMPOSE_TIMEOUT_SECS").unwrap_or(COMPOSE_TIMEOUT)
+}
+
+fn seconds_from_env(name: &str) -> Option<Duration> {
+    std::env::var(name)
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .filter(|s| *s > 0)
         .map(Duration::from_secs)
-        .unwrap_or(STALL_TIMEOUT)
 }
 
 /// The one line shown when a model stopped mid-answer and no fallback could take over.
@@ -1413,8 +1434,10 @@ async fn start_engine(
     // `opencode serve` is up in a couple of seconds on any laptop; a server that has not bound
     // its port after this long is broken, and the user should hear so instead of waiting.
     opts.startup_timeout = ENGINE_START_TIMEOUT;
-    // A model that stops mid-answer is aborted after this and the turn recovers (see `Stalled`).
+    // A model that stops mid-answer is aborted after this and the turn recovers (see `Stalled`);
+    // one composing a tool call (silent by design) gets the longer ceiling.
     opts.idle_timeout = Some(stall_timeout());
+    opts.compose_timeout = Some(compose_timeout());
 
     match OpenCodeEngine::start(&cli, opts).await {
         Ok(engine) => {
@@ -1916,6 +1939,13 @@ pub async fn run_workshop_turn(
         };
         tokio::select! {
             _ = silence => {
+                // A model whose first move is a tool call has answered — the engine announced the
+                // call and is silent while its input streams; the engine's own ceilings own the
+                // wait from here (nothing reaches this stream until the call is complete).
+                if stream.composing() {
+                    first_event_at = None;
+                    continue;
+                }
                 // The model accepted the prompt but nothing came back: stop waiting. OpenCode's
                 // model cannot answer, so the silent fallback answers instead; a vendor CLI gets
                 // the plain failure line.
