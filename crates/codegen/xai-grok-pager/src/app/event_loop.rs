@@ -4523,6 +4523,14 @@ fn handle_workshop_turn_msg(
             }
             true
         }
+        M::Notice(line) => {
+            // A plain, non-failing note (no free model can see images): the turn keeps going and
+            // its own answer still stands, so this pushes no error and arms no retry.
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent.scrollback.push_block(RenderBlock::system(line));
+            }
+            true
+        }
         M::Done {
             session_id,
             cancelled,

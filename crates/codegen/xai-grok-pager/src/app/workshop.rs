@@ -872,6 +872,9 @@ pub enum WorkshopTurnMsg {
     FollowUp(String),
     /// The plain failure line (`Couldn't reach <model> — …`); the cause is already in the log.
     Error(String),
+    /// A one-line, non-failing system notice (e.g. no free model can see images): shown as a plain
+    /// system block, never red, and does not end, error or retry the turn.
+    Notice(String),
     /// OpenCode's model could not start or answer this turn (offline, installer failed, no
     /// verified `opencode`, the prompt refused, nothing back before the first-event ceiling).
     /// `text` is the prompt that never ran; the UI silently resends it through the keyless pool.
@@ -1718,22 +1721,48 @@ struct EngineFollowUp {
     image_input: bool,
 }
 
-/// The free models that can see images, in the order a turn that needs to see one is handed to
-/// them: Muse Spark 1.3 sorted the owner's Panthera photos best and fastest, 1.2 is its backup,
-/// MiMo last (a fresh engine often does not list it yet).
-const VISION_MODELS: [&str; 3] = [
+/// Preferred vision models, best-first, by how well they sorted the owner's Panthera photos: Muse
+/// Spark 1.3 was best and fastest, 1.2 is its backup, MiMo last. These are only a *ranking* — the
+/// list Workshop actually uses is the live catalog, so a preferred model leaving the free list (the
+/// owner warns Muse 1.3 will) never leaves vision without a model.
+const VISION_MODEL_PREFERENCE: [&str; 3] = [
     "opencode/muse-spark-1.3-contributor-free",
     "opencode/muse-spark-1.2-contributor-free",
     "opencode/mimo-v2.6-flash-free",
 ];
 
-/// The first of [`VISION_MODELS`] the running engine lists with image input.
+/// The free model a turn that needs to see images is handed to, chosen from the *live* catalog: the
+/// highest-ranked preferred model still listed with image input, else any free model the live
+/// catalog marks image-capable. `None` only when the live catalog has no image-capable free model
+/// at all — Workshop then says so in one plain line instead of failing.
 fn vision_model(live: &[EngineModel]) -> Option<EngineModel> {
-    VISION_MODELS.iter().find_map(|model_ref| {
-        live.iter()
-            .find(|m| m.model_ref == *model_ref && m.image_input)
-            .cloned()
-    })
+    VISION_MODEL_PREFERENCE
+        .iter()
+        .find_map(|model_ref| {
+            live.iter()
+                .find(|m| m.model_ref == *model_ref && m.image_input)
+                .cloned()
+        })
+        .or_else(|| live.iter().find(|m| m.image_input).cloned())
+}
+
+/// The one plain line shown when a turn needs a model that can see images but the live free catalog
+/// has none: no runtime names, and the way out.
+const NO_VISION_MODEL_LINE: &str =
+    "No free model here can see images \u{2014} /model to pick one that can";
+
+/// Tell the user, once a turn, that a step needed image sight but no free vision model is listed.
+/// A plain system line, never a failure: the text-only model's own answer still stands.
+fn notice_no_vision(tx: &mpsc::UnboundedSender<WorkshopTurnMsg>, sent: &mut bool) {
+    if *sent {
+        return;
+    }
+    *sent = true;
+    state::append_log(
+        &engine_log_path(),
+        "vision: a turn needed image sight but the live free catalog lists no image-capable model",
+    );
+    let _ = tx.send(WorkshopTurnMsg::Notice(NO_VISION_MODEL_LINE.to_owned()));
 }
 
 /// The follow-up sent (never shown) when a turn moves to a model that can see what it opened.
@@ -1935,23 +1964,35 @@ async fn build_stream(
                     .find(|c| c.model_ref == m.model_ref)
                     .map_or(m.image_input, |c| c.image_input)
             };
-            if !spec.images.is_empty()
-                && !sees(&model)
-                && let Some(vision) = vision_model(&cached_engine_models())
-            {
-                state::append_log(
-                    &engine_log_path(),
-                    &format!(
-                        "vision: the prompt carries {} image(s) {} cannot see; {} answers this turn",
-                        spec.images.len(),
-                        model.model_ref,
-                        vision.model_ref
-                    ),
-                );
-                let _ = tx.send(WorkshopTurnMsg::Answering {
-                    model: vision.clone(),
-                });
-                model = vision;
+            if !spec.images.is_empty() && !sees(&model) {
+                match vision_model(&cached_engine_models()) {
+                    Some(vision) => {
+                        state::append_log(
+                            &engine_log_path(),
+                            &format!(
+                                "vision: the prompt carries {} image(s) {} cannot see; {} answers this turn",
+                                spec.images.len(),
+                                model.model_ref,
+                                vision.model_ref
+                            ),
+                        );
+                        let _ = tx.send(WorkshopTurnMsg::Answering {
+                            model: vision.clone(),
+                        });
+                        model = vision;
+                    }
+                    None => {
+                        state::append_log(
+                            &engine_log_path(),
+                            &format!(
+                                "vision: the prompt carries {} image(s) {} cannot see, and no free vision model is listed",
+                                spec.images.len(),
+                                model.model_ref
+                            ),
+                        );
+                        let _ = tx.send(WorkshopTurnMsg::Notice(NO_VISION_MODEL_LINE.to_owned()));
+                    }
+                }
             }
             engine_progress(tx, THINKING);
             // A model that is up but will not take the prompt cannot answer either: the silent
@@ -2123,6 +2164,8 @@ pub async fn run_workshop_turn(
     let (asks_tx, mut asks_rx) = mpsc::unbounded_channel::<AskOutcome>();
     let mut asks_in_flight: usize = 0;
     let mut resume_with: Option<String> = None;
+    // Set once a turn after telling the user no free vision model is listed (so it isn't repeated).
+    let mut no_vision_notice = false;
     loop {
         let silence = async {
             match first_event_at {
@@ -2199,17 +2242,21 @@ pub async fn run_workshop_turn(
                         && !aborted_by_us
                         && let Some(f) = &follow_up
                         && !f.image_input
-                        && let Some(vision) = vision_model(&cached_engine_models())
                     {
-                        state::append_log(
-                            &engine_log_path(),
-                            &format!(
-                                "vision: {} cannot see the image it opened on {}; {} answers the rest of the turn",
-                                f.model_ref, f.session, vision.model_ref
-                            ),
-                        );
-                        vision_switch = Some(vision);
-                        stream.cancel();
+                        match vision_model(&cached_engine_models()) {
+                            Some(vision) => {
+                                state::append_log(
+                                    &engine_log_path(),
+                                    &format!(
+                                        "vision: {} cannot see the image it opened on {}; {} answers the rest of the turn",
+                                        f.model_ref, f.session, vision.model_ref
+                                    ),
+                                );
+                                vision_switch = Some(vision);
+                                stream.cancel();
+                            }
+                            None => notice_no_vision(&tx, &mut no_vision_notice),
+                        }
                     }
                 }
                 Some(AdapterEvent::Error { message }) => {
@@ -2423,28 +2470,32 @@ pub async fn run_workshop_turn(
                         && permission == PermissionPolicy::WorkspaceWrite
                         && let Some(f) = &follow_up
                         && !f.image_input
-                        && let Some(vision) = vision_model(&cached_engine_models())
+                        && (downloaded_images || claims_cannot_see_images(&tail))
                     {
-                        if downloaded_images {
-                            state::append_log(
-                                &engine_log_path(),
-                                &format!(
-                                    "vision: {} downloaded images it cannot see on {}; {} checks them",
-                                    f.model_ref, f.session, vision.model_ref
-                                ),
-                            );
-                            vision_switch = Some(vision);
-                            vision_prompt = VISION_CHECK_PROMPT;
-                        } else if claims_cannot_see_images(&tail) {
-                            state::append_log(
-                                &engine_log_path(),
-                                &format!(
-                                    "vision: {} said it cannot see images on {}; {} redoes the turn",
-                                    f.model_ref, f.session, vision.model_ref
-                                ),
-                            );
-                            vision_switch = Some(vision);
-                            vision_prompt = VISION_REDO_PROMPT;
+                        match vision_model(&cached_engine_models()) {
+                            Some(vision) if downloaded_images => {
+                                state::append_log(
+                                    &engine_log_path(),
+                                    &format!(
+                                        "vision: {} downloaded images it cannot see on {}; {} checks them",
+                                        f.model_ref, f.session, vision.model_ref
+                                    ),
+                                );
+                                vision_switch = Some(vision);
+                                vision_prompt = VISION_CHECK_PROMPT;
+                            }
+                            Some(vision) => {
+                                state::append_log(
+                                    &engine_log_path(),
+                                    &format!(
+                                        "vision: {} said it cannot see images on {}; {} redoes the turn",
+                                        f.model_ref, f.session, vision.model_ref
+                                    ),
+                                );
+                                vision_switch = Some(vision);
+                                vision_prompt = VISION_REDO_PROMPT;
+                            }
+                            None => notice_no_vision(&tx, &mut no_vision_notice),
                         }
                     }
                     if let Some(vision) = vision_switch.take()
@@ -2691,7 +2742,57 @@ mod tests {
     use super::{
         announces_unfinished_action, asks_to_write_files, claims_cannot_see_images,
         downloads_images, ends_with_code_block, engine_question_answers, engine_questions,
+        vision_model,
     };
+
+    #[test]
+    fn vision_model_is_chosen_dynamically_from_the_live_catalog() {
+        use workshop_auth::EngineModel;
+        let m = |model_ref: &str, image: bool| EngineModel {
+            model_ref: model_ref.into(),
+            name: model_ref.into(),
+            is_default: false,
+            tool_call: true,
+            context_limit: None,
+            variants: Vec::new(),
+            effort: None,
+            image_input: image,
+        };
+        // Prefer the highest-ranked model while it is listed.
+        let live = vec![
+            m("opencode/big-pickle", false),
+            m("opencode/muse-spark-1.2-contributor-free", true),
+            m("opencode/muse-spark-1.3-contributor-free", true),
+        ];
+        assert_eq!(
+            vision_model(&live).unwrap().model_ref,
+            "opencode/muse-spark-1.3-contributor-free"
+        );
+        // Muse 1.3 gone from the free list (the owner's warning): fall to the next ranked, 1.2.
+        let live = vec![
+            m("opencode/big-pickle", false),
+            m("opencode/muse-spark-1.2-contributor-free", true),
+        ];
+        assert_eq!(
+            vision_model(&live).unwrap().model_ref,
+            "opencode/muse-spark-1.2-contributor-free"
+        );
+        // None of the ranked models remain, but a different free model can see: pick it, don't fail.
+        let live = vec![
+            m("opencode/big-pickle", false),
+            m("opencode/some-future-vision-free", true),
+        ];
+        assert_eq!(
+            vision_model(&live).unwrap().model_ref,
+            "opencode/some-future-vision-free"
+        );
+        // No image-capable free model at all: None, so the plain "no vision model" line fires.
+        let live = vec![
+            m("opencode/big-pickle", false),
+            m("opencode/text-only-free", false),
+        ];
+        assert!(vision_model(&live).is_none());
+    }
 
     #[test]
     fn a_model_begging_off_images_is_detected() {
