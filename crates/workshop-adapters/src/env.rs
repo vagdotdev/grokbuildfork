@@ -64,6 +64,16 @@ const DENY_PREFIXES: &[&str] = &[
     "GOOGLE_",
 ];
 
+/// Variables Workshop sets on the `opencode serve` engine itself; the parent's values must never
+/// leak in, so the engine passthrough drops them. The server password and the permission policy are
+/// security-relevant (a user's ambient value must not override the host's), and the inline config is
+/// how Workshop installs its shell and prompt.
+const ENGINE_MANAGED: &[&str] = &[
+    "OPENCODE_PERMISSION",
+    "OPENCODE_CONFIG_CONTENT",
+    "OPENCODE_SERVER_PASSWORD",
+];
+
 #[derive(Debug, thiserror::Error)]
 #[error("refusing to pass `{0}` to a delegated CLI: secret-shaped variable")]
 pub struct DeniedEnvVar(pub String);
@@ -134,8 +144,10 @@ where
     let mut out = BTreeMap::new();
     for (k, v) in parent {
         match k.to_str() {
-            // A secret-shaped name never reaches the engine, exactly as for a probe.
-            Some(key) if is_denied(key) => continue,
+            // A secret-shaped name never reaches the engine, exactly as for a probe; nor does a
+            // variable Workshop sets on the engine itself (the parent must not override the server
+            // password, the permission policy, or the inline config).
+            Some(key) if is_denied(key) || ENGINE_MANAGED.contains(&key) => continue,
             // Non-UTF-8 names cannot be secret-shaped (the deny list is ASCII) and Grok Build
             // inherits them too; pass them through rather than dropping the user's environment.
             _ => {
@@ -237,6 +249,10 @@ mod tests {
                 // Still secret-shaped: never reaches the engine, exactly as for a probe.
                 ("ANTHROPIC_API_KEY", "sk-ant"),
                 ("GITHUB_TOKEN", "ghp"),
+                // Host-owned engine controls: the parent's values must never leak in.
+                ("OPENCODE_PERMISSION", "{\"bash\":\"allow\"}"),
+                ("OPENCODE_SERVER_PASSWORD", "hunter2"),
+                ("OPENCODE_CONFIG_CONTENT", "{}"),
             ]),
             &[],
         )
@@ -254,11 +270,15 @@ mod tests {
         // The user's own terminal type is kept; no CI-style values are forced on.
         assert_eq!(get("TERM"), Some("xterm-256color"));
         assert_eq!(get("RANDOM_THING"), Some("x"));
-        assert!(env.get(&OsString::from("CI")).is_none());
-        assert!(env.get(&OsString::from("NO_COLOR")).is_none());
+        assert!(!env.contains_key(&OsString::from("CI")));
+        assert!(!env.contains_key(&OsString::from("NO_COLOR")));
         // Secrets are still stripped.
-        assert!(env.get(&OsString::from("ANTHROPIC_API_KEY")).is_none());
-        assert!(env.get(&OsString::from("GITHUB_TOKEN")).is_none());
+        assert!(!env.contains_key(&OsString::from("ANTHROPIC_API_KEY")));
+        assert!(!env.contains_key(&OsString::from("GITHUB_TOKEN")));
+        // Host-owned engine controls never leak in from the parent.
+        assert!(!env.contains_key(&OsString::from("OPENCODE_PERMISSION")));
+        assert!(!env.contains_key(&OsString::from("OPENCODE_SERVER_PASSWORD")));
+        assert!(!env.contains_key(&OsString::from("OPENCODE_CONFIG_CONTENT")));
     }
 
     #[test]
