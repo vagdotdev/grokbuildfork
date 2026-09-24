@@ -779,7 +779,7 @@ pub struct RemoteSettings {
     pub crash_handler_enabled: Option<bool>,
     /// Whether the TUI shows agent thinking/reasoning blocks in scrollback.
     /// `None` defers to local config, env, then the default (`true`); `Some(false)` is a remote kill-switch.
-    /// `resolve_show_thinking_blocks` resolves it: requirements, env, user, managed, remote, then the default (true).
+    /// `resolve_show_thinking_blocks` resolves it: requirements, env, user, managed, remote, then the default (false).
     #[serde(default)]
     pub show_thinking_blocks: Option<bool>,
     /// Whether the TUI folds runs of consecutive non-destructive tool calls (reads, searches, lists) into one transcript row.
