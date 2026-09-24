@@ -58,10 +58,10 @@ pub use state::{clear_quarantine, quarantine_flag};
 pub type LogSink = Arc<dyn Fn(&str) + Send + Sync>;
 
 use crate::adapter::{Adapter, AdapterId, PermissionPolicy, PinStatus, Terminal};
-use crate::detect::InstalledCli;
 use crate::event::AdapterEvent;
 use crate::supervisor::RunOutcome;
 use crate::vendors::OpenCodeAdapter;
+use workshop_detect::Identity;
 
 /// Answer to a [`PermissionRequest`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -345,12 +345,12 @@ fn parse_listening_line(line: &str) -> Option<SocketAddr> {
 
 impl OpenCodeEngine {
     /// Spawn `opencode serve` for `opts.workspace` and wait until it is healthy.
-    pub async fn start(cli: &InstalledCli, opts: EngineOptions) -> Result<Self, EngineError> {
-        if cli.adapter != AdapterId::OpenCode {
-            return Err(EngineError::NotOpenCode(cli.adapter));
+    pub async fn start(cli: &Identity, opts: EngineOptions) -> Result<Self, EngineError> {
+        if cli.vendor != AdapterId::OpenCode {
+            return Err(EngineError::NotOpenCode(cli.vendor));
         }
         let pin = OpenCodeAdapter.version_pin();
-        match cli.pin {
+        match pin.classify(&cli.version) {
             PinStatus::OlderThanSupported => {
                 return Err(EngineError::UnsupportedVersion {
                     version: cli.version.clone(),

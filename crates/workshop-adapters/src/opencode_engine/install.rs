@@ -13,9 +13,10 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use workshop_detect::process::strip_ansi;
+use workshop_detect::{DetectConfig, Detection, Identity, Vendor};
+
 use crate::adapter::Adapter;
-use crate::detect::{DetectOptions, Detection, InstalledCli, detect, verify_binary};
-use crate::probe::run_probe;
 use crate::vendors::OpenCodeAdapter;
 
 pub const OFFICIAL_INSTALLER_URL: &str = "https://opencode.ai/install";
@@ -175,7 +176,7 @@ fn path_without(path: &OsString, binary: &str) -> OsString {
 }
 
 /// Run the official installer and verify the result.
-pub async fn install_opencode(opts: &InstallOptions) -> Result<InstalledCli, InstallError> {
+pub async fn install_opencode(opts: &InstallOptions) -> Result<Identity, InstallError> {
     let mut env = match &opts.env {
         Some(env) => crate::env::minimal_env(env.clone(), &[])?,
         None => crate::env::minimal_env_from_process(&[])?,
@@ -231,24 +232,46 @@ pub async fn install_opencode(opts: &InstallOptions) -> Result<InstalledCli, Ins
             }
         })
     });
-    let output = run_probe(&bash, &["-c", &script], &env, Some(&home), opts.timeout).await;
+    // The same bounded, process-grouped runner the detection stack uses for its probes.
+    let installer_env: Vec<(OsString, OsString)> =
+        env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let (bash_path, script_owned, home_dir, timeout) =
+        (bash.clone(), script.clone(), home.clone(), opts.timeout);
+    let output = tokio::task::spawn_blocking(move || {
+        workshop_detect::process::run(
+            &bash_path,
+            &["-c", &script_owned],
+            Some(&home_dir),
+            &installer_env,
+            timeout,
+        )
+    })
+    .await;
     if let Some(poll) = progress_poll {
         poll.abort();
     }
-    let output = output.map_err(|e| match e {
-        crate::probe::ProbeError::Timeout { timeout, .. } => InstallError::Timeout(timeout),
-        other => InstallError::InstallerFailed {
-            exit_code: None,
-            stderr: other.to_string(),
-        },
-    })?;
+    let output = match output {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => {
+            return Err(InstallError::InstallerFailed {
+                exit_code: None,
+                stderr: e.to_string(),
+            });
+        }
+        Err(e) => {
+            return Err(InstallError::InstallerFailed {
+                exit_code: None,
+                stderr: format!("installer task failed: {e}"),
+            });
+        }
+    };
+    if output.timed_out {
+        return Err(InstallError::Timeout(opts.timeout));
+    }
     if !output.success() {
         return Err(InstallError::InstallerFailed {
-            exit_code: output.exit_code,
-            stderr: crate::probe::strip_ansi(&output.stderr)
-                .chars()
-                .take(800)
-                .collect(),
+            exit_code: output.code,
+            stderr: strip_ansi(&output.stderr).chars().take(800).collect(),
         });
     }
 
@@ -268,7 +291,7 @@ pub async fn install_opencode(opts: &InstallOptions) -> Result<InstalledCli, Ins
         })?;
     }
     if !path.is_file() {
-        let combined = crate::probe::strip_ansi(&format!("{}\n{}", output.stdout, output.stderr));
+        let combined = strip_ansi(&format!("{}\n{}", output.stdout, output.stderr));
         let tail: String = combined
             .lines()
             .rfind(|l| !l.trim().is_empty())
@@ -277,7 +300,7 @@ pub async fn install_opencode(opts: &InstallOptions) -> Result<InstalledCli, Ins
             .take(400)
             .collect();
         return Err(InstallError::InstallerFailed {
-            exit_code: output.exit_code,
+            exit_code: output.code,
             stderr: format!("finished without writing `{}`: {tail}", path.display()),
         });
     }
@@ -286,16 +309,25 @@ pub async fn install_opencode(opts: &InstallOptions) -> Result<InstalledCli, Ins
     // no attribute, but some configurations do; strip it before the first spawn the way
     // scripts/install.sh strips it for `workshop` itself. Idempotent, no-op off macOS.
     super::state::clear_quarantine(&path);
-    let cli = verify_binary(
-        &OpenCodeAdapter,
-        &path,
-        &verify_env,
-        Duration::from_secs(60),
-    )
+    // The detection stack's own identity check, with the caller's locations on top of the
+    // minimal environment.
+    let identify_cfg = DetectConfig {
+        timeout: Duration::from_secs(60),
+        extra_env: verify_env.into_iter().collect(),
+        ..DetectConfig::default()
+    };
+    let verify_path = path.clone();
+    let cli = tokio::task::spawn_blocking(move || {
+        workshop_detect::identify(Vendor::OpenCode, &verify_path, &identify_cfg)
+    })
     .await
-    .map_err(|reason| InstallError::Unverified {
+    .map_err(|e| InstallError::Unverified {
         path: path.clone(),
-        reason,
+        reason: format!("verification task failed: {e}"),
+    })?
+    .map_err(|e| InstallError::Unverified {
+        path: path.clone(),
+        reason: e.to_string(),
     })?;
     if cli.version != version {
         return Err(InstallError::VersionMismatch {
@@ -307,35 +339,31 @@ pub async fn install_opencode(opts: &InstallOptions) -> Result<InstalledCli, Ins
     Ok(cli)
 }
 
-/// Detect `opencode` without installing: PATH, the vendor's known dirs, and the Workshop tools
-/// tree (a previous auto-install is found first). `install` only names the target dir to search.
+/// Detect `opencode` without installing: PATH, the Workshop tools tree (a previous auto-install
+/// is found before any other copy), then the vendor's known dirs — through the detection stack
+/// the picker uses. `install` only names the target dir to search.
 pub async fn detect_opencode(
-    detect_opts: &DetectOptions,
+    detect_cfg: &DetectConfig,
     install: Option<&InstallOptions>,
 ) -> Detection {
-    let mut opts = detect_opts.clone();
-    let mut known = opts
-        .known_dirs
-        .clone()
-        .unwrap_or_else(|| crate::detect::default_known_dirs(opts.home_dir().as_deref()));
-    if let Some(InstallOptions { target, .. }) = install
-        && let Some(bin) = target.bin_dir()
-    {
-        known.insert(0, bin);
-    } else if let Some(bin) = InstallTarget::Home(workshop_tools_dir().join("opencode")).bin_dir() {
-        known.insert(0, bin);
+    let mut cfg = detect_cfg.clone();
+    let tools_bin = match install {
+        Some(InstallOptions { target, .. }) => target.bin_dir(),
+        None => InstallTarget::Home(workshop_tools_dir().join("opencode")).bin_dir(),
+    };
+    if let Some(bin) = tools_bin {
+        cfg.preferred_dirs.insert(0, bin);
     }
-    opts.known_dirs = Some(known);
-    detect(&OpenCodeAdapter, &opts).await
+    crate::detect(&OpenCodeAdapter, &cfg).await
 }
 
 /// Detect `opencode`, optionally installing it when absent. Also searches the
 /// Workshop tools tree so a previous auto-install is found first.
 pub async fn ensure_opencode(
-    detect_opts: &DetectOptions,
+    detect_cfg: &DetectConfig,
     install: Option<&InstallOptions>,
-) -> Result<InstalledCli, InstallError> {
-    match detect_opencode(detect_opts, install).await {
+) -> Result<Identity, InstallError> {
+    match detect_opencode(detect_cfg, install).await {
         Detection::Installed(cli) => Ok(cli),
         Detection::Unverified { path, reason } => Err(InstallError::Impostor { path, reason }),
         Detection::NotInstalled => match install {

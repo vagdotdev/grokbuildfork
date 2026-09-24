@@ -39,6 +39,52 @@ impl VendorProbe {
     pub fn ready(&self) -> bool {
         self.installed() && matches!(self.login, Some(LoginState::LoggedIn))
     }
+
+    /// The one answer a caller that wants to *run* the CLI needs: the verified binary, else the
+    /// first same-named executable that failed verification, else nothing. The picker's vendor
+    /// rows and the adapters' turns read the same probe, so they can never disagree.
+    pub fn detection(&self) -> Detection {
+        match (&self.binary, self.rejected.first()) {
+            (Some(id), _) => Detection::Installed(id.clone()),
+            (None, Some(rejected)) => Detection::Unverified {
+                path: rejected.path.clone(),
+                reason: rejected.reason.clone(),
+            },
+            (None, None) => Detection::NotInstalled,
+        }
+    }
+}
+
+/// What a probe found for the caller that runs the CLI (see [`VendorProbe::detection`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum Detection {
+    Installed(Identity),
+    /// A same-named executable exists but did not identify as this vendor.
+    Unverified {
+        path: PathBuf,
+        reason: String,
+    },
+    NotInstalled,
+}
+
+impl Detection {
+    pub fn installed(&self) -> Option<&Identity> {
+        match self {
+            Detection::Installed(id) => Some(id),
+            _ => None,
+        }
+    }
+}
+
+/// Locate and verify `vendor`'s CLI without asking its status command: the detection the
+/// adapters use before a turn. Same locate → identify path as [`probe_vendor`].
+pub fn detect_vendor(vendor: Vendor, cfg: &DetectConfig) -> Detection {
+    let cfg = DetectConfig {
+        check_login: false,
+        ..cfg.clone()
+    };
+    probe_vendor(vendor, &cfg).detection()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -4,10 +4,8 @@
 //! `claude auth status --help`) and the `SDKMessage` types shipped in
 //! `@anthropic-ai/claude-agent-sdk` 0.3.278 (`sdk.d.ts`).
 //!
-//! * identity: `claude --version` -> `2.1.278 (Claude Code)`
-//! * status:   `claude auth status --json` -> `{"loggedIn": bool, "authMethod": ...}`
-//!   (exit 1 when logged out). Workshop never reads `~/.claude`.
-//! * login:    `claude auth login` in the user's terminal.
+//! * identity, status, login: `workshop-detect` (the one detection stack, shared with the
+//!   picker) verifies the binary, asks the official status command and runs the login.
 //! * run:      `claude -p --output-format stream-json --verbose --include-partial-messages
 //!   --input-format stream-json --permission-prompt-tool stdio --permission-mode <mode>
 //!   [--model M] [--resume ID]`; the prompt is a `user` message line on stdin, which stays
@@ -45,68 +43,11 @@ impl Adapter for ClaudeAdapter {
         AdapterId::Claude
     }
 
-    fn binary_names(&self) -> &'static [&'static str] {
-        &["claude"]
-    }
-
-    fn extra_install_dirs(&self, home: &Path) -> Vec<PathBuf> {
-        // Older native installer location; the current one is ~/.local/bin.
-        vec![home.join(".claude/local")]
-    }
-
-    fn identity_probes(&self) -> &'static [&'static [&'static str]] {
-        &[&["--version"]]
-    }
-
-    fn identify(&self, outputs: &[ProbeOutput]) -> Option<String> {
-        let out = outputs.first()?;
-        let line = out.stdout.lines().next()?.trim();
-        let version = line.strip_suffix("(Claude Code)")?.trim();
-        (!version.is_empty() && version.chars().next()?.is_ascii_digit())
-            .then(|| version.to_string())
-    }
-
     fn version_pin(&self) -> VersionPin {
         VersionPin {
             min_supported: "2.1.278",
             max_tested: "2.1.281",
         }
-    }
-
-    fn status_args(&self) -> &'static [&'static str] {
-        &["auth", "status", "--json"]
-    }
-
-    fn interpret_status(&self, output: &ProbeOutput) -> LoginState {
-        let Ok(v) = serde_json::from_str::<Value>(output.stdout.trim()) else {
-            return LoginState::Unknown {
-                reason: format!(
-                    "`claude auth status --json` did not print JSON (exit {:?})",
-                    output.exit_code
-                ),
-            };
-        };
-        match json::bool_of(&v, "loggedIn") {
-            Some(true) => LoginState::Ready {
-                method: Some(match json::str(&v, "authMethod") {
-                    Some("claude.ai") => "Claude account".to_string(),
-                    Some("console") | Some("apiKey") => "API key".to_string(),
-                    _ => "Signed in".to_string(),
-                }),
-            },
-            Some(false) => LoginState::SignIn,
-            None => LoginState::Unknown {
-                reason: "`loggedIn` missing from auth status".to_string(),
-            },
-        }
-    }
-
-    fn login_args(&self) -> &'static [&'static str] {
-        &["auth", "login"]
-    }
-
-    fn logout_args(&self) -> &'static [&'static str] {
-        &["auth", "logout"]
     }
 
     fn prompt_delivery(&self) -> PromptDelivery {
@@ -667,53 +608,6 @@ pub(crate) fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn identifies_only_claude_code() {
-        let a = ClaudeAdapter;
-        let ok = ProbeOutput {
-            stdout: "2.1.278 (Claude Code)\n".into(),
-            ..Default::default()
-        };
-        assert_eq!(a.identify(&[ok]), Some("2.1.278".to_string()));
-        let other = ProbeOutput {
-            stdout: "claude 1.0 (something else)\n".into(),
-            ..Default::default()
-        };
-        assert_eq!(a.identify(&[other]), None);
-    }
-
-    #[test]
-    fn status_json_maps_to_login_state() {
-        let a = ClaudeAdapter;
-        let out = ProbeOutput {
-            stdout: r#"{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty"}"#
-                .into(),
-            exit_code: Some(1),
-            ..Default::default()
-        };
-        assert_eq!(a.interpret_status(&out), LoginState::SignIn);
-        let out = ProbeOutput {
-            stdout: r#"{"loggedIn": true, "authMethod": "claude.ai", "email": "x@y"}"#.into(),
-            exit_code: Some(0),
-            ..Default::default()
-        };
-        assert_eq!(
-            a.interpret_status(&out),
-            LoginState::Ready {
-                method: Some("Claude account".into())
-            }
-        );
-        let out = ProbeOutput {
-            stdout: "Not logged in. Run claude auth login".into(),
-            exit_code: Some(1),
-            ..Default::default()
-        };
-        assert!(matches!(
-            a.interpret_status(&out),
-            LoginState::Unknown { .. }
-        ));
-    }
 
     #[test]
     fn pinned_run_flags() {

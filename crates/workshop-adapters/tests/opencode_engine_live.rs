@@ -18,7 +18,7 @@ use workshop_adapters::opencode_engine::{
 };
 use workshop_adapters::vendors::OpenCodeAdapter;
 use workshop_adapters::{
-    AdapterEvent, DetectOptions, Detection, PermissionPolicy, RunOutcome, detect,
+    AdapterEvent, DetectConfig, Detection, PermissionPolicy, RunOutcome, detect,
 };
 
 fn gated() -> bool {
@@ -88,8 +88,7 @@ async fn live_free_tier_turn_with_tool_call_cancel_and_resume() {
     if !gated() {
         return;
     }
-    let Detection::Installed(cli) = detect(&OpenCodeAdapter, &DetectOptions::default()).await
-    else {
+    let Detection::Installed(cli) = detect(&OpenCodeAdapter, &DetectConfig::default()).await else {
         eprintln!("[live] opencode not installed; skipping");
         return;
     };

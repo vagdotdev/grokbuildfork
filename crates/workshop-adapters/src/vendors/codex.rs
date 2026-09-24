@@ -5,10 +5,8 @@
 //! `codex-rs/exec/src/exec_events.rs` + `codex-rs/cli/src/login.rs` at tags
 //! `rust-v0.155.1` / `rust-v0.156.1`.
 //!
-//! * identity: `codex --version` -> `codex-cli 0.155.1`
-//! * status:   `codex login status` -> stderr `Logged in using ChatGPT` (exit 0)
-//!   or `Not logged in` (exit 1). Workshop never reads `~/.codex/auth.json`.
-//! * login:    `codex login` in the user's terminal.
+//! * identity, status, login: `workshop-detect` (the one detection stack, shared with the
+//!   picker) verifies the binary, asks the official status command and runs the login.
 //! * run:      `codex exec --json -s <sandbox> --skip-git-repo-check [-m M] -`
 //!   (prompt on stdin via the `-` sentinel). Headless exec never asks for
 //!   approvals (`AskForApproval::Never`), so the sandbox flag is the policy:
@@ -28,8 +26,8 @@ use serde_json::{Value, json};
 use super::claude::truncate;
 use super::{json, tool};
 use crate::adapter::{
-    Adapter, AdapterId, LoginState, NormalizeError, Normalizer, PermissionPolicy, ProbeOutput,
-    PromptDelivery, RunRequest, Terminal, VersionPin,
+    Adapter, AdapterId, NormalizeError, Normalizer, PermissionPolicy, PromptDelivery, RunRequest,
+    Terminal, VersionPin,
 };
 use crate::event::{AdapterEvent, Usage};
 
@@ -77,77 +75,11 @@ impl Adapter for CodexAdapter {
         AdapterId::Codex
     }
 
-    fn binary_names(&self) -> &'static [&'static str] {
-        &["codex"]
-    }
-
-    fn extra_install_dirs(&self, home: &Path) -> Vec<PathBuf> {
-        vec![home.join(".npm-global/bin")]
-    }
-
-    fn identity_probes(&self) -> &'static [&'static [&'static str]] {
-        &[&["--version"]]
-    }
-
-    fn identify(&self, outputs: &[ProbeOutput]) -> Option<String> {
-        let line = outputs.first()?.stdout.lines().next()?.trim();
-        let version = line.strip_prefix("codex-cli ")?.trim();
-        (!version.is_empty() && version.chars().next()?.is_ascii_digit())
-            .then(|| version.to_string())
-    }
-
     fn version_pin(&self) -> VersionPin {
         VersionPin {
             min_supported: "0.155.1",
             max_tested: "0.156.1",
         }
-    }
-
-    fn status_args(&self) -> &'static [&'static str] {
-        &["login", "status"]
-    }
-
-    fn interpret_status(&self, output: &ProbeOutput) -> LoginState {
-        let text = format!("{}\n{}", output.stderr, output.stdout);
-        let first = text
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .unwrap_or("");
-        if output.success() && first.starts_with("Logged in using") {
-            // Only a fixed label leaves this function; the API-key variant of
-            // this line includes a partially masked key.
-            let method = if first.contains("ChatGPT") {
-                "ChatGPT"
-            } else if first.contains("API key") {
-                "API key"
-            } else if first.contains("workload identity") {
-                "Workload identity"
-            } else {
-                "Access token"
-            };
-            LoginState::Ready {
-                method: Some(method.to_string()),
-            }
-        } else if first.starts_with("Not logged in") {
-            LoginState::SignIn
-        } else {
-            LoginState::Unknown {
-                reason: format!(
-                    "`codex login status` exit {:?}: {}",
-                    output.exit_code,
-                    truncate(first, 120)
-                ),
-            }
-        }
-    }
-
-    fn login_args(&self) -> &'static [&'static str] {
-        &["login"]
-    }
-
-    fn logout_args(&self) -> &'static [&'static str] {
-        &["logout"]
     }
 
     fn prompt_delivery(&self) -> PromptDelivery {
@@ -412,56 +344,6 @@ impl Normalizer for CodexNormalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn identifies_codex_cli() {
-        let a = CodexAdapter;
-        let ok = ProbeOutput {
-            stdout: "codex-cli 0.155.1\n".into(),
-            ..Default::default()
-        };
-        assert_eq!(a.identify(&[ok]), Some("0.155.1".to_string()));
-        let other = ProbeOutput {
-            stdout: "0.155.1\n".into(),
-            ..Default::default()
-        };
-        assert_eq!(a.identify(&[other]), None);
-    }
-
-    #[test]
-    fn status_text_maps_without_leaking_key() {
-        let a = CodexAdapter;
-        let out = ProbeOutput {
-            stderr: "Not logged in\n".into(),
-            exit_code: Some(1),
-            ..Default::default()
-        };
-        assert_eq!(a.interpret_status(&out), LoginState::SignIn);
-        let out = ProbeOutput {
-            stderr: "Logged in using ChatGPT\n".into(),
-            exit_code: Some(0),
-            ..Default::default()
-        };
-        assert_eq!(
-            a.interpret_status(&out),
-            LoginState::Ready {
-                method: Some("ChatGPT".into())
-            }
-        );
-        let out = ProbeOutput {
-            stderr: "Logged in using an API key - sk-proj-abc***xyz\n".into(),
-            exit_code: Some(0),
-            ..Default::default()
-        };
-        let state = a.interpret_status(&out);
-        assert_eq!(
-            state,
-            LoginState::Ready {
-                method: Some("API key".into())
-            }
-        );
-        assert!(!format!("{state:?}").contains("sk-proj"));
-    }
 
     #[test]
     fn pinned_run_and_resume_flags() {

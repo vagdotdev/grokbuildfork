@@ -60,6 +60,12 @@ impl Vendor {
     }
 }
 
+impl std::fmt::Display for Vendor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.id())
+    }
+}
+
 /// Subscription rails, in the order the picker shows them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

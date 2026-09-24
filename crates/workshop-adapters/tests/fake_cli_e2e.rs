@@ -1,5 +1,6 @@
 //! detect -> status -> spawn -> stream -> cancel, end to end against fake
-//! vendor CLIs that replay each vendor's real stream shapes.
+//! vendor CLIs that replay each vendor's real stream shapes. Detection and
+//! login state come from `workshop-detect`, the stack the picker uses too.
 
 #![cfg(unix)]
 
@@ -11,9 +12,10 @@ use common::{ALL, CLAUDE, CODEX, CURSOR, FakeVendor, OPENCODE, Sandbox};
 use serde_json::json;
 use workshop_adapters::vendors;
 use workshop_adapters::{
-    AdapterEvent, Detection, InstalledCli, LoginState, PermissionPolicy, PinStatus, RailPill,
-    RunOutcome, RunRequest, SpawnError, Usage, detect, probe_login, rail_status, spawn,
+    AdapterEvent, Detection, InstalledCli, PermissionPolicy, PinStatus, RunOutcome, RunRequest,
+    SpawnError, Usage, detect, spawn,
 };
+use workshop_detect::{LoginState, Pill, Rail, RailModels, probe_vendor, rail_state};
 
 const CLAUDE_SUCCESS: &str = include_str!("fixtures/claude_success.jsonl");
 const CLAUDE_ASK: &str = include_str!("fixtures/claude_ask.jsonl");
@@ -27,7 +29,7 @@ const OPENCODE_ERROR: &str = include_str!("fixtures/opencode_error.jsonl");
 
 async fn detect_installed(sandbox: &Sandbox, vendor: &FakeVendor) -> InstalledCli {
     let adapter = vendors::by_id(vendor.id);
-    match detect(adapter.as_ref(), &sandbox.detect_options()).await {
+    match detect(adapter.as_ref(), &sandbox.detect_config()).await {
         Detection::Installed(cli) => cli,
         other => panic!("{}: expected Installed, got {other:?}", vendor.id),
     }
@@ -74,21 +76,24 @@ async fn detects_every_fake_vendor_on_path() {
     }
     for vendor in ALL {
         let cli = detect_installed(&sandbox, vendor).await;
-        assert_eq!(cli.adapter, vendor.id);
+        assert_eq!(cli.vendor, vendor.id);
         assert_eq!(cli.path, sandbox.bin().join(vendor.binary));
-        assert_eq!(cli.pin, PinStatus::Tested, "{}: {}", vendor.id, cli.version);
+        let pin = vendors::by_id(vendor.id)
+            .version_pin()
+            .classify(&cli.version);
+        assert_eq!(pin, PinStatus::Tested, "{}: {}", vendor.id, cli.version);
     }
 }
 
 #[tokio::test]
-async fn detects_in_known_dirs_when_not_on_path() {
+async fn detects_in_preferred_dirs_when_not_on_path() {
     let sandbox = Sandbox::new();
     let known = sandbox.root.path().join("opt-homebrew-bin");
     sandbox.install_as(&known, &CODEX, "codex");
-    let mut opts = sandbox.detect_options();
-    opts.path_env = Some("/nonexistent".into());
-    opts.known_dirs = Some(vec![known.clone()]);
-    match detect(vendors::by_id(CODEX.id).as_ref(), &opts).await {
+    let mut cfg = sandbox.detect_config();
+    cfg.search_path = Some("/nonexistent".into());
+    cfg.preferred_dirs = vec![known.clone()];
+    match detect(vendors::by_id(CODEX.id).as_ref(), &cfg).await {
         Detection::Installed(cli) => assert_eq!(cli.path, known.join("codex")),
         other => panic!("expected Installed, got {other:?}"),
     }
@@ -98,38 +103,31 @@ async fn detects_in_known_dirs_when_not_on_path() {
 async fn missing_binary_is_not_installed() {
     let sandbox = Sandbox::new();
     for vendor in ALL {
-        let d = detect(
-            vendors::by_id(vendor.id).as_ref(),
-            &sandbox.detect_options(),
-        )
-        .await;
+        let d = detect(vendors::by_id(vendor.id).as_ref(), &sandbox.detect_config()).await;
         assert_eq!(d, Detection::NotInstalled, "{}", vendor.id);
     }
 }
 
+/// The adapters and the picker read one probe: what `detect` calls Unverified, the picker's
+/// vendor row calls not installed.
 #[tokio::test]
 async fn unrelated_agent_binary_is_not_cursor() {
     let sandbox = Sandbox::new();
     let impostor = sandbox.install_impostor("agent");
-    let d = detect(
-        vendors::by_id(CURSOR.id).as_ref(),
-        &sandbox.detect_options(),
-    )
-    .await;
+    let cfg = sandbox.detect_config();
+    let d = detect(vendors::by_id(CURSOR.id).as_ref(), &cfg).await;
     match &d {
         Detection::Unverified { path, reason } => {
             assert_eq!(*path, impostor);
-            assert!(
-                reason.contains("did not identify itself as Cursor"),
-                "{reason}"
-            );
+            assert!(reason.contains("not Cursor Agent"), "{reason}");
         }
         other => panic!("expected Unverified, got {other:?}"),
     }
-    // The rail treats it as not installed.
-    let rail = rail_status(CURSOR.id, Some(&d), None, false);
+    let probe = probe_vendor(Rail::Cursor.vendor(), &cfg);
+    assert_eq!(probe.detection(), d, "one probe, one answer");
+    let rail = rail_state(Rail::Cursor, &probe, RailModels::NotReady);
     assert!(!rail.installed);
-    assert_eq!(rail.pill, RailPill::SignIn);
+    assert_eq!(rail.pill, Pill::Install);
 }
 
 #[tokio::test]
@@ -158,7 +156,12 @@ async fn old_version_is_detected_but_refused_at_spawn() {
     };
     sandbox.install(&old);
     let cli = detect_installed(&sandbox, &old).await;
-    assert_eq!(cli.pin, PinStatus::OlderThanSupported);
+    assert_eq!(
+        vendors::by_id(CLAUDE.id)
+            .version_pin()
+            .classify(&cli.version),
+        PinStatus::OlderThanSupported
+    );
     let err = spawn(
         vendors::by_id(CLAUDE.id).as_ref(),
         &cli,
@@ -176,34 +179,30 @@ async fn old_version_is_detected_but_refused_at_spawn() {
 
 // ------------------------------------------------------------------- status
 
+/// Login state is the detection stack's: the same probe the picker's vendor rows read.
 #[tokio::test]
 async fn status_reports_sign_in_then_ready_for_every_vendor() {
     let sandbox = Sandbox::new();
     for vendor in ALL {
         sandbox.install(vendor);
     }
-    let env = sandbox.probe_env();
+    let cfg = sandbox.detect_config();
     for vendor in ALL {
-        let adapter = vendors::by_id(vendor.id);
         let cli = detect_installed(&sandbox, vendor).await;
 
         sandbox.set_logged_in(false);
-        let state = probe_login(adapter.as_ref(), &cli, Some(&env), Duration::from_secs(10)).await;
-        assert_eq!(state, LoginState::SignIn, "{}", vendor.id);
-        let d = Detection::Installed(cli.clone());
-        let rail = rail_status(vendor.id, Some(&d), Some(&state), false);
-        assert_eq!(rail.pill, RailPill::SignIn);
-        assert!(rail.installed && rail.show_connect);
+        let probe = probe_vendor(vendor.id, &cfg);
+        assert_eq!(probe.binary.as_ref(), Some(&cli), "{}", vendor.id);
+        assert_eq!(probe.login, Some(LoginState::LoggedOut), "{}", vendor.id);
 
         sandbox.set_logged_in(true);
-        let state = probe_login(adapter.as_ref(), &cli, Some(&env), Duration::from_secs(10)).await;
-        assert!(
-            matches!(state, LoginState::Ready { .. }),
-            "{}: {state:?}",
-            vendor.id
-        );
-        let rail = rail_status(vendor.id, Some(&d), Some(&state), false);
-        assert_eq!(rail.pill, RailPill::Ready);
+        let probe = probe_vendor(vendor.id, &cfg);
+        assert_eq!(probe.login, Some(LoginState::LoggedIn), "{}", vendor.id);
+        if let Some(rail) = Rail::ALL.iter().find(|r| r.vendor() == vendor.id) {
+            let state = rail_state(*rail, &probe, RailModels::Loading);
+            assert_eq!(state.pill, Pill::Ready);
+            assert!(state.installed);
+        }
     }
 }
 

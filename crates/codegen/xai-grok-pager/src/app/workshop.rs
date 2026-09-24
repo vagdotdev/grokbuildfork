@@ -29,9 +29,10 @@ use workshop_adapters::opencode_engine::{
 use crate::app::workshop_engine_state::{self as state, EngineState};
 use workshop_adapters::supervisor::{RunHandle, SupervisorOptions, spawn};
 use workshop_adapters::{
-    AdapterEvent, AdapterId, AskReply, DetectOptions, Detection, PermissionPolicy, Replier,
-    RunRequest, Usage, detect, question_answers_prompt,
+    AdapterEvent, AdapterId, AskReply, Detection, PermissionPolicy, Replier, RunRequest, Usage,
+    detect, question_answers_prompt,
 };
+use workshop_detect::DetectConfig;
 use workshop_auth::{ENGINE_PROVIDER_ID, EngineModel, PickerSnapshot, models_rows};
 use workshop_providers::catalog::live::{self as live_catalogs, HostedCatalogs};
 use workshop_providers::{
@@ -1497,7 +1498,7 @@ async fn start_engine(
         })),
         ..InstallOptions::default()
     };
-    let detect_opts = DetectOptions::default();
+    let detect_opts = DetectConfig::default();
     let run_installer = |st: &mut EngineState, log: &Path| {
         st.last_phase = Some("install".into());
         st.save(&home);
@@ -2120,7 +2121,7 @@ async fn detect_adapter_cli(adapter: &dyn workshop_adapters::Adapter) -> Detecti
     {
         return Detection::Installed(verified.cli);
     }
-    let detection = detect(adapter, &DetectOptions::default()).await;
+    let detection = detect(adapter, &DetectConfig::default()).await;
     if let Detection::Installed(cli) = &detection
         && let Ok(mut cache) = ADAPTER_CLI_CACHE.lock()
     {
@@ -2683,14 +2684,10 @@ async fn wait_cancelled(cancel_rx: &mut watch::Receiver<bool>) {
     }
 }
 
-/// Map a subscription rail to its `workshop-adapters` CLI adapter id.
+/// Map a subscription rail to its CLI adapter id: the adapters share the detection stack's
+/// vendor identity, so a rail's vendor *is* its adapter.
 pub fn rail_adapter_id(rail: workshop_detect::Rail) -> AdapterId {
-    match rail.vendor() {
-        workshop_detect::Vendor::Claude => AdapterId::Claude,
-        workshop_detect::Vendor::Codex => AdapterId::Codex,
-        workshop_detect::Vendor::Cursor => AdapterId::Cursor,
-        workshop_detect::Vendor::OpenCode => AdapterId::OpenCode,
-    }
+    rail.vendor()
 }
 
 /// A vendor CLI installer the user started from an `Install` rail, while it runs: one at a time,
