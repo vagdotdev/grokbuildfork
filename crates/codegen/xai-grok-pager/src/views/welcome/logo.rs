@@ -1,26 +1,30 @@
-//! The logo is hidden entirely on legacy Windows consoles: the ConHost raster fonts do not cover the U+2800 braille block, so it renders as tofu.
+//! The welcome logo: Workshop's ASCII donut ([`workshop_brand::donut`]) at the upstream logo grids.
+//!
+//! The hero box spins it (one precomputed frame per slow tick while the welcome screen is up and
+//! focused); every other surface — the stacked narrow layout, the login and consent screens,
+//! minimal's welcome card — paints the resting frame. The logo is hidden entirely on legacy
+//! Windows consoles, as upstream hides its braille art there.
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget};
+use ratatui::layout::{Position, Rect};
+use ratatui::style::Color;
 
 use crate::render::color::blend_color;
 use crate::theme::Theme;
+use workshop_brand::donut::{self, Size};
 
 /// Height at or above which the small logo is shown (below it, no logo).
 const SMALL_LOGO_MIN_HEIGHT: u16 = 22;
 /// Height at or above which the full logo is shown.
 const FULL_LOGO_MIN_HEIGHT: u16 = 26;
-/// Height at or above which the 2x art is shown, when the brand art set carries one (it is 7 rows taller than the full logo).
+/// Height at or above which a 2x art would be shown; the donut ships no 2x tier, so this is never reached.
 const LARGE_LOGO_MIN_HEIGHT: u16 = 33;
 
 /// Which logo art the stacked column shows.
 /// The terminal height picks the tier; the stacked layout steps it down only while the column would not fit beside the draft.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogoTier {
-    /// The 2x art; only reachable while [`workshop_brand::HeroArt::large`] is set.
+    /// A 2x art; the donut has none, so this tier paints nothing and is never chosen.
     Large,
     Full,
     Compact,
@@ -45,31 +49,22 @@ impl LogoTier {
         }
     }
 
-    fn art(self) -> Option<&'static str> {
-        let art = workshop_brand::hero_art();
+    /// The donut grid this tier paints; `None` paints nothing.
+    fn size(self) -> Option<Size> {
         match self {
-            Self::Large => art.large,
-            Self::Full => Some(art.full),
-            Self::Compact => Some(art.compact),
-            Self::Hidden => None,
-        }
-    }
-
-    /// Per-cell shade map for a tonal art; only the large tier carries one.
-    fn shade(self) -> Option<&'static str> {
-        match self {
-            Self::Large => workshop_brand::hero_art().large_shade,
-            _ => None,
+            Self::Full => Some(Size::Full),
+            Self::Compact => Some(Size::Compact),
+            Self::Large | Self::Hidden => None,
         }
     }
 
     pub fn rows(self) -> u16 {
-        self.art().map_or(0, count_lines)
+        self.size().map_or(0, |s| s.rows() as u16)
     }
 
     /// Columns the art spans; 0 when the tier paints nothing.
     pub fn visual_width(self) -> u16 {
-        self.art().map_or(0, visual_width)
+        self.size().map_or(0, |s| s.cols() as u16)
     }
 
     /// The next smaller tier; `None` once hidden.
@@ -93,112 +88,38 @@ pub fn hero_logo_tiers() -> &'static [LogoTier] {
     }
 }
 
-#[cfg(not(test))]
-fn large_enabled() -> bool {
-    workshop_brand::hero_art().large.is_some()
-}
-
-/// Unit tests keep the upstream tier chain (no automatic 2x), so the layout invariants written for the 7-row hero still hold.
-/// The Large tier is exercised explicitly where it matters.
-#[cfg(test)]
+/// The donut ships no 2x art, so the tier chain tops out at the full logo.
 fn large_enabled() -> bool {
     false
 }
 
-fn pick_logo(window_height: u16) -> Option<&'static str> {
+fn pick_logo(window_height: u16) -> Option<Size> {
     pick_logo_for(window_height, logo_hidden())
 }
 
-fn pick_logo_for(window_height: u16, hidden: bool) -> Option<&'static str> {
-    LogoTier::for_height_and_hidden(window_height, hidden, large_enabled()).art()
+fn pick_logo_for(window_height: u16, hidden: bool) -> Option<Size> {
+    LogoTier::for_height_and_hidden(window_height, hidden, large_enabled()).size()
 }
 
-/// The braille art has no ASCII stand-in; see the module doc.
+/// Upstream hides its logo on legacy Windows consoles; the donut keeps that so the welcome layout stays the same there.
 fn logo_hidden() -> bool {
     crate::glyphs::is_legacy_windows_console()
 }
 
-fn non_empty_lines(logo: &str) -> impl Iterator<Item = &str> {
-    logo.lines().filter(|l| !l.is_empty())
+/// Whether this terminal gets the spinning hero at all: a logo to spin, and colour on (no
+/// `NO_COLOR`, no dumb terminal — those read as a request for a quiet screen, and get the
+/// resting frame). The user's `[ui] hero_animation` and the terminal's focus are checked by the
+/// app, the layout by the welcome renderer.
+pub fn hero_animation_supported() -> bool {
+    !logo_hidden() && crate::theme::color_support::detect().has_color()
 }
 
-fn count_lines(logo: &str) -> u16 {
-    non_empty_lines(logo).count() as u16
-}
-
-fn visual_width(logo: &str) -> u16 {
-    non_empty_lines(logo)
-        .map(unicode_width::UnicodeWidthStr::width)
-        .max()
-        .unwrap_or(24) as u16
-}
-
-/// Animation phase in seconds since the first render.
-/// The phase is wall-clock based so the shimmer speed is independent of the frame rate.
-fn anim_phase_secs() -> f32 {
-    use std::sync::OnceLock;
-    use std::time::Instant;
-    static START: OnceLock<Instant> = OnceLock::new();
-    START.get_or_init(Instant::now).elapsed().as_secs_f32()
-}
-
-/// Shimmer redraw cadence in frames per second.
-/// The sweep is slow, so a few fps looks smooth while sparing the long-lived welcome screen from full-rate repaints.
-const SHIMMER_FPS: f32 = 12.0;
-
-/// Seconds for one sweep plus its rest.
-const CYCLE: f32 = 4.0;
-/// Portion of the cycle spent sweeping (~1.3s glint, rest idles).
-const SWEEP_FRAC: f32 = 0.32;
-
-/// Quantized shimmer frame for the current wall-clock phase.
-/// The welcome screen redraws only when this advances: at ~`SHIMMER_FPS` while the band sweeps, and not at all while it rests
-/// (the frame holds one value for the whole rest), so an idle welcome screen paints nothing between glints —
-/// a remote desktop or SSH session sees no traffic from a screen where nothing moves.
-/// The frame is pinned to 0 when the logo is hidden.
-pub fn shimmer_frame() -> u64 {
-    if logo_hidden() {
-        return 0;
-    }
-    shimmer_frame_at(anim_phase_secs())
-}
-
-fn shimmer_frame_at(secs: f32) -> u64 {
-    let in_cycle = secs % CYCLE;
-    if in_cycle / CYCLE < SWEEP_FRAC {
-        (secs * SHIMMER_FPS) as u64
-    } else {
-        // The rest holds the frame the next sweep opens with (its band still parked off-screen).
-        ((secs - in_cycle + CYCLE) * SHIMMER_FPS) as u64
-    }
-}
-
-/// Per-glyph shine opacity in `[0, 1]` at normalized diagonal position `diag` (0 is bottom-left, 1 is top-right) and animation time `secs`.
-/// A raised-cosine band sweeps from bottom-left to top-right and parks off-screen between sweeps, where the art rests at its plain shades.
-/// 0 keeps the resting gray, 1 is full bright.
-fn shine_opacity(diag: f32, secs: f32) -> f32 {
-    const BAND: f32 = 0.38; // half-width of the shine band; wider means a more gradual falloff
-    const SHINE: f32 = 0.33; // peak shine strength
-
-    let p = (secs % CYCLE) / CYCLE;
-    let q = (p / SWEEP_FRAC).min(1.0); // parks the band off-screen during the rest
-    let band_pos = -BAND + q * (1.0 + 2.0 * BAND);
-
-    let d = (diag - band_pos).abs();
-    let shine = if d < BAND {
-        0.5 * (1.0 + (std::f32::consts::PI * d / BAND).cos())
-    } else {
-        0.0
-    };
-    (SHINE * shine).clamp(0.0, 1.0)
-}
-
-/// How far the weak shade sinks from the resting gray toward the background, and the strong shade rises toward the text color.
+/// How far the shadow shade sinks from the resting gray toward the background, and the lit shade rises toward the text color.
 /// Both stay theme-derived so every palette (and polarity) keeps its own contrast.
 const SHADE_WEAK_MIX: f32 = 0.5;
 const SHADE_STRONG_MIX: f32 = 0.55;
 
-/// Resting colors for the three shade levels of a tonal art: weak, mid (the plain logo gray), strong.
+/// Resting colors for three luminance bands: shadow, mid (the plain logo gray), lit.
 fn shade_palette(theme: &Theme) -> [Color; 3] {
     let mid = theme.gray;
     let weak = blend_color(mid, theme.bg_base, SHADE_WEAK_MIX).unwrap_or(mid);
@@ -206,83 +127,69 @@ fn shade_palette(theme: &Theme) -> [Color; 3] {
     [weak, mid, strong]
 }
 
-fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, logo: &str, shade: Option<&str>) {
-    // Light themes paint the dots dark, so flip the portrait to keep it a positive image
-    let dark = theme.is_dark();
-    let ink = (!dark).then(|| workshop_brand::invert(logo));
-    let logo = ink.as_deref().unwrap_or(logo);
-    let lines: Vec<&str> = non_empty_lines(logo).collect();
-    let rows = lines.len().max(1) as f32;
-    let cols = lines
-        .iter()
-        .map(|l| l.chars().count())
-        .max()
-        .unwrap_or(1)
-        .max(1) as f32;
-    let secs = anim_phase_secs();
+/// Theme colour for a ramp level: `.,-` shadow, `~:;` mid gray, `=!*` lit, `#$@` the text colour.
+/// The lit side always carries the most contrast against the canvas, on either polarity.
+fn band_color(level: u8, [weak, mid, strong]: [Color; 3], hilite: Color) -> Color {
+    match level {
+        0..=2 => weak,
+        3..=5 => mid,
+        6..=8 => strong,
+        _ => hilite,
+    }
+}
 
-    // Each glyph rests on its cell's shade (the plain gray without a shade map) and blends toward the bright text color by its shine opacity, so a sheen sweeps across the braille art
-    // A light theme's dots are ink, so a bright cell there carries few, weak dots and a dark cell many, strong ones: the shade levels mirror
-    // Adjacent glyphs that land on the same blended color share one Span to hold down the per-frame allocation
-    let [weak, mid, strong] = shade_palette(theme);
+/// Paint one donut frame with its top-left at the area's top row, centred horizontally.
+fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, frame: &donut::Frame) {
+    let palette = shade_palette(theme);
     let hilite = theme.text_primary;
-    let logo_lines: Vec<Line> = lines
-        .iter()
-        .enumerate()
-        .map(|(row, line)| {
-            let mut spans: Vec<Span> = Vec::new();
-            let mut run = String::new();
-            let mut run_color: Option<Color> = None;
-            for (col, ch) in line.chars().enumerate() {
-                let level = shade.map_or(1, |s| workshop_brand::shade_level(s, row, col));
-                let base = match (dark, level) {
-                    (true, 0) | (false, 2) => weak,
-                    (true, 2) | (false, 0) => strong,
-                    _ => mid,
-                };
-                // Sweep along the diagonal from bottom-left to top-right: the coordinate grows as col increases and row decreases
-                let diag = (col as f32 + (rows - 1.0 - row as f32)) / (cols + rows);
-                let color = blend_color(base, hilite, shine_opacity(diag, secs)).unwrap_or(base);
-                if run_color != Some(color) {
-                    if let Some(prev) = run_color {
-                        spans.push(Span::styled(
-                            std::mem::take(&mut run),
-                            Style::default().fg(prev),
-                        ));
-                    }
-                    run_color = Some(color);
+    let size = frame.size();
+    let cols = (size.cols() as u16).min(area.width);
+    let rows = (size.rows() as u16).min(area.height);
+    let x0 = area.x + area.width.saturating_sub(cols) / 2;
+    for row in 0..rows {
+        for col in 0..cols {
+            let Some(cell) = buf.cell_mut(Position::new(x0 + col, area.y + row)) else {
+                continue;
+            };
+            match frame.level(usize::from(row), usize::from(col)) {
+                Some(level) => {
+                    cell.set_char(frame.glyph(usize::from(row), usize::from(col)))
+                        .set_fg(band_color(level, palette, hilite));
                 }
-                run.push(ch);
+                None => {
+                    cell.set_char(' ');
+                }
             }
-            if let Some(prev) = run_color {
-                spans.push(Span::styled(run, Style::default().fg(prev)));
-            }
-            Line::from(spans).alignment(Alignment::Center)
-        })
-        .collect();
-    Paragraph::new(logo_lines).render(area, buf);
+        }
+    }
 }
 
 pub fn logo_line_count(window_height: u16) -> u16 {
-    pick_logo(window_height).map_or(0, count_lines)
+    pick_logo(window_height).map_or(0, |s| s.rows() as u16)
 }
 
 pub fn logo_visual_width(window_height: u16) -> u16 {
-    pick_logo(window_height).map_or(24, visual_width)
+    pick_logo(window_height).map_or(24, |s| s.cols() as u16)
 }
 
+/// The resting logo for the terminal height (login and consent screens).
 pub fn render_logo(area: Rect, buf: &mut Buffer, theme: &Theme, window_height: u16) {
     render_logo_tier(area, buf, theme, LogoTier::for_height(window_height));
 }
 
-/// Paint the tier the layout reserved rows for, so the art can never outgrow its slot.
+/// Paint the tier the layout reserved rows for, resting: the first frame of the loop.
 pub fn render_logo_tier(area: Rect, buf: &mut Buffer, theme: &Theme, tier: LogoTier) {
-    if let Some(logo) = tier.art() {
-        render_into(area, buf, theme, logo, tier.shade());
+    render_logo_frame(area, buf, theme, tier, 0);
+}
+
+/// Paint frame `frame` of the spin in the tier the layout reserved rows for, so the art can never outgrow its slot.
+pub fn render_logo_frame(area: Rect, buf: &mut Buffer, theme: &Theme, tier: LogoTier, frame: u32) {
+    if let Some(size) = tier.size() {
+        render_into(area, buf, theme, donut::frame(size, frame as usize));
     }
 }
 
-/// Line count of the small logo used in minimal's committed welcome card (0 on a legacy Windows console, where the braille art is suppressed).
+/// Line count of the small logo used in minimal's committed welcome card (0 on a legacy Windows console, where the logo is suppressed).
 pub fn compact_logo_line_count() -> u16 {
     if logo_hidden() {
         0
@@ -291,7 +198,7 @@ pub fn compact_logo_line_count() -> u16 {
     }
 }
 
-/// Render the small braille logo (centered) into `area` for minimal's welcome card.
+/// Render the small logo (centered) into `area` for minimal's welcome card.
 /// No-op when the logo is hidden.
 pub fn render_compact_logo(area: Rect, buf: &mut Buffer, theme: &Theme) {
     if !logo_hidden() {
@@ -345,9 +252,13 @@ mod tests {
         assert_eq!(LogoTier::Full.step_down(), Some(LogoTier::Compact));
         assert_eq!(LogoTier::Compact.step_down(), Some(LogoTier::Hidden));
         assert_eq!(LogoTier::Hidden.step_down(), None);
+        // The donut has no 2x art: the tier paints nothing and the hero chain never offers it
+        assert_eq!(LogoTier::Large.rows(), 0);
+        assert_eq!(LogoTier::Large.visual_width(), 0);
+        assert!(!large_enabled());
     }
 
-    // The braille art has no legacy-safe stand-in, so every height tier must collapse to no logo when the legacy-console flag is set
+    // Every height tier must collapse to no logo when the legacy-console flag is set
     #[test]
     fn logo_hidden_on_legacy_console_at_every_height() {
         for h in [
@@ -368,29 +279,18 @@ mod tests {
         if logo_hidden() {
             return;
         }
-        assert!(LogoTier::Full.rows() > LogoTier::Compact.rows());
-        assert!(LogoTier::Full.visual_width() > LogoTier::Compact.visual_width());
+        assert_eq!(LogoTier::Full.rows(), 7);
+        assert_eq!(LogoTier::Full.visual_width(), 14);
+        assert_eq!(LogoTier::Compact.rows(), 5);
+        assert_eq!(LogoTier::Compact.visual_width(), 10);
         assert_eq!(LogoTier::Hidden.rows(), 0);
         assert_eq!(LogoTier::Hidden.visual_width(), 0);
-        if let Some(large) = workshop_brand::hero_art().large {
-            assert_eq!(LogoTier::Large.rows(), count_lines(large));
-            assert!(LogoTier::Large.rows() > LogoTier::Full.rows());
-            assert!(LogoTier::Large.visual_width() > LogoTier::Full.visual_width());
-        } else {
-            assert_eq!(LogoTier::Large.rows(), 0);
-        }
     }
 
     #[test]
     fn hero_tiers_try_the_tallest_art_first_and_end_on_full() {
         let tiers = hero_logo_tiers();
-        assert_eq!(tiers.last(), Some(&LogoTier::Full));
-        assert!(!tiers.contains(&LogoTier::Compact));
-        assert!(!tiers.contains(&LogoTier::Hidden));
-        assert_eq!(
-            tiers.contains(&LogoTier::Large),
-            large_enabled() && !logo_hidden()
-        );
+        assert_eq!(tiers, &[LogoTier::Full]);
     }
 
     #[test]
@@ -405,65 +305,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shine_opacity_stays_in_unit_range() {
-        let mut secs = 0.0;
-        while secs < 10.0 {
-            for i in 0..=20 {
-                let diag = i as f32 / 20.0;
-                let op = shine_opacity(diag, secs);
-                assert!(
-                    (0.0..=1.0).contains(&op),
-                    "opacity {op} out of range at diag {diag}, secs {secs}"
-                );
-            }
-            secs += 0.13;
-        }
-    }
-
-    #[test]
-    fn shine_band_sweeps_across() {
-        // The brightest point along the diagonal advances from left to right as the sweep progresses through its active phase
-        let brightest = |secs: f32| -> f32 {
-            (0..=100)
-                .map(|i| i as f32 / 100.0)
-                .max_by(|a, b| {
-                    shine_opacity(*a, secs)
-                        .partial_cmp(&shine_opacity(*b, secs))
-                        .unwrap()
-                })
-                .unwrap()
-        };
-        let early = brightest(0.1);
-        let mid = brightest(0.4);
-        let late = brightest(0.7);
-        assert!(early < mid, "early {early} should precede mid {mid}");
-        assert!(mid < late, "mid {mid} should precede late {late}");
-    }
-
-    #[test]
-    fn shine_rests_dim_between_sweeps() {
-        // During the rest phase the band is parked off-screen, so an interior glyph falls back to its plain shade, never full bright
-        let op = shine_opacity(0.5, 6.0); // secs % 4.0 = 2.0, past SWEEP_FRAC, in the rest phase
-        assert_eq!(op, 0.0, "resting opacity {op} should be the plain shade");
-    }
-
-    #[test]
-    fn shimmer_frame_holds_still_while_resting() {
-        // The frame advances through the sweep and then holds one value until the next sweep starts,
-        // so `tick` asks for no redraw while nothing on the logo moves.
-        assert_ne!(shimmer_frame_at(0.1), shimmer_frame_at(0.4));
-        let rest_start = CYCLE * SWEEP_FRAC + 0.05;
-        let held = shimmer_frame_at(rest_start);
-        let mut secs = rest_start;
-        while secs < CYCLE {
-            assert_eq!(shimmer_frame_at(secs), held, "rest frame moved at {secs}s");
-            secs += 0.05;
-        }
-        // The next cycle's sweep resumes advancing.
-        assert_ne!(shimmer_frame_at(CYCLE + 0.2), shimmer_frame_at(CYCLE + 0.5));
-    }
-
     fn luminance(color: Color) -> f32 {
         match color {
             Color::Rgb(r, g, b) => 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32,
@@ -471,9 +312,10 @@ mod tests {
         }
     }
 
-    /// The unquantized dark and light palettes, so the assertions see RGB regardless of `NO_COLOR` or the terminal under test.
-    fn polarities() -> [crate::theme::Theme; 2] {
+    /// The unquantized palettes of both polarities and the default theme, so the assertions see RGB regardless of `NO_COLOR` or the terminal under test.
+    fn palettes() -> [crate::theme::Theme; 3] {
         [
+            crate::theme::Theme::oscura_midnight(),
             crate::theme::Theme::groknight(),
             crate::theme::Theme::grokday(),
         ]
@@ -482,7 +324,7 @@ mod tests {
     #[test]
     fn shade_palette_steps_from_the_background_toward_the_text() {
         // The three resting shades must be ordered by contrast against the canvas on both polarities, or tone shading would invert
-        for theme in polarities() {
+        for theme in palettes() {
             let [weak, mid, strong] = shade_palette(&theme);
             assert_eq!(mid, theme.gray);
             let bg = luminance(theme.bg_base);
@@ -495,44 +337,82 @@ mod tests {
     }
 
     #[test]
-    fn shaded_cells_take_their_level_and_flat_art_rests_on_gray() {
-        for theme in polarities() {
-            let [weak, mid, strong] = shade_palette(&theme);
-            // Two full cells (so the light theme's inverted glyph is still non-blank): shade 0 then 2
-            let art = "\u{28FF}\u{28FF}\n";
-            let area = Rect::new(0, 0, 2, 1);
-            let mut shaded = Buffer::empty(area);
-            render_into(area, &mut shaded, &theme, art, Some("02\n"));
-            let mut flat = Buffer::empty(area);
-            render_into(area, &mut flat, &theme, art, None);
-            // A dark cell is weak where dots are light and strong where dots are ink, and the reverse for a bright cell
-            let expected = if theme.is_dark() {
-                [weak, strong]
-            } else {
-                [strong, weak]
-            };
-            // The shimmer shifts every cell toward the text color, so only check the cell sits between its base and that color
-            let toward = |base: Color, cell: Color| {
-                let (b, c, t) = (
-                    luminance(base),
-                    luminance(cell),
-                    luminance(theme.text_primary),
+    fn ramp_bands_map_onto_four_theme_colours() {
+        for theme in palettes() {
+            let palette = shade_palette(&theme);
+            let hilite = theme.text_primary;
+            let bands: Vec<Color> = (0..12u8)
+                .map(|level| band_color(level, palette, hilite))
+                .collect();
+            assert_eq!(bands.first(), Some(&palette[0]));
+            assert_eq!(bands.get(3), Some(&palette[1]));
+            assert_eq!(bands.get(6), Some(&palette[2]));
+            assert_eq!(bands.last(), Some(&hilite));
+            // Brighter ramp levels never lose contrast against the canvas
+            let bg = luminance(theme.bg_base);
+            let contrast: Vec<f32> = bands.iter().map(|c| (luminance(*c) - bg).abs()).collect();
+            assert!(
+                contrast.windows(2).all(|w| w[0] <= w[1]),
+                "{contrast:?} on {:?}",
+                theme.bg_base
+            );
+        }
+    }
+
+    #[test]
+    fn frame_zero_is_painted_in_theme_colours_and_frames_differ() {
+        let theme = crate::theme::Theme::oscura_midnight();
+        let area = Rect::new(0, 0, 14, 7);
+        let mut resting = Buffer::empty(area);
+        render_logo_tier(area, &mut resting, &theme, LogoTier::Full);
+        let frame0 = donut::frame(Size::Full, 0);
+        let palette = shade_palette(&theme);
+        for row in 0..7u16 {
+            for col in 0..14u16 {
+                let cell = resting.cell((col, row)).unwrap();
+                let level = frame0.level(usize::from(row), usize::from(col));
+                assert_eq!(
+                    cell.symbol(),
+                    frame0.glyph(usize::from(row), usize::from(col)).to_string(),
+                    "glyph at {row},{col}"
                 );
-                (c - b) * (t - b) >= 0.0 && (c - b).abs() <= (t - b).abs()
-            };
-            for (x, base) in expected.into_iter().enumerate() {
-                let cell = shaded.cell((x as u16, 0)).unwrap().fg;
-                assert!(
-                    toward(base, cell),
-                    "cell {x}: {cell:?} not between {base:?} and the text color"
-                );
-                let plain = flat.cell((x as u16, 0)).unwrap().fg;
-                assert!(
-                    toward(mid, plain),
-                    "flat cell {x}: {plain:?} not between {mid:?} and the text color"
-                );
-                assert_ne!(cell, plain, "shading must change cell {x}");
+                if let Some(level) = level {
+                    assert_eq!(cell.fg, band_color(level, palette, theme.text_primary));
+                }
             }
         }
+        // The lit top of the torus is in the text colour; the row under it is the resting gray
+        assert_eq!(resting.cell((5, 0)).unwrap().fg, theme.text_primary);
+        assert_eq!(resting.cell((5, 1)).unwrap().symbol(), "!");
+        assert_eq!(resting.cell((5, 1)).unwrap().fg, palette[2]);
+
+        let mut spun = Buffer::empty(area);
+        render_logo_frame(area, &mut spun, &theme, LogoTier::Full, 40);
+        assert_ne!(resting, spun, "a later frame paints different cells");
+
+        // The hidden tier and the 2x tier leave the buffer untouched
+        let mut blank = Buffer::empty(area);
+        render_logo_frame(area, &mut blank, &theme, LogoTier::Hidden, 3);
+        render_logo_frame(area, &mut blank, &theme, LogoTier::Large, 3);
+        assert_eq!(blank, Buffer::empty(area));
+    }
+
+    #[test]
+    fn the_logo_is_centred_in_a_wider_area_and_clipped_to_a_smaller_one() {
+        let theme = crate::theme::Theme::groknight();
+        let wide = Rect::new(0, 0, 40, 7);
+        let mut buf = Buffer::empty(wide);
+        render_logo(wide, &mut buf, &theme, FULL_LOGO_MIN_HEIGHT);
+        let frame0 = donut::frame(Size::Full, 0);
+        // (40 - 14) / 2 = 13 columns of margin on the left
+        assert_eq!(buf.cell((13 + 5, 0)).unwrap().symbol(), "$");
+        assert_eq!(buf.cell((13 + 5, 1)).unwrap().symbol(), "!");
+        assert_eq!(buf.cell((0, 0)).unwrap().symbol(), " ");
+        assert_eq!(frame0.glyph(1, 5), '!');
+
+        let small = Rect::new(0, 0, 6, 3);
+        let mut clipped = Buffer::empty(small);
+        render_logo_tier(small, &mut clipped, &theme, LogoTier::Full);
+        assert_eq!(clipped.cell((5, 0)).unwrap().symbol(), "$");
     }
 }

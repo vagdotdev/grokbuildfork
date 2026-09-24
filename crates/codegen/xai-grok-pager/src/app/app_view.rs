@@ -888,9 +888,13 @@ pub struct AppView {
     pub session_picker_pending_delete: Option<crate::views::session_picker::PendingDelete>,
     /// Tick counter for welcome screen spinner animation.
     pub welcome_tick: u64,
-    /// Last shimmer frame drawn on the welcome screen.
-    /// Lets `tick` throttle the wall-clock logo animation to a few fps instead of the full tick rate.
-    pub welcome_shimmer_frame: u64,
+    /// Workshop: the frame of the hero donut's loop the welcome screen shows. Advances one frame
+    /// per slow tick (~12 fps) while [`Self::welcome_hero_spins`]; holds its frame otherwise, so
+    /// the mark resumes where it paused instead of jumping.
+    pub welcome_hero_frame: u32,
+    /// Workshop: the last welcome paint spun the hero (wide layout, logo shown, animation on), as
+    /// reported by the renderer. Off until the first paint and whenever the resting frame is drawn.
+    pub welcome_hero_animating: bool,
     /// CLI model override (`-m` / `--model`).
     /// Seeded into every new `AgentSession.deferred_model_switch` so the model is applied once the session is created.
     pub cli_model_override: Option<acp::ModelId>,
@@ -1600,7 +1604,8 @@ impl AppView {
             session_picker_entries_query: None,
             session_picker_pending_delete: None,
             welcome_tick: 0,
-            welcome_shimmer_frame: 0,
+            welcome_hero_frame: 0,
+            welcome_hero_animating: false,
             cli_model_override: None,
             cli_effort_token: None,
             default_yolo: false,
@@ -4701,6 +4706,9 @@ impl AppView {
         });
         let welcome_default_yolo = self.default_yolo;
         let welcome_auto_gate = self.auto_mode_gate;
+        let welcome_hero_frame = self
+            .hero_animation_enabled()
+            .then_some(self.welcome_hero_frame);
         let Self {
             active_view,
             agents,
@@ -4918,6 +4926,7 @@ impl AppView {
                                 welcome_announcement_expanded: self.welcome_announcement.expanded,
                                 upgrade_cta: hero_cta.map(|(_owner, label, _)| label),
                                 privacy_banner,
+                                hero_frame: welcome_hero_frame,
                                 #[cfg(feature = "local-workspace")]
                                 workspace_mode: self.welcome_workspace_mode,
                                 #[cfg(feature = "local-workspace")]
@@ -4934,6 +4943,7 @@ impl AppView {
                                 &mut self.session_picker_state,
                             );
                             self.welcome_menu_rects = result.menu_rects;
+                            self.welcome_hero_animating = result.hero_animating;
                             self.welcome_show_changelog_action = result.changelog_action_present;
                             self.welcome_show_resume_action = result.resume_action_present;
                             self.welcome_prompt_rect = result.prompt_rect;
@@ -5702,8 +5712,10 @@ impl AppView {
                 )
             {
                 needs_redraw = true;
-            } else {
-                needs_redraw |= self.tick_welcome_hero();
+            } else if self.welcome_hero_spins() {
+                self.welcome_hero_frame =
+                    (self.welcome_hero_frame + 1) % workshop_brand::donut::FRAMES as u32;
+                needs_redraw = true;
             }
         }
         if matches!(self.active_view, ActiveView::AgentDashboard)
@@ -6207,8 +6219,40 @@ impl AppView {
                     TickDemand::None
                 }
             }
-            ActiveView::Welcome => TickDemand::Slow,
+            // Workshop: the hero donut turns at the slow cadence; without it (resting frame,
+            // unfocused terminal, animation off) a resting welcome screen parks unless a toast
+            // or the session picker's spinner still needs the clock.
+            ActiveView::Welcome => {
+                if self.welcome_hero_spins()
+                    || self.welcome_toast.is_some()
+                    || crate::views::session_picker::loading_spinner_active(
+                        self.session_picker_entries.as_deref(),
+                        self.session_picker_source_filter,
+                        self.session_picker_loading,
+                        &self.session_picker_lanes,
+                    )
+                {
+                    TickDemand::Slow
+                } else {
+                    TickDemand::None
+                }
+            }
         }
+    }
+    /// Workshop: whether the welcome hero should advance a frame on the next tick — the user has
+    /// not turned it off (`[ui] hero_animation = false`), the terminal can show it (colour on, no
+    /// legacy console), the last paint spun it (wide layout, logo shown) and the terminal is
+    /// focused. Leaving the welcome screen ends it by construction: the tick only runs here for
+    /// [`ActiveView::Welcome`].
+    pub fn welcome_hero_spins(&self) -> bool {
+        self.hero_animation_enabled()
+            && self.welcome_hero_animating
+            && self.notification_service.focus_tracker.is_focused()
+    }
+    /// Workshop: `[ui] hero_animation` (default on) and the terminal's ability to show the spin.
+    pub fn hero_animation_enabled(&self) -> bool {
+        self.current_ui.hero_animation.unwrap_or(true)
+            && crate::views::welcome::hero_animation_supported()
     }
     /// Workshop: what the composer calls the active model — the silent fallback's model while it
     /// carries the session, else the connection's model name. Never a provider or runtime name.

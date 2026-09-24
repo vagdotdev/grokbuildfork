@@ -145,6 +145,10 @@ pub struct UiConfig {
     /// Config-file-only knob (no /settings row).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor_blink: Option<bool>,
+    /// Workshop: whether the welcome screen's hero logo spins. `None` means on; `Some(false)`
+    /// shows its resting frame. Config-file-only knob (no /settings row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hero_animation: Option<bool>,
     /// `"fullscreen"` | `"minimal"`; unset uses the product default, fullscreen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_mode: Option<String>,
@@ -285,6 +289,7 @@ impl Default for UiConfig {
             collapsed_edit_blocks: None,
             prompt_suggestions: None,
             cursor_blink: None,
+            hero_animation: None,
             screen_mode: None,
             double_click_action: None,
             contextual_hints: ContextualHints::default(),
