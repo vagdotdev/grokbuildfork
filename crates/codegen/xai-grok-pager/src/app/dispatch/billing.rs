@@ -379,7 +379,11 @@ pub(super) fn handle_check_subscription_complete(
 ) -> Vec<Effect> {
     let was_blocked = !app.has_access();
     let applied = match meta {
-        Some(meta_val) => {
+        // A JSON `null` meta is the shell reporting "no subscription / not authenticated" — the
+        // normal, expected case for Workshop (no xAI account), which the watch fires every
+        // interval. Treat it like `None`; only a genuinely malformed (non-null) meta is a
+        // protocol bug worth an error line, so the log stays quiet when nothing is wrong.
+        Some(meta_val) if !meta_val.is_null() => {
             match serde_json::from_value::<xai_grok_login::AuthMeta>(meta_val) {
                 Ok(auth_meta) => {
                     app.apply_auth_meta(&auth_meta);
@@ -400,8 +404,8 @@ pub(super) fn handle_check_subscription_complete(
                 }
             }
         }
-        // A `None` meta means the shell reports "not authenticated" or the check RPC failed (already logged as subscription.check.rpc_failed)
-        None => false,
+        // A `None` (or `null`) meta means the shell reports "not authenticated" or the check RPC failed (already logged as subscription.check.rpc_failed)
+        _ => false,
     };
     if !applied && let Some(generation) = verify {
         app.promote_deferred_gate(generation, "check_failed");
