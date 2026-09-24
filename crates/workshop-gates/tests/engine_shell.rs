@@ -197,7 +197,8 @@ fn sigterm_kills_the_command_group() {
     let marker = format!("workshop-cancel-probe-{}", std::process::id());
     let command = format!("echo started; exec -a {marker} sleep 120");
 
-    #[allow(clippy::zombie_processes)] // reaped by wait() below
+    // reaped by wait() below; deliberately unenrolled (we SIGTERM it to prove the group is killed)
+    #[allow(clippy::zombie_processes, clippy::disallowed_methods)]
     let mut child = Command::new(&bin)
         .args(["__engine-shell", "-c", &command])
         .env("WORKSHOP_HOME", home.path())

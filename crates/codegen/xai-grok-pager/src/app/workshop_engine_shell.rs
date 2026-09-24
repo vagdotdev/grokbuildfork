@@ -200,7 +200,7 @@ pub fn maybe_run_helper() -> Option<i32> {
     if args.get(1).map(OsString::as_os_str) != Some(OsStr::new("__engine-shell")) {
         return None;
     }
-    let command = extract_command(&args[2..]);
+    let command = extract_command(args.get(2..).unwrap_or(&[]));
     Some(run(&command))
 }
 
@@ -245,6 +245,9 @@ fn run_with_watchdog(command: &str) -> std::io::Result<i32> {
     // `setsid`: the command runs in its own session, so a daemon or GUI it leaves behind survives
     // this shim's exit and is out of OpenCode's process group (its timeout kill cannot reach it).
     xai_tty_utils::detach_std_command(&mut cmd);
+    // Enrolling would tie the child to this process's scope; the whole point is that it outlives us
+    // (a backgrounded command, a detached GUI), so it is spawned deliberately unenrolled.
+    #[allow(clippy::disallowed_methods)]
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
@@ -320,7 +323,9 @@ fn pump(reader: &mut std::fs::File, offset: &mut u64, out: &mut impl Write) -> b
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                if out.write_all(&buf[..n]).is_ok() {
+                if let Some(chunk) = buf.get(..n)
+                    && out.write_all(chunk).is_ok()
+                {
                     *offset += n as u64;
                     wrote = true;
                 }
