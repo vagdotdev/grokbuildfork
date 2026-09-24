@@ -76,8 +76,11 @@ ev() { # ev NAME [TEXT]
 }
 screen() { tail -n +2 "$LIVE" 2>/dev/null; }
 screen_has() { screen | grep -qE -- "$1"; }
-# Screen text without what changes on its own: braille spinner frames, clock times, elapsed counters.
-norm() { screen | LC_ALL=C sed -E $'s/\xe2[\xa0-\xa3][\x80-\xbf]//g; s/[0-9]{1,2}:[0-9]{2}( [AP]M)?//g; s/[0-9]+(\\.[0-9]+)?\\s?(ms|s|m|min)\\b//g'; }
+# Screen text without what changes on its own: braille spinner frames, clock times, elapsed counters,
+# and the animated rows for a background command the model left running (`⸬ Task Start a server … (1)`,
+# `◎ 1 command still running`).
+bg_rows='/[0-9]+ commands? still running/d; / Task .*\([0-9]+\)/d'
+norm() { screen | sed -E "$bg_rows" | LC_ALL=C sed -E $'s/\xe2[\xa0-\xa3][\x80-\xbf]//g; s/[0-9]{1,2}:[0-9]{2}( [AP]M)?//g; s/[0-9]+(\\.[0-9]+)?\\s?(ms|s|m|min)\\b//g'; }
 # A tool call is running: the run's `opencode serve` has a child process.
 tool_running() {
   local p
@@ -124,7 +127,7 @@ TURN_BASE=0; TURN_PROMPT=""
 # v0.2.2's done line (`Worked for 22s`): below this turn's own prompt, or the last line above the
 # composer box when the prompt has scrolled away.
 done_line() {
-  screen | awk -v p="$TURN_PROMPT" '
+  screen | sed -E "$bg_rows" | awk -v p="$TURN_PROMPT" '
     p != "" && index($0, p) {f = 1}
     f && /Worked for/ {d = 1}
     /╭─/ {exit}
