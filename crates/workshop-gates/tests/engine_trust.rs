@@ -51,6 +51,10 @@
 //! * `sudo_password_is_asked_in_workshop_never_the_model` — `sudo` in an engine command asks in
 //!   Workshop's own masked prompt (SUDO_ASKPASS helper → this process); the password goes to sudo
 //!   only; Esc skips with "Skipped — needs your password" for the model.
+//! * `subagent_asks_are_answered_in_always_approve` / `subagent_asks_show_the_prompt_in_normal_mode`
+//!   — the `task` tool's subagent asks from its own child session; the ask is answered like the
+//!   parent's (at once in always-approve, through the approval prompt otherwise), the reply goes
+//!   back to the child session, and the turn ends instead of hanging on a `Run …` row.
 //!
 //! Evidence (text + HTML screenshots) lands in `WORKSHOP_PTY_EVIDENCE_DIR/engine-trust/*`.
 
@@ -1598,10 +1602,12 @@ fn first_run_starts_in_always_approve_and_a_pick_persists() {
     quit(&mut j);
 }
 
-/// Sessions the fake engine was asked to open (`POST /session`), in order.
+/// Sessions the fake engine was asked to open (`POST /session`), in order — not the child
+/// sessions its `task` tool opens on its own (those carry a `parent`).
 fn sessions_created(log: &Path) -> Vec<String> {
     engine_log(log)
         .iter()
+        .filter(|v| v.get("parent").is_none())
         .filter_map(|v| v.get("created").and_then(|s| s.as_str()).map(str::to_owned))
         .collect()
 }
@@ -1855,6 +1861,133 @@ fn long_tool_run_is_not_a_stall() {
         !screen.contains("stopped responding"),
         "no stall line for a slow command:\n{screen}"
     );
+    quit(&mut j);
+}
+
+/// `(permission id, session that asked)` for every ask the fake engine raised, in order.
+fn asks_by_session(log: &Path) -> Vec<(String, String)> {
+    engine_log(log)
+        .iter()
+        .filter_map(|v| {
+            Some((
+                v.get("asked")?.as_str()?.to_owned(),
+                v.get("session")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+/// `(permission id, session the reply was posted to, reply)` for every reply Workshop posted,
+/// in order; a reply the fake engine refused (posted under another session) is `misrouted`.
+fn replies_by_session(log: &Path) -> Vec<(String, String, String, bool)> {
+    engine_log(log)
+        .iter()
+        .filter_map(|v| {
+            Some((
+                v.get("permission")?.as_str()?.to_owned(),
+                v.get("session")?.as_str()?.to_owned(),
+                v.get("response")?.as_str()?.to_owned(),
+                v.get("misrouted")
+                    .and_then(|m| m.as_bool())
+                    .unwrap_or(false),
+            ))
+        })
+        .collect()
+}
+
+/// The child session's ask, answered where it was asked: `(child session, permission id)`, after
+/// checking it is not the turn's own session and the one reply went back to the child.
+fn assert_child_ask_answered(fx: &Fixture, reply: &str) -> (String, String) {
+    let prompts = prompts_by_session(&fx.log);
+    let (turn_session, _) = prompts
+        .last()
+        .expect("the prompt reached the engine")
+        .clone();
+    let children: Vec<String> = engine_log(&fx.log)
+        .iter()
+        .filter(|v| v.get("parent").and_then(|p| p.as_str()) == Some(turn_session.as_str()))
+        .filter_map(|v| v.get("created")?.as_str().map(str::to_owned))
+        .collect();
+    assert_eq!(
+        children.len(),
+        1,
+        "the task opened one child session: {children:?}"
+    );
+    let child = children[0].clone();
+    let asks = asks_by_session(&fx.log);
+    assert_eq!(asks.len(), 1, "one ask, the subagent's: {asks:?}");
+    let (perm_id, asked_in) = asks[0].clone();
+    assert_eq!(asked_in, child, "the ask came from the child session");
+    let replies = replies_by_session(&fx.log);
+    assert_eq!(
+        replies,
+        vec![(perm_id.clone(), child.clone(), reply.to_owned(), false)],
+        "exactly one reply, posted to the child session, never misrouted"
+    );
+    (child, perm_id)
+}
+
+/// A subagent (OpenCode's `task` tool, the built-in `explore` agent on the same model) works in a
+/// child session of the turn's; its bash ask arrives with the child's sessionID. In always-approve
+/// it is answered at once and to the child, so the task finishes and the turn ends — v0.2.2
+/// dropped it as another session's and sat on `Run …` for good.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn subagent_asks_are_answered_in_always_approve() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/subagent-always-approve", &bin, &fx);
+    set_mode(&mut j, "always-approve");
+    send_prompt(&mut j, "find photo candidates for the Panthera genus");
+    wait_for(&mut j.h, "Extract Wikimedia image candidates", 60);
+    // The fake child waits up to 120 s for its answer: an answer that never comes (v0.2.2)
+    // leaves this waiting well past the minute allowed here.
+    wait_for(&mut j.h, "Found 15 photo candidates, 3 per species.", 60);
+    wait_for(&mut j.h, "Worked for", 30);
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "01-task-finished-without-a-prompt");
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("Run this command?"),
+        "always-approve draws no prompt for the subagent's ask either:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Subagent report"),
+        "the child's own text is not the parent's answer:\n{screen}"
+    );
+    assert_child_ask_answered(&fx, "once");
+    quit(&mut j);
+}
+
+/// The same ask in the asking mode: the approval prompt names the subagent's command, the pick
+/// is posted to the child session, and the turn ends.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn subagent_asks_show_the_prompt_in_normal_mode() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut j = launch("engine-trust/subagent-normal-prompt", &bin, &fx);
+    set_mode(&mut j, "normal");
+    send_prompt(&mut j, "find photo candidates for the Panthera genus");
+    wait_for(&mut j.h, "Run this command?", 60);
+    wait_for(&mut j.h, "python3 extract_candidates.py species.txt", 5);
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "01-subagent-command-prompt");
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains("Extract Wikimedia image candidates"),
+        "the task row is on screen while its subagent asks:\n{screen}"
+    );
+    assert!(
+        screen.contains("don't ask again for `python3 *`"),
+        "the always option names the engine's pattern:\n{screen}"
+    );
+    j.h.inject_keys(b"1").unwrap(); // Yes, run it
+    wait_for(&mut j.h, "Found 15 photo candidates, 3 per species.", 60);
+    wait_for(&mut j.h, "Worked for", 30);
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "02-approved-task-finished");
+    assert_child_ask_answered(&fx, "once");
     quit(&mut j);
 }
 

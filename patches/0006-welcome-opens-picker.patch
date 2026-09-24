@@ -4243,10 +4243,10 @@ index 60fe34f9..8b49336e 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..84b9315b
+index 00000000..5b4ac4f5
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,2429 @@
+@@ -0,0 +1,2439 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -5166,7 +5166,17 @@ index 00000000..84b9315b
 +
 +/// One-line summary of a tool call for its transcript row: the path, command, pattern or URL.
 +pub fn summarize_tool_input(input: &serde_json::Value) -> String {
-+    for key in ["filePath", "path", "command", "pattern", "query", "url"] {
++    // `description` last: the `task` tool (a subagent) has no path or command, only what it was
++    // asked to do — that is the row (`Run Extract Wikimedia image candidates`), not `Run task`.
++    for key in [
++        "filePath",
++        "path",
++        "command",
++        "pattern",
++        "query",
++        "url",
++        "description",
++    ] {
 +        if let Some(v) = input.get(key).and_then(serde_json::Value::as_str) {
 +            return v.to_owned();
 +        }

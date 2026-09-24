@@ -917,7 +917,17 @@ pub struct WorkshopTurnSpec {
 
 /// One-line summary of a tool call for its transcript row: the path, command, pattern or URL.
 pub fn summarize_tool_input(input: &serde_json::Value) -> String {
-    for key in ["filePath", "path", "command", "pattern", "query", "url"] {
+    // `description` last: the `task` tool (a subagent) has no path or command, only what it was
+    // asked to do — that is the row (`Run Extract Wikimedia image candidates`), not `Run task`.
+    for key in [
+        "filePath",
+        "path",
+        "command",
+        "pattern",
+        "query",
+        "url",
+        "description",
+    ] {
         if let Some(v) = input.get(key).and_then(serde_json::Value::as_str) {
             return v.to_owned();
         }

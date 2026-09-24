@@ -889,10 +889,12 @@ impl TurnDriver {
         format!("/question/{question_id}/{verb}{}", self.dir_query)
     }
 
-    fn permission_path(&self, permission_id: &str) -> String {
+    /// The reply endpoint of an ask: the session that asked (the turn's own, or a subagent's
+    /// child session — the server keeps each session's pending asks apart).
+    fn permission_path(&self, session_id: &str, permission_id: &str) -> String {
         format!(
-            "/session/{}/permissions/{permission_id}{}",
-            self.session_id, self.dir_query
+            "/session/{session_id}/permissions/{permission_id}{}",
+            self.dir_query
         )
     }
 
@@ -902,11 +904,11 @@ impl TurnDriver {
         let mut abort_deadline: Option<tokio::time::Instant> = None;
         let idle = self.idle_timeout.unwrap_or(NEVER);
         // Asks the host answers later (its user is looking at a prompt): one task per ask
-        // resolves to `(permission id, reply)`; the ids are kept so a cancel can reject them all
-        // before aborting. The event loop keeps running meanwhile, so Esc/Ctrl-C still work
-        // while a prompt is up and the model's other output keeps streaming.
-        let mut pending: JoinSet<(String, PermissionReply)> = JoinSet::new();
-        let mut pending_ids: HashMap<tokio::task::Id, String> = HashMap::new();
+        // resolves to `((session id, permission id), reply)`; the ids are kept so a cancel can
+        // reject them all before aborting. The event loop keeps running meanwhile, so Esc/Ctrl-C
+        // still work while a prompt is up and the model's other output keeps streaming.
+        let mut pending: JoinSet<((String, String), PermissionReply)> = JoinSet::new();
+        let mut pending_ids: HashMap<tokio::task::Id, (String, String)> = HashMap::new();
         // The idle ceiling counts from the turn's last real activity — output, a tool starting or
         // finishing, a permission answered — never from the server's 10 s heartbeats, and only
         // once the model has said something (the host owns the wait for the first event).
@@ -929,8 +931,8 @@ impl TurnDriver {
                         // A prompt the user never answered is a "no": tell the server before the
                         // abort so the tool ends rejected rather than hanging on the ask.
                         pending.abort_all();
-                        for id in pending_ids.drain().map(|(_, id)| id) {
-                            self.post_reply(&id, PermissionReply::Reject).await;
+                        for (session, id) in pending_ids.drain().map(|(_, ask)| ask) {
+                            self.post_reply(&session, &id, PermissionReply::Reject).await;
                         }
                         questions.abort_all();
                         for id in question_ids.drain().map(|(_, id)| id) {
@@ -958,14 +960,14 @@ impl TurnDriver {
                 Some(decided) = pending.join_next_with_id(), if !pending.is_empty() => {
                     last_activity = Some(tokio::time::Instant::now());
                     match decided {
-                        Ok((task_id, (perm_id, reply))) => {
+                        Ok((task_id, ((session, perm_id), reply))) => {
                             pending_ids.remove(&task_id);
-                            self.post_reply(&perm_id, reply).await;
+                            self.post_reply(&session, &perm_id, reply).await;
                         }
                         Err(e) => {
                             // The decision task itself is gone (panicked/aborted): fail closed.
-                            if let Some(perm_id) = pending_ids.remove(&e.id()) {
-                                self.post_reply(&perm_id, PermissionReply::Reject).await;
+                            if let Some((session, perm_id)) = pending_ids.remove(&e.id()) {
+                                self.post_reply(&session, &perm_id, PermissionReply::Reject).await;
                             }
                         }
                     }
@@ -989,14 +991,15 @@ impl TurnDriver {
                         for perm in permissions {
                             match self.decide_permission(&perm) {
                                 PermissionDecision::Reply(reply) => {
-                                    self.post_reply(&perm.id, reply).await;
+                                    self.post_reply(&perm.session_id, &perm.id, reply).await;
                                 }
                                 PermissionDecision::Pending(rx) => {
-                                    let perm_id = perm.id.clone();
-                                    let handle = pending.spawn(async move {
-                                        (perm_id, rx.await.unwrap_or(PermissionReply::Reject))
+                                    let ask = (perm.session_id.clone(), perm.id.clone());
+                                    let handle = pending.spawn({
+                                        let ask = ask.clone();
+                                        async move { (ask, rx.await.unwrap_or(PermissionReply::Reject)) }
                                     });
-                                    pending_ids.insert(handle.id(), perm.id.clone());
+                                    pending_ids.insert(handle.id(), ask);
                                 }
                             }
                         }
@@ -1087,13 +1090,15 @@ impl TurnDriver {
         }
     }
 
-    async fn post_reply(&self, permission_id: &str, reply: PermissionReply) {
+    async fn post_reply(&self, session_id: &str, permission_id: &str, reply: PermissionReply) {
         tracing::info!(
             permission_id,
+            session_id,
+            subagent = session_id != self.session_id,
             ?reply,
             "answering opencode permission request"
         );
-        let path = self.permission_path(permission_id);
+        let path = self.permission_path(session_id, permission_id);
         if let Err(e) = self
             .client
             .post_json(&path, &json!({ "response": reply.as_str() }))
