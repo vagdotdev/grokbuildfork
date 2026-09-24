@@ -149,7 +149,7 @@ def system_prompt(agent):
 
 def identity_answer(agent, text_l):
     if system_prompt(agent).startswith("You are Workshop's"):
-        return "I'm Workshop's coding assistant, running as big-pickle."
+        return "I'm Workshop's assistant, running as Big Pickle."
     if "who made you" in text_l:
         return "I was made by the OpenCode team (github.com/anomalyco/opencode)."
     return "I'm opencode, an AI coding assistant that runs in your terminal."

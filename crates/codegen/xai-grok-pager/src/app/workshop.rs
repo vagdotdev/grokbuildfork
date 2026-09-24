@@ -1373,19 +1373,33 @@ pub fn engine_instructions_path() -> PathBuf {
 /// What the engine's models are told about where they run. Appended by OpenCode to every system
 /// prompt it builds for Workshop's server (all agents), like a project `AGENTS.md` — but kept
 /// under `$WORKSHOP_HOME`, so nothing is written into the user's project. It follows OpenCode's
-/// environment block, which names the model by its provider-qualified id (`opencode/big-pickle`).
-pub const ENGINE_INSTRUCTIONS: &str = "\
-# Workshop
-
-You are Workshop's coding assistant. Workshop is the terminal application the user launched; you \
-are the model working inside it. When asked who or what you are, or who made you, say you are \
-Workshop's coding assistant and call the model you are running as by its short name only: for a \
-model ID of the form provider/name, say just the name. The provider part of the model ID only says \
-where the model is hosted, not who made you or Workshop, so never mention it. Do not describe the \
-software you run on and do not introduce yourself by any other product name.
-
-Everything else about how you work — tools, conventions, permissions — is as instructed above.
-";
+/// environment block, which names the model by its provider-qualified id (`opencode/big-pickle`);
+/// `model_display` is the friendly name Workshop shows for it (`Big Pickle`), so the model can
+/// introduce itself the way the user sees it instead of by the raw id.
+pub fn engine_instructions(model_display: Option<&str>) -> String {
+    let identity = match model_display {
+        Some(name) => format!(
+            "When asked who or what you are, or who made you, say \"I'm Workshop's assistant, \
+running as {name}.\" Introduce yourself as Workshop's assistant, never by a company's or a \
+product's name, and never by a raw model id."
+        ),
+        None => "When asked who or what you are, or who made you, say you are Workshop's assistant \
+and call the model you are running as by its short name only: for a model id of the form \
+provider/name, say just the name. Never introduce yourself by a company's or a product's name."
+            .to_owned(),
+    };
+    format!(
+        "# Workshop\n\nYou are Workshop's assistant. Workshop is the terminal application the user \
+launched; you are the model working inside it, and you help with anything on the user's computer \
+or in code. {identity} The provider part of a model id only says where the model is hosted, not \
+who made you or Workshop, so never mention it. Do not describe the software you run on.\n\n\
+# Viewing images\nYou can look at an image by opening the file with your read tool — Workshop \
+shows the picture to a model that can see it. Never say you cannot see or view images, and never \
+sort or judge images by their file names: open each one with your read tool and use what you \
+see.\n\nEverything else about how you work — tools, conventions, permissions — is as instructed \
+above.\n"
+    )
+}
 
 /// The engine's inline config: Workshop's base prompt for the agents its turns run on, and the
 /// identity file for this launch. A home that cannot be written drops only the file; the cause
@@ -1401,7 +1415,9 @@ fn engine_config(log: &Path) -> serde_json::Value {
     config
 }
 
-/// Write the identity file (idempotent); `None` when the home cannot be written.
+/// Write the identity file (idempotent); `None` when the home cannot be written. The friendly
+/// model name (`Big Pickle`) comes from the active connection so the model introduces itself the
+/// way the user sees it, not by its raw id.
 fn write_engine_instructions(log: &Path) -> Option<PathBuf> {
     let path = engine_instructions_path();
     if let Some(parent) = path.parent()
@@ -1410,8 +1426,9 @@ fn write_engine_instructions(log: &Path) -> Option<PathBuf> {
         state::append_log(log, &format!("instructions: cannot create {}: {e}", parent.display()));
         return None;
     }
-    if std::fs::read_to_string(&path).ok().as_deref() != Some(ENGINE_INSTRUCTIONS)
-        && let Err(e) = workshop_providers::atomic_write_private(&path, ENGINE_INSTRUCTIONS.as_bytes())
+    let contents = engine_instructions(load_active_connection().model_display_name().as_deref());
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(contents.as_str())
+        && let Err(e) = workshop_providers::atomic_write_private(&path, contents.as_bytes())
     {
         state::append_log(log, &format!("instructions: cannot write {}: {e}", path.display()));
         return None;
@@ -1729,6 +1746,37 @@ const VISION_CHECK_PROMPT: &str = "Continue my request: open each image you down
 read tool, check that it is a real photo of what I asked for and that no two are the same picture \
 (an edited, cropped or resized version of one photo counts as the same), replace any that fail, \
 then finish.";
+
+/// The follow-up sent (never shown) when a model that cannot see images said so instead of looking:
+/// a model that can redoes the request from what it actually sees, never from file names.
+const VISION_REDO_PROMPT: &str = "Continue my request. You can see images: open each relevant image \
+file with your read tool and use what you actually see in the pictures — never sort or judge them \
+by their file names.";
+
+/// Whether the model's closing text begged off looking at images ("this model doesn't support
+/// image input", "I can't visually distinguish…") rather than reading them. Only consulted for a
+/// text-only model on a write turn, so a redo on a vision model is safe.
+fn claims_cannot_see_images(tail: &str) -> bool {
+    let t = tail.to_lowercase();
+    const NEG: [&str; 8] = [
+        "can't see",
+        "cannot see",
+        "can't view",
+        "cannot view",
+        "can't visually",
+        "cannot visually",
+        "unable to see",
+        "unable to view",
+    ];
+    if NEG.iter().any(|p| t.contains(p)) {
+        return true;
+    }
+    // "doesn't support image input", "no image input", "don't support image input".
+    t.contains("image input")
+        && ["support", "can't", "cannot", "don't", "do not", "no ", "not "]
+            .iter()
+            .any(|q| t.contains(q))
+}
 
 /// A tool call that fetches image files (a `curl`/`wget`/script download of .jpg/.png/…).
 fn downloads_images(tool: &str, input: &serde_json::Value) -> bool {
@@ -2364,10 +2412,11 @@ pub async fn run_workshop_turn(
                             }
                         }
                     }
-                    // Images a model that cannot see downloaded are checked by one that can.
-                    let mut checking = false;
+                    // A model that cannot see images either downloaded some (check them) or said
+                    // outright that it cannot see them (redo the request on a model that can).
+                    // Both hand the rest of the turn to a vision model on the same session, once.
+                    let mut vision_prompt = VISION_CONTINUE_PROMPT;
                     if vision_switch.is_none()
-                        && downloaded_images
                         && !switched
                         && !aborted_by_us
                         && !errored
@@ -2376,26 +2425,33 @@ pub async fn run_workshop_turn(
                         && !f.image_input
                         && let Some(vision) = vision_model(&cached_engine_models())
                     {
-                        state::append_log(
-                            &engine_log_path(),
-                            &format!(
-                                "vision: {} downloaded images it cannot see on {}; {} checks them",
-                                f.model_ref, f.session, vision.model_ref
-                            ),
-                        );
-                        vision_switch = Some(vision);
-                        checking = true;
+                        if downloaded_images {
+                            state::append_log(
+                                &engine_log_path(),
+                                &format!(
+                                    "vision: {} downloaded images it cannot see on {}; {} checks them",
+                                    f.model_ref, f.session, vision.model_ref
+                                ),
+                            );
+                            vision_switch = Some(vision);
+                            vision_prompt = VISION_CHECK_PROMPT;
+                        } else if claims_cannot_see_images(&tail) {
+                            state::append_log(
+                                &engine_log_path(),
+                                &format!(
+                                    "vision: {} said it cannot see images on {}; {} redoes the turn",
+                                    f.model_ref, f.session, vision.model_ref
+                                ),
+                            );
+                            vision_switch = Some(vision);
+                            vision_prompt = VISION_REDO_PROMPT;
+                        }
                     }
                     if let Some(vision) = vision_switch.take()
                         && !aborted_by_us
                         && let Some(f) = follow_up.as_mut()
                     {
-                        let prompt = if checking {
-                            VISION_CHECK_PROMPT
-                        } else {
-                            VISION_CONTINUE_PROMPT
-                        };
-                        let mut req = TurnRequest::new(prompt);
+                        let mut req = TurnRequest::new(vision_prompt);
                         req.model = Some(vision.model_ref.clone());
                         req.permission = permission;
                         match f.engine.prompt(&f.session, req).await {
@@ -2633,9 +2689,32 @@ pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        announces_unfinished_action, asks_to_write_files, downloads_images, ends_with_code_block,
-        engine_question_answers, engine_questions,
+        announces_unfinished_action, asks_to_write_files, claims_cannot_see_images,
+        downloads_images, ends_with_code_block, engine_question_answers, engine_questions,
     };
+
+    #[test]
+    fn a_model_begging_off_images_is_detected() {
+        // The exact repro line, plus the other phrasings a text-only model uses.
+        for tail in [
+            "I can't visually distinguish image content (this model doesn't support image input), so I'll sort them by their filenames",
+            "This model does not support image input.",
+            "I cannot see images, so I'll go by the file names.",
+            "I'm unable to view the photos.",
+            "no image input is available to me",
+        ] {
+            assert!(claims_cannot_see_images(tail), "{tail:?}");
+        }
+        // A turn that actually looked, or one unrelated to images, never triggers a redo.
+        for tail in [
+            "The photo shows a snow leopard.",
+            "Sorted all 15 photos into ~/Desktop/Panthera.",
+            "Done — the tests pass.",
+            "",
+        ] {
+            assert!(!claims_cannot_see_images(tail), "{tail:?}");
+        }
+    }
 
     #[test]
     fn image_downloads_are_recognised() {
