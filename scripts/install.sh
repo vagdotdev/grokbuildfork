@@ -11,8 +11,10 @@
 #      $WORKSHOP_HOME/bin/workshop at it (replacing whatever was there, a plain file from a
 #      manual tar install included), stamp $WORKSHOP_HOME/installed-version
 #   5. macOS: clear the quarantine attribute; run `workshop --version`
-#   6. say what happened (`Installed Workshop 0.2.2` / `Updated Workshop 0.2.0 -> 0.2.2`) and
-#      what to do next: `cd <project> && workshop`
+#   6. put $WORKSHOP_HOME/bin on PATH for the user's shell: one marked block in ~/.zshrc,
+#      ~/.bashrc or ~/.config/fish/config.fish (replaced, never duplicated, on a re-run)
+#   7. say what happened (`Installed Workshop 0.2.2` / `Updated Workshop 0.2.0 -> 0.2.2`) and
+#      what to do next: open a new terminal and type `workshop` (plus the line for this one)
 #
 # That is all a default install downloads: the one `workshop` archive. Voice dictation (the
 # `voice-engine` helper and the Whisper speech model, up to ~570 MB) is NOT installed here;
@@ -422,6 +424,70 @@ $ve_version"
   mv -f "$VOICE_DIR/.model.selected.tmp.$$" "$VOICE_DIR/model.selected"
 }
 
+# --- PATH: written into the user's shell startup file, once ------------------------------
+# Like Grok Build's installer: `workshop` works in the next terminal without a manual edit. The
+# lines sit between markers so a re-run replaces them instead of adding a second copy, and the
+# file is written through (never swapped out), so a dotfiles symlink stays a symlink.
+PATH_BLOCK_BEGIN='# >>> workshop installer >>>'
+PATH_BLOCK_END='# <<< workshop installer <<<'
+
+# shell_rc_file NAME -> the startup file an interactive NAME shell reads; nothing for other shells.
+shell_rc_file() {
+  case "$1" in
+    bash) printf '%s\n' "${HOME}/.bashrc" ;;
+    zsh) printf '%s\n' "${ZDOTDIR:-$HOME}/.zshrc" ;;
+    fish) printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" ;;
+    *) printf '\n' ;;
+  esac
+}
+
+# path_line NAME DIR -> the one line that puts DIR on PATH in a NAME shell (fish has its own verb;
+# anything else gets the POSIX export). A DIR under $HOME is written as $HOME so the line survives
+# a moved home directory and reads the same for everyone.
+path_line() {
+  pl_dir=$2
+  case "$pl_dir" in
+    "$HOME"/*) pl_dir="\$HOME${pl_dir#"$HOME"}" ;;
+  esac
+  case "$1" in
+    fish) printf 'fish_add_path %s\n' "$pl_dir" ;;
+    *) printf 'export PATH="%s:%s"\n' "$pl_dir" "\$PATH" ;;
+  esac
+}
+
+# write_path_block RC_FILE NAME DIR: add the marked block to RC_FILE, replace an older one in
+# place, or do nothing when the current line is already there. Returns non-zero when the file
+# could not be written (unwritable home, read-only dotfiles).
+write_path_block() {
+  wp_rc=$1
+  wp_line=$(path_line "$2" "$3")
+  if [ -f "$wp_rc" ] && grep -qxF -- "$wp_line" "$wp_rc"; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$wp_rc")" 2>/dev/null || return 1
+  if [ -f "$wp_rc" ] && grep -qF -- "$PATH_BLOCK_BEGIN" "$wp_rc"; then
+    wp_tmp="$wp_rc.workshop-installer.$$"
+    awk -v b="$PATH_BLOCK_BEGIN" -v e="$PATH_BLOCK_END" \
+      '$0 == b { skip = 1; next } $0 == e { skip = 0; next } !skip { print }' "$wp_rc" >"$wp_tmp" || { rm -f "$wp_tmp"; return 1; }
+    printf '\n%s\n%s\n%s\n' "$PATH_BLOCK_BEGIN" "$wp_line" "$PATH_BLOCK_END" >>"$wp_tmp"
+    cat "$wp_tmp" >"$wp_rc" || { rm -f "$wp_tmp"; return 1; }
+    rm -f "$wp_tmp"
+    return 0
+  fi
+  if [ -s "$wp_rc" ]; then
+    printf '\n' >>"$wp_rc" 2>/dev/null || return 1
+  fi
+  printf '%s\n%s\n%s\n' "$PATH_BLOCK_BEGIN" "$wp_line" "$PATH_BLOCK_END" >>"$wp_rc" 2>/dev/null
+}
+
+# pretty_home PATH -> PATH with a leading $HOME shown as ~ (for messages only).
+pretty_home() {
+  case "$1" in
+    "$HOME"/*) printf '~%s\n' "${1#"$HOME"}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
 main() {
   need uname
   need tar
@@ -542,19 +608,43 @@ $reported"
   if [ "$OS" = macos ]; then
     say "(Not Apple-notarized: if macOS ever blocks it, run  xattr -d com.apple.quarantine $bindir/$BIN)"
   fi
+
+  # Put bin/ on PATH for every future shell of the user's kind (bash, zsh, fish); other shells
+  # get the line to add by hand. The terminal this runs in cannot be changed from here, so it
+  # gets the same line to paste.
+  user_shell=$(basename "${SHELL:-}")
+  rc_file=$(shell_rc_file "$user_shell")
+  rc_written=""
+  if [ -n "$rc_file" ]; then
+    if write_path_block "$rc_file" "$user_shell" "$bindir"; then
+      rc_written=$rc_file
+      # macOS opens bash as a login shell, which reads ~/.bash_profile and not ~/.bashrc.
+      if [ "$user_shell" = bash ] && [ "$OS" = macos ] && [ -f "${HOME}/.bash_profile" ] \
+        && ! grep -q '\.bashrc' "${HOME}/.bash_profile"; then
+        printf '\n[ -r ~/.bashrc ] && . ~/.bashrc\n' >>"${HOME}/.bash_profile" 2>/dev/null || true
+      fi
+    else
+      say "Could not write $(pretty_home "$rc_file"); add Workshop to your PATH yourself:  $(path_line "$user_shell" "$bindir")"
+    fi
+  fi
+  if [ -n "$rc_written" ]; then
+    say "Added $(pretty_home "$bindir") to your PATH in $(pretty_home "$rc_written")."
+  fi
+  say ""
   case ":$PATH:" in
-    *":$bindir:"*) ;;
+    *":$bindir:"*)
+      say "  Type  $BIN  to start."
+      ;;
     *)
-      say ""
-      say "Add Workshop to your PATH (append to ~/.zshrc, ~/.bashrc or ~/.config/fish/config.fish):"
-      case "$(basename "${SHELL:-sh}")" in
-        fish) printf '  fish_add_path %s\n' "$bindir" >&2 ;;
-        *) printf '  export PATH="%s:%s"\n' "$bindir" "\$PATH" >&2 ;;
-      esac
+      say "  Open a new terminal and type  $BIN"
+      say "  (or, in this one, first run:  $(path_line "$user_shell" "$bindir"))"
+      if [ -z "$rc_written" ] && [ -z "$rc_file" ]; then
+        say "  To keep it, add that line to your shell's startup file."
+      fi
       ;;
   esac
-  printf '\n  cd <your-project> && %s\n\n' "$BIN" >&2
-  say "Then type what you want. Workshop starts on a free model; /model switches, /auth connects a subscription or an API key."
+  say ""
+  say "Workshop starts on a free model; /model switches, /auth connects a subscription or an API key."
 }
 
 main "$@"
