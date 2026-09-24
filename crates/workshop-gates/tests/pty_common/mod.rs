@@ -233,10 +233,46 @@ pub fn fake_opencode_answering(record: &Path) -> tempfile::TempDir {
 /// [`fake_opencode_answering`] replaying the given turn (JSON lines of `opencode serve` events)
 /// with `pace` seconds between events, so a gate can watch the transcript mid-turn.
 pub fn fake_opencode_answering_with(record: &Path, turn: &Path, pace: f64) -> tempfile::TempDir {
+    let providers = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../workshop-adapters/tests/fixtures/opencode_serve_providers.json");
+    fake_opencode_answering_serving(record, turn, pace, &providers)
+}
+
+/// The captured `/config/providers` answer without the models named in `dropped` (their catalog
+/// ids, `muse-spark-1.3-contributor-free`): what `opencode serve` reports once OpenCode retires
+/// them. Written next to `record`.
+pub fn providers_without(record: &Path, dropped: &[&str]) -> PathBuf {
+    let full = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../workshop-adapters/tests/fixtures/opencode_serve_providers.json");
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&full).expect("providers fixture"))
+            .expect("providers fixture is JSON");
+    if let Some(providers) = doc.get_mut("providers").and_then(|p| p.as_array_mut()) {
+        for provider in providers {
+            if let Some(models) = provider.get_mut("models").and_then(|m| m.as_object_mut()) {
+                for id in dropped {
+                    models.remove(*id);
+                }
+            }
+        }
+    }
+    let path = record
+        .parent()
+        .expect("record dir")
+        .join("providers-trimmed.json");
+    std::fs::write(&path, serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+    path
+}
+
+/// [`fake_opencode_answering_with`] serving `providers` as its `/config/providers` answer.
+pub fn fake_opencode_answering_serving(
+    record: &Path,
+    turn: &Path,
+    pace: f64,
+    providers: &Path,
+) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let adapter_fixtures =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../workshop-adapters/tests/fixtures");
     let script = format!(
         r#"#!/bin/sh
 case "$1" in
@@ -253,9 +289,7 @@ echo "fake opencode: unexpected $*" >&2
 exit 2
 "#,
         serve = fixtures.join("fake-opencode-serve-turn.py").display(),
-        providers = adapter_fixtures
-            .join("opencode_serve_providers.json")
-            .display(),
+        providers = providers.display(),
         turn = turn.display(),
         record = record.display(),
     );

@@ -1000,6 +1000,26 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             vec![]
         }
         TaskResult::WorkshopPickerLoaded(snap) => {
+            // The lists just read decide whether the picked model still exists (owner rule: it
+            // sticks unless it is gone). The engine list counts only once it was ever fetched —
+            // the pinned seed row is not evidence; a vendor counts once its probe finished.
+            let engine_known = snap
+                .catalog_status
+                .iter()
+                .find(|s| s.provider_id == workshop_auth::ENGINE_PROVIDER_ID)
+                .is_some_and(|s| s.freshness != workshop_auth::Freshness::Seed);
+            let engine: Vec<workshop_auth::EngineModel> = if engine_known {
+                snap.rows
+                    .iter()
+                    .filter_map(|r| match &r.kind {
+                        workshop_auth::RowKind::Engine(m) => Some(m.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let mut effects = crate::app::workshop::apply_retired_pick(app, &engine, &snap.rails);
             if let Some(picker) = app.connection_picker.as_mut() {
                 // The cursor lands on the active connection's row (never xAI, never Zen).
                 picker.apply_snapshot(snap);
@@ -1008,10 +1028,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 // live rows (and any `refresh failed` note) always land after the cached ones.
                 if picker.refresh_pending && !picker.refresh_in_flight {
                     picker.refresh_in_flight = true;
-                    return vec![Effect::WorkshopRefreshCatalogs {
+                    effects.push(Effect::WorkshopRefreshCatalogs {
                         force: false,
                         engine: app.workshop_engine.clone(),
-                    }];
+                    });
+                    return effects;
                 }
                 // Nothing live is queued (`/auth`, after a sign-in) but a signed-in rail has no
                 // cached list yet: ask its CLI. That snapshot never comes back `Loading`.
@@ -1020,10 +1041,10 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                         matches!(r.subscription, workshop_detect::RailModels::Loading)
                     })
                 {
-                    return vec![Effect::WorkshopRefreshRailModels];
+                    effects.push(Effect::WorkshopRefreshRailModels);
                 }
             }
-            vec![]
+            effects
         }
         TaskResult::WorkshopConnectDone {
             provider_id,
