@@ -243,7 +243,7 @@ mod tests {
                 ("WAYLAND_DISPLAY", "wayland-0"),
                 ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
                 ("XAUTHORITY", "/home/u/.Xauthority"),
-                ("SSH_AUTH_SOCK", "/run/user/1000/keyring/ssh"),
+                ("SSH_AUTH_SOCK", "/run/user/1000/ssh-agent.sock"),
                 ("TERM", "xterm-256color"),
                 ("RANDOM_THING", "x"),
                 // Still secret-shaped: never reaches the engine, exactly as for a probe.
@@ -266,7 +266,7 @@ mod tests {
             Some("unix:path=/run/user/1000/bus")
         );
         assert_eq!(get("XAUTHORITY"), Some("/home/u/.Xauthority"));
-        assert_eq!(get("SSH_AUTH_SOCK"), Some("/run/user/1000/keyring/ssh"));
+        assert_eq!(get("SSH_AUTH_SOCK"), Some("/run/user/1000/ssh-agent.sock"));
         // The user's own terminal type is kept; no CI-style values are forced on.
         assert_eq!(get("TERM"), Some("xterm-256color"));
         assert_eq!(get("RANDOM_THING"), Some("x"));
