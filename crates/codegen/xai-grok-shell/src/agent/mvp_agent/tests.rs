@@ -3813,36 +3813,43 @@ async fn cached_token_fallthrough_respects_kill_switch() {
     let _lockdown = EnvGuard::unset("GROK_DISABLE_API_KEY_AUTH");
     let _key = EnvGuard::set(XAI_API_KEY_ENV_VAR, "test-deployment-key");
     let agent = build_agent_with_api_key_auth_disabled();
+    // Workshop (gate:no-xai): the test agent has no session-login provider configured, so the
+    // fallthrough must fail closed rather than fall to interactive grok.com. Either way the
+    // kill switch keeps `xai.api_key` out of the fallthrough.
+    let _ = GROK_COM_METHOD_ID;
     assert_eq!(
         agent
             .cached_token_fallthrough_method_id()
             .as_ref()
             .map(|id| id.0.as_ref()),
-        Some(GROK_COM_METHOD_ID),
-        "disable_api_key_auth must keep the cached_token fallthrough on \
-         interactive grok.com so XAI_API_KEY can't bypass forced IdP login",
+        None,
+        "disable_api_key_auth must keep xai.api_key out of the cached_token fallthrough; \
+         with no session-login provider configured the fallthrough fails closed",
     );
 }
-/// No advertiseable credentials at all (no env key, no kill switch): the user genuinely needs to log in.
-/// The fallthrough is interactive `grok.com`.
+/// No advertiseable credentials at all (no env key, no kill switch) and no session-login provider:
+/// Workshop fails closed (gate:no-xai). The pager shows the connection picker; nothing here may
+/// resolve to interactive `grok.com`.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
-async fn cached_token_fallthrough_falls_to_grok_com_without_credentials() {
-    use crate::agent::auth_method::{
-        GROK_COM_METHOD_ID, LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR,
-    };
+async fn cached_token_fallthrough_fails_closed_without_credentials_or_provider() {
+    use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
     use xai_grok_test_support::EnvGuard;
     let _lockdown = EnvGuard::unset("GROK_DISABLE_API_KEY_AUTH");
     let _new = EnvGuard::unset(XAI_API_KEY_ENV_VAR);
     let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
     let agent = build_minimal_agent_for_tests();
+    assert!(
+        !agent.cfg.borrow().grok_com_config.has_session_login_provider(),
+        "precondition: Workshop default has no session-login provider",
+    );
     assert_eq!(
         agent
             .cached_token_fallthrough_method_id()
             .as_ref()
             .map(|id| id.0.as_ref()),
-        Some(GROK_COM_METHOD_ID),
-        "no API-key creds and no kill switch -> interactive grok.com login",
+        None,
+        "no API-key creds, no provider -> fail closed (connection picker), never grok.com",
     );
 }
 /// Verifies the 4-state matrix of `(disable_zdr_incompatible_tools, zdr_video_output_s3)`: | ZDR flag | S3 config | Result | |----------|-----------|---------------------------------------------| | false | None | Enabled, no S3 (normal non-ZDR mode) | | true | None | Disabled (ZDR with no escape hatch) | | false | Some | Enabled, S3 **not** threaded (non-ZDR) | | true | Some | Enabled, S3 threaded (ZDR with upload path) |
