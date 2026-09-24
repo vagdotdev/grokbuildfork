@@ -112,6 +112,53 @@ pub fn minimal_env_from_process(
     minimal_env(std::env::vars_os(), extra)
 }
 
+/// The environment for the OpenCode engine, whose commands are the user's own commands.
+///
+/// Unlike [`minimal_env`] (the strict allowlist for vendor-CLI probes), this passes the parent's
+/// environment through untouched except for the same secret-shaped deny list, and adds none of the
+/// CI-style [`FIXED`] values. Grok Build's shell tool inherits the user's environment untouched
+/// (`xai-grok-tools/src/computer/local/terminal.rs`, `apply_child_env`); this is the engine's
+/// equivalent. In particular `DISPLAY`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`,
+/// `XAUTHORITY` and `SSH_AUTH_SOCK` reach the engine's commands, so a GUI the model launches can
+/// open on the desktop, and `CI` / `TERM=dumb` / `NO_COLOR` are not forced onto them.
+///
+/// `extra` entries are added after the passthrough and are rejected if they are secret-shaped, the
+/// same as [`minimal_env`].
+pub fn engine_env<I>(
+    parent: I,
+    extra: &[(String, String)],
+) -> Result<BTreeMap<OsString, OsString>, DeniedEnvVar>
+where
+    I: IntoIterator<Item = (OsString, OsString)>,
+{
+    let mut out = BTreeMap::new();
+    for (k, v) in parent {
+        match k.to_str() {
+            // A secret-shaped name never reaches the engine, exactly as for a probe.
+            Some(key) if is_denied(key) => continue,
+            // Non-UTF-8 names cannot be secret-shaped (the deny list is ASCII) and Grok Build
+            // inherits them too; pass them through rather than dropping the user's environment.
+            _ => {
+                out.insert(k, v);
+            }
+        }
+    }
+    for (k, v) in extra {
+        if is_denied(k) {
+            return Err(DeniedEnvVar(k.clone()));
+        }
+        out.insert(OsString::from(k), OsString::from(v));
+    }
+    Ok(out)
+}
+
+/// Convenience: [`engine_env`] over the current process environment.
+pub fn engine_env_from_process(
+    extra: &[(String, String)],
+) -> Result<BTreeMap<OsString, OsString>, DeniedEnvVar> {
+    engine_env(std::env::vars_os(), extra)
+}
+
 /// Apply an environment map to a command, replacing whatever it had.
 pub fn apply(cmd: &mut tokio::process::Command, env: &BTreeMap<OsString, OsString>) {
     cmd.env_clear();
@@ -172,5 +219,51 @@ mod tests {
         assert!(is_denied("openai_api_key"));
         assert!(is_denied("AWS_SECRET_ACCESS_KEY"));
         assert!(!is_denied("CLAUDE_CONFIG_DIR"));
+    }
+
+    #[test]
+    fn engine_env_passes_the_desktop_through_and_forces_no_ci_style() {
+        let env = engine_env(
+            parent(&[
+                ("HOME", "/home/u"),
+                ("PATH", "/usr/bin"),
+                ("DISPLAY", ":1"),
+                ("WAYLAND_DISPLAY", "wayland-0"),
+                ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
+                ("XAUTHORITY", "/home/u/.Xauthority"),
+                ("SSH_AUTH_SOCK", "/run/user/1000/keyring/ssh"),
+                ("TERM", "xterm-256color"),
+                ("RANDOM_THING", "x"),
+                // Still secret-shaped: never reaches the engine, exactly as for a probe.
+                ("ANTHROPIC_API_KEY", "sk-ant"),
+                ("GITHUB_TOKEN", "ghp"),
+            ]),
+            &[],
+        )
+        .unwrap();
+        let get = |k: &str| env.get(&OsString::from(k)).and_then(|v| v.to_str());
+        // The desktop reaches the engine, so a GUI the model launches can open on the desktop.
+        assert_eq!(get("DISPLAY"), Some(":1"));
+        assert_eq!(get("WAYLAND_DISPLAY"), Some("wayland-0"));
+        assert_eq!(
+            get("DBUS_SESSION_BUS_ADDRESS"),
+            Some("unix:path=/run/user/1000/bus")
+        );
+        assert_eq!(get("XAUTHORITY"), Some("/home/u/.Xauthority"));
+        assert_eq!(get("SSH_AUTH_SOCK"), Some("/run/user/1000/keyring/ssh"));
+        // The user's own terminal type is kept; no CI-style values are forced on.
+        assert_eq!(get("TERM"), Some("xterm-256color"));
+        assert_eq!(get("RANDOM_THING"), Some("x"));
+        assert!(env.get(&OsString::from("CI")).is_none());
+        assert!(env.get(&OsString::from("NO_COLOR")).is_none());
+        // Secrets are still stripped.
+        assert!(env.get(&OsString::from("ANTHROPIC_API_KEY")).is_none());
+        assert!(env.get(&OsString::from("GITHUB_TOKEN")).is_none());
+    }
+
+    #[test]
+    fn engine_env_extra_cannot_smuggle_secrets() {
+        let err = engine_env(parent(&[]), &[("MY_TOKEN".into(), "t".into())]).unwrap_err();
+        assert_eq!(err.0, "MY_TOKEN");
     }
 }
