@@ -45,6 +45,46 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// A release version strictly behind the binary under test (`workshop 0.2.1-dev (…)` → `0.2.0`),
+/// the way a channel that has not caught up with a release is. A build that names no release
+/// (`0.0.0-dev`: no `v*` tag in its checkout, no `WORKSHOP_VERSION`) has nothing behind it, and
+/// the gate says so rather than testing an update that is legitimately newer.
+#[allow(clippy::disallowed_methods)] // one `--version` of the binary under test
+fn version_behind(bin: &Path) -> String {
+    let out = std::process::Command::new(bin)
+        .arg("--version")
+        .output()
+        .expect("workshop --version");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let version = text
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .split(['-', '+'])
+        .next()
+        .unwrap_or_default();
+    let mut parts: Vec<u64> = version.split('.').filter_map(|p| p.parse().ok()).collect();
+    assert_eq!(
+        parts.len(),
+        3,
+        "`workshop --version` names a semver: {text:?}"
+    );
+    assert!(
+        parts.iter().any(|p| *p > 0),
+        "the binary under test is `{version}`: build it from a checkout with its `v*` tags (or with WORKSHOP_VERSION set) so a channel can be behind it"
+    );
+    for i in (0..3).rev() {
+        if parts[i] > 0 {
+            parts[i] -= 1;
+            for later in parts.iter_mut().skip(i + 1) {
+                *later = 0;
+            }
+            break;
+        }
+    }
+    format!("{}.{}.{}", parts[0], parts[1], parts[2])
+}
+
 /// A loopback release channel: `stable.json` pointing at one `tar.gz` (a `workshop` stub that
 /// answers `--version`) served from the same base, every request logged.
 struct Channel {
@@ -196,7 +236,8 @@ fn quit(j: &mut Journey) {
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (loopback channel); run with --include-ignored"]
 fn older_channel_version_is_not_installed() {
     let Some(bin) = bin_from_env() else { return };
-    let channel = serve_channel("0.0.1");
+    let behind = version_behind(&bin);
+    let channel = serve_channel(&behind);
     let fake = fake_opencode("crash");
     let mut j = spawn_with_channel(
         "updater-older",
@@ -221,7 +262,7 @@ fn older_channel_version_is_not_installed() {
     let requests = channel.requests();
     assert!(
         !requests.iter().any(|r| r.contains("tar.gz")),
-        "an older version is never downloaded: {requests:?}"
+        "an older version ({behind}) is never downloaded: {requests:?}"
     );
     let log = unified_log(&j);
     assert!(

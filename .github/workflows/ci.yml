@@ -111,7 +111,12 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
+      # Tags included: the gate binary's version is the nearest `v*` tag plus `-dev`, as any source
+      # build's is (`0.0.0-dev` otherwise, which every channel version out-updates — the updater
+      # gates need a version a channel can be behind).
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Free disk space
         # This job builds the whole workspace several times (gates, overlay + upstream tests, the
         # pager lib suite, the binary) with a shared `target/`; the hosted runner's ~14 GB root fills
