@@ -3,23 +3,31 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/OWNER/NAME/release-channel/install.sh | sh
 #
-# Steps, in order:
+# What it does, in order:
 #   1. detect OS and CPU (macOS/Linux, x86_64/aarch64; Rosetta is corrected to arm64)
 #   2. fetch the channel manifest -> version, archive URL, SHA-256
 #   3. download the archive, verify its SHA-256, extract `workshop`
-#   4. install $WORKSHOP_HOME/downloads/workshop-<version>-<platform>
-#      and point the symlink $WORKSHOP_HOME/bin/workshop at it
+#   4. install $WORKSHOP_HOME/downloads/workshop-<version>-<platform>, point the symlink
+#      $WORKSHOP_HOME/bin/workshop at it (replacing whatever was there, a plain file from a
+#      manual tar install included), stamp $WORKSHOP_HOME/installed-version
 #   5. macOS: clear the quarantine attribute; run `workshop --version`
-#   6. voice dictation (no prompt, no flag): install the `voice-engine` helper beside the
-#      CLI, pick the Whisper model tier for this machine (Apple Silicon -> turbo; otherwise a
-#      timed probe decode on `base` decides between turbo/small/base), download that model into
-#      $WORKSHOP_HOME/voice with resume + SHA-256 verification (three attempts, project mirror
-#      first, then Hugging Face), and record the choice. A matching file is never downloaded again.
-#   7. print a PATH hint
+#   6. say what happened (`Installed Workshop 0.2.2` / `Updated Workshop 0.2.0 -> 0.2.2`) and
+#      what to do next: `cd <project> && workshop`
 #
-# Network: manifest (or SHA256SUMS when WORKSHOP_VERSION pins a version), the CLI archive,
-# SHA256SUMS, MODEL.lock.json, the helper archive and the model file(s), all from the release
-# repo (models fall back to huggingface.co). No telemetry.
+# That is all a default install downloads: the one `workshop` archive. Voice dictation (the
+# `voice-engine` helper and the Whisper speech model, up to ~570 MB) is NOT installed here;
+# Workshop fetches both later, on its own. Only WORKSHOP_VOICE=1 (or a forced
+# WORKSHOP_VOICE_TIER) makes the installer do it now: it picks the tier for this machine (Apple
+# Silicon -> turbo; otherwise a timed probe decode on `base` decides between turbo/small/base),
+# downloads that model into $WORKSHOP_HOME/voice with resume + SHA-256 verification (three
+# attempts, project mirror first, then Hugging Face), and records the choice. A matching file
+# is never downloaded again.
+#
+# The output reads like a product ("Verifying... done"), not a log.
+#
+# Network: manifest (or SHA256SUMS when WORKSHOP_VERSION pins a version) and the CLI archive,
+# from the release repo. With WORKSHOP_VOICE=1 also SHA256SUMS, MODEL.lock.json, the helper
+# archive and the model file(s) (models fall back to huggingface.co). No telemetry.
 #
 # Environment:
 #   WORKSHOP_CHANNEL        stable (default) or alpha
@@ -29,6 +37,7 @@
 #   WORKSHOP_MANIFEST_URL   full manifest URL (mirrors, tests)
 #   WORKSHOP_DOWNLOAD_BASE  asset base containing v<version>/ directories, for pinned
 #                           installs (mirrors, tests; default: the GitHub release assets)
+#   WORKSHOP_VOICE=1        also install voice dictation now (helper + speech model)
 #
 # This file is POSIX sh on purpose: it runs under whatever `sh` the user has.
 set -eu
@@ -38,8 +47,11 @@ WORKSHOP_RELEASE_REPO_DEFAULT="vagdotdev/grokbuildfork"
 CHANNEL_BRANCH="release-channel"
 BIN="workshop"
 
-say() { printf 'workshop: %s\n' "$*" >&2; }
-die() { printf 'workshop: error: %s\n' "$*" >&2; exit 1; }
+say() { printf '%s\n' "$*" >&2; }
+# One phase on one line: `Verifying... ` then `done` (or a short result) when it ends.
+begin() { printf '%s… ' "$1" >&2; }
+finish() { printf '%s\n' "${1:-done}" >&2; }
+die() { printf '\nCould not install Workshop: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 
 check_url() {
@@ -55,6 +67,18 @@ fetch() {
   if command -v curl >/dev/null 2>&1; then
     if [ -t 2 ]; then progress="--progress-bar"; else progress="-s"; fi
     curl -fSL "$progress" --proto '=https,http' --proto-redir '=https' --retry 3 -o "$2" "$1"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O "$2" "$1"
+  else
+    die "need curl or wget"
+  fi
+}
+
+# Small side downloads (manifest, checksums, pins): no progress bar, errors still reported.
+fetch_quiet() {
+  check_url "$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --proto '=https,http' --proto-redir '=https' --retry 3 -o "$2" "$1"
   elif command -v wget >/dev/null 2>&1; then
     wget -q -O "$2" "$1"
   else
@@ -108,19 +132,51 @@ detect_platform() {
   fi
   OS=$os
   PLATFORM="$os-$arch"
+  case "$PLATFORM" in
+    macos-aarch64) PLATFORM_LABEL="macOS, Apple Silicon" ;;
+    macos-x86_64) PLATFORM_LABEL="macOS, Intel" ;;
+    *) PLATFORM_LABEL="$os $arch" ;;
+  esac
+}
+
+# The Workshop already at $bindir/$BIN, if its version can be told: from the installer's own
+# symlink name (downloads/workshop-<version>-<platform>), else from the version stamp this
+# installer leaves. A plain binary from a manual tar install has neither, so nothing is claimed
+# about its version (`workshop --version` still reports the upstream build number).
+previous_version() {
+  p="$bindir/$BIN"
+  if [ -L "$p" ]; then
+    t=$(basename "$(readlink "$p")")
+    v=${t#"$BIN-"}
+    v=${v%"-$PLATFORM"}
+    if is_semver "$v"; then printf '%s' "$v"; return 0; fi
+  fi
+  if [ -f "$home/installed-version" ]; then
+    v=$(tr -d '\n\r ' <"$home/installed-version")
+    if is_semver "$v"; then printf '%s' "$v"; return 0; fi
+  fi
+  return 1
 }
 
 # ---------------------------------------------------------------------------
-# Voice dictation: helper + model (voice/MODEL.lock.json in the source tree is the pin; the
-# release ships it as the MODEL.lock.json asset so both installer and app read one file).
+# Voice dictation: helper + model, only on request (voice/MODEL.lock.json in the source tree is
+# the pin; the release ships it as the MODEL.lock.json asset so both installer and app read one
+# file). A default install touches none of this: Workshop fetches voice on its own later.
 #
+#   WORKSHOP_VOICE=1                 install the helper and download the model now
+#   WORKSHOP_VOICE_TIER=turbo|small|base   force the tier, skip the hardware probe (implies WORKSHOP_VOICE=1)
 # Undocumented CI escape hatches (never needed by users; never printed):
-#   WORKSHOP_VOICE_SKIP=1            skip helper + model entirely (machines with no mirror access)
-#   WORKSHOP_VOICE_TIER=turbo|small|base   force the tier, skip the hardware probe
+#   WORKSHOP_VOICE_SKIP=1            never install voice, even with WORKSHOP_VOICE=1
 #   WORKSHOP_VOICE_MODEL_BASE=URL    base URL for the model mirror (default: the release assets)
 #   WORKSHOP_VOICE_UPSTREAM_BASE=URL base URL replacing https://huggingface.co/... upstream files
 # ---------------------------------------------------------------------------
 VOICE_ENGINE_BIN="voice-engine"
+
+# Whether this run installs voice dictation: only when asked for.
+voice_requested() {
+  [ "${WORKSHOP_VOICE_SKIP:-0}" = 1 ] && return 1
+  [ "${WORKSHOP_VOICE:-0}" = 1 ] || [ -n "${WORKSHOP_VOICE_TIER:-}" ]
+}
 
 # Number under `"KEY": 123` inside a JSON block.
 block_num() {
@@ -219,7 +275,7 @@ voice_fetch_model() {
   if [ "$(avail_kib "$2")" -lt "$need_kib" ]; then
     die "not enough disk space in $2 for the voice model ($(( VM_SIZE / 1048576 )) MiB needed); free some space and re-run this command"
   fi
-  say "Downloading voice model..."
+  say "Downloading the voice model ($VM_FILE, $(( VM_SIZE / 1048576 )) MiB)..."
   mirror="${3%/}/$VM_FILE"
   attempt=1
   while [ "$attempt" -le 3 ]; do
@@ -303,9 +359,8 @@ voice_pick_tier() {
   fi
 }
 
-# install_voice VERSION PLATFORM ASSET_BASE SHA256SUMS_PATH
+# install_voice VERSION PLATFORM ASSET_BASE SHA256SUMS_PATH (only when voice_requested)
 install_voice() {
-  [ "${WORKSHOP_VOICE_SKIP:-0}" = 1 ] && return 0
   v_version=$1
   v_platform=$2
   v_base=${3%/}
@@ -314,10 +369,11 @@ install_voice() {
   VOICE_MODEL_BASE="${WORKSHOP_VOICE_MODEL_BASE:-$v_base}"
 
   # 1. helper beside the CLI (same downloads/ + bin/ symlink layout as workshop itself)
+  begin "Installing the voice helper"
   asset="$VOICE_ENGINE_BIN-$v_version-$v_platform.tar.gz"
   sha=$(awk -v n="$asset" '$2 == n {print $1}' "$v_sums")
   is_sha256 "$sha" || die "release $v_version has no voice helper for $v_platform (SHA256SUMS lists no $asset); /voice cannot work without it"
-  fetch "$v_base/$asset" "$tmp/$asset"
+  fetch_quiet "$v_base/$asset" "$tmp/$asset"
   actual=$(sha256_of "$tmp/$asset")
   [ "$actual" = "$sha" ] || die "checksum mismatch for $asset
   expected: $sha
@@ -339,11 +395,11 @@ install_voice() {
     die "$VOICE_ENGINE_PATH --version failed:
 $ve_version"
   fi
-  say "$ve_version"
+  finish "done ($ve_version)"
 
   # 2. model pins
   VOICE_LOCK="$tmp/MODEL.lock.json"
-  fetch "$v_base/MODEL.lock.json" "$VOICE_LOCK"
+  fetch_quiet "$v_base/MODEL.lock.json" "$VOICE_LOCK"
   [ -n "$(json_block "$VOICE_LOCK" base)" ] || die "release $v_version ships no MODEL.lock.json with model pins"
 
   # 3. an earlier install (or the app) already chose a tier and its file verifies: nothing to download
@@ -377,26 +433,32 @@ main() {
   case "$channel" in stable | alpha) ;; *) die "WORKSHOP_CHANNEL must be stable or alpha, got '$channel'" ;; esac
   home="${WORKSHOP_HOME:-$HOME/.workshop}"
   pinned="${WORKSHOP_VERSION:-}"
+  downloads="$home/downloads"
+  bindir="$home/bin"
 
   detect_platform
+  # What is there now, before anything is replaced: a version when it can be told, and whether
+  # anything (symlink, plain file, even a dangling link) sits at bin/workshop at all.
+  previous=$(previous_version || true)
+  had_previous=0
+  if [ -e "$bindir/$BIN" ] || [ -L "$bindir/$BIN" ]; then had_previous=1; fi
 
   tmp=$(mktemp -d 2>/dev/null || mktemp -d -t workshop)
   trap 'rm -rf "$tmp"' EXIT INT TERM
 
+  begin "Finding the latest Workshop"
   if [ -n "$pinned" ]; then
     is_semver "$pinned" || die "WORKSHOP_VERSION must be a semver version like 1.2.3 or 1.2.3-alpha.1"
     version=$pinned
     asset="$BIN-$version-$PLATFORM.tar.gz"
     base="${WORKSHOP_DOWNLOAD_BASE:-https://github.com/$repo/releases/download}"
     url="$base/v$version/$asset"
-    say "fetching SHA256SUMS for v$version"
-    fetch "$base/v$version/SHA256SUMS" "$tmp/SHA256SUMS"
+    fetch_quiet "$base/v$version/SHA256SUMS" "$tmp/SHA256SUMS"
     sha=$(awk -v n="$asset" '$2 == n {print $1}' "$tmp/SHA256SUMS")
     [ -n "$sha" ] || die "v$version has no asset for $PLATFORM (SHA256SUMS lists no $asset)"
   else
     manifest_url="${WORKSHOP_MANIFEST_URL:-https://raw.githubusercontent.com/$repo/$CHANNEL_BRANCH/$channel.json}"
-    say "fetching $channel channel manifest"
-    fetch "$manifest_url" "$tmp/manifest.json"
+    fetch_quiet "$manifest_url" "$tmp/manifest.json"
     version=$(json_str "$tmp/manifest.json" version)
     is_semver "$version" || die "manifest at $manifest_url has no valid version field"
     block=$(json_block "$tmp/manifest.json" "$PLATFORM")
@@ -407,14 +469,19 @@ main() {
   fi
   is_sha256 "$sha" || die "manifest has no valid sha256 for $PLATFORM"
   case "$asset" in *.tar.gz) ;; *) die "unexpected asset name: $asset" ;; esac
-  # Every release asset (CLI, voice helper, model mirror) lives next to the CLI archive.
+  finish "$version ($PLATFORM_LABEL)"
+  # Every release asset (CLI, voice helper, model mirror) lives next to the CLI archive; the
+  # checksum list is only needed for the voice helper.
   asset_base=${url%/*}
-  if [ ! -f "$tmp/SHA256SUMS" ] && [ "${WORKSHOP_VOICE_SKIP:-0}" != 1 ]; then
-    fetch "$asset_base/SHA256SUMS" "$tmp/SHA256SUMS"
+  if voice_requested && [ ! -f "$tmp/SHA256SUMS" ]; then
+    fetch_quiet "$asset_base/SHA256SUMS" "$tmp/SHA256SUMS"
   fi
 
-  say "downloading $BIN $version for $PLATFORM"
+  # The archive is the one download a default install makes; its progress bar (on a terminal)
+  # takes the line under this one.
+  say "Downloading Workshop ${version}…"
   fetch "$url" "$tmp/$asset"
+  begin "Verifying"
   actual=$(sha256_of "$tmp/$asset")
   if [ "$actual" != "$sha" ]; then
     die "checksum mismatch for $asset
@@ -422,14 +489,12 @@ main() {
   actual:   $actual
 The download is corrupt or tampered with; nothing was installed."
   fi
-  say "checksum verified"
+  finish
 
+  begin "Installing"
   mkdir -p "$tmp/x"
   tar -xzf "$tmp/$asset" -C "$tmp/x"
   [ -f "$tmp/x/$BIN" ] || die "archive does not contain a $BIN binary"
-
-  downloads="$home/downloads"
-  bindir="$home/bin"
   mkdir -p "$downloads" "$bindir"
   name="$BIN-$version-$PLATFORM"
   chmod 755 "$tmp/x/$BIN"
@@ -438,9 +503,13 @@ The download is corrupt or tampered with; nothing was installed."
   if [ "$OS" = macos ] && command -v xattr >/dev/null 2>&1; then
     xattr -d com.apple.quarantine "$downloads/$name" 2>/dev/null || true
   fi
+  # `mv` over whatever sits at bin/workshop — the previous symlink, or a plain binary from a
+  # manual tar install — replaces it in one step; a directory there is the one thing we refuse.
+  [ ! -d "$bindir/$BIN" ] || [ -L "$bindir/$BIN" ] || die "$bindir/$BIN is a directory; move it aside and re-run"
   ln -s "../downloads/$name" "$bindir/.$BIN.tmp.$$"
   mv -f "$bindir/.$BIN.tmp.$$" "$bindir/$BIN"
-  say "installed $bindir/$BIN -> downloads/$name"
+  printf '%s\n' "$version" >"$home/.installed-version.tmp.$$"
+  mv -f "$home/.installed-version.tmp.$$" "$home/installed-version"
 
   if ! reported=$("$bindir/$BIN" --version 2>&1); then
     if [ "$OS" = macos ]; then
@@ -452,24 +521,40 @@ $reported"
     die "$bindir/$BIN --version failed:
 $reported"
   fi
-  say "$reported"
-  if [ "$OS" = macos ]; then
-    say "macOS note: this build is not Apple-notarized. If it is ever blocked, run: xattr -d com.apple.quarantine $bindir/$BIN"
+  finish
+
+  if voice_requested; then
+    install_voice "$version" "$PLATFORM" "$asset_base" "$tmp/SHA256SUMS"
   fi
 
-  # Voice dictation is part of the install, not a follow-up step (voice-spec §6.3).
-  install_voice "$version" "$PLATFORM" "$asset_base" "$tmp/SHA256SUMS"
-
+  say ""
+  if [ -z "$previous" ]; then
+    if [ "$had_previous" = 1 ]; then
+      say "Replaced the existing Workshop with $version."
+    else
+      say "Installed Workshop $version."
+    fi
+  elif [ "$previous" = "$version" ]; then
+    say "Workshop $version was already installed; refreshed."
+  else
+    say "Updated Workshop $previous → $version."
+  fi
+  if [ "$OS" = macos ]; then
+    say "(Not Apple-notarized: if macOS ever blocks it, run  xattr -d com.apple.quarantine $bindir/$BIN)"
+  fi
   case ":$PATH:" in
-    *":$bindir:"*) say "run: $BIN" ;;
+    *":$bindir:"*) ;;
     *)
-      say "add Workshop to your PATH (append to ~/.zshrc, ~/.bashrc or ~/.config/fish/config.fish), then run: $BIN"
+      say ""
+      say "Add Workshop to your PATH (append to ~/.zshrc, ~/.bashrc or ~/.config/fish/config.fish):"
       case "$(basename "${SHELL:-sh}")" in
         fish) printf '  fish_add_path %s\n' "$bindir" >&2 ;;
         *) printf '  export PATH="%s:%s"\n' "$bindir" "\$PATH" >&2 ;;
       esac
       ;;
   esac
+  printf '\n  cd <your-project> && %s\n\n' "$BIN" >&2
+  say "Then type what you want. Workshop starts on a free model; /model switches, /auth connects a subscription or an API key."
 }
 
 main "$@"
