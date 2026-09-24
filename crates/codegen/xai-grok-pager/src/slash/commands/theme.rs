@@ -116,7 +116,7 @@ impl SlashCommand for ThemeCommand {
         }
 
         // Named theme (including "auto"): parse and dispatch.
-        // Truecolor-only themes are accepted on any terminal; `Theme::apply_kind` clamps the live colors as needed
+        // Truecolor-only themes are accepted on any terminal; below truecolor `Theme::current` quantizes them
         match ThemeKind::from_name(trimmed) {
             Some(kind) => {
                 // An alias normalises to the canonical `display_name`
@@ -667,8 +667,8 @@ mod tests {
                 CommandResult::Action(Action::SetTheme(name)) => {
                     assert_eq!(
                         name, "tokyonight",
-                        "truecolor themes must be accepted; clamping happens \
-                         downstream in `Theme::apply_kind`",
+                        "truecolor themes must be accepted; below truecolor \
+                         `Theme::current` quantizes them",
                     );
                 }
                 other => panic!("expected Action::SetTheme(\"tokyonight\"), got {other:?}"),

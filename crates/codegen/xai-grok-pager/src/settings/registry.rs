@@ -574,7 +574,7 @@ pub fn current_value_for(
             ui.theme
                 .as_deref()
                 .and_then(crate::theme::canonical_name)
-                .unwrap_or("night"),
+                .unwrap_or(crate::theme::ThemeKind::DEFAULT.display_name()),
         )),
         "auto_dark_theme" => Some(SettingValue::Enum(
             ui.auto_dark_theme
@@ -836,7 +836,7 @@ mod tests {
                         .theme
                         .as_deref()
                         .and_then(crate::theme::canonical_name)
-                        .unwrap_or("night");
+                        .unwrap_or(crate::theme::ThemeKind::DEFAULT.display_name());
                     assert_eq!(
                         *default, expected,
                         "theme default drifts from UiConfig::default()",

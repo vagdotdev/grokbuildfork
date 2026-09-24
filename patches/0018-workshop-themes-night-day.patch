@@ -1,8 +1,112 @@
+diff --git a/crates/codegen/xai-grok-pager-render/src/theme/cache.rs b/crates/codegen/xai-grok-pager-render/src/theme/cache.rs
+index 16dc68f3..da781ef6 100644
+--- a/crates/codegen/xai-grok-pager-render/src/theme/cache.rs
++++ b/crates/codegen/xai-grok-pager-render/src/theme/cache.rs
+@@ -15,7 +15,7 @@ use super::system_appearance;
+ 
+ /// In-memory theme kind, encoded as a `u8` matching the `ThemeKind` discriminants.
+ /// Loaded from disk once at startup via `load_from_disk()`, then kept in sync by `set()`.
+-static CURRENT: AtomicU8 = AtomicU8::new(ThemeKind::GrokNight as u8);
++static CURRENT: AtomicU8 = AtomicU8::new(ThemeKind::DEFAULT as u8);
+ static LOADED: AtomicBool = AtomicBool::new(false);
+ #[cfg(any(test, feature = "test-support"))]
+ static TEST_LOCK: Mutex<()> = Mutex::new(());
+@@ -173,7 +173,7 @@ pub fn invalidate_auto_theme_config() {
+ 
+ // -- Theme resolution --------------------------------------------------------
+ 
+-/// Concrete kind, never `Auto`. Env (`GROK_THEME` / `LC_GROK_THEME`), then `[ui].theme`, then `GrokNight`.
++/// Concrete kind, never `Auto`. Env (`GROK_THEME` / `LC_GROK_THEME`), then `[ui].theme`, then [`ThemeKind::DEFAULT`].
+ #[must_use]
+ pub fn resolve_initial_theme() -> ThemeKind {
+     resolve_initial_theme_from(env_theme_name().as_deref(), load_from_disk(), true)
+@@ -231,7 +231,7 @@ fn resolve_from_config(config_theme: Option<ThemeKind>, osc11_fallback: bool) ->
+         return kind;
+     }
+ 
+-    ThemeKind::GrokNight
++    ThemeKind::DEFAULT
+ }
+ 
+ fn resolve_from_appearance(appearance: Option<system_appearance::SystemAppearance>) -> ThemeKind {
+@@ -561,7 +561,7 @@ mod tests {
+             );
+             assert!(is_auto_mode(), "auto must arm the appearance watcher");
+ 
+-            assert_eq!(resolve_from_config(None, false), ThemeKind::GrokNight);
++            assert_eq!(resolve_from_config(None, false), ThemeKind::DEFAULT);
+         });
+     }
+ 
+@@ -645,10 +645,11 @@ mod tests {
+     // -- resolve_from_config (resolve_initial_theme inner logic) ---------------
+ 
+     #[test]
+-    fn resolve_from_config_no_config_returns_groknight() {
++    fn resolve_from_config_no_config_returns_default() {
+         with_test_env(|| {
+             let result = resolve_from_config(None, true);
+-            assert_eq!(result, ThemeKind::GrokNight);
++            assert_eq!(result, ThemeKind::DEFAULT);
++            assert_eq!(result, ThemeKind::OscuraMidnight, "a fresh install starts on Oscura Midnight");
+             assert!(!is_auto_mode());
+         });
+     }
 diff --git a/crates/codegen/xai-grok-pager-render/src/theme/mod.rs b/crates/codegen/xai-grok-pager-render/src/theme/mod.rs
-index a32853ed..84494959 100644
+index a32853ed..5f79b4c5 100644
 --- a/crates/codegen/xai-grok-pager-render/src/theme/mod.rs
 +++ b/crates/codegen/xai-grok-pager-render/src/theme/mod.rs
-@@ -96,9 +96,9 @@ impl ThemeKind {
+@@ -1,5 +1,5 @@
+ //! All colors come from the `Theme` struct. No hardcoded colors elsewhere.
+-//! The default theme is GrokNight (neutral gray base with TokyoNight accents).
++//! Workshop's default theme ([`ThemeKind::DEFAULT`]) is Oscura Midnight; upstream's is GrokNight (neutral gray base with TokyoNight accents).
+ //!
+ //! ## Color support
+ //!
+@@ -40,6 +40,10 @@ pub enum ThemeKind {
+ }
+ 
+ impl ThemeKind {
++    /// Workshop: the theme of a fresh install (`[ui].theme` unset). Upstream starts on GrokNight.
++    /// Auto mode keeps upstream's Night / Day pair (`auto_dark_theme` / `auto_light_theme`).
++    pub const DEFAULT: ThemeKind = ThemeKind::OscuraMidnight;
++
+     /// All theme kinds (including those that may not work on the current terminal).
+     pub const ALL: &[ThemeKind] = &[
+         ThemeKind::GrokNight,
+@@ -68,37 +72,18 @@ impl ThemeKind {
+ 
+     /// Theme kinds available on the current terminal.
+     ///
+-    /// [`selectable()`] minus themes that require truecolor when the terminal does not support it (e.g., macOS Terminal.app is 256-color).
++    /// Workshop: every [`selectable()`] theme, on every terminal. Below truecolor (macOS Terminal.app is
++    /// 256-color) a truecolor theme renders through [`Theme::quantized`] like it already does at startup,
++    /// instead of being hidden here and swapped for Night by [`Theme::apply_kind`].
+     pub fn available() -> &'static [ThemeKind] {
+-        if color_support::detect().has_truecolor() {
+-            return Self::selectable();
+-        }
+-        if cache::terminal_theme_enabled() {
+-            static NO_TRUECOLOR: LazyLock<Vec<ThemeKind>> = LazyLock::new(|| {
+-                ThemeKind::ALL
+-                    .iter()
+-                    .copied()
+-                    .filter(|kind| !kind.requires_truecolor())
+-                    .collect()
+-            });
+-            &NO_TRUECOLOR
+-        } else {
+-            static NO_TRUECOLOR_GATED: LazyLock<Vec<ThemeKind>> = LazyLock::new(|| {
+-                ThemeKind::ALL
+-                    .iter()
+-                    .copied()
+-                    .filter(|kind| !kind.requires_truecolor() && !kind.is_terminal_native())
+-                    .collect()
+-            });
+-            &NO_TRUECOLOR_GATED
+-        }
++        Self::selectable()
+     }
  
      pub fn display_name(self) -> &'static str {
          match self {
@@ -14,7 +118,7 @@ index a32853ed..84494959 100644
              Self::RosePineMoon => "rosepine-moon",
              Self::OscuraMidnight => "oscura-midnight",
              Self::Terminal => "terminal",
-@@ -130,9 +130,11 @@ impl ThemeKind {
+@@ -130,9 +115,11 @@ impl ThemeKind {
      /// Alternate lowercase spellings accepted by [`from_name`](Self::from_name), excluding [`display_name`](Self::display_name).
      pub fn aliases(self) -> &'static [&'static str] {
          match self {
@@ -28,7 +132,7 @@ index a32853ed..84494959 100644
              Self::RosePineMoon => &["rosepine", "rose-pine", "rose-pine-moon"],
              Self::OscuraMidnight => &["oscura"],
              Self::Terminal => &["terminal-default", "transparent", "native"],
-@@ -180,13 +182,13 @@ pub fn canonical_name(value: &str) -> Option<&'static str> {
+@@ -180,15 +167,17 @@ pub fn canonical_name(value: &str) -> Option<&'static str> {
      ThemeKind::from_name(value).map(|k| k.display_name())
  }
  
@@ -44,8 +148,37 @@ index a32853ed..84494959 100644
 +        "day" | "grokday" => "Day",
          "tokyonight" => "Tokyo Night",
          "rosepine-moon" => "Rose Pine Moon",
++        // Workshop: the default theme gets its settings label in toasts too (upstream fell back to the canonical).
++        "oscura-midnight" => "Oscura Midnight",
          "terminal" => "Terminal",
-@@ -1175,6 +1177,7 @@ mod tests {
+         other => other,
+     }
+@@ -345,21 +334,13 @@ impl Theme {
+     }
+ 
+     /// In-memory only; the event loop emits OSC 12. No-op while the terminal-native lock is engaged.
++    /// Workshop: the picked kind is applied as-is; below truecolor [`Self::current`] quantizes it (no swap to Night).
+     pub fn apply_kind(kind: ThemeKind) -> ThemeKind {
+         if cache::terminal_native_locked() {
+             return cache::current_kind();
+         }
+-        let effective = Self::clamp_to_terminal(kind);
+-        cache::set(effective);
+-        effective
+-    }
+-
+-    fn clamp_to_terminal(kind: ThemeKind) -> ThemeKind {
+-        if kind.requires_truecolor() && !color_support::detect().has_truecolor() {
+-            ThemeKind::GrokNight
+-        } else {
+-            kind
+-        }
++        cache::set(kind);
++        kind
+     }
+ 
+     /// Native ~12-unit RGB steps collapse under Windows display gamma; ConHost needs ~24-32 levels per channel.
+@@ -1175,6 +1156,7 @@ mod tests {
          let cases = [
              ("auto", ThemeKind::Auto),
              ("system", ThemeKind::Auto),
@@ -54,7 +187,7 @@ index a32853ed..84494959 100644
              ("grok-night", ThemeKind::GrokNight),
              ("dark", ThemeKind::GrokNight),
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/settings.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/settings.rs
-index 4fec06be..f5811957 100644
+index 4fec06be..593c1bde 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/settings.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/settings.rs
 @@ -955,7 +955,7 @@ fn deep_link_preview_esc_closes_modal_and_forwards_revert_action() {
@@ -62,7 +195,7 @@ index 4fec06be..f5811957 100644
      match outcome {
          InputOutcome::Action(Action::PreviewTheme(name)) => {
 -            assert_eq!(name, "groknight");
-+            assert_eq!(name, "night");
++            assert_eq!(name, "oscura-midnight");
          }
          other => panic!("expected Action(PreviewTheme), got {other:?}"),
      }
@@ -391,7 +524,7 @@ index 4fec06be..f5811957 100644
          let _ = dispatch(
              Action::TaskComplete(TaskResult::SettingPersistFailed {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/status.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/status.rs
-index 2d8e1168..552e47f0 100644
+index 2d8e1168..56a15f12 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/status.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/status.rs
 @@ -1564,16 +1564,16 @@ fn dispatch_confirm_reset_setting_reset_dispatches_typed_setter_for_shared_enum(
@@ -399,23 +532,23 @@ index 2d8e1168..552e47f0 100644
          );
  
 -        // Reset dispatches SetTheme("groknight"), the registered default
-+        // Reset dispatches SetTheme("night"), the registered default
++        // Reset dispatches SetTheme("oscura-midnight"), the registered default
          assert_eq!(effects.len(), 1);
          match effects.first() {
              Some(Effect::PersistSetting { key, value, .. }) => {
                  assert_eq!(*key, "theme");
 -                assert_eq!(value, &SettingValue::Enum("groknight"));
-+                assert_eq!(value, &SettingValue::Enum("night"));
++                assert_eq!(value, &SettingValue::Enum("oscura-midnight"));
              }
              other => panic!("expected PersistSetting, got {other:?}"),
          }
 -        assert_eq!(app.current_ui.theme.as_deref(), Some("groknight"));
-+        assert_eq!(app.current_ui.theme.as_deref(), Some("night"));
++        assert_eq!(app.current_ui.theme.as_deref(), Some("oscura-midnight"));
      });
  }
  
 diff --git a/crates/codegen/xai-grok-pager/src/settings/defs.rs b/crates/codegen/xai-grok-pager/src/settings/defs.rs
-index 671138df..90071e16 100644
+index 671138df..69190560 100644
 --- a/crates/codegen/xai-grok-pager/src/settings/defs.rs
 +++ b/crates/codegen/xai-grok-pager/src/settings/defs.rs
 @@ -34,13 +34,13 @@ const THEME_CHOICES: &[EnumChoice] = &[
@@ -484,8 +617,8 @@ index 671138df..90071e16 100644
              kind: SettingKind::Enum {
 -                // `Option<String>`: `None` resolves to "groknight"
 -                default: "groknight",
-+                // `Option<String>`: `None` resolves to "night"
-+                default: "night",
++                // `Option<String>`: `None` resolves to "oscura-midnight" (`ThemeKind::DEFAULT`)
++                default: "oscura-midnight",
                  choices: THEME_CHOICES,
                  supports_preview: true,
              },
@@ -563,7 +696,7 @@ index 671138df..90071e16 100644
                  "ssh",
                  "wrap",
 diff --git a/crates/codegen/xai-grok-pager/src/settings/registry.rs b/crates/codegen/xai-grok-pager/src/settings/registry.rs
-index fbaebaa3..6569987d 100644
+index fbaebaa3..7ee4e020 100644
 --- a/crates/codegen/xai-grok-pager/src/settings/registry.rs
 +++ b/crates/codegen/xai-grok-pager/src/settings/registry.rs
 @@ -67,9 +67,9 @@ impl SettingCategory {
@@ -583,7 +716,7 @@ index fbaebaa3..6569987d 100644
                  .as_deref()
                  .and_then(crate::theme::canonical_name)
 -                .unwrap_or("groknight"),
-+                .unwrap_or("night"),
++                .unwrap_or(crate::theme::ThemeKind::DEFAULT.display_name()),
          )),
          "auto_dark_theme" => Some(SettingValue::Enum(
              ui.auto_dark_theme
@@ -608,7 +741,7 @@ index fbaebaa3..6569987d 100644
                          .as_deref()
                          .and_then(crate::theme::canonical_name)
 -                        .unwrap_or("groknight");
-+                        .unwrap_or("night");
++                        .unwrap_or(crate::theme::ThemeKind::DEFAULT.display_name());
                      assert_eq!(
                          *default, expected,
                          "theme default drifts from UiConfig::default()",
@@ -672,9 +805,18 @@ index fbaebaa3..6569987d 100644
  
      /// The persisted `fork_secondary_model` slug resolves to the catalog display name.
 diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/theme.rs b/crates/codegen/xai-grok-pager/src/slash/commands/theme.rs
-index 53b62d0d..f8eb684c 100644
+index 53b62d0d..c5afac02 100644
 --- a/crates/codegen/xai-grok-pager/src/slash/commands/theme.rs
 +++ b/crates/codegen/xai-grok-pager/src/slash/commands/theme.rs
+@@ -116,7 +116,7 @@ impl SlashCommand for ThemeCommand {
+         }
+ 
+         // Named theme (including "auto"): parse and dispatch.
+-        // Truecolor-only themes are accepted on any terminal; `Theme::apply_kind` clamps the live colors as needed
++        // Truecolor-only themes are accepted on any terminal; below truecolor `Theme::current` quantizes them
+         match ThemeKind::from_name(trimmed) {
+             Some(kind) => {
+                 // An alias normalises to the canonical `display_name`
 @@ -270,8 +270,8 @@ mod tests {
              let items = cmd.suggest_args(&ctx, "").expect("should return items");
              let groknight = items
@@ -740,8 +882,19 @@ index 53b62d0d..f8eb684c 100644
              assert_eq!(
                  Theme::current_kind(),
                  ThemeKind::GrokNight,
+@@ -667,8 +667,8 @@ mod tests {
+                 CommandResult::Action(Action::SetTheme(name)) => {
+                     assert_eq!(
+                         name, "tokyonight",
+-                        "truecolor themes must be accepted; clamping happens \
+-                         downstream in `Theme::apply_kind`",
++                        "truecolor themes must be accepted; below truecolor \
++                         `Theme::current` quantizes them",
+                     );
+                 }
+                 other => panic!("expected Action::SetTheme(\"tokyonight\"), got {other:?}"),
 diff --git a/crates/codegen/xai-grok-pager/tests/settings_e2e.rs b/crates/codegen/xai-grok-pager/tests/settings_e2e.rs
-index 02692458..8d4655dd 100644
+index 02692458..9042756b 100644
 --- a/crates/codegen/xai-grok-pager/tests/settings_e2e.rs
 +++ b/crates/codegen/xai-grok-pager/tests/settings_e2e.rs
 @@ -1999,9 +1999,9 @@ fn defaults_round_trip_through_registry() {
@@ -751,7 +904,7 @@ index 02692458..8d4655dd 100644
 -            "theme" => SettingValue::Enum("groknight"),
 -            "auto_dark_theme" => SettingValue::Enum("groknight"),
 -            "auto_light_theme" => SettingValue::Enum("grokday"),
-+            "theme" => SettingValue::Enum("night"),
++            "theme" => SettingValue::Enum("oscura-midnight"),
 +            "auto_dark_theme" => SettingValue::Enum("night"),
 +            "auto_light_theme" => SettingValue::Enum("day"),
              "render_mermaid" => SettingValue::Enum("auto"),

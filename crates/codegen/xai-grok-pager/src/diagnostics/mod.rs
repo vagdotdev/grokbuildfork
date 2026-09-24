@@ -219,7 +219,7 @@ pub enum WarningCategory {
     /// Every native copy then goes through a focus-dependent path (arboard via the XWayland selection bridge, or `wl-copy` without data-control).
     /// A copy fails if the terminal loses focus mid-copy.
     WaylandNoDataControl,
-    /// Color support is below truecolor, so truecolor themes are hidden. Reported by explicit `/doctor` only.
+    /// Color support is below truecolor, so truecolor themes are approximated. Reported by explicit `/doctor` only.
     LimitedColorSupport,
     /// tmux is attached to a client it believes cannot render 24-bit color, so it rewrites every truecolor cell to the client terminfo's palette.
     TmuxColorReduced,
@@ -952,7 +952,7 @@ pub fn format_clipboard_diagnostics(input: ClipboardDiagnosticsInput<'_>) -> Cli
     }
 }
 
-/// Explicit `/doctor` warning when truecolor themes are locked out.
+/// Explicit `/doctor` warning when truecolor themes are approximated (below truecolor).
 ///
 /// Not in `collect_startup_warnings`: limited color is normal on some emulators and would spam the welcome banner.
 pub fn color_support_warning(
@@ -1005,7 +1005,7 @@ pub fn color_support_warning(
     if brand == TerminalName::AppleTerminal {
         let mut warning = TerminalWarning::new(
             WarningCategory::LimitedColorSupport,
-            "Apple Terminal supports 256 colors, so truecolor themes are unavailable",
+            "Apple Terminal supports 256 colors, so truecolor themes are approximated",
             None,
             None,
         );
@@ -1017,7 +1017,7 @@ pub fn color_support_warning(
         let mut warning = TerminalWarning::new(
             WarningCategory::LimitedColorSupport,
             &format!(
-                "This terminal reports {level_label} color, so truecolor themes are unavailable"
+                "This terminal reports {level_label} color, so truecolor themes are approximated"
             ),
             Some("set -as terminal-features \",*:RGB\""),
             Some(tmux_config_path),
@@ -1032,7 +1032,7 @@ pub fn color_support_warning(
 
     let mut warning = TerminalWarning::new(
         WarningCategory::LimitedColorSupport,
-        &format!("This terminal reports {level_label} color, so truecolor themes are unavailable"),
+        &format!("This terminal reports {level_label} color, so truecolor themes are approximated"),
         Some("export COLORTERM=truecolor"),
         None,
     );

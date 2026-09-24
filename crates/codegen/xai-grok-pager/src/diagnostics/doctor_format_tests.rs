@@ -240,7 +240,7 @@ fn limited_color_output_is_stable() {
             "  multiplexer  None detected\n",
             "  ssh          no\n",
             "  color        256\n",
-            "  themes       3/6: night, day, terminal\n",
+            "  themes       all\n",
             "\n",
             "Clipboard\n",
             "  native       local (pbcopy)\n",
@@ -251,7 +251,7 @@ fn limited_color_output_is_stable() {
             "\n",
             "Issues (1)\n",
             "\n",
-            "  ! terminal.limited-color  This terminal reports 256 color, so truecolor themes are unavailable\n",
+            "  ! terminal.limited-color  This terminal reports 256 color, so truecolor themes are approximated\n",
             "      Run: `export COLORTERM=truecolor`\n",
             "      Note: Add this export to your shell startup file, such as `~/.zshrc` or `~/.bashrc`, then restart Workshop.\n",
         )

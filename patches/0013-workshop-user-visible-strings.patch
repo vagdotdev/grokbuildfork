@@ -2490,10 +2490,10 @@ index 6d2f3363..31eb2d47 100644
  
  Project and user entries replace lower-priority ones of the same name. Plugin entries only add servers whose names aren't already defined by a local file, so a local `lsp.json` always wins over a plugin. Plugin LSP servers load only after the plugin is trusted (see [Plugins](09-plugins.md)).
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/06-theming.md b/crates/codegen/xai-grok-pager/docs/user-guide/06-theming.md
-index 7ffcf8e6..34905fc3 100644
+index 7ffcf8e6..df7afeb2 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/06-theming.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/06-theming.md
-@@ -1,17 +1,17 @@
+@@ -1,38 +1,38 @@
  # Theming and Appearance Customization
  
 -Grok Build draws all TUI colors from a central theme. You can switch themes while Grok is running, follow your operating system's light or dark appearance, and adjust scrollback layout, animations, and block styling through configuration files.
@@ -2510,12 +2510,15 @@ index 7ffcf8e6..34905fc3 100644
  |-------|-------------|-------------|--------------------|
 -| **GrokNight** | `groknight`, `grok-night`, `dark` | Neutral dark base with a magenta accent. Default theme. Survives quantization cleanly on 256-color and 16-color terminals. | No |
 -| **GrokDay** | `grokday`, `grok-day`, `light`, `day` | Light theme for bright terminal backgrounds. | No |
-+| **Night** | `night`, `dark` | Neutral dark base with a magenta accent. Default theme. Survives quantization cleanly on 256-color and 16-color terminals. | No |
++| **Night** | `night`, `dark` | Neutral dark base with a magenta accent. Survives quantization cleanly on 256-color and 16-color terminals. | No |
 +| **Day** | `day`, `light` | Light theme for bright terminal backgrounds. | No |
  | **TokyoNight** | `tokyonight`, `tokyo-night`, `tokyo` | Dark, blue-tinted backgrounds from the Tokyo Night palette. Loses its character when quantized. | Yes |
  | **RosePineMoon** | `rosepine`, `rose-pine`, `rosepine-moon`, `rose-pine-moon` | Muted dark palette with mauve accents, from the Rosé Pine family. | Yes |
- | **OscuraMidnight** | `oscura`, `oscura-midnight` | Deep dark base with purple accents. | Yes |
-@@ -21,18 +21,18 @@ Theme names are case-insensitive. The `auto` option (alias `system`) is document
+-| **OscuraMidnight** | `oscura`, `oscura-midnight` | Deep dark base with purple accents. | Yes |
++| **OscuraMidnight** | `oscura`, `oscura-midnight` | Deep dark base with purple accents. Default theme. | Yes |
+ | **Terminal** | `terminal`, `terminal-default`, `transparent`, `native` | Your terminal's own colors: no background of its own, so the terminal canvas (translucency, background images) shows through. | No |
+ 
+ Theme names are case-insensitive. The `auto` option (alias `system`) is documented under [Auto Theme (System Appearance)](#auto-theme-system-appearance).
  
  ### Terminal Theme
  
@@ -2623,7 +2626,7 @@ index 7ffcf8e6..34905fc3 100644
  - On **16-color** terminals, colors map to ANSI names.
  
 -GrokNight and GrokDay use neutral grays that quantize cleanly. TokyoNight, RosePineMoon, and OscuraMidnight use distinctive tinted backgrounds that lose their character when quantized, which is why the theme picker hides them on non-truecolor terminals.
-+Night and Day use neutral grays that quantize cleanly. TokyoNight, RosePineMoon, and OscuraMidnight use distinctive tinted backgrounds that lose their character when quantized, which is why the theme picker hides them on non-truecolor terminals.
++Night and Day use neutral grays that quantize cleanly. TokyoNight, RosePineMoon, and OscuraMidnight use distinctive tinted backgrounds that lose some of their character when quantized; the theme picker still lists them on every terminal, and below truecolor they render in the nearest palette colors.
  
  ### Runtime-Generated Colors
  

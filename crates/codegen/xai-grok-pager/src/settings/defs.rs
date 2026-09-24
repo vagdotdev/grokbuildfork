@@ -701,8 +701,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "light",
             ],
             kind: SettingKind::Enum {
-                // `Option<String>`: `None` resolves to "night"
-                default: "night",
+                // `Option<String>`: `None` resolves to "oscura-midnight" (`ThemeKind::DEFAULT`)
+                default: "oscura-midnight",
                 choices: THEME_CHOICES,
                 supports_preview: true,
             },

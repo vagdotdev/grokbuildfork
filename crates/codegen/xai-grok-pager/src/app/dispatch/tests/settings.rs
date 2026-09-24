@@ -955,7 +955,7 @@ fn deep_link_preview_esc_closes_modal_and_forwards_revert_action() {
     );
     match outcome {
         InputOutcome::Action(Action::PreviewTheme(name)) => {
-            assert_eq!(name, "night");
+            assert_eq!(name, "oscura-midnight");
         }
         other => panic!("expected Action(PreviewTheme), got {other:?}"),
     }

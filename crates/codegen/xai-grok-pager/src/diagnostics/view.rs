@@ -169,12 +169,9 @@ fn facts(
     suppress_newline: bool,
 ) -> (DiagnosticFacts, ClipboardRecovery) {
     let ctx = snapshot.common.terminal;
+    // Workshop: every selectable theme is available on every terminal (quantized below truecolor).
     let available_themes = match snapshot.color_level {
-        RuntimeEvidence::Available(color_level) => crate::theme::ThemeKind::selectable()
-            .iter()
-            .copied()
-            .filter(|kind| color_level.has_truecolor() || !kind.requires_truecolor())
-            .collect(),
+        RuntimeEvidence::Available(_) => crate::theme::ThemeKind::selectable().to_vec(),
         RuntimeEvidence::Unavailable => Vec::new(),
     };
     let keyboard_capabilities =
