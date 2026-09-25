@@ -48,6 +48,10 @@
 //! * `mid_turn_stall_is_recovered` / `long_tool_run_is_not_a_stall` — a model that goes silent
 //!   mid-answer is aborted at the stall ceiling and the turn recovers (pool fallback, or one plain
 //!   line with Enter to retry); silence while a tool runs is not a stall.
+//! * `composing_a_large_tool_call_is_not_a_stall` / `a_dead_stream_mid_tool_call_still_ends` — a
+//!   model composing one large tool call (a whole page in a `write`: the engine publishes the
+//!   call once and nothing while its input streams) is not a stall past the ordinary ceiling; a
+//!   stream that dies mid-call still ends at the compose ceiling with the same recovery.
 //! * `sudo_password_is_asked_in_workshop_never_the_model` — `sudo` in an engine command asks in
 //!   Workshop's own masked prompt (SUDO_ASKPASS helper → this process); the password goes to sudo
 //!   only; Esc skips with "Skipped — needs your password" for the model.
@@ -1860,6 +1864,129 @@ fn long_tool_run_is_not_a_stall() {
     assert!(
         !screen.contains("stopped responding"),
         "no stall line for a slow command:\n{screen}"
+    );
+    quit(&mut j);
+}
+
+/// A model composing one large tool call (a whole page in a `write`) is silent for as long as
+/// the file takes — the engine publishes the call once, `pending`, and nothing while its input
+/// streams. That silence is not a stall: past the ordinary ceiling (3 s here; 90 s shipped) the
+/// call still runs, the file lands, the turn ends on the same model — never handed to another.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn composing_a_large_tool_call_is_not_a_stall() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut env: Vec<(&str, &str)> = OFFLINE.to_vec();
+    env.push(("WORKSHOP_STALL_TIMEOUT_SECS", "3"));
+    let mut j = pty_common::spawn(
+        "engine-trust/composing-not-a-stall",
+        &bin,
+        &env,
+        Some(&fx.bin),
+    );
+    pty_common::connect_big_pickle(&mut j);
+    // The model's first and only move is the write; it composes it for 8 s, silent.
+    send_prompt(&mut j, "write the whole page (8s)");
+    let started = std::time::Instant::now();
+    wait_for(&mut j.h, "Wrote the whole page to page.html.", 60);
+    wait_for(&mut j.h, "Worked for", 30);
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_secs(8),
+        "the file took its time to compose: {took:?}"
+    );
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "01-large-write-landed");
+    assert!(
+        aborts(&fx.log).is_empty(),
+        "composing a tool call is not a stall: nothing was aborted"
+    );
+    assert!(
+        j.cwd.path().join("page.html").exists(),
+        "the page was written"
+    );
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("stopped responding"),
+        "no stall line while a call is composed:\n{screen}"
+    );
+    assert!(
+        composer_border(&screen).contains("Big Pickle"),
+        "the turn stayed on the user's model (no silent fallback):\n{screen}"
+    );
+    let engine_log_text =
+        std::fs::read_to_string(j.workshop_home().join("logs").join("opencode-engine.log"))
+            .unwrap_or_default();
+    assert!(
+        !engine_log_text.contains("stopped responding")
+            && !engine_log_text.contains("no answer from"),
+        "no stall, no no-answer on record:\n{engine_log_text}"
+    );
+    quit(&mut j);
+}
+
+/// The other side of that allowance: a stream that dies while a call is being composed still
+/// ends — at the compose ceiling (`WORKSHOP_COMPOSE_TIMEOUT_SECS`, 6 s here; 600 s shipped),
+/// with the same recovery as any stall.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve); run with --include-ignored"]
+fn a_dead_stream_mid_tool_call_still_ends() {
+    let Some(bin) = bin_from_env() else { return };
+    let fx = fixture();
+    let mut env: Vec<(&str, &str)> = OFFLINE.to_vec();
+    env.push(("WORKSHOP_STALL_TIMEOUT_SECS", "3"));
+    env.push(("WORKSHOP_COMPOSE_TIMEOUT_SECS", "6"));
+    let mut j = pty_common::spawn(
+        "engine-trust/dead-stream-mid-call",
+        &bin,
+        &env,
+        Some(&fx.bin),
+    );
+    pty_common::connect_big_pickle(&mut j);
+    send_prompt(&mut j, "write the whole page and never finish");
+    let began = std::time::Instant::now();
+    let deadline = began + Duration::from_secs(40);
+    while aborts(&fx.log).is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a dead stream mid-call was never aborted:\n{}",
+            j.h.screen_contents()
+        );
+        j.h.update(Duration::from_millis(200));
+    }
+    let aborted_after = began.elapsed();
+    assert!(
+        aborted_after >= Duration::from_secs(5),
+        "the compose ceiling (6 s), not the 3 s stall ceiling, ended it: aborted after {aborted_after:?}"
+    );
+    // Recovery on screen, as for any stall: the pool fallback took over or the plain line stands.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let screen = j.h.screen_contents();
+        let label_switched = !composer_border(&screen).contains("Big Pickle");
+        let plain_line = screen.contains("stopped responding");
+        if (label_switched || plain_line) && !screen.contains("Waiting for Big Pickle") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no recovery after the dead stream:\n{screen}"
+        );
+        j.h.update(Duration::from_millis(300));
+    }
+    j.h.update(Duration::from_millis(800));
+    snapshot(&j.h, &j.dir, "01-dead-stream-recovered");
+    let engine_log_text =
+        std::fs::read_to_string(j.workshop_home().join("logs").join("opencode-engine.log"))
+            .unwrap_or_default();
+    assert!(
+        engine_log_text.contains("stall: Big Pickle stopped responding")
+            && engine_log_text.contains("while composing a tool call"),
+        "the stall names the composing call for /doctor:\n{engine_log_text}"
+    );
+    eprintln!(
+        "dead stream mid-call: aborted {aborted_after:.1?} after the prompt (compose ceiling 6 s)"
     );
     quit(&mut j);
 }
