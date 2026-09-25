@@ -205,6 +205,8 @@ status_cell() { # STATUS
   printf '### Tree replacement\n\n'
   printf -- '- upstream-owned paths now mirror `%s` exactly; the import commit carries the upstream commit as second parent\n' "$short_new"
   printf -- '- %s overlay file(s) restored from `%s` (patterns: %s)\n' "${OVERLAY_FILE_COUNT:-0}" "${BASE_BRANCH:-$(short_sha "${BASE_SHA:-}")}" "$(paste -sd' ' "$R/overlay-patterns.txt" 2>/dev/null | sed 's/[^ ]*/`&`/g')"
+  printf -- '- overlay files replacing upstream'"'"'s (declared, kept): %s\n' "${OVERLAY_REPLACED_COUNT:-0}"
+  if [[ -s "$R/overlay-replaced-files.txt" ]]; then sed 's/^/  - `/; s/$/`/' "$R/overlay-replaced-files.txt"; fi
   printf -- '- overlay collisions: %s\n' "${OVERLAY_COLLISION_COUNT:-0}"
   if [[ -s "$R/overlay-collisions.txt" ]]; then sed 's/^/  - `/; s/$/`/' "$R/overlay-collisions.txt"; fi
   printf -- '- files deleted upstream (routine): %s\n' "${UPSTREAM_DELETED_COUNT:-0}"

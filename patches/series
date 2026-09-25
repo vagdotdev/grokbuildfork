@@ -23,3 +23,4 @@
 0019-foreign-config-off-by-default.patch  # product
 0020-workshop-system-prompt.patch  # branding
 0021-thinking-hidden-by-default.patch  # product
+0022-double-slash-voice.patch  # product

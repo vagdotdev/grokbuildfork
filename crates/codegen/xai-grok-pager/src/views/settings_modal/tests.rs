@@ -6096,11 +6096,11 @@ fn click_settings_breadcrumb_collapses_picker_to_browse() {
         click_y,
     );
     // For preview-supporting enums (theme), the breadcrumb-click revert dispatches `Action::PreviewTheme(original)`
-    // The default theme's original canonical is `"night"`
+    // The default theme's original canonical is `"oscura-midnight"`
     match outcome {
         SettingsKeyOutcome::Action(Action::PreviewTheme(orig)) => {
             assert_eq!(
-                orig, "night",
+                orig, "oscura-midnight",
                 "breadcrumb-click revert must carry the original canonical",
             );
         }
@@ -6148,7 +6148,7 @@ fn click_settings_breadcrumb_ignores_close_on_picker_exit() {
     );
     match outcome {
         SettingsKeyOutcome::Action(Action::PreviewTheme(orig)) => {
-            assert_eq!(orig, "night");
+            assert_eq!(orig, "oscura-midnight");
         }
         other => panic!("expected preview revert Action, got {other:?}"),
     }
@@ -6245,10 +6245,10 @@ fn d_key_in_picking_enum_dispatches_open_reset_confirm() {
                 key, "theme",
                 "OpenResetConfirm key must be the active picker setting",
             );
-            // Default theme is `night`
-            // Entering the picker captures `original_value = current value = groknight`, so the revert dispatches with that canonical
+            // Default theme is `oscura-midnight`
+            // Entering the picker captures `original_value = current value = oscura-midnight`, so the revert dispatches with that canonical
             assert_eq!(
-                orig, "night",
+                orig, "oscura-midnight",
                 "PreviewTheme revert must carry the original canonical",
             );
         }

@@ -11,7 +11,10 @@
 # patch series creates go to patch-created-files.txt (the replay re-creates
 # them), anything else to dropped-files.txt for a human to confirm.
 # Upstream files that collide with an overlay pattern are listed in
-# overlay-collisions.txt and make the run red (conflict policy rule 4).
+# overlay-collisions.txt and make the run red (conflict policy rule 4) —
+# except single files Workshop replaces outright (an overlay entry naming
+# one file HEAD has, such as README.md): those go to
+# overlay-replaced-files.txt, ours is kept and the run stays green.
 #
 # The result is left staged in the index; run.sh commits it (as a merge with
 # the upstream commit as second parent) after update-lockfile.sh.
@@ -44,7 +47,18 @@ trap 'rm -rf "$tmp"' EXIT
 git ls-tree -r --name-only HEAD | sort > "$tmp/head.txt"
 git ls-tree -r --name-only "$SYNC_REF_NEW" | sort > "$tmp/upstream.txt"
 
-filter_paths "${overlay[@]}" < "$tmp/upstream.txt" > "$SYNC_REPORT_DIR/overlay-collisions.txt"
+# Overlay entries that name one file HEAD has (no glob, a blob rather than a directory) replace
+# upstream's same-named file outright — the root README, SECURITY.md, CONTRIBUTING.md. Ours is
+# kept and upstream's dropped; that is by declaration, not a rule-4 collision.
+: > "$SYNC_REPORT_DIR/overlay-replaced-files.txt"
+for pat in "${overlay[@]}"; do
+  case "$pat" in *'*'*|*'?'*|*'['*) continue ;; esac
+  [[ "$(git cat-file -t "HEAD:$pat" 2>/dev/null)" == blob ]] || continue
+  grep -qxF -- "$pat" "$tmp/upstream.txt" && printf '%s\n' "$pat" >> "$SYNC_REPORT_DIR/overlay-replaced-files.txt"
+done
+sort -o "$SYNC_REPORT_DIR/overlay-replaced-files.txt" "$SYNC_REPORT_DIR/overlay-replaced-files.txt"
+filter_paths "${overlay[@]}" < "$tmp/upstream.txt" \
+  | comm -23 - "$SYNC_REPORT_DIR/overlay-replaced-files.txt" > "$SYNC_REPORT_DIR/overlay-collisions.txt"
 # Overlay files to restore: HEAD files under overlay patterns, minus paths
 # upstream now ships itself (upstream wins there; rule 4 says rename ours).
 filter_paths "${overlay[@]}" < "$tmp/head.txt" \
@@ -75,12 +89,13 @@ if [[ -s "$tmp/overlay-files.txt" ]]; then
 fi
 
 report_set OVERLAY_FILE_COUNT "$(wc -l < "$tmp/overlay-files.txt")"
+report_set OVERLAY_REPLACED_COUNT "$(wc -l < "$SYNC_REPORT_DIR/overlay-replaced-files.txt")"
 report_set OVERLAY_COLLISION_COUNT "$(wc -l < "$SYNC_REPORT_DIR/overlay-collisions.txt")"
 report_set DROPPED_FILE_COUNT "$(wc -l < "$SYNC_REPORT_DIR/dropped-files.txt")"
 report_set UPSTREAM_DELETED_COUNT "$(wc -l < "$SYNC_REPORT_DIR/upstream-deleted-files.txt")"
 report_set PATCH_RECREATED_COUNT "$(wc -l < "$SYNC_REPORT_DIR/patch-recreated-files.txt")"
 
-log "restored $(wc -l < "$tmp/overlay-files.txt") overlay file(s); $(wc -l < "$SYNC_REPORT_DIR/upstream-deleted-files.txt") file(s) deleted upstream; $(wc -l < "$SYNC_REPORT_DIR/patch-recreated-files.txt") patch-created file(s) to be replayed; dropped $(wc -l < "$SYNC_REPORT_DIR/dropped-files.txt") stale non-upstream file(s)"
+log "restored $(wc -l < "$tmp/overlay-files.txt") overlay file(s) ($(wc -l < "$SYNC_REPORT_DIR/overlay-replaced-files.txt") replacing upstream's); $(wc -l < "$SYNC_REPORT_DIR/upstream-deleted-files.txt") file(s) deleted upstream; $(wc -l < "$SYNC_REPORT_DIR/patch-recreated-files.txt") patch-created file(s) to be replayed; dropped $(wc -l < "$SYNC_REPORT_DIR/dropped-files.txt") stale non-upstream file(s)"
 if [[ -s "$SYNC_REPORT_DIR/overlay-collisions.txt" ]]; then
   warn "upstream now ships files under overlay paths (kept upstream's version, needs a human):"
   sed 's/^/  /' "$SYNC_REPORT_DIR/overlay-collisions.txt" >&2

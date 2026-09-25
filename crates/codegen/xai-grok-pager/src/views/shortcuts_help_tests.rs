@@ -501,6 +501,51 @@ fn build_entries_includes_history_row_in_both_modes() {
     }
 }
 
+/// Workshop: the `//` composer shortcut for `/voice` is a display-only Input row that follows the voice gate.
+#[test]
+fn build_entries_lists_double_slash_voice_row_when_voice_is_on() {
+    let registry = ActionRegistry::defaults();
+    let voice_row = |entries: &[ShortcutsHelpEntry]| -> Option<(bool, Option<ActionId>)> {
+        entries.iter().find_map(|e| match e {
+            ShortcutsHelpEntry::Hint {
+                item,
+                dimmed,
+                action_id,
+                ..
+            } if item.custom_display == Some(crate::slash::VOICE_DOUBLE_SLASH_HINT) => {
+                Some((*dimmed, *action_id))
+            }
+            _ => None,
+        })
+    };
+    let prev = crate::app::voice_mode_enabled();
+    crate::app::set_voice_mode_enabled_for_test(true);
+    let lit = build_entries(&all_contexts(), &registry, false);
+    let dimmed = build_entries(&[When::ScrollbackFocused], &registry, false);
+    crate::app::set_voice_mode_enabled_for_test(false);
+    let off = build_entries(&all_contexts(), &registry, false);
+    crate::app::set_voice_mode_enabled_for_test(prev);
+
+    assert_eq!(voice_row(&lit), Some((false, None)), "lit on the prompt, display-only");
+    assert_eq!(voice_row(&dimmed), Some((true, None)), "dimmed off the prompt");
+    assert!(voice_row(&off).is_none(), "hidden while voice is off");
+    let label = lit.iter().find_map(|e| match e {
+        ShortcutsHelpEntry::Hint { item, .. }
+            if item.custom_display == Some(crate::slash::VOICE_DOUBLE_SLASH_HINT) =>
+        {
+            Some((item.label.to_string(), item.description.clone()))
+        }
+        _ => None,
+    });
+    assert_eq!(
+        label,
+        Some((
+            "voice".to_owned(),
+            Some("Dictation, no menu needed (same as /voice)".into())
+        ))
+    );
+}
+
 #[test]
 fn history_row_lit_only_by_prompt_focus() {
     let registry = ActionRegistry::defaults();
@@ -1900,6 +1945,8 @@ fn build_entries_sets_action_id_on_registry_hints() {
             "undo" => item.keys.contains(&undo_key),
             "redo" => item.keys.contains(&redo_key),
             "history" => item.keys.contains(&history_key),
+            // Workshop: `//` runs /voice from the composer (typed, not a chord)
+            "voice" => item.custom_display == Some(crate::slash::VOICE_DOUBLE_SLASH_HINT),
             _ => false,
         };
         if is_pseudo {

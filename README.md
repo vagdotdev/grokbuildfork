@@ -1,140 +1,117 @@
-<div align="center">
+# Workshop
 
-<h1>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://media.x.ai/v1/website/spacexai-symbol-white-transparent-0c31957f.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://media.x.ai/v1/website/spacexai-symbol-black-transparent-6435cf42.png">
-    <img alt="SpaceXAI logo" src="https://media.x.ai/v1/website/spacexai-symbol-black-transparent-6435cf42.png" width="96">
-  </picture>
-  <br>
-  Grok Build (<code>grok</code>)
-</h1>
+Workshop is a terminal coding agent: it reads your codebase, runs shell commands, edits files and
+tracks tasks, right in your terminal. It starts on a free model with nothing to configure; when you
+want more, `/model` switches models and `/auth` connects a coding subscription (Claude Code, Codex,
+Cursor) or an API key. Use it interactively as a full-screen TUI, headlessly for scripting and
+CI/CD, or from an editor via the Agent Client Protocol (ACP).
 
-**Grok Build** is SpaceXAI's terminal-based AI coding agent. It runs as a
-full-screen TUI that understands your codebase, edits files, executes shell
-commands, searches the web, and manages long-running tasks — interactively,
-headlessly for scripting/CI, or embedded in editors via the Agent Client
-Protocol (ACP).
+## Install
 
-[Installing the released binary](#installing-the-released-binary) ·
-[Building from source](#building-from-source) ·
-[Documentation](#documentation) ·
-[Repository layout](#repository-layout) ·
-[Development](#development) ·
-[Contributing](#contributing) ·
-[License](#license)
-
-![Grok Build TUI](https://media.x.ai/v1/website/universe-tui-screenshot-6f7a0837.png)
-
-**Learn more about Grok Build at [x.ai/cli](https://x.ai/cli)**
-
-This repository contains the Rust source for the `grok` CLI/TUI and its agent
-runtime. It is synced periodically from the SpaceXAI monorepo.
-
-A small `SOURCE_REV` file at the root records the full monorepo commit SHA
-for the version of the code present in this tree.
-
-</div>
-
----
-
-## Installing the released binary
-
-Prebuilt binaries are published for macOS, Linux, and Windows:
+macOS and Linux, one line:
 
 ```sh
-curl -fsSL https://x.ai/cli/install.sh | bash   # macOS / Linux / Git Bash
-irm https://x.ai/cli/install.ps1 | iex          # Windows PowerShell
-grok --version
+curl -fsSL https://raw.githubusercontent.com/vagdotdev/grokbuildfork/release-channel/install.sh | sh
 ```
 
-See the [changelog](https://x.ai/build/changelog) for the latest fixes,
-features, and improvements in each release.
-
-## Building from source
-
-Requirements:
-
-- **Rust** — the toolchain is pinned by [`rust-toolchain.toml`](rust-toolchain.toml);
-  `rustup` installs it automatically on first build.
-- **[DotSlash](https://dotslash-cli.com)** — required so hermetic tools under
-  [`bin/`](bin/) (notably [`bin/protoc`](bin/protoc)) can download and run.
-  Install it and ensure `dotslash` is on your `PATH` **before** building:
-
-  ```sh
-  cargo install dotslash
-  # or: prebuilt packages — https://dotslash-cli.com/docs/installation/
-  /usr/bin/env dotslash --help   # sanity check
-  ```
-
-- **protoc** — proto codegen resolves [`bin/protoc`](bin/protoc) via DotSlash,
-  or falls back to a `protoc` on `PATH` / `$PROTOC`.
-- macOS and Linux are supported build hosts; Windows builds are best-effort
-  and not currently tested from this tree.
+The installer downloads the release for your platform, verifies its SHA-256 against the channel
+manifest, installs `~/.workshop/bin/workshop`, adds that directory to your shell's `PATH` (your
+`~/.zshrc`, `~/.bashrc` or fish config, once) and prints the line for the terminal you are in. It
+makes no other network requests and sends no telemetry. Then open a new terminal and type:
 
 ```sh
-cargo run -p xai-grok-pager-bin              # build + launch the TUI
-cargo build -p xai-grok-pager-bin --release  # release binary: target/release/xai-grok-pager
-cargo check -p xai-grok-pager-bin            # fast validation
+workshop
 ```
 
-The binary artifact is named `xai-grok-pager`; official installs ship it as
-`grok`. On first launch it opens your browser to authenticate — see the
-[authentication guide](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
+You land in the composer with **Big Pickle**, OpenCode's free default model, active: type a
+sentence and press Enter. `/model` switches models, `/auth` connects a subscription or an API key,
+`/theme` picks a look (Oscura Midnight by default; Night, Day, Tokyo Night, Rose Pine Moon too),
+`//` on an empty composer starts dictation and `//` again stops it. Updates install silently in the
+background; `workshop update` forces one, `workshop --version` says what you have.
 
-## Documentation
+Pin a version with `WORKSHOP_VERSION=0.2.2 curl -fsSL … | sh`. Workshop keeps everything in
+`~/.workshop` (`WORKSHOP_HOME`) and never reads another tool's settings, hooks or sessions.
 
-Full online documentation is available at
-[docs.x.ai/build/overview](https://docs.x.ai/build/overview).
+**macOS:** the binary is not Apple-notarized. The installer clears the quarantine attribute; if
+macOS still refuses to start it, run `xattr -d com.apple.quarantine ~/.workshop/bin/workshop`.
 
-The user guide ships with the pager crate:
-[`crates/codegen/xai-grok-pager/docs/user-guide/`](crates/codegen/xai-grok-pager/docs/user-guide/)
-— getting started, keyboard shortcuts, slash commands, configuration, theming,
-MCP servers, skills, plugins, hooks, headless mode, sandboxing, and more.
+## What it is
 
-## Repository layout
+Workshop is a thin **overlay** on the public [Grok Build](https://github.com/xai-org/grok-build)
+tree (Apache-2.0): the upstream crates keep their names, Workshop adds `crates/workshop-*` and a
+short, numbered patch series for the few upstream files that must change, and a daily sync brings
+new upstream releases in. A user who has never heard of xAI can install it and start typing: login
+never opens `auth.x.ai` unless the user explicitly chooses the optional, labeled xAI card (last on
+`/auth`), no xAI endpoint is contacted by default, and telemetry is off. The decisions are recorded
+in [`docs/workshop/adr/`](docs/workshop/adr/); the sync is described in
+[`docs/upstream-sync.md`](docs/upstream-sync.md).
 
-| Path | Contents |
-|------|----------|
-| `crates/codegen/xai-grok-pager-bin` | Composition-root package; builds the `xai-grok-pager` binary |
-| `crates/codegen/xai-grok-pager` | The TUI: scrollback, prompt, modals, rendering |
-| `crates/codegen/xai-grok-shell` | Agent runtime + leader/stdio/headless entry points |
-| `crates/codegen/xai-grok-tools` | Tool implementations (terminal, file edit, search, ...) |
-| `crates/codegen/xai-grok-workspace` | Host filesystem, VCS, execution, checkpoints |
-| `crates/codegen/...` | The rest of the CLI crate closure (config, MCP, markdown, sandbox, ...) |
-| `crates/common/`, `crates/build/`, `prod/mc/` | Small shared leaf crates pulled in by the closure |
-| `third_party/` | Vendored upstream source (Mermaid diagram stack) — see below |
+## Layout
 
-> [!IMPORTANT]
-> The root `Cargo.toml` (workspace members, dependency versions, lints,
-> profiles) is **generated** — treat it as read-only. Prefer editing per-crate
-> `Cargo.toml` files.
+| Path | Role |
+|---|---|
+| `crates/codegen/xai-grok-*`, `crates/common/xai-*` | Upstream crates, **never renamed**; a handful carry small patches |
+| `crates/workshop-auth` | `/model` + `/auth` picker policy (rows, rails, xAI card last, text renderer); the TUI overlay is `xai-grok-pager/src/views/connection_picker.rs` |
+| `crates/workshop-gates` | No-xAI gates 1–4, the theme catalog gate and the picker policy as `cargo test`; PTY smoke of the built binary |
+| `crates/workshop-adapters` | Vendor CLI adapters (Claude/Codex/Cursor) + the OpenCode engine (`opencode serve`) |
+| `crates/workshop-providers`, `-detect`, `-brand`, `-voice` | Provider catalog + credential broker; presence-only CLI detection; welcome hero art; local voice STT |
+| `patches/series`, `patches/*.patch` | Quilt series over upstream files; tags `gate:no-xai` / `gate:no-theft` / `product` / `branding` |
+| `patches/groups.txt`, `scripts/regenerate-patches.sh` | Patch file ↔ upstream path groups; regenerates the series from the tree |
+| `scripts/no-xai-scan.sh` | Default-path source scan and binary string scan (`--sources`, `--binary BIN`) |
+| `scripts/no-egress-smoke.sh` | Startup + Login in a network namespace with hostname logging; fails on any xAI host |
+| `scripts/overlay-paths.txt`, `upstream-lock.toml` | What the upstream sync preserves (this README, `SECURITY.md` and `CONTRIBUTING.md` included), and which snapshot the tree is on |
+| `scripts/sync/`, `.github/workflows/sync-upstream.yml` | Upstream auto-sync |
+| `scripts/install.sh`, `scripts/release/`, `.github/workflows/release.yml` | Release pipeline (CLI installer + voice-engine helper and pinned Whisper model) |
+| `scripts/smoke/first-run.py`, `.github/workflows/first-run-smoke.yml` | After each release: public one-liner → `workshop` → one sentence → reply → `/exit` in a PTY on macOS arm64, macOS Intel and Linux |
+| `.github/workflows/ci.yml` | Three jobs: **fmt + check (overlay)**, **no-xai gates** (required; source/binary scans, overlay + touched-upstream tests, full pager lib suite, no-egress + no-theft-fs-audit, PTY picker + rails smokes), **voice-engine** (whisper.cpp helper build + model probe) |
 
-## Development
+## Build and run
 
 ```sh
-cargo check -p <crate>        # always target specific crates; full-workspace builds are slow
-cargo test -p xai-grok-config # per-crate tests
-cargo clippy -p <crate>       # lint config: clippy.toml at the repo root
-cargo fmt --all               # rustfmt.toml at the repo root
+cargo build -p xai-grok-pager-bin --bin workshop     # protoc 29.3 required (bin/protoc via dotslash)
+target/debug/workshop                                # TUI; first run lands in the composer (OpenCode · Big Pickle)
+target/debug/workshop login                          # the /model + /auth lists as text
+target/debug/workshop login --xai                    # optional xAI account login only (opens auth.x.ai)
 ```
 
-## Contributing
+Home is `~/.workshop` (`$WORKSHOP_HOME`). `GROK_HOME` and `~/.grok` are never read, so a machine that also runs Grok Build keeps its settings, hooks, sessions and memory separate.
+The model lists on `/model` are live: the keyless catalogs (Kilo, OpenRouter, NVIDIA) are fetched
+when `/model` opens (lists younger than 5 min are reused; `r` forces) and on a launch that already
+has an active connection; the OpenCode rows are what the running `opencode serve` reports, fetched
+on every engine start. Results are cached under `~/.workshop/catalog-cache/` so the next launch is
+instant, and every row says `fetched <age>` or, offline, `cached list from <date>` (the compiled
+seed). Nothing is fetched on a first run, by `/auth`, `/login` or `workshop login`.
+Telemetry is off and no Mixpanel token or events URL is baked in. Updates install silently: at
+launch Workshop reads the channel manifest (`stable.json` on the `release-channel` branch of the
+release repository baked at build time, `WORKSHOP_RELEASE_REPO`) and, when it names a newer version,
+a detached `workshop update` downloads the archive, checks its SHA-256 against the manifest,
+smoke-runs the binary and swaps `~/.workshop/bin/workshop` atomically; the running session is left
+alone, the welcome screen offers the restart, and the next launch says "Updated to <version>".
+Offline or on any failure it only logs. `--no-auto-update`, `WORKSHOP_DISABLE_AUTOUPDATER=1` or
+`[cli] auto_update = false` in `~/.workshop/config.toml` turn it off.
 
-> [!NOTE]
-> External contributions are not accepted. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+## Gates
 
-## License
+```sh
+cargo test -p workshop-gates                          # compiled defaults: issuer, auth methods, endpoints, updater, model, themes
+scripts/no-xai-scan.sh --sources                      # default-path sources + gate:no-theft markers
+scripts/no-xai-scan.sh --binary target/debug/workshop # forbidden-host strings must be reviewed contexts (scripts/no-xai-binary-baseline.txt)
+scripts/no-egress-smoke.sh target/debug/workshop      # zero xAI egress on startup, login, headless, first-run TUI (+ /auth); /model reaches only the catalog hosts
+WORKSHOP_BIN=$PWD/target/debug/workshop cargo test -p workshop-gates --test pty_login_picker -- --include-ignored
+WORKSHOP_BIN=$PWD/target/debug/workshop cargo test -p workshop-gates --test pty_live_catalogs -- --include-ignored  # no fetch before the user acts; /model lists the engine's live rows
+```
 
-First-party code in this repository is licensed under the **Apache License,
-Version 2.0** — see [`LICENSE`](LICENSE).
+## Editing an upstream file
 
-Third-party and vendored code remains under its original licenses. See:
+Edit the file in place (the tree keeps the patched state), then run `scripts/regenerate-patches.sh`
+and commit `patches/` together with the change. Add new upstream paths to the right group in
+`patches/groups.txt`. Gate-tagged patches are never commented out of `patches/series`.
 
-- [`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES) — crates.io / git dependencies,
-  bundled UI themes, and **in-tree source ports** (including openai/codex and
-  sst/opencode tool implementations)
-- [`crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md`](crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md)
-  — crate-local notice for the codex and opencode ports (license texts +
-  Apache §4(b) change notice)
-- [`third_party/NOTICE`](third_party/NOTICE) — vendored Mermaid-stack index
+## Security and contributing
+
+Report a vulnerability privately through
+[GitHub's security advisories for this repository](https://github.com/vagdotdev/grokbuildfork/security/advisories/new),
+never in a public issue (see [`SECURITY.md`](SECURITY.md)). Bug reports and pull requests go
+through GitHub as usual (see [`CONTRIBUTING.md`](CONTRIBUTING.md)). Workshop is distributed under
+the Apache License 2.0 ([`LICENSE`](LICENSE)); third-party notices are in
+[`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES).

@@ -849,10 +849,10 @@ index 8ffcc224..613c4739 100644
  ## Reopen this tutorial
  
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
-index ab27a76d..4a8342a4 100644
+index ab27a76d..0885bad0 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
-@@ -1,99 +1,100 @@
+@@ -1,99 +1,102 @@
  # Getting Started
  
 -Grok Build is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
@@ -879,8 +879,9 @@ index ab27a76d..4a8342a4 100644
  
 -Install a specific version:
 +The installer downloads the release for your platform, verifies its SHA-256 against the channel
-+manifest, installs `~/.workshop/bin/workshop` and prints the one line to add to your `PATH` if it
-+is not there yet. It makes no other network requests and sends no telemetry. Later:
++manifest, installs `~/.workshop/bin/workshop`, adds that directory to your `PATH` in your shell's
++startup file (`~/.zshrc`, `~/.bashrc` or the fish config, once) and prints the line for the
++terminal you are in. It makes no other network requests and sends no telemetry. Later:
  
  ```bash
 -curl -fsSL https://x.ai/cli/install.sh | bash -s 0.1.42
@@ -916,9 +917,7 @@ index ab27a76d..4a8342a4 100644
 -```bash
 -grok update
 -```
-+**macOS:** the binary is not Apple-notarized. The installer clears the quarantine attribute; if
-+macOS still refuses to start it, run `xattr -d com.apple.quarantine ~/.workshop/bin/workshop`.
- 
+-
 -To fetch a repository through Grove (NFS on macOS, FUSE on Linux), enable
 -`grok clone` with `[clone] enabled = true` in Grove config, `GROK_CLONE=1`,
 -or the enable-both convenience `GROK_GROVE=1` / `[cli] grove = true` in
@@ -927,7 +926,9 @@ index ab27a76d..4a8342a4 100644
 -```bash
 -grok clone <url> [dir]
 -```
--
++**macOS:** the binary is not Apple-notarized. The installer clears the quarantine attribute; if
++macOS still refuses to start it, run `xattr -d com.apple.quarantine ~/.workshop/bin/workshop`.
+ 
 -The default is a depth-1 checkout of the selected branch. Pass `--full-history`
 -for a complete clone. Clone enablement is independent of session / `-w` Grove
 -worktrees (the convenience above turns both on; the specific knobs still win).
@@ -949,11 +950,11 @@ index ab27a76d..4a8342a4 100644
 -On first launch, Grok opens your browser to authenticate with grok.com. After you sign in, Grok stores your credentials in `~/.grok/auth.json`, where they persist across sessions. Grok refreshes your credentials automatically and prompts you to sign in again when they can no longer be renewed.
 -
 -If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
--
++Open a new terminal (or run the line the installer printed) and type:
+ 
  ```bash
 -export XAI_API_KEY="xai-..."
 -grok
-+cd your-project
 +workshop
  ```
  
@@ -1014,7 +1015,7 @@ index ab27a76d..4a8342a4 100644
  
  ### File References
  
-@@ -105,7 +106,8 @@ Use `@` in your prompt to attach files:
+@@ -105,7 +108,8 @@ Use `@` in your prompt to attach files:
  @src/                     # Browse a directory
  ```
  
@@ -1024,7 +1025,7 @@ index ab27a76d..4a8342a4 100644
  
  ```
  @!.github                 # Search hidden files
-@@ -114,10 +116,14 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore`
+@@ -114,10 +118,14 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore`
  
  ### Permissions
  
@@ -1041,7 +1042,7 @@ index ab27a76d..4a8342a4 100644
  - Type `/always-approve` in the prompt to toggle the mode
  
  ---
-@@ -126,27 +132,31 @@ By default, Grok asks for permission before executing shell commands or editing
+@@ -126,27 +134,31 @@ By default, Grok asks for permission before executing shell commands or editing
  
  ### Sessions
  
@@ -1079,7 +1080,7 @@ index ab27a76d..4a8342a4 100644
  
  | Tool | Description |
  |------|-------------|
-@@ -159,14 +169,17 @@ Grok has built-in tools for:
+@@ -159,14 +171,17 @@ Grok has built-in tools for:
  | `spawn_subagent` | Spawn parallel subagent sessions |
  | `memory_search` | Search cross-session memory |
  
@@ -1100,7 +1101,7 @@ index ab27a76d..4a8342a4 100644
  /compact                          # Compress conversation history
  /always-approve                   # Toggle always-approve mode
  /new                              # Start a new session
-@@ -180,54 +193,50 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
+@@ -180,54 +195,50 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
  
  ```bash
  # Launch the interactive TUI and submit an initial prompt as the first turn
@@ -1170,7 +1171,7 @@ index ab27a76d..4a8342a4 100644
  ```
  
  Output formats:
-@@ -241,22 +250,24 @@ Output formats:
+@@ -241,22 +252,24 @@ Output formats:
  Example CI/CD usage:
  
  ```bash
@@ -1199,7 +1200,7 @@ index ab27a76d..4a8342a4 100644
  
  ---
  
-@@ -264,7 +275,7 @@ Deeper files take precedence. Grok also reads `CLAUDE.md` files for compatibilit
+@@ -264,7 +277,7 @@ Deeper files take precedence. Grok also reads `CLAUDE.md` files for compatibilit
  
  | Document | What You Will Learn |
  |----------|-------------------|
@@ -2490,10 +2491,10 @@ index 6d2f3363..31eb2d47 100644
  
  Project and user entries replace lower-priority ones of the same name. Plugin entries only add servers whose names aren't already defined by a local file, so a local `lsp.json` always wins over a plugin. Plugin LSP servers load only after the plugin is trusted (see [Plugins](09-plugins.md)).
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/06-theming.md b/crates/codegen/xai-grok-pager/docs/user-guide/06-theming.md
-index 7ffcf8e6..34905fc3 100644
+index 7ffcf8e6..df7afeb2 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/06-theming.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/06-theming.md
-@@ -1,17 +1,17 @@
+@@ -1,38 +1,38 @@
  # Theming and Appearance Customization
  
 -Grok Build draws all TUI colors from a central theme. You can switch themes while Grok is running, follow your operating system's light or dark appearance, and adjust scrollback layout, animations, and block styling through configuration files.
@@ -2510,12 +2511,15 @@ index 7ffcf8e6..34905fc3 100644
  |-------|-------------|-------------|--------------------|
 -| **GrokNight** | `groknight`, `grok-night`, `dark` | Neutral dark base with a magenta accent. Default theme. Survives quantization cleanly on 256-color and 16-color terminals. | No |
 -| **GrokDay** | `grokday`, `grok-day`, `light`, `day` | Light theme for bright terminal backgrounds. | No |
-+| **Night** | `night`, `dark` | Neutral dark base with a magenta accent. Default theme. Survives quantization cleanly on 256-color and 16-color terminals. | No |
++| **Night** | `night`, `dark` | Neutral dark base with a magenta accent. Survives quantization cleanly on 256-color and 16-color terminals. | No |
 +| **Day** | `day`, `light` | Light theme for bright terminal backgrounds. | No |
  | **TokyoNight** | `tokyonight`, `tokyo-night`, `tokyo` | Dark, blue-tinted backgrounds from the Tokyo Night palette. Loses its character when quantized. | Yes |
  | **RosePineMoon** | `rosepine`, `rose-pine`, `rosepine-moon`, `rose-pine-moon` | Muted dark palette with mauve accents, from the Rosé Pine family. | Yes |
- | **OscuraMidnight** | `oscura`, `oscura-midnight` | Deep dark base with purple accents. | Yes |
-@@ -21,18 +21,18 @@ Theme names are case-insensitive. The `auto` option (alias `system`) is document
+-| **OscuraMidnight** | `oscura`, `oscura-midnight` | Deep dark base with purple accents. | Yes |
++| **OscuraMidnight** | `oscura`, `oscura-midnight` | Deep dark base with purple accents. Default theme. | Yes |
+ | **Terminal** | `terminal`, `terminal-default`, `transparent`, `native` | Your terminal's own colors: no background of its own, so the terminal canvas (translucency, background images) shows through. | No |
+ 
+ Theme names are case-insensitive. The `auto` option (alias `system`) is documented under [Auto Theme (System Appearance)](#auto-theme-system-appearance).
  
  ### Terminal Theme
  
@@ -2623,7 +2627,7 @@ index 7ffcf8e6..34905fc3 100644
  - On **16-color** terminals, colors map to ANSI names.
  
 -GrokNight and GrokDay use neutral grays that quantize cleanly. TokyoNight, RosePineMoon, and OscuraMidnight use distinctive tinted backgrounds that lose their character when quantized, which is why the theme picker hides them on non-truecolor terminals.
-+Night and Day use neutral grays that quantize cleanly. TokyoNight, RosePineMoon, and OscuraMidnight use distinctive tinted backgrounds that lose their character when quantized, which is why the theme picker hides them on non-truecolor terminals.
++Night and Day use neutral grays that quantize cleanly. TokyoNight, RosePineMoon, and OscuraMidnight use distinctive tinted backgrounds that lose some of their character when quantized; the theme picker still lists them on every terminal, and below truecolor they render in the nearest palette colors.
  
  ### Runtime-Generated Colors
  
@@ -9642,7 +9646,7 @@ index bc5d1a55..7310dac4 100644
      modal_window::render_centered_tip_footer(buf, area, theme, text.as_ref());
  }
 diff --git a/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs b/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs
-index 788104bb..76062118 100644
+index 788104bb..241724e2 100644
 --- a/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs
 @@ -174,7 +174,7 @@ fn enum_choice_gated_off_covers_voice_permission_and_terminal_theme() {
@@ -9740,12 +9744,12 @@ index 788104bb..76062118 100644
      );
      // For preview-supporting enums (theme), the breadcrumb-click revert dispatches `Action::PreviewTheme(original)`
 -    // The default theme's original canonical is `"groknight"`
-+    // The default theme's original canonical is `"night"`
++    // The default theme's original canonical is `"oscura-midnight"`
      match outcome {
          SettingsKeyOutcome::Action(Action::PreviewTheme(orig)) => {
              assert_eq!(
 -                orig, "groknight",
-+                orig, "night",
++                orig, "oscura-midnight",
                  "breadcrumb-click revert must carry the original canonical",
              );
          }
@@ -9754,7 +9758,7 @@ index 788104bb..76062118 100644
      match outcome {
          SettingsKeyOutcome::Action(Action::PreviewTheme(orig)) => {
 -            assert_eq!(orig, "groknight");
-+            assert_eq!(orig, "night");
++            assert_eq!(orig, "oscura-midnight");
          }
          other => panic!("expected preview revert Action, got {other:?}"),
      }
@@ -9772,11 +9776,12 @@ index 788104bb..76062118 100644
                  "OpenResetConfirm key must be the active picker setting",
              );
 -            // Default theme is `groknight`
-+            // Default theme is `night`
-             // Entering the picker captures `original_value = current value = groknight`, so the revert dispatches with that canonical
+-            // Entering the picker captures `original_value = current value = groknight`, so the revert dispatches with that canonical
++            // Default theme is `oscura-midnight`
++            // Entering the picker captures `original_value = current value = oscura-midnight`, so the revert dispatches with that canonical
              assert_eq!(
 -                orig, "groknight",
-+                orig, "night",
++                orig, "oscura-midnight",
                  "PreviewTheme revert must carry the original canonical",
              );
          }

@@ -12,6 +12,8 @@
 #   - replace-tree.sh lists the patch-created file under
 #     patch-recreated-files.txt, only the stale file under dropped-files.txt,
 #     and resets the upstream-owned file;
+#   - an overlay entry naming one file both sides have (README.md) keeps ours,
+#     is reported under overlay-replaced-files.txt and is not a collision;
 #   - the replay re-creates the file and the tree ends clean.
 set -euo pipefail
 
@@ -40,6 +42,7 @@ mkdir -p dir
 printf 'upstream a\n' > a.txt
 printf 'upstream b\n' > dir/b.txt
 printf 'keep\n' > dir/keep.txt
+printf 'upstream readme\n' > README.md
 git add -A && git commit -q -m "Synced from monorepo"
 upstream="$(git rev-parse HEAD)"
 
@@ -61,7 +64,8 @@ printf '%s\n' "$patch2" > patches/0002-rename-b.patch
 printf '%s\n' \
   '0001-edit-and-create.patch  # gate:no-xai' \
   '0002-rename-b.patch         # product' > patches/series
-printf 'patches\nscripts\n' > scripts/overlay-paths.txt
+printf 'patches\nscripts\nREADME.md\n' > scripts/overlay-paths.txt
+printf 'our readme\n' > README.md
 printf 'left behind\n' > stale.txt
 git add -A && git commit -q -m "base: overlay + patches pushed + stale file"
 git update-ref "$SYNC_REF_NEW" "$upstream"
@@ -85,6 +89,11 @@ check "only the stale file is dropped" \
   lines_equal "$SYNC_REPORT_DIR/dropped-files.txt" "stale.txt"
 check "DROPPED_FILE_COUNT=1" [ "${DROPPED_FILE_COUNT:-}" = 1 ]
 check "PATCH_RECREATED_COUNT=2" [ "${PATCH_RECREATED_COUNT:-}" = 2 ]
+check "README.md (overlay entry both sides have) keeps ours" file_is README.md "our readme"
+check "README.md is reported as replacing upstream's" \
+  lines_equal "$SYNC_REPORT_DIR/overlay-replaced-files.txt" "README.md"
+check "OVERLAY_REPLACED_COUNT=1" [ "${OVERLAY_REPLACED_COUNT:-}" = 1 ]
+check "no overlay collision" [ "${OVERLAY_COLLISION_COUNT:-}" = 0 ]
 check "upstream-owned a.txt reset to upstream" file_is a.txt "upstream a"
 check "upstream-owned dir/b.txt restored" file_is dir/b.txt "upstream b"
 check "patch-created new.txt gone until replay" [ ! -e new.txt ]

@@ -1999,7 +1999,7 @@ fn defaults_round_trip_through_registry() {
             "remember_tool_approvals" => SettingValue::Bool(true),
             "toolset.ask_user_question.timeout_enabled" => SettingValue::Bool(true),
             "keep_text_selection" => SettingValue::Enum("flash"),
-            "theme" => SettingValue::Enum("night"),
+            "theme" => SettingValue::Enum("oscura-midnight"),
             "auto_dark_theme" => SettingValue::Enum("night"),
             "auto_light_theme" => SettingValue::Enum("day"),
             "render_mermaid" => SettingValue::Enum("auto"),

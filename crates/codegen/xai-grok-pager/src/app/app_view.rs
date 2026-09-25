@@ -2032,6 +2032,37 @@ impl AppView {
             None
         }
     }
+    /// Workshop: `// start · // stop`. While dictation is live in this agent's composer, a `/` typed
+    /// right after a `/` stops it — the same [`Action::VoiceToggle`] as Esc and `[stop]`, so the
+    /// transcript lands in the composer — and the first slash is taken back out of the draft so `//`
+    /// never ends up in the text. The start half (a second `/` on a composer holding exactly `/`) is
+    /// `AgentView::handle_prompt_key`.
+    fn voice_double_slash_stop_outcome(
+        &mut self,
+        key_event: Option<&crossterm::event::KeyEvent>,
+        id: AgentId,
+    ) -> Option<InputOutcome> {
+        let key = key_event?;
+        if key.code != KeyCode::Char('/')
+            || key.kind == KeyEventKind::Release
+            || !matches!(
+                key.modifiers,
+                crossterm::event::KeyModifiers::NONE | crossterm::event::KeyModifiers::SHIFT
+            )
+            || !self.voice_listening()
+            || self.voice_recording_target() != Some(VoiceTarget::Agent(id))
+        {
+            return None;
+        }
+        let agent = self.agents.get_mut(&id)?;
+        let before_caret = agent.prompt.text().get(..agent.prompt.cursor())?;
+        if agent.prompt.selection_range().is_some() || !before_caret.ends_with('/') {
+            return None;
+        }
+        agent.prompt.textarea.delete_backward(1);
+        agent.prompt.refresh_slash(&agent.session.models);
+        Some(InputOutcome::Action(Action::VoiceToggle))
+    }
     /// Commit interim on real send keys only (not multiline bare Enter).
     fn maybe_commit_voice_interim_before_submit_key(&mut self, key: &crossterm::event::KeyEvent) {
         if self.registry.matches_id(ActionId::InterjectPrompt, key) {
@@ -2831,6 +2862,9 @@ impl AppView {
                     return InputOutcome::Unchanged;
                 }
                 if let Some(outcome) = self.voice_esc_outcome(key_event) {
+                    return outcome;
+                }
+                if let Some(outcome) = self.voice_double_slash_stop_outcome(key_event, id) {
                     return outcome;
                 }
                 if let Event::Key(key) = ev

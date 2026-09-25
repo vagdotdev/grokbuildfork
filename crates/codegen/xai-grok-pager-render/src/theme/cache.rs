@@ -15,7 +15,7 @@ use super::system_appearance;
 
 /// In-memory theme kind, encoded as a `u8` matching the `ThemeKind` discriminants.
 /// Loaded from disk once at startup via `load_from_disk()`, then kept in sync by `set()`.
-static CURRENT: AtomicU8 = AtomicU8::new(ThemeKind::GrokNight as u8);
+static CURRENT: AtomicU8 = AtomicU8::new(ThemeKind::DEFAULT as u8);
 static LOADED: AtomicBool = AtomicBool::new(false);
 #[cfg(any(test, feature = "test-support"))]
 static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -173,7 +173,7 @@ pub fn invalidate_auto_theme_config() {
 
 // -- Theme resolution --------------------------------------------------------
 
-/// Concrete kind, never `Auto`. Env (`GROK_THEME` / `LC_GROK_THEME`), then `[ui].theme`, then `GrokNight`.
+/// Concrete kind, never `Auto`. Env (`GROK_THEME` / `LC_GROK_THEME`), then `[ui].theme`, then [`ThemeKind::DEFAULT`].
 #[must_use]
 pub fn resolve_initial_theme() -> ThemeKind {
     resolve_initial_theme_from(env_theme_name().as_deref(), load_from_disk(), true)
@@ -231,7 +231,7 @@ fn resolve_from_config(config_theme: Option<ThemeKind>, osc11_fallback: bool) ->
         return kind;
     }
 
-    ThemeKind::GrokNight
+    ThemeKind::DEFAULT
 }
 
 fn resolve_from_appearance(appearance: Option<system_appearance::SystemAppearance>) -> ThemeKind {
@@ -561,7 +561,7 @@ mod tests {
             );
             assert!(is_auto_mode(), "auto must arm the appearance watcher");
 
-            assert_eq!(resolve_from_config(None, false), ThemeKind::GrokNight);
+            assert_eq!(resolve_from_config(None, false), ThemeKind::DEFAULT);
         });
     }
 
@@ -645,10 +645,11 @@ mod tests {
     // -- resolve_from_config (resolve_initial_theme inner logic) ---------------
 
     #[test]
-    fn resolve_from_config_no_config_returns_groknight() {
+    fn resolve_from_config_no_config_returns_default() {
         with_test_env(|| {
             let result = resolve_from_config(None, true);
-            assert_eq!(result, ThemeKind::GrokNight);
+            assert_eq!(result, ThemeKind::DEFAULT);
+            assert_eq!(result, ThemeKind::OscuraMidnight, "a fresh install starts on Oscura Midnight");
             assert!(!is_auto_mode());
         });
     }

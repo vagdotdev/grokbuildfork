@@ -134,9 +134,11 @@ curl -fsSL https://raw.githubusercontent.com/vagdotdev/grokbuildfork/release-cha
 channel manifest, downloads the archive, verifies SHA-256, installs
 `$WORKSHOP_HOME/downloads/workshop-<version>-<platform>` and atomically points
 `$WORKSHOP_HOME/bin/workshop` at it (the same managed layout the updater uses, so it can
-read the installed version from the symlink and keep N-1 for rollback), then runs
-`workshop --version` and prints a PATH hint. Two network requests, no telemetry, https
-only (loopback http is accepted for tests).
+read the installed version from the symlink and keep N-1 for rollback), runs
+`workshop --version`, writes the PATH line into the user's shell startup file (bash, zsh,
+fish; one marked block, replaced on a re-run) and prints the line for the current
+terminal. Two network requests, no telemetry, https only (loopback http is accepted for
+tests).
 
 Environment: `WORKSHOP_CHANNEL` (`stable`|`alpha`), `WORKSHOP_VERSION` (pin; verifies
 against that release's `SHA256SUMS`), `WORKSHOP_HOME` (default `~/.workshop`),
@@ -152,8 +154,8 @@ installed binary and prints the manual fallback. If macOS ever blocks it:
 xattr -d com.apple.quarantine ~/.workshop/bin/workshop
 ```
 
-Release notes carry the same statement (`release-notes.sh`). The root README is
-upstream-owned; the branding pass should add this section there.
+Release notes carry the same statement (`release-notes.sh`), and so does the root
+`README.md` (Workshop's own page, an overlay path).
 
 ## Local dry run
 

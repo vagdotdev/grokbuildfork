@@ -629,14 +629,20 @@ mod tests {
         assert_eq!(sh("exit 130"), InteractiveExit::Interrupted);
         // The child's SIGINT is the default again after exec, so it dies of the signal it sends
         // itself; the same signal sent to this process first is only recorded (a default
-        // disposition would have ended the test binary here).
+        // disposition would have ended the test binary here). The pause after `kill -INT $PPID`
+        // is the terminal's reality — Ctrl+C reaches Workshop and the login together, and the
+        // login takes a moment to clean up — and keeps the test off the race where the child is
+        // reaped before the parent's handler has run on another thread of the test binary.
         assert_eq!(
-            sh("kill -INT $PPID; kill -INT $$; exit 7"),
+            sh("kill -INT $PPID; sleep 0.2; kill -INT $$; exit 7"),
             InteractiveExit::Interrupted
         );
         // A login that handles Ctrl+C itself and exits 0 (`codex login`) is still a cancel: the
         // terminal sent the caller the same SIGINT.
-        assert_eq!(sh("kill -INT $PPID; exit 0"), InteractiveExit::Interrupted);
+        assert_eq!(
+            sh("kill -INT $PPID; sleep 0.2; exit 0"),
+            InteractiveExit::Interrupted
+        );
         assert_eq!(sh("exit 0"), InteractiveExit::Success, "flag is per run");
         assert_eq!(
             run_interactive(&["/nonexistent/vendor-cli".into()], None),

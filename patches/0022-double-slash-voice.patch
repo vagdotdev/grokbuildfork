@@ -1,0 +1,128 @@
+diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/voice.rs b/crates/codegen/xai-grok-pager/src/slash/commands/voice.rs
+index d2aa381c..5ef5c947 100644
+--- a/crates/codegen/xai-grok-pager/src/slash/commands/voice.rs
++++ b/crates/codegen/xai-grok-pager/src/slash/commands/voice.rs
+@@ -26,14 +26,9 @@ impl SlashCommand for VoiceCommand {
+     }
+ 
+     fn description(&self) -> &str {
+-        // Chord is Ctrl+Space or F8
+-        // Without key releases hold-to-talk is impossible, so the label says "Toggle"
+-        // With them the mode is configurable (toggle or hold via `voice_capture_mode`), so the label leaves the behavior unspecified
+-        if crate::app::kitty_releases_reported() {
+-            "Dictation (Ctrl+Space/F8; Esc/Enter to stop)"
+-        } else {
+-            "Toggle dictation (Ctrl+Space/F8; Esc/Enter to stop)"
+-        }
++        // Workshop: `//` on an empty composer starts, `//` again stops (a toggle on every terminal);
++        // the Ctrl+Space / F8 chord and Esc / Enter keep their upstream behavior.
++        "Dictation: // start \u{b7} // stop (or Ctrl+Space/F8; Esc/Enter to stop)"
+     }
+ 
+     fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
+diff --git a/crates/codegen/xai-grok-pager/src/views/shortcuts_help.rs b/crates/codegen/xai-grok-pager/src/views/shortcuts_help.rs
+index 31366deb..18dad858 100644
+--- a/crates/codegen/xai-grok-pager/src/views/shortcuts_help.rs
++++ b/crates/codegen/xai-grok-pager/src/views/shortcuts_help.rs
+@@ -117,6 +117,15 @@ Run /history to open a searchable history panel and filter by text.";
+ 
+ // Scrollback search has no ActionRegistry entry: it's the vim `/` inline handler, or the /find slash command in simple mode
+ // List both triggers here
++/// Workshop: the `//` composer shortcut for `/voice`.
++const DOUBLE_SLASH_VOICE_LONG_HELP: &str = "\
++Dictation from the keyboard, without the slash menu: // start \u{b7} // stop.\n\
++Type / on an empty composer, then / again: the second slash starts recording (the \
++same as /voice). It only counts when the composer holds exactly one slash, so a / \
++inside text such as https:// is typed as usual.\n\
++While recording, type // again to stop; the transcript stays in the composer. Esc \
++also stops (Enter stops and sends), and Ctrl+Space / F8 toggle it too.";
++
+ const SCROLLBACK_SEARCH_LONG_HELP: &str = "\
+ Searches the conversation scrollback for text and jumps between matches.\n\
+ In the prompt input, run /find to search. In vim mode, you can also press / \
+@@ -318,6 +327,20 @@ pub fn build_entries(
+                 action_id: None,
+                 long_help: Some(HISTORY_LONG_HELP),
+             });
++
++            // Workshop: `//` on an empty composer is `/voice`. Typed at the prompt (not a chord), so a
++            // null key with a custom display, like `/find`; it is prompt-only and follows the voice gate.
++            if crate::app::voice_mode_enabled() {
++                let mut voice = HintItem::new(crate::key!(Null), "voice");
++                voice.custom_display = Some(crate::slash::VOICE_DOUBLE_SLASH_HINT);
++                voice.description = Some("Dictation, no menu needed (same as /voice)".into());
++                entries.push(ShortcutsHelpEntry::Hint {
++                    item: voice,
++                    dimmed: !active_contexts.contains(&When::PromptFocused),
++                    action_id: None,
++                    long_help: Some(DOUBLE_SLASH_VOICE_LONG_HELP),
++                });
++            }
+         }
+         let count = entries.len() - header_idx - 1;
+         if count == 0 {
+diff --git a/crates/codegen/xai-grok-pager/src/views/shortcuts_help_tests.rs b/crates/codegen/xai-grok-pager/src/views/shortcuts_help_tests.rs
+index a0cf0bf9..21a2f225 100644
+--- a/crates/codegen/xai-grok-pager/src/views/shortcuts_help_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/views/shortcuts_help_tests.rs
+@@ -501,6 +501,51 @@ fn build_entries_includes_history_row_in_both_modes() {
+     }
+ }
+ 
++/// Workshop: the `//` composer shortcut for `/voice` is a display-only Input row that follows the voice gate.
++#[test]
++fn build_entries_lists_double_slash_voice_row_when_voice_is_on() {
++    let registry = ActionRegistry::defaults();
++    let voice_row = |entries: &[ShortcutsHelpEntry]| -> Option<(bool, Option<ActionId>)> {
++        entries.iter().find_map(|e| match e {
++            ShortcutsHelpEntry::Hint {
++                item,
++                dimmed,
++                action_id,
++                ..
++            } if item.custom_display == Some(crate::slash::VOICE_DOUBLE_SLASH_HINT) => {
++                Some((*dimmed, *action_id))
++            }
++            _ => None,
++        })
++    };
++    let prev = crate::app::voice_mode_enabled();
++    crate::app::set_voice_mode_enabled_for_test(true);
++    let lit = build_entries(&all_contexts(), &registry, false);
++    let dimmed = build_entries(&[When::ScrollbackFocused], &registry, false);
++    crate::app::set_voice_mode_enabled_for_test(false);
++    let off = build_entries(&all_contexts(), &registry, false);
++    crate::app::set_voice_mode_enabled_for_test(prev);
++
++    assert_eq!(voice_row(&lit), Some((false, None)), "lit on the prompt, display-only");
++    assert_eq!(voice_row(&dimmed), Some((true, None)), "dimmed off the prompt");
++    assert!(voice_row(&off).is_none(), "hidden while voice is off");
++    let label = lit.iter().find_map(|e| match e {
++        ShortcutsHelpEntry::Hint { item, .. }
++            if item.custom_display == Some(crate::slash::VOICE_DOUBLE_SLASH_HINT) =>
++        {
++            Some((item.label.to_string(), item.description.clone()))
++        }
++        _ => None,
++    });
++    assert_eq!(
++        label,
++        Some((
++            "voice".to_owned(),
++            Some("Dictation, no menu needed (same as /voice)".into())
++        ))
++    );
++}
++
+ #[test]
+ fn history_row_lit_only_by_prompt_focus() {
+     let registry = ActionRegistry::defaults();
+@@ -1900,6 +1945,8 @@ fn build_entries_sets_action_id_on_registry_hints() {
+             "undo" => item.keys.contains(&undo_key),
+             "redo" => item.keys.contains(&redo_key),
+             "history" => item.keys.contains(&history_key),
++            // Workshop: `//` runs /voice from the composer (typed, not a chord)
++            "voice" => item.custom_display == Some(crate::slash::VOICE_DOUBLE_SLASH_HINT),
+             _ => false,
+         };
+         if is_pseudo {

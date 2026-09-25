@@ -117,6 +117,15 @@ Run /history to open a searchable history panel and filter by text.";
 
 // Scrollback search has no ActionRegistry entry: it's the vim `/` inline handler, or the /find slash command in simple mode
 // List both triggers here
+/// Workshop: the `//` composer shortcut for `/voice`.
+const DOUBLE_SLASH_VOICE_LONG_HELP: &str = "\
+Dictation from the keyboard, without the slash menu: // start \u{b7} // stop.\n\
+Type / on an empty composer, then / again: the second slash starts recording (the \
+same as /voice). It only counts when the composer holds exactly one slash, so a / \
+inside text such as https:// is typed as usual.\n\
+While recording, type // again to stop; the transcript stays in the composer. Esc \
+also stops (Enter stops and sends), and Ctrl+Space / F8 toggle it too.";
+
 const SCROLLBACK_SEARCH_LONG_HELP: &str = "\
 Searches the conversation scrollback for text and jumps between matches.\n\
 In the prompt input, run /find to search. In vim mode, you can also press / \
@@ -318,6 +327,20 @@ pub fn build_entries(
                 action_id: None,
                 long_help: Some(HISTORY_LONG_HELP),
             });
+
+            // Workshop: `//` on an empty composer is `/voice`. Typed at the prompt (not a chord), so a
+            // null key with a custom display, like `/find`; it is prompt-only and follows the voice gate.
+            if crate::app::voice_mode_enabled() {
+                let mut voice = HintItem::new(crate::key!(Null), "voice");
+                voice.custom_display = Some(crate::slash::VOICE_DOUBLE_SLASH_HINT);
+                voice.description = Some("Dictation, no menu needed (same as /voice)".into());
+                entries.push(ShortcutsHelpEntry::Hint {
+                    item: voice,
+                    dimmed: !active_contexts.contains(&When::PromptFocused),
+                    action_id: None,
+                    long_help: Some(DOUBLE_SLASH_VOICE_LONG_HELP),
+                });
+            }
         }
         let count = entries.len() - header_idx - 1;
         if count == 0 {
