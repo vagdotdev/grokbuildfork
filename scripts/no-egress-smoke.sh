@@ -77,7 +77,7 @@ PY
 
 observed version -- "${COMMON[@]}" "$BIN" --version || fail=1
 observed cli-login -- "${COMMON[@]}" "$BIN" login || fail=1
-grep -q "connect a model" "$OUT/cli-login/stdout.log" || { echo "VIOLATION: workshop login did not print the connection picker" >&2; fail=1; }
+grep -q "Workshop — models and subscriptions" "$OUT/cli-login/stdout.log" || { echo "VIOLATION: workshop login did not print the connection picker" >&2; fail=1; }
 grep -q "cached list from 2026-09-21" "$OUT/cli-login/stdout.log" || { echo "VIOLATION: workshop login did not date its (unfetched) model lists" >&2; fail=1; }
 grep -Eq "auth\.x\.ai|accounts\.x\.ai" "$OUT/cli-login/stderr.log" && { echo "VIOLATION: workshop login mentioned xAI auth on stderr" >&2; fail=1; }
 proxy_hosts cli-login || fail=1
@@ -88,11 +88,12 @@ if grep -q "^exit=0" "$OUT/headless/exit.txt"; then echo "VIOLATION: headless pr
 proxy_hosts headless || fail=1
 
 # TUI first run: the composer comes up with the OpenCode default active (no picker); `/auth` opens
-# the Subscriptions overlay (rails + API-key providers + optional xAI card), Tab switches to the
-# Models view and back, Esc closes, quit. The one network request of the whole run is the engine
+# the one overlay (OpenCode models first, then Subscriptions: vendor rows, API keys, optional xAI).
+# Tab is swallowed. Esc closes, quit. The one network request of the whole run is the engine
 # install the launch starts in the background (the vendor's installer at opencode.ai, refused by
 # the proxy, nothing drawn): the model lists are the cached/seed ones (a live refresh is only ever
-# asked for by `/model`, below).
+# asked for by `/model`, below). `/auth` lands on the first vendor row, so this screen's detail
+# is that row's state, not the OpenCode seed date.
 first_run_started=$(date +%s)
 observed tui-first-run -- "${COMMON[@]}" python3 "$HERE/no-egress/pty_drive.py" --bin "$BIN" --out "$OUT/tui-first-run/raw.log" --cwd "$CWD_DIR" \
   --script "wait:7000,text:/auth,wait:500,key:Enter,wait:2500,key:Tab,wait:1500,key:Tab,wait:800,key:Esc,wait:800,key:C-c,wait:800,key:C-c,wait:500" || fail=1
@@ -105,20 +106,29 @@ txt=re.sub(r'\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b[=>]
 flat=''.join(txt.split())
 ok=True
 # The picker is an overlay; ratatui repaints only changed cells, so a needle must be text a view
-# draws whole ("type to filter" is the Models view's search line, "Tab: Models" the /auth title).
-# The composer label is the model name only; the Models view groups rows under "OpenCode" and
-# never lists Kilo Gateway; no user-visible text names the engine.
+# draws whole ("type to filter" is the search line, "Models" the title, "Subscriptions" the
+# section header, "optional · sign in" the xAI row's suffix). The composer label is the model
+# name only; rows group under "OpenCode" then "Subscriptions"; never Kilo Gateway; no
+# user-visible text names the engine.
 for needle in ["Big Pickle","/model to switch","/auth to connect subscriptions",
-               "type to filter","OpenCode","Tab: Models","Claude","Codex","Cursor","xAI — Sign in","optional",
-               "cached list from 2026-09-21"]:
+               "type to filter","Models","OpenCode","Subscriptions",
+               "Claude","Codex","Cursor","API keys","xAI","optional · sign in"]:
     if ''.join(needle.split()) not in flat:
         print("VIOLATION: TUI first run did not show %r" % needle); ok=False
-# A rail's pill: [Install] when its CLI is missing (a hosted runner), [Sign in] when it is
-# installed but signed out (a developer machine).
-if not any(''.join(p.split()) in flat for p in ["[Install]","[Sign in]","[Ready]"]):
-    print("VIOLATION: TUI first run showed no rail pill"); ok=False
+# A vendor row's state is a plain suffix, never a pill. The detail line is drawn whole:
+# `Enter installs` when the CLI is missing (a hosted runner), the official login when it is
+# installed but signed out, `Signed in` once ready, or the detecting line while the probe runs.
+if not any(''.join(p.split()) in flat for p in [
+        "Enter installs",
+        "Enter runs the official login",
+        "Signed in",
+        "Looking for the official CLI",
+    ]):
+    print("VIOLATION: TUI first run showed no vendor row state"); ok=False
 for bad in ["Login with grok.com","auth.x.ai/.well-known","Login with Grok","accounts.x.ai",
-            "connect a model","Connection classes","refreshing lists","OpenCode · Big Pickle","Kilo","engine"]:
+            "connect a model","Connection classes","refreshing lists","OpenCode · Big Pickle","Kilo","engine",
+            "Tab: Models","Tab: Subscriptions","[Install]","[Sign in]","[Ready]","[Detecting]",
+            "xAI — Sign in"]:
     if ''.join(bad.split()) in flat:
         print("VIOLATION: TUI showed %r" % bad); ok=False
 if not any("Workshop" in t for t in titles) or any("grok" in t.lower() for t in titles):
@@ -171,12 +181,15 @@ ok=True
 # The proxy refuses, so the live list never replaces the dated seed (`cached list from …`); the
 # ` · refresh failed` detail note is repainted cell by cell (ratatui) and row-selection dependent,
 # so the hermetic pty_live_catalogs gate asserts it. Here the point is the seed stands and egress
-# stays put.
-for needle in ["Big Pickle","Tab: Subscriptions","OpenCode","NVIDIA","cached list from 2026-09-21"]:
+# stays put. `Subscriptions` is the section under the OpenCode models — one overlay, no tab.
+for needle in ["Big Pickle","Models","Subscriptions","OpenCode","NVIDIA","API keys","optional · sign in",
+               "cached list from 2026-09-21"]:
     if ''.join(needle.split()) not in flat:
         print("VIOLATION: TUI /model did not show %r" % needle); ok=False
 for bad in ["Login with grok.com","auth.x.ai/.well-known","Login with Grok","accounts.x.ai","connect a model",
-            "OpenCode · Big Pickle","Kilo","engine"]:
+            "OpenCode · Big Pickle","Kilo","engine",
+            "Tab: Models","Tab: Subscriptions","[Install]","[Sign in]","[Ready]","[Detecting]",
+            "xAI — Sign in"]:
     if ''.join(bad.split()) in flat:
         print("VIOLATION: TUI showed %r" % bad); ok=False
 print("tui /model screen check:", "ok" if ok else "FAILED")
