@@ -7,7 +7,7 @@
 //! directory).
 //!
 //! `a_cancelled_chained_sign_in_still_shows_the_installed_cli`: Ctrl+C at the chained vendor
-//! sign-in leaves the CLI installed, so the rail re-detects at once and reads `[Sign in]` — no
+//! sign-in leaves the CLI installed, so the row re-detects at once and reads `sign in` — no
 //! Ctrl+R — and its detail names the whole command (`claude auth login`).
 //!
 //! Hermetic (fake installer + fake `claude`). Opt-in via `WORKSHOP_BIN`, `--include-ignored`.
@@ -220,7 +220,7 @@ fn a_missing_cli_installs_and_signs_in_on_one_keypress() {
 }
 
 /// Ctrl+C at the sign-in that follows the one-keypress install: the CLI is installed and signed
-/// out, and the rail says so at once (`[Sign in]`, its detail naming `claude auth login`) with no
+/// out, and the row says so at once (`sign in`, its detail naming `claude auth login`) with no
 /// Ctrl+R. The install is not undone and nobody is signed in.
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake installer + fake claude); run with --include-ignored"]
@@ -244,7 +244,13 @@ fn a_cancelled_chained_sign_in_still_shows_the_installed_cli() {
     );
     connect_big_pickle(&mut j);
     send_prompt(&mut j, "/auth");
-    wait_for(&mut j.h, "[Install]", 15);
+    wait_for(&mut j.h, PICKER_OPEN, 15);
+    wait_gone(&mut j.h, "detecting", 15);
+    assert!(
+        selected_line(&j.h).is_some_and(|l| l.contains("Claude") && l.contains("install")),
+        "the Claude row reads `install`:\n{}",
+        j.h.screen_contents()
+    );
 
     // Enter: the installer, then straight into the vendor's sign-in, which owns the terminal.
     j.h.inject_keys(b"\r").unwrap();
@@ -261,9 +267,9 @@ fn a_cancelled_chained_sign_in_still_shows_the_installed_cli() {
     snapshot(&j.h, &j.dir, "01-chained-sign-in-owns-the-terminal");
 
     // Ctrl+C in the (cooked-mode) terminal ends the vendor login only. Back in the picker, the
-    // rail must say what is true now — installed, signed out — without a Ctrl+R.
+    // row must say what is true now — installed, signed out — without a Ctrl+R.
     j.h.inject_keys(b"\x03").unwrap();
-    wait_for(&mut j.h, "[Sign in]", 20);
+    wait_for(&mut j.h, "sign in", 20);
     j.h.update(Duration::from_millis(800));
     assert!(
         j.h.is_running().unwrap_or(false),
@@ -271,22 +277,39 @@ fn a_cancelled_chained_sign_in_still_shows_the_installed_cli() {
         j.h.screen_contents()
     );
     let screen = j.h.screen_contents();
-    let claude_line = screen
-        .lines()
-        .find(|l| l.contains("Claude") && l.contains('['))
-        .unwrap_or_default();
+    let claude_line = selected_line(&j.h).unwrap_or_default();
     assert!(
-        claude_line.contains("[Sign in]") && !claude_line.contains("[Install]"),
-        "the installed CLI's rail re-detects to Sign in on its own: {claude_line}\n{screen}"
+        claude_line.contains("Claude")
+            && claude_line.contains("sign in")
+            && !claude_line.contains("install"),
+        "the installed CLI's row re-detects to sign in on its own: {claude_line}\n{screen}"
     );
     assert!(
         screen.contains("in your terminal:  claude auth login"),
         "the detail names the whole login command, binary included:\n{screen}"
     );
+    let row_state = |name: &str| {
+        screen
+            .lines()
+            .find(|l| l.contains(name) && l.contains("install"))
+            .map(str::to_owned)
+    };
     assert!(
-        screen.contains("Codex   [Install]") && screen.contains("Cursor  [Install]"),
-        "the CLIs that are still missing keep their one Install action:\n{screen}"
+        row_state("Codex").is_some() && row_state("Cursor").is_some(),
+        "the CLIs that are still missing keep their one install action:\n{screen}"
     );
+    for pill in [
+        "[Ready]",
+        "[Install]",
+        "[Sign in]",
+        "Tab: Models",
+        "Tab: Subscriptions",
+    ] {
+        assert!(
+            !screen.contains(pill),
+            "no pill, no tab ({pill}):\n{screen}"
+        );
+    }
     assert!(
         !state.join("logged_in").exists(),
         "a cancelled sign-in signs nobody in"

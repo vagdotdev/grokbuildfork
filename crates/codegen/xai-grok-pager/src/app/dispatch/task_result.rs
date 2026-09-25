@@ -1037,9 +1037,10 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 // Nothing live is queued (`/auth`, after a sign-in) but a signed-in rail has no
                 // cached list yet: ask its CLI. That snapshot never comes back `Loading`.
                 if !picker.refresh_pending
-                    && picker.rails.iter().any(|r| {
-                        matches!(r.subscription, workshop_detect::RailModels::Loading)
-                    })
+                    && picker
+                        .rails
+                        .iter()
+                        .any(|r| matches!(r.subscription, workshop_detect::RailModels::Loading))
                 {
                     effects.push(Effect::WorkshopRefreshRailModels);
                 }
@@ -1099,13 +1100,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             use workshop_detect::process::InteractiveExit;
             if let Some(picker) = app.connection_picker.as_mut() {
                 if exit == InteractiveExit::Interrupted {
-                    // A sign-in chained onto the one-keypress install: the rail still reads
-                    // `[Install]` although the CLI is on PATH now, so re-detect (it becomes
-                    // `[Sign in]`). A cancelled sign-in on an installed CLI changes nothing.
-                    let just_installed = picker
-                        .rails
-                        .iter()
-                        .any(|r| r.rail == rail && !r.installed);
+                    // A sign-in chained onto the one-keypress install: the row still reads
+                    // `install` although the CLI is on PATH now, so re-detect (it becomes
+                    // `sign in`). A cancelled sign-in on an installed CLI changes nothing.
+                    let just_installed =
+                        picker.rails.iter().any(|r| r.rail == rail && !r.installed);
                     if just_installed {
                         picker.set_status(format!(
                             "{} installed \u{b7} sign-in cancelled (Ctrl+C); re-detecting\u{2026}",
