@@ -1212,7 +1212,7 @@ fn answer_lines<'a>(screen: &'a str, needle: &str) -> Vec<&'a str> {
 }
 
 fn assert_answers_as_workshop(j: &mut Journey, question: &str) {
-    const ANSWER: &str = "Workshop's coding assistant";
+    const ANSWER: &str = "Workshop's assistant";
     let answered = |screen: &str| {
         let mut lines = screen.lines();
         lines.any(|l| l.contains(&format!("\u{276f} {question}")))
@@ -1275,13 +1275,13 @@ fn engine_answers_as_workshop() {
     );
     for (agent, head) in &heads {
         assert!(
-            head.starts_with("You are Workshop's coding assistant"),
+            head.starts_with("You are Workshop's assistant"),
             "{agent}: {head}"
         );
     }
     let instructions = j.workshop_home().join("engine").join("instructions.md");
     let text = std::fs::read_to_string(&instructions).expect("instructions file under the home");
-    assert!(text.contains("Workshop's coding assistant"), "{text}");
+    assert!(text.contains("Workshop's assistant"), "{text}");
     assert!(
         !j.cwd.path().join("AGENTS.md").exists(),
         "nothing is written into the user's project"

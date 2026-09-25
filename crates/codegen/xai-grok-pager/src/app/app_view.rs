@@ -1081,6 +1081,10 @@ pub struct AppView {
     /// start or answer); holds the answering model's plain name for the composer. Cleared when the
     /// user picks a connection or the fallback fails too.
     pub workshop_fallback: Option<String>,
+    /// Workshop: when the original engine turn started, captured as it hands over to the silent
+    /// fallback so the resent turn's `Worked for …` counts from the user's prompt, not from the
+    /// fallback. Consumed by the resent turn's `PromptResponse`.
+    pub workshop_fallback_prompt_at: Option<std::time::Instant>,
     /// Workshop: this launch created the home (nothing was ever connected before), so the composer
     /// carries the `/model to switch · /auth to connect subscriptions` hint.
     pub workshop_first_launch: bool,
@@ -1678,6 +1682,7 @@ impl AppView {
             workshop_turn_prompt_text: None,
             workshop_resend: None,
             workshop_fallback: None,
+            workshop_fallback_prompt_at: None,
             workshop_first_launch: false,
             auth_clipboard_delivery: None,
             auth_clipboard_feedback_generation: 0,

@@ -201,6 +201,20 @@ pub(super) struct WakeTerminal<'a> {
     pub error_kind: Option<crate::app::error_display::WireErrorType>,
 }
 
+/// Whether the most recent turn-terminal marker in `agent`'s scrollback is a `TurnCompleted`
+/// ("Worked for …") — a real turn's done line a wake turn must not stack a second one onto.
+fn last_turn_terminal_is_completed(agent: &AgentView) -> bool {
+    use crate::scrollback::block::RenderBlock;
+    for i in (0..agent.scrollback.len()).rev() {
+        if let Some(RenderBlock::SessionEvent(b)) = agent.scrollback.get(i).map(|e| &e.block)
+            && b.event.is_turn_terminal()
+        {
+            return matches!(b.event, SessionEvent::TurnCompleted { .. });
+        }
+    }
+    false
+}
+
 /// Close out a wake turn. This is the only place that flushes its streamed entries still in flight, because wake turns skip `PromptResponse`.
 /// Failures are the exception and still get a marker when silent, because the user's standing instruction stopped executing invisibly.
 /// The `HookAnnotation` warning attributes the deny but is not turn output, so a silently blocked wake closes without a marker.
@@ -275,6 +289,17 @@ pub(super) fn finish_wake_turn(
                 error_banner_present: false,
             },
         ),
+    };
+    // A synthetic wake turn (a background command or subagent completing) must never stack a
+    // second "Worked for …" onto a real turn's done line — the user would read the wake's short
+    // time as the turn's. Drop the wake's `TurnCompleted` when the last done line is already one;
+    // the wake's own output still renders, and failures / cancels still push their marker.
+    let event = if matches!(&event, Some(SessionEvent::TurnCompleted { .. }))
+        && last_turn_terminal_is_completed(agent)
+    {
+        None
+    } else {
+        event
     };
     let notify = matches!(&event, Some(SessionEvent::TurnCompleted { .. }));
     crate::app::turn_completion::push_turn_terminal_marker(agent, event);

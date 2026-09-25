@@ -1199,7 +1199,7 @@ mod tests {
     /// family's "You are opencode" text is left for the instructions file to contradict.
     #[test]
     fn agent_prompt_is_workshop_for_build_and_plan() {
-        assert!(WORKSHOP_AGENT_PROMPT.starts_with("You are Workshop's coding assistant"));
+        assert!(WORKSHOP_AGENT_PROMPT.starts_with("You are Workshop's assistant"));
         let lower = WORKSHOP_AGENT_PROMPT.to_lowercase();
         for other in ["opencode", "anomaly", "grok"] {
             assert!(!lower.contains(other), "prompt names {other}");

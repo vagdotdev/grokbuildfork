@@ -4171,6 +4171,13 @@ fn handle_workshop_turn_msg(
         agent.scrollback.finish_running(id);
     }
     if let M::EngineUnavailable { reason, text } = msg {
+        // The resent turn runs on the shell fallback, whose clock starts now; remember when the
+        // user's original turn started so its `Worked for …` counts from the prompt, not the
+        // fallback (its `PromptResponse` consumes this).
+        app.workshop_fallback_prompt_at = app
+            .agents
+            .get(&agent_id)
+            .and_then(|a| a.workshop_turn_started_at);
         let effects = dispatch::dispatch(
             Action::WorkshopEngineUnavailable {
                 agent_id,
@@ -4192,6 +4199,12 @@ fn handle_workshop_turn_msg(
         // rail — the user gets one plain line and Enter retries.
         let reason = format!("{model} stopped responding");
         if engine && crate::app::workshop::kilo_fallback_model().is_some() {
+            // As with EngineUnavailable: the resent turn's `Worked for …` counts from the user's
+            // prompt, not from the fallback that follows the stall.
+            app.workshop_fallback_prompt_at = app
+                .agents
+                .get(&agent_id)
+                .and_then(|a| a.workshop_turn_started_at);
             let effects = dispatch::dispatch(
                 Action::WorkshopEngineUnavailable {
                     agent_id,
@@ -4373,6 +4386,16 @@ fn handle_workshop_turn_msg(
             {
                 agent.scrollback.finish_running(id);
             }
+            // A to-do update feeds the upstream task list (the Ctrl+T pane), not a scrollback row,
+            // exactly as Grok Build does — no empty `todowrite` row is ever left in the transcript.
+            if crate::app::workshop_tools::is_todo_tool(&name) {
+                if let Some(items) = crate::app::workshop_tools::todo_items_from_input(&input)
+                    && let Some(agent) = app.agents.get_mut(&agent_id)
+                {
+                    agent.todo.update_todos(items);
+                }
+                return (true, vec![]);
+            }
             // The turn-status row reads `Run <command>` with the call's own timer while it runs,
             // as it does for a shell turn's tool, so a long command never looks frozen.
             let activity = crate::app::workshop_tools::turn_activity(&name, &input);
@@ -4497,6 +4520,14 @@ fn handle_workshop_turn_msg(
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 agent.scrollback.push_block(RenderBlock::system_error(line));
                 agent.workshop_retry_prompt = app.workshop_last_prompt.clone();
+            }
+            true
+        }
+        M::Notice(line) => {
+            // A plain, non-failing note (no free model can see images): the turn keeps going and
+            // its own answer still stands, so this pushes no error and arms no retry.
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent.scrollback.push_block(RenderBlock::system(line));
             }
             true
         }

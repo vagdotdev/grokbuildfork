@@ -10,10 +10,12 @@ use serde_json::Value;
 use xai_grok_pager_diff::{DiffHunk, diff_hunks_from_strings};
 
 use crate::scrollback::block::RenderBlock;
+use crate::scrollback::blocks::tool::{WebFetchToolCallBlock, WebSearchToolCallBlock};
 use crate::scrollback::blocks::{
     EditToolCallBlock, ExecuteToolCallBlock, ListDirToolCallBlock, OtherToolCallBlock,
     ReadToolCallBlock, ToolCallBlock,
 };
+use xai_grok_shell::tools::{TodoItem, TodoPriority, TodoStatus};
 
 /// Longest command output kept in a row (the tail); the model saw the whole thing anyway.
 const OUTPUT_TAIL_BYTES: usize = 16 * 1024;
@@ -84,13 +86,66 @@ pub fn turn_activity(name: &str, input: &Value) -> crate::acp::tracker::TurnActi
     crate::acp::tracker::TurnActivity::ToolRunning { title, description }
 }
 
+/// Whether the engine's tool `name` is a to-do update (`todowrite`), which Workshop maps onto the
+/// upstream todo list (the Ctrl+T pane) rather than a scrollback row, as Grok Build does.
+pub fn is_todo_tool(name: &str) -> bool {
+    matches!(name, "todowrite" | "todo_write" | "todoread" | "todo_read")
+}
+
+/// The to-do items an engine `todowrite` call carries, as the pager's canonical `TodoItem`s, so a
+/// to-do update renders as the upstream task list instead of an empty `todowrite` row. `None` when
+/// the input has no `todos` array (a `todoread`, or a shape we don't recognise).
+pub fn todo_items_from_input(input: &Value) -> Option<Vec<TodoItem>> {
+    let todos = input.get("todos").and_then(Value::as_array)?;
+    Some(
+        todos
+            .iter()
+            .filter_map(|t| {
+                let content = str_of(t, "content")
+                    .or_else(|| str_of(t, "text"))
+                    .map(str::to_owned)?;
+                if content.trim().is_empty() {
+                    return None;
+                }
+                let status = match str_of(t, "status") {
+                    Some("in_progress") | Some("in-progress") | Some("active") => {
+                        TodoStatus::InProgress
+                    }
+                    Some("completed") | Some("done") => TodoStatus::Completed,
+                    Some("cancelled") | Some("canceled") => TodoStatus::Cancelled,
+                    _ => TodoStatus::Pending,
+                };
+                let priority = match str_of(t, "priority") {
+                    Some("high") => TodoPriority::High,
+                    Some("low") => TodoPriority::Low,
+                    _ => TodoPriority::Medium,
+                };
+                Some(TodoItem {
+                    content,
+                    priority,
+                    status,
+                    meta: None,
+                })
+            })
+            .collect(),
+    )
+}
+
 /// The row shown while the call runs: the pager's own verb rows (`◆ Run`, `◆ Edit`,
-/// `◆ Creating`, `◈ Read`, …) so engine turns read like shell turns.
+/// `◆ Creating`, `◈ Read`, …) so engine turns read like shell turns. The engine's `webfetch` /
+/// `websearch` ids map onto the upstream Fetch / Web Search blocks (bare `webfetch` never reaches
+/// `from_name`, which only knows the underscored upstream ids).
 pub fn running_row(name: &str, input: &Value) -> RenderBlock {
     let input = &crate::app::workshop::scrub_scratch_json(input);
     let summary = summary(input);
     match name {
-        "list" => RenderBlock::list_dir(summary),
+        "list" | "ls" | "list_dir" => RenderBlock::list_dir(summary),
+        "webfetch" | "web_fetch" | "fetch" => {
+            RenderBlock::ToolCall(ToolCallBlock::WebFetch(WebFetchToolCallBlock::new(summary)))
+        }
+        "websearch" | "web_search" => {
+            RenderBlock::ToolCall(ToolCallBlock::WebSearch(WebSearchToolCallBlock::new(summary)))
+        }
         _ => RenderBlock::tool_call(name, summary, true),
     }
 }
@@ -186,7 +241,29 @@ pub fn finished_row(
             }
             RenderBlock::ToolCall(ToolCallBlock::ListDir(block))
         }
-        "glob" | "grep" | "webfetch" | "websearch" => {
+        "webfetch" | "web_fetch" | "fetch" => {
+            let mut block = WebFetchToolCallBlock::new(summary);
+            let body = tail(output);
+            if !body.trim().is_empty() {
+                block = block.with_output(body);
+            }
+            if error.is_some() {
+                block.set_error(error);
+            }
+            RenderBlock::ToolCall(ToolCallBlock::WebFetch(block))
+        }
+        "websearch" | "web_search" => {
+            let mut block = WebSearchToolCallBlock::new(summary);
+            let body = tail(output);
+            if !body.trim().is_empty() {
+                block.content = Some(body);
+            }
+            if error.is_some() {
+                block.set_error(error);
+            }
+            RenderBlock::ToolCall(ToolCallBlock::WebSearch(block))
+        }
+        "glob" | "grep" => {
             // Keep the pager's own verb row for these; the result text is the body.
             let mut block = match RenderBlock::tool_call(name, summary.clone(), true) {
                 RenderBlock::ToolCall(tc) => tc,
@@ -501,5 +578,68 @@ mod tests {
         assert!(t.starts_with("…\nline "));
         assert!(t.ends_with("line 4999\n"));
         assert!(t.len() <= OUTPUT_TAIL_BYTES + 8);
+    }
+
+    #[test]
+    fn engine_web_tools_map_onto_the_upstream_blocks() {
+        // The bare `webfetch` / `websearch` ids the engine sends become Fetch / Web Search blocks,
+        // never a raw-named Other row.
+        assert!(matches!(
+            running_row("webfetch", &json!({"url": "https://ghostty.org/docs/install"})),
+            RenderBlock::ToolCall(ToolCallBlock::WebFetch(_))
+        ));
+        assert!(matches!(
+            running_row("websearch", &json!({"query": "ghostty ubuntu"})),
+            RenderBlock::ToolCall(ToolCallBlock::WebFetch(_) | ToolCallBlock::WebSearch(_))
+        ));
+        let fetched = finished_row(
+            "webfetch",
+            &json!({"url": "https://ghostty.org/docs/install"}),
+            true,
+            "# Install\nUse apt.",
+            None,
+            &json!({}),
+        );
+        let RenderBlock::ToolCall(ToolCallBlock::WebFetch(f)) = fetched else {
+            panic!("webfetch row");
+        };
+        assert_eq!(f.url, "https://ghostty.org/docs/install");
+        assert!(f.output.as_deref().unwrap_or_default().contains("Use apt."));
+        let searched = finished_row(
+            "websearch",
+            &json!({"query": "ghostty ubuntu"}),
+            true,
+            "result one\nresult two",
+            None,
+            &json!({}),
+        );
+        let RenderBlock::ToolCall(ToolCallBlock::WebSearch(s)) = searched else {
+            panic!("websearch row");
+        };
+        assert_eq!(s.query, "ghostty ubuntu");
+        assert!(s.content.as_deref().unwrap_or_default().contains("result two"));
+    }
+
+    #[test]
+    fn todowrite_input_parses_into_todo_items() {
+        assert!(is_todo_tool("todowrite"));
+        assert!(is_todo_tool("todoread"));
+        assert!(!is_todo_tool("bash"));
+        let items = todo_items_from_input(&json!({
+            "todos": [
+                {"content": "download books", "status": "completed", "priority": "high"},
+                {"content": "install ghostty", "status": "in_progress", "priority": "medium"},
+                {"content": "verify", "status": "pending", "priority": "low"},
+                {"content": "", "status": "pending"},
+            ]
+        }))
+        .expect("todos array");
+        assert_eq!(items.len(), 3, "empty content is dropped");
+        assert_eq!(items[0].content, "download books");
+        assert_eq!(items[0].status, TodoStatus::Completed);
+        assert_eq!(items[0].priority, TodoPriority::High);
+        assert_eq!(items[1].status, TodoStatus::InProgress);
+        assert_eq!(items[2].status, TodoStatus::Pending);
+        assert!(todo_items_from_input(&json!({"other": true})).is_none());
     }
 }

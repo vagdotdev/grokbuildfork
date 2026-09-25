@@ -2122,7 +2122,13 @@ impl AgentView {
                             watching_hovered: self.hit_watching_cue.hovered,
                         }),
                         has_running_execute,
-                        total_tokens: self.context_state.as_ref().map(|c| c.used),
+                        // Workshop: the `⇣Nk` counter reads the live Engine/Adapter model's usage
+                        // (the same source as the header's context meter), not the frozen shell
+                        // placeholder; unknown stays hidden.
+                        total_tokens: match self.workshop_context {
+                            Some((used, _)) => used,
+                            None => self.context_state.as_ref().map(|c| c.used),
+                        },
                         session_starting_since: self.session_starting_since,
                         is_bash_turn: self.bash_turn,
                         is_pending_user_input,
