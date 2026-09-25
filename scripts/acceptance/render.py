@@ -45,11 +45,13 @@ with open(os.path.join(out, "session.cast"), encoding="utf-8", errors="replace")
 sc = pyte.Screen(hdr["width"], hdr["height"])
 st = pyte.Stream(sc)
 NOISE = [re.compile(r"[\u2800-\u28ff]"), re.compile(r"\b\d{1,2}:\d{2}( [AP]M)?\b"),
+         re.compile(r"\b\d+h\d+m\d+s\b|\b\d+m\d+s\b"), re.compile(r"⇣[0-9.]+k?"),
          re.compile(r"\b\d+(\.\d+)?\s?(ms|s|m|h|sec|min)\b"), re.compile(r"\.{1,3}(?=\s|$)")]
 
 
 def norm():
-    txt = "\n".join(l.rstrip() for l in sc.display)
+    # A truncated status row ("Run <cmd>… 46s") jitters by a character as its counter widens: keep a fixed prefix.
+    txt = "\n".join((l[:60] if "…" in l else l).rstrip() for l in sc.display)
     for rx in NOISE:
         txt = rx.sub("", txt)
     return txt

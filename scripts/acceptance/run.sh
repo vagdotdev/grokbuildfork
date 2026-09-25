@@ -76,8 +76,11 @@ ev() { # ev NAME [TEXT]
 }
 screen() { tail -n +2 "$LIVE" 2>/dev/null; }
 screen_has() { screen | grep -qE -- "$1"; }
-# Screen text without what changes on its own: braille spinner frames, clock times, elapsed counters.
-norm() { screen | LC_ALL=C sed -E $'s/\xe2[\xa0-\xa3][\x80-\xbf]//g; s/[0-9]{1,2}:[0-9]{2}( [AP]M)?//g; s/[0-9]+(\\.[0-9]+)?\\s?(ms|s|m|min)\\b//g'; }
+# Screen text without what changes on its own: braille spinner frames, clock times, elapsed counters,
+# and the animated rows for a background command the model left running (`⸬ Task Start a server … (1)`,
+# `◎ 1 command still running`).
+bg_rows='/[0-9]+ commands? still running/d; / Task .*\([0-9]+\)/d'
+norm() { screen | sed -E "$bg_rows" | LC_ALL=C sed -E $'s/\xe2[\xa0-\xa3][\x80-\xbf]//g; s/[0-9]{1,2}:[0-9]{2}( [AP]M)?//g; s/[0-9]+(\\.[0-9]+)?\\s?(ms|s|m|min)\\b//g'; }
 # A tool call is running: the run's `opencode serve` has a child process.
 tool_running() {
   local p
@@ -124,7 +127,7 @@ TURN_BASE=0; TURN_PROMPT=""
 # v0.2.2's done line (`Worked for 22s`): below this turn's own prompt, or the last line above the
 # composer box when the prompt has scrolled away.
 done_line() {
-  screen | awk -v p="$TURN_PROMPT" '
+  screen | sed -E "$bg_rows" | awk -v p="$TURN_PROMPT" '
     p != "" && index($0, p) {f = 1}
     f && /Worked for/ {d = 1}
     /╭─/ {exit}
@@ -190,6 +193,11 @@ if [ -n "${ACC_MODEL_REF:-}" ]; then
   printf '{"kind":"engine","model":{"model_ref":"%s","name":"%s","is_default":false,"tool_call":true}}\n' \
     "$ACC_MODEL_REF" "$ACC_MODEL_NAME" | "${AS[@]}" tee "$UHOME/.workshop/active-connection.json" >/dev/null
 fi
+# ACC_PICK=DIR: a model picked in /model, as the picker saved it (DIR holds that HOME's
+# ~/.workshop/active-connection.json and config.toml, copied unchanged).
+if [ -n "${ACC_PICK:-}" ]; then
+  for f in active-connection.json config.toml; do "${AS[@]}" tee "$UHOME/.workshop/$f" < "$ACC_PICK/$f" >/dev/null; done
+fi
 RC="$UHOME/.acc-rc"
 printf 'PS1="\\$ "\nexport LANG=C.UTF-8\ncd ~\n' | "${AS[@]}" tee "$RC" >/dev/null
 UPATH="$UHOME/.local/bin:$UHOME/.workshop/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -207,7 +215,7 @@ python3 - "$OUT/run.json" <<EOF
 import json, sys, time
 json.dump({"task": "$TASK", "run_id": "$RUN_ID", "user": "$RUN_USER", "home": "$UHOME", "bin": "$BIN",
            "path": "$UPATH", "tmpdir": "$UTMP", "desktop": "$DESKTOP" == "--desktop", "started": time.time(),
-           "turn_timeout": $TURN_TIMEOUT, "stall": $STALL, "model": "${ACC_MODEL_REF:-}", "seeded_permission_mode": "${ACC_PERMISSION_MODE:-}", "extra_env": "${ACC_ENV:-}"}, open(sys.argv[1], "w"), indent=1)
+           "turn_timeout": $TURN_TIMEOUT, "stall": $STALL, "model": "${ACC_MODEL_REF:-}", "pick": "${ACC_PICK:-}", "seeded_permission_mode": "${ACC_PERMISSION_MODE:-}", "extra_env": "${ACC_ENV:-}"}, open(sys.argv[1], "w"), indent=1)
 EOF
 python3 "$HERE/verify.py" snap "$TASK" "$OUT" before >> "$LOG" 2>&1
 
@@ -219,7 +227,7 @@ python3 "$HERE/verify.py" snap "$TASK" "$OUT" before >> "$LOG" 2>&1
 "${T[@]}" set -g escape-time 0 >/dev/null
 ACC_TMUX_SOCKET="$SESSION" ACC_SUDO_PASSWORD="$PASSWORD" python3 "$HERE/monitor.py" "$CAST" "$OUT" "$SESSION" > "$OUT/monitor.log" 2>&1 &
 MON=$!
-FF=""; TERMW=""
+FF=""; TERMW=""; WINLOG=""
 if [ "$DESKTOP" = "--desktop" ]; then
   echo "ffmpeg_start_wall=$(date +%s.%3N)" > "$OUT/video-sync.txt"
   "$FFMPEG" -loglevel error -y -f x11grab -video_size 1920x1200 -framerate 15 -i "$DISPLAY" \
@@ -230,6 +238,12 @@ if [ "$DESKTOP" = "--desktop" ]; then
   TERMW=$!
   for _ in $(seq 1 60); do WID="$(xdotool search --onlyvisible --pid "$TERMW" 2>/dev/null | head -1)"; [ -n "$WID" ] && break; sleep 0.5; done
   [ -n "${WID:-}" ] && { xdotool windowmove "$WID" 40 40; xdotool mousemove 1900 1180; }
+  # the visible windows' titles whenever they change (a browser Workshop opens, and when it closes)
+  ( last=""; while :; do
+      w="$(xdotool search --onlyvisible --name . 2>/dev/null | while read -r id; do xdotool getwindowname "$id" 2>/dev/null; done | sort -u | paste -sd '|')"
+      [ "$w" != "$last" ] && printf '%s\t%s\n' "$(date +%s.%3N)" "$w" >> "$OUT/windows.log"; last="$w"; sleep 1
+    done ) &
+  WINLOG=$!
 fi
 for _ in $(seq 1 100); do [ -s "$LIVE" ] && break; sleep 0.1; done
 waitre '^\$' 30 >/dev/null
@@ -271,6 +285,7 @@ for _ in $(seq 1 20); do "${T[@]}" has-session -t "$SESSION" 2>/dev/null || brea
 sleep 1
 [ -n "$FF" ] && { kill -INT "$FF" 2>/dev/null; wait "$FF" 2>/dev/null; echo "ffmpeg_stop_wall=$(date +%s.%3N)" >> "$OUT/video-sync.txt"; }
 [ -n "$TERMW" ] && kill "$TERMW" 2>/dev/null
+[ -n "$WINLOG" ] && kill "$WINLOG" 2>/dev/null
 kill "$MON" 2>/dev/null
 ev recording_stopped
 python3 "$HERE/verify.py" verify "$TASK" "$OUT" >> "$LOG" 2>&1
