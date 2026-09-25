@@ -198,6 +198,16 @@ impl Sandbox {
         std::fs::read_to_string(self.state().join("stdin.txt")).unwrap_or_default()
     }
 
+    /// The `control_response` lines the fake read on its control channel, one per
+    /// `control_request` it replayed.
+    pub fn replies(&self) -> Vec<String> {
+        std::fs::read_to_string(self.state().join("replies.txt"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
     pub fn child_env(&self) -> Vec<String> {
         std::fs::read_to_string(self.state().join("env.txt"))
             .unwrap_or_default()
@@ -307,7 +317,17 @@ if [ "$1" = "serve" ]; then
   while :; do sleep 1; done
 fi
 printf '%s\n' "$@" > "$state/argv.txt"
-cat > "$state/stdin.txt"
+case " $* " in
+  *" --input-format "*)
+    # Control channel (Claude Code's stream-json input): the prompt arrives as message lines
+    # and stdin stays open for control responses; read up to the user message.
+    : > "$state/stdin.txt"
+    while IFS= read -r line; do
+      printf '%s\n' "$line" >> "$state/stdin.txt"
+      case "$line" in *'"type":"user"'*) break ;; esac
+    done ;;
+  *) cat > "$state/stdin.txt" ;;
+esac
 env > "$state/env.txt"
 pwd > "$state/cwd.txt"
 mode=$(cat "$state/mode" 2>/dev/null || echo stream)
@@ -327,7 +347,15 @@ case "$mode" in
     wait
     exit 0 ;;
   *)
-    while IFS= read -r line || [ -n "$line" ]; do printf '%s\n' "$line"; done < "$state/fixture.jsonl"
+    # A replayed `control_request` blocks, as the real CLI does, until its `control_response`
+    # arrives on stdin; the fixture is read on fd 3 so stdin stays the channel.
+    while IFS= read -r line <&3 || [ -n "$line" ]; do
+      printf '%s\n' "$line"
+      case "$line" in
+        *'"type":"control_request"'*)
+          IFS= read -r reply && printf '%s\n' "$reply" >> "$state/replies.txt" ;;
+      esac
+    done 3< "$state/fixture.jsonl"
     exit "$(cat "$state/exit_code" 2>/dev/null || echo 0)" ;;
 esac
 "#,

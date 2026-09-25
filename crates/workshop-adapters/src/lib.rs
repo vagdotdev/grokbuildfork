@@ -48,11 +48,11 @@ pub mod vendors;
 pub mod worktree;
 
 pub use adapter::{
-    Adapter, AdapterId, LoginState, NormalizeError, Normalizer, PermissionPolicy, PinStatus,
-    ProbeOutput, PromptDelivery, RunRequest, Terminal, VersionPin,
+    Adapter, AdapterId, AskReply, LoginState, NormalizeError, Normalizer, PermissionPolicy,
+    PinStatus, ProbeOutput, PromptDelivery, RunRequest, Terminal, VersionPin,
 };
 pub use detect::{DetectOptions, Detection, InstalledCli, detect};
-pub use event::{AdapterEvent, Usage};
+pub use event::{AdapterEvent, QuestionChoice, QuestionPrompt, Usage, question_answers_prompt};
 pub use status::{RailPill, RailStatus, probe_login, rail_status};
-pub use supervisor::{RunHandle, RunOutcome, SpawnError, SupervisorOptions, spawn};
+pub use supervisor::{Replier, RunHandle, RunOutcome, SpawnError, SupervisorOptions, spawn};
 pub use worktree::{GitWorktreeIsolation, InPlace, IsolatedWorkspace, WorkspaceIsolation};

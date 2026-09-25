@@ -147,6 +147,10 @@ pub enum PermissionPolicy {
     /// Edit files inside the workspace. Command execution stays under the
     /// vendor's own sandbox / approval defaults; nothing is force-approved.
     WorkspaceWrite,
+    /// Every tool call is approved: the vendor's own run-everything mode
+    /// (`cursor-agent --force`, `claude --permission-mode bypassPermissions`,
+    /// `codex -s danger-full-access`), as Grok Build's always-approve.
+    AlwaysApprove,
 }
 
 /// How the prompt reaches the child process.
@@ -156,6 +160,37 @@ pub enum PromptDelivery {
     Stdin,
     /// Appended as the final positional argument; stdin is `/dev/null`.
     Argument,
+    /// Written to stdin as the vendor's message lines ([`Adapter::prompt_lines`]); stdin then
+    /// stays open as the CLI's control channel — the asks it raises ([`AdapterEvent::PermissionAsk`],
+    /// [`AdapterEvent::Question`]) are answered on it ([`Normalizer::reply`]) — and is closed
+    /// once the normalizer reaches its terminal event, which ends the CLI.
+    Channel,
+}
+
+/// The host's answer to an ask the vendor CLI raised on its control channel.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AskReply {
+    /// Approve the tool call asked about in [`AdapterEvent::PermissionAsk`] `id`; `always` also
+    /// approves the same kind of call for the rest of the session (the vendor's own rule).
+    Allow { id: String, always: bool },
+    /// Refuse it; `message` is what the model is told.
+    Deny { id: String, message: String },
+    /// Answer the [`AdapterEvent::Question`] `id`: one list of chosen labels (or typed text) per
+    /// question, in order.
+    Answer {
+        id: String,
+        answers: Vec<Vec<String>>,
+    },
+}
+
+impl AskReply {
+    pub fn id(&self) -> &str {
+        match self {
+            AskReply::Allow { id, .. }
+            | AskReply::Deny { id, .. }
+            | AskReply::Answer { id, .. } => id,
+        }
+    }
 }
 
 /// One delegated, whole-task run.
@@ -212,6 +247,22 @@ pub trait Normalizer: Send {
     fn session_id(&self) -> Option<&str>;
 
     fn terminal(&self) -> Option<&Terminal>;
+
+    /// Queue the stdin line that answers `reply` on the CLI's control channel
+    /// ([`PromptDelivery::Channel`]). `false` when this run cannot carry it: the vendor has no
+    /// channel, or the ask was not one of its own — the host then falls back (a question's
+    /// answers resume the session as the next prompt).
+    fn reply(&mut self, reply: &AskReply) -> bool {
+        let _ = reply;
+        false
+    }
+
+    /// Lines the normalizer wants written to the CLI's stdin (answers queued by [`Self::reply`],
+    /// refusals of control requests Workshop does not serve). Drained by the supervisor after
+    /// every stdout line and every reply.
+    fn take_stdin_lines(&mut self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// A vendor CLI adapter. Pure description and parsing; no I/O.
@@ -246,6 +297,12 @@ pub trait Adapter: Send + Sync {
     fn logout_args(&self) -> &'static [&'static str];
 
     fn prompt_delivery(&self) -> PromptDelivery;
+
+    /// The stdin lines that carry the prompt under [`PromptDelivery::Channel`] (the vendor's
+    /// message framing); unused for the other deliveries.
+    fn prompt_lines(&self, prompt: &str) -> Vec<String> {
+        vec![prompt.to_string()]
+    }
 
     /// Pinned non-interactive run arguments (without the prompt when
     /// [`Self::prompt_delivery`] is `Argument`; the supervisor appends it).

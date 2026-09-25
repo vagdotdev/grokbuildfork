@@ -434,7 +434,8 @@ const FAKE_CLAUDE: FakeVendor = FakeVendor {
     status_fd: 1,
     login_args: "auth login",
     fixture: "claude_success.jsonl",
-    models_arm: r#"*--input-format*)
+    // The model-list probe only (a turn also passes `--input-format`, its control channel).
+    models_arm: r#"*--strict-mcp-config*)
     IFS= read -r _req
     printf '%s\n' '{"type":"control_response","response":{"subtype":"success","request_id":"workshop-models","response":{"models":[{"value":"default","displayName":"Default (recommended)"},{"value":"opus[1m]","displayName":"Opus (1M context)"},{"value":"sonnet","displayName":"Sonnet"}],"account":{"email":"user@example.com","subscriptionType":"max"}}}}'
     while IFS= read -r _; do :; done; exit 0 ;;"#,
@@ -523,10 +524,28 @@ case "$*" in
     if [ -f "$state/login_hang" ]; then sleep 60; fi
     exit 0 ;;
 esac
-# Otherwise this is a turn: replay the adapter success fixture line by line. A per-line sleep keeps
-# the turn on-screen long enough to be cancelled mid-stream (SIGINT from the supervisor stops it).
+# Otherwise this is a turn: record its flags, then replay the adapter fixture line by line. A
+# per-line sleep keeps the turn on-screen long enough to be cancelled mid-stream (SIGINT from the
+# supervisor stops it). On a control channel (`--input-format`, Claude Code) the prompt arrives as
+# message lines on stdin, and a replayed `control_request` blocks — as the real CLI does — until
+# its `control_response` arrives there; the fixture is read on fd 3 so stdin stays the channel.
 trap 'exit 130' INT TERM
-while IFS= read -r line || [ -n "$line" ]; do printf '%s\n' "$line"; sleep 0.3; done < "$state/fixture.jsonl"
+printf '%s\n' "$*" >> "$state/turn_argv.txt"
+case " $* " in
+  *" --input-format "*)
+    while IFS= read -r line; do
+      printf '%s\n' "$line" >> "$state/stdin.txt"
+      case "$line" in *'"type":"user"'*) break ;; esac
+    done ;;
+esac
+while IFS= read -r line <&3 || [ -n "$line" ]; do
+  printf '%s\n' "$line"
+  case "$line" in
+    *'"type":"control_request"'*)
+      IFS= read -r reply && printf '%s\n' "$reply" >> "$state/replies.txt" ;;
+    *) sleep 0.3 ;;
+  esac
+done 3< "$state/fixture.jsonl"
 exit 0
 "#,
         state = sh_quote(&state.to_string_lossy()),
@@ -679,6 +698,200 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
         j,
         "P3 rails (logged-in fakes): Claude rail Ready → model select → adapter turn renders \
          (fixture replay) → cancel. No network (fake CLIs).\n",
+    );
+}
+
+/// From `/auth`, connect the Claude rail's default model; the composer then names it.
+fn connect_claude_default(j: &mut Journey) {
+    open_subscriptions(j);
+    wait_for(&mut j.h, "[Ready]", 15);
+    wait_for(&mut j.h, "3 models", 20);
+    j.h.inject_keys(b"\r").unwrap();
+    wait_for(&mut j.h, "Opus (1M context)", 10);
+    j.h.inject_keys(b"\r").unwrap();
+    if let Err(e) =
+        j.h.wait_for_text_absent(SUBSCRIPTIONS_OVERLAY, Duration::from_secs(120))
+    {
+        panic!(
+            "overlay never closed after selecting a Claude model: {e}\n{}",
+            j.h.screen_contents()
+        );
+    }
+    wait_for(&mut j.h, "Default (recommended)", 30);
+}
+
+/// The composer's bottom border, which names the model and, except in Normal mode, the mode.
+fn composer_border(screen: &str) -> String {
+    screen
+        .lines()
+        .rev()
+        .find(|l| l.contains('\u{256f}'))
+        .map(str::to_owned)
+        .unwrap_or_default()
+}
+
+/// Shift+Tab until the composer reads `mode` (`plan`, `auto`, `always-approve`; Normal shows no
+/// label) next to the connected model.
+fn set_mode(j: &mut Journey, mode: &str) {
+    for _ in 0..6 {
+        let border = composer_border(&j.h.screen_contents());
+        let current_is = |m: &str| border.contains(&format!("\u{b7} {m}"));
+        let at_target = match mode {
+            "normal" => !["plan", "auto", "always-approve"]
+                .iter()
+                .any(|m| current_is(m)),
+            m => current_is(m),
+        };
+        if at_target {
+            return;
+        }
+        j.h.inject_keys(b"\x1b[Z").unwrap();
+        j.h.update(Duration::from_millis(400));
+    }
+    panic!(
+        "could not reach mode {mode}\nscreen:\n{}",
+        j.h.screen_contents()
+    );
+}
+
+fn send_prompt(j: &mut Journey, text: &str) {
+    j.h.inject_keys(text.as_bytes()).unwrap();
+    j.h.update(Duration::from_millis(300));
+    j.h.inject_keys(b"\r").unwrap();
+}
+
+fn lines_of(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Wait for the turn's `Worked for` line; the fake exits when its fixture is replayed.
+fn wait_turn_done(j: &mut Journey, secs: u64) {
+    wait_for(&mut j.h, "Worked for", secs);
+    j.h.update(Duration::from_millis(500));
+}
+
+/// P3 modes (logged-in fakes, Claude rail): Normal is the CLI's write-capable mode that asks —
+/// `acceptEdits` on its stdio prompt tool: the CLI's question opens Workshop's question view and
+/// the answer goes back on the channel; its `can_use_tool` for a command opens Workshop's approval
+/// card, "Yes, run it" goes back as `allow` and the turn completes. Plan is the one read-only
+/// mode (`--permission-mode plan`); always-approve is the CLI's run-everything mode
+/// (`bypassPermissions`), and neither Normal nor Auto ever runs a plan mode.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake CLIs, no network); run with --include-ignored"]
+fn rails_modes_normal_asks_with_the_approval_card_plan_is_read_only() {
+    let Some(bin) = bin_from_env() else { return };
+    let fakes = install_fakes(true);
+    let claude_state = fakes.state.join("claude");
+    let mut j = spawn("rails-modes", &bin, &[], Some(&fakes.bin));
+    connect_claude_default(&mut j);
+    snapshot(&j.h, &j.dir, "01-connected-claude");
+
+    // 1. Normal mode: the fake replays the ask fixture (a question, then a `cp` the permission
+    //    mode prompts for).
+    std::fs::copy(
+        fixtures_dir().join("claude_ask.jsonl"),
+        claude_state.join("fixture.jsonl"),
+    )
+    .unwrap();
+    set_mode(&mut j, "normal");
+    snapshot(&j.h, &j.dir, "02-normal-mode");
+    send_prompt(&mut j, "make the page use my wallpaper");
+    // The CLI's question is Workshop's question view: pick the second option (Down, Enter).
+    wait_for(&mut j.h, "Which wallpaper should the page use?", 30);
+    wait_for(&mut j.h, "Ocean", 5);
+    snapshot(&j.h, &j.dir, "03-question-view");
+    j.h.inject_keys(b"\x1b[B").unwrap();
+    j.h.update(Duration::from_millis(300));
+    j.h.inject_keys(b"\r").unwrap();
+    // The command the mode prompts for is Workshop's approval card, with the command in full.
+    wait_for(&mut j.h, "Run this command?", 30);
+    wait_for(&mut j.h, "cp ~/Pictures/ocean.png assets/", 5);
+    wait_for(&mut j.h, "Yes, run it", 5);
+    j.h.update(Duration::from_millis(400));
+    snapshot(&j.h, &j.dir, "04-approval-card");
+    assert!(
+        lines_of(&claude_state.join("replies.txt")).len() == 1,
+        "the command waits for the answer: {:?}",
+        lines_of(&claude_state.join("replies.txt"))
+    );
+    j.h.inject_keys(b"1").unwrap(); // Yes, run it
+    wait_for(&mut j.h, "The ocean wallpaper is in assets/.", 30);
+    wait_turn_done(&mut j, 30);
+    snapshot(&j.h, &j.dir, "05-normal-turn-done");
+    let replies: Vec<serde_json::Value> = lines_of(&claude_state.join("replies.txt"))
+        .iter()
+        .map(|l| serde_json::from_str(l).expect("control responses are JSON"))
+        .collect();
+    assert_eq!(replies.len(), 2, "{replies:?}");
+    assert_eq!(replies[0]["response"]["request_id"], "req_q");
+    assert_eq!(
+        replies[0]["response"]["response"]["updatedInput"]["answers"]["Which wallpaper should the page use?"],
+        "Ocean"
+    );
+    assert_eq!(replies[1]["response"]["request_id"], "req_cp");
+    assert_eq!(replies[1]["response"]["response"]["behavior"], "allow");
+    let screen = j.h.screen_contents();
+    for plumbing in [
+        "AskUserQuestion",
+        "can_use_tool",
+        "toolu_",
+        "control_request",
+    ] {
+        assert!(
+            !screen.contains(plumbing),
+            "{plumbing} is plumbing, never on screen:\n{screen}"
+        );
+    }
+    let argv = lines_of(&claude_state.join("turn_argv.txt"));
+    assert_eq!(argv.len(), 1, "{argv:?}");
+    assert!(
+        argv[0].contains("--permission-mode acceptEdits")
+            && argv[0].contains("--permission-prompt-tool stdio"),
+        "Normal is the write-capable mode with the prompt tool: {argv:?}"
+    );
+
+    // 2. Plan mode is the read-only mode; always-approve the run-everything one. The success
+    //    fixture asks nothing, so each turn completes on its own.
+    std::fs::copy(
+        fixtures_dir().join("claude_success.jsonl"),
+        claude_state.join("fixture.jsonl"),
+    )
+    .unwrap();
+    set_mode(&mut j, "plan");
+    send_prompt(&mut j, "summarize the README");
+    wait_turn_done(&mut j, 60);
+    set_mode(&mut j, "always-approve");
+    send_prompt(&mut j, "summarize the README again");
+    wait_turn_done(&mut j, 60);
+    snapshot(&j.h, &j.dir, "06-plan-and-always-approve-turns");
+    let argv = lines_of(&claude_state.join("turn_argv.txt"));
+    assert_eq!(argv.len(), 3, "{argv:?}");
+    assert!(
+        argv[1].contains("--permission-mode plan"),
+        "Plan is the read-only mode: {argv:?}"
+    );
+    assert!(
+        argv[2].contains("--permission-mode bypassPermissions"),
+        "always-approve is the run-everything mode: {argv:?}"
+    );
+    assert!(
+        argv.iter()
+            .filter(|a| a.contains("--permission-mode plan"))
+            .count()
+            == 1,
+        "only Plan runs the plan mode: {argv:?}"
+    );
+    finish(
+        j,
+        "P3 modes (logged-in fakes, Claude rail): Normal → acceptEdits + stdio prompt tool; the \
+         CLI's question opened the question view and the answer went back on the channel; its \
+         can_use_tool for `cp` opened the approval card and `Yes, run it` went back as allow; the \
+         turn completed. Plan → --permission-mode plan; always-approve → bypassPermissions. \
+         No network (fake CLIs).\n",
     );
 }
 
