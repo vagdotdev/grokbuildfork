@@ -54,7 +54,7 @@ pub fn reply_for_response(
 }
 
 /// `/home/me/Desktop/*` → `~/Desktop/*`: paths under the user's home read shorter in a prompt.
-fn shorten_home(path: &str) -> String {
+pub fn shorten_home(path: &str) -> String {
     match std::env::var("HOME").ok().filter(|h| !h.is_empty()) {
         Some(h) if path == h => "~".to_owned(),
         Some(h) if path.starts_with(&format!("{h}/")) => format!("~{}", &path[h.len()..]),

@@ -42,6 +42,9 @@ from the real server:
     that can (muse-spark-*, mimo-*), or the "Continue my request …" prompt sent to one, answers
     "Looking at the photos." and, 2 s later, "Sorted 1 photo: a lion.".
   * "slow"                            -> waits 3 s before answering (to queue prompts behind it).
+  * "scratch note"                    -> permission.asked (edit) then a `write` and a `read` part on
+    `<TMPDIR>/opencode/note.txt` (OpenCode's temp dir), really written (the screen must never
+    say "opencode" for it).
   * "install htop"                    -> permission.asked (bash `sudo touch installed-htop.txt`) and
     the command really runs (through the `sudo` on PATH, with this server's environment — the
     askpass gate's stand-in reads SUDO_ASKPASS); the answer reports success or sudo's words.
@@ -364,6 +367,25 @@ def run_turn(sid, agent, text, model=None):
                             "Edit applied successfully.", "hello.txt",
                             {"diagnostics": {}, "diff": diff, "filediff": {"file": path, "patch": diff, "additions": 1, "deletions": 1}, "truncated": False}))
         answer = "Changed hi to hello in hello.txt."
+    elif "scratch note" in text_l:
+        # Scratch work where OpenCode keeps its temp dir, `<TMPDIR>/opencode` — what a model
+        # uses when it needs somewhere to work. Really written, then read back, so a write row
+        # and a read row both carry the path.
+        scratch = os.path.join(os.environ.get("TMPDIR") or "/tmp", "opencode")
+        os.makedirs(scratch, exist_ok=True)
+        path = os.path.join(scratch, "note.txt")
+        call_id = next_id("call")
+        reply = ask_permission(sid, mid, call_id, "edit", [path], {"filepath": path, "diff": unified_diff(path, "", "scratch\n")}, ["*"])
+        if reply in ("once", "always"):
+            with open(path, "w") as f:
+                f.write("scratch\n")
+            emit_part(tool_part(sid, mid, "write", call_id, {"filePath": path, "content": "scratch\n"}, "Wrote file successfully.", "note.txt",
+                                {"diagnostics": {}, "filepath": path, "exists": False, "truncated": False}))
+            call2 = next_id("call")
+            emit_part(tool_part(sid, mid, "read", call2, {"filePath": path}, "scratch", path, {}))
+            answer = "Saved a scratch note and read it back."
+        else:
+            answer = "Understood \u2014 no scratch note."
     elif "install htop" in text_l:
         # A command that needs root: really run through whatever `sudo` is on PATH (the gate's
         # stand-in), with the environment Workshop gave this server, and report what it said.

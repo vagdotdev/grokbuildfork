@@ -1,13 +1,15 @@
 diff --git a/crates/codegen/xai-grok-update/Cargo.toml b/crates/codegen/xai-grok-update/Cargo.toml
-index 7302480d..9c8c5f7b 100644
+index 7302480d..e38bcc27 100644
 --- a/crates/codegen/xai-grok-update/Cargo.toml
 +++ b/crates/codegen/xai-grok-update/Cargo.toml
-@@ -26,6 +26,8 @@ xai-grok-telemetry = { workspace = true }
+@@ -26,6 +26,10 @@ xai-grok-telemetry = { workspace = true }
  xai-grok-tools = { workspace = true }
  xai-grok-version = { workspace = true }
  flate2 = { workspace = true }
 +# Workshop: release artifacts are `.tar.gz`; the updater extracts the single `workshop` member.
 +tar = { workspace = true }
++# Workshop: the installer marker is one key edited in place, never a whole-config save.
++toml_edit = { workspace = true }
  zstd = { workspace = true }
  sha2 = { workspace = true }
  xai-tty-utils = { workspace = true }
@@ -43,7 +45,7 @@ index 00000000..d02e5d1b
 +    );
 +}
 diff --git a/crates/codegen/xai-grok-update/src/auto_update.rs b/crates/codegen/xai-grok-update/src/auto_update.rs
-index b95cd59e..7e5ee0fb 100644
+index b95cd59e..783905cd 100644
 --- a/crates/codegen/xai-grok-update/src/auto_update.rs
 +++ b/crates/codegen/xai-grok-update/src/auto_update.rs
 @@ -30,8 +30,8 @@ pub enum UpdateRunMode {
@@ -180,7 +182,81 @@ index b95cd59e..7e5ee0fb 100644
          None => Some("internal"),
      }
  }
-@@ -584,7 +583,16 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
+@@ -512,13 +511,12 @@ fn needs_update(current: &str, target: &str, channel: &str, allow_downgrade: boo
+                 );
+                 return Some(false);
+             }
+-            if !current.pre.is_empty() {
+-                return Some(true);
+-            }
+         }
+         "alpha" => {}
+         _ => return None,
+     }
++    // Workshop: a build's `-dev`/commit suffix is not a channel to leave (upstream jumps any
++    // pre-release install onto the next stable pointer); only a strictly newer version installs.
+     Some(if allow_downgrade {
+         target != current
+     } else {
+@@ -530,10 +528,53 @@ fn needs_update(current: &str, target: &str, channel: &str, allow_downgrade: boo
+ /// for backends like npm where stale corporate registries/proxies can return arbitrarily old versions. Users who
+ /// installed via `install.sh` are classified as `"internal"` by `get_installer()`, so they also get rollback support.
+ fn installer_allows_downgrade(installer: &str) -> bool {
+-    match installer {
+-        "internal" | "gh-release" => true,
+-        "npm" => false,
+-        _ => false,
++    // Upstream lets its managed installers (`internal`, `gh-release`) follow the pointer both ways:
++    // xAI's pointer is authoritative and moving it back is how they roll a release back. Workshop's
++    // channel is a file on a branch that can lag behind a published release, so following it back
++    // would replace a newer install with an older one (0.2.2 installed 0.2.1 over itself). Only
++    // strictly newer versions install, for every installer.
++    let _ = installer;
++    false
++}
++
++/// Write `[cli] installer = "<installer>"` into the user's config.toml and nothing else. Upstream
++/// saves the whole typed config here (`config::update_config`), which also writes every `[ui]`
++/// default — `yolo = false` among them — and Workshop reads a `[ui]` permission key as the user
++/// having chosen a mode (see `event_loop`'s launch mode); an update must not make that choice for
++/// them. One key, edited in place, the rest of the document untouched.
++async fn persist_installer_marker(installer: &str) {
++    let path = config::user_config_path();
++    let installer = installer.to_owned();
++    let result = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
++        let content = match std::fs::read_to_string(&path) {
++            Ok(text) => text,
++            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
++            Err(e) => return Err(e),
++        };
++        let mut doc = content
++            .parse::<toml_edit::DocumentMut>()
++            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
++        let cli = doc
++            .entry("cli")
++            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
++        if let Some(table) = cli.as_table_mut() {
++            if table.get("installer").and_then(|v| v.as_str()) == Some(installer.as_str()) {
++                return Ok(());
++            }
++            table.insert("installer", toml_edit::value(installer.as_str()));
++        }
++        if let Some(parent) = path.parent() {
++            std::fs::create_dir_all(parent)?;
++        }
++        let tmp = path.with_extension(format!("toml.tmp.{}", std::process::id()));
++        std::fs::write(&tmp, doc.to_string())?;
++        std::fs::rename(&tmp, &path)
++    })
++    .await;
++    match result {
++        Ok(Ok(())) => {}
++        Ok(Err(e)) => tracing::warn!(error = %e, "could not record the installer in config.toml"),
++        Err(e) => tracing::warn!(error = %e, "installer marker task failed"),
+     }
+ }
+ 
+@@ -584,7 +625,16 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
      let policy = config::VersionPolicy::resolve();
      let target_version = match fetch_update_plan(installer, update_config, &policy).await {
          Ok(UpdatePlan::Install { target, .. }) => target,
@@ -198,7 +274,7 @@ index b95cd59e..7e5ee0fb 100644
              return BackgroundUpdateCheck::none();
          }
      };
-@@ -619,6 +627,11 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
+@@ -619,6 +669,11 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
  
      // Kick off a non-blocking download so the binary is ready when the user restarts (or accepts the in-TUI restart prompt)
      let download = if disk_needs_download {
@@ -210,7 +286,7 @@ index b95cd59e..7e5ee0fb 100644
          match run_update_subcommand(UpdateRunMode::NonBlocking, CliUpdateTrigger::AutoBackground)
              .await
          {
-@@ -706,7 +719,7 @@ pub async fn run_update_if_available(
+@@ -706,7 +761,7 @@ pub async fn run_update_if_available(
      let channel_label = format!(" [{}]", update_config.channel);
      if auto_update {
          eprintln!(
@@ -219,7 +295,7 @@ index b95cd59e..7e5ee0fb 100644
              current_version, latest_version, channel_label
          );
          if interactive {
-@@ -734,7 +747,7 @@ pub async fn run_update_if_available(
+@@ -734,7 +789,7 @@ pub async fn run_update_if_available(
              return Ok(false);
          }
          eprintln!(
@@ -228,7 +304,7 @@ index b95cd59e..7e5ee0fb 100644
              current_version, latest_version, channel_label
          );
          if interactive {
-@@ -805,7 +818,7 @@ async fn run_update_subcommand(
+@@ -805,7 +860,7 @@ async fn run_update_subcommand(
              // The atomic install protocol makes mid-download kills safe
              let status = cmd.status().await?;
              if !status.success() {
@@ -237,7 +313,7 @@ index b95cd59e..7e5ee0fb 100644
              }
              Ok(None)
          }
-@@ -842,7 +855,7 @@ pub fn restart_grok() -> Result<()> {
+@@ -842,7 +897,7 @@ pub fn restart_grok() -> Result<()> {
      }
      cmd.env_clear();
      cmd.envs(std::env::vars_os().filter(|(k, _)| k != "GROK_AUTO_UPDATE"));
@@ -246,7 +322,7 @@ index b95cd59e..7e5ee0fb 100644
  
      // Use exec on Unix to replace the current process, avoiding stdio issues when the parent exits
      // On Windows, fall back to spawn and exit
-@@ -1242,20 +1255,6 @@ async fn remove_stale_models_cache() {
+@@ -1242,20 +1297,6 @@ async fn remove_stale_models_cache() {
      }
  }
  
@@ -267,7 +343,7 @@ index b95cd59e..7e5ee0fb 100644
  async fn download_plain(url: &str, dest: &std::path::Path, with_progress: bool) -> Result<()> {
      if with_progress {
          download_with_progress(url, dest).await
-@@ -1264,6 +1263,9 @@ async fn download_plain(url: &str, dest: &std::path::Path, with_progress: bool)
+@@ -1264,6 +1305,9 @@ async fn download_plain(url: &str, dest: &std::path::Path, with_progress: bool)
      }
  }
  
@@ -277,7 +353,7 @@ index b95cd59e..7e5ee0fb 100644
  #[derive(Clone, Copy)]
  enum Codec {
      Zstd,
-@@ -1274,6 +1276,7 @@ enum Codec {
+@@ -1274,6 +1318,7 @@ enum Codec {
  // A real CLI binary is ~170 MiB; 512 MiB leaves 3x headroom
  const MAX_DECODED_BYTES: u64 = 512 * 1024 * 1024;
  
@@ -285,7 +361,7 @@ index b95cd59e..7e5ee0fb 100644
  async fn download_and_decode(
      url: &str,
      dest: &std::path::Path,
-@@ -1324,6 +1327,7 @@ async fn download_and_decode(
+@@ -1324,6 +1369,7 @@ async fn download_and_decode(
  }
  
  /// Object-name candidates in fetch order; on Windows the `.exe` name comes first.
@@ -293,7 +369,7 @@ index b95cd59e..7e5ee0fb 100644
  fn cli_object_candidates(object_name: &str, windows: bool) -> Vec<String> {
      if windows {
          vec![format!("{object_name}.exe"), object_name.to_string()]
-@@ -1332,7 +1336,8 @@ fn cli_object_candidates(object_name: &str, windows: bool) -> Vec<String> {
+@@ -1332,7 +1378,8 @@ fn cli_object_candidates(object_name: &str, windows: bool) -> Vec<String> {
      }
  }
  
@@ -303,7 +379,7 @@ index b95cd59e..7e5ee0fb 100644
  async fn download_cli_artifact_from_gcs(
      gcs_base_url: &str,
      object_name: &str,
-@@ -1384,9 +1389,9 @@ pub async fn install_internal_from_bases(
+@@ -1384,9 +1431,9 @@ pub async fn install_internal_from_bases(
                      .map(|()| download.version)
                      .map_err(|e| InstallPhaseError::Activate(e).into());
              }
@@ -316,7 +392,7 @@ index b95cd59e..7e5ee0fb 100644
                  return Err(e);
              }
              Err(e) => {
-@@ -1512,8 +1517,8 @@ pub async fn install_internal_from_base(
+@@ -1512,8 +1559,8 @@ pub async fn install_internal_from_base(
          .map_err(|e| InstallPhaseError::Activate(e).into())
  }
  
@@ -327,7 +403,7 @@ index b95cd59e..7e5ee0fb 100644
  struct VerifiedDownload {
      version: String,
      binary_path: std::path::PathBuf,
-@@ -1522,43 +1527,52 @@ struct VerifiedDownload {
+@@ -1522,43 +1569,52 @@ struct VerifiedDownload {
      payload: windows_payload::Payload,
  }
  
@@ -393,7 +469,7 @@ index b95cd59e..7e5ee0fb 100644
      let smoke_span = xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
          "update.smoke_test",
          elapsed_ms = tracing::field::Empty,
-@@ -1577,7 +1591,8 @@ async fn download_verified_from_base(
+@@ -1577,7 +1633,8 @@ async fn download_verified_from_base(
  
      // Best-effort and base-dependent, so it belongs to this phase; a miss never fails the install.
      #[cfg(windows)]
@@ -403,7 +479,7 @@ index b95cd59e..7e5ee0fb 100644
      #[cfg(not(windows))]
      let payload = windows_payload::Payload::default();
  
-@@ -1588,6 +1603,121 @@ async fn download_verified_from_base(
+@@ -1588,6 +1645,121 @@ async fn download_verified_from_base(
      })
  }
  
@@ -525,7 +601,7 @@ index b95cd59e..7e5ee0fb 100644
  /// Local activation phase: swap the managed bin links to the downloaded binary and finish bookkeeping.
  /// Nothing here depends on which base URL served the download, so callers must not retry another base on failure.
  async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
-@@ -1601,11 +1731,9 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
+@@ -1601,11 +1773,9 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
      let bin_dir = grok_home.join("bin");
      tokio::fs::create_dir_all(&bin_dir).await?;
  
@@ -538,7 +614,7 @@ index b95cd59e..7e5ee0fb 100644
      // Hook exes beside grok.exe and the bundled MinGit; grok is already live, so a failure here is only logged.
      #[cfg(windows)]
      windows_payload::activate(&download.payload, &bin_dir, &download.version).await;
-@@ -1613,8 +1741,7 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
+@@ -1613,14 +1783,10 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
      eprintln!();
  
      // Current, N-1, and any leftover a live process is still executing.
@@ -547,8 +623,15 @@ index b95cd59e..7e5ee0fb 100644
 +    cleanup_old_downloads(&download_dir, "workshop", &download.version).await;
  
      // Persist installer to config.toml so future runs auto-detect internal.
-     let _ = config::update_config(|st| {
-@@ -1637,13 +1764,17 @@ async fn regenerate_completions(binary: &std::path::Path, grok_home: &std::path:
+-    let _ = config::update_config(|st| {
+-        st.cli.installer = Some("internal".to_string());
+-    })
+-    .await;
++    persist_installer_marker("internal").await;
+ 
+     regenerate_completions(&link_path, &grok_home).await;
+ 
+@@ -1637,13 +1803,17 @@ async fn regenerate_completions(binary: &std::path::Path, grok_home: &std::path:
      // Derive $HOME independently: grok_home may be overridden via GROK_HOME env var, so grok_home.parent() isn't necessarily the user's home dir
      let user_home = xai_dirs::home_dir().unwrap_or_default();
  
@@ -571,7 +654,7 @@ index b95cd59e..7e5ee0fb 100644
          if let Some(parent) = dest.parent() {
              let _ = tokio::fs::create_dir_all(parent).await;
          }
-@@ -1686,22 +1817,22 @@ fn relative_symlink_target(target: &std::path::Path, link: &std::path::Path) ->
+@@ -1686,22 +1856,22 @@ fn relative_symlink_target(target: &std::path::Path, link: &std::path::Path) ->
      target.to_path_buf()
  }
  
@@ -605,7 +688,7 @@ index b95cd59e..7e5ee0fb 100644
  }
  
  /// Point every `dest` in `pairs` at its `src` (a symlink on Unix, a copy through
-@@ -2202,9 +2333,9 @@ async fn gh_release_download(tag: &str, pattern: &str, dest: &std::path::Path) -
+@@ -2202,9 +2372,9 @@ async fn gh_release_download(tag: &str, pattern: &str, dest: &std::path::Path) -
      Ok(())
  }
  
@@ -618,7 +701,7 @@ index b95cd59e..7e5ee0fb 100644
  async fn install_gh_release(target: Option<&str>) -> Result<()> {
      let (os, arch) = detect_platform()?;
      let platform = format!("{}-{}", os, arch);
-@@ -2220,60 +2351,62 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
+@@ -2220,72 +2390,94 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
      tokio::fs::create_dir_all(&download_dir).await?;
      tokio::fs::create_dir_all(&bin_dir).await?;
  
@@ -720,8 +803,12 @@ index b95cd59e..7e5ee0fb 100644
 +    cleanup_old_downloads(&download_dir, "workshop", &version).await;
  
      // Persist installer to config.toml so future runs auto-detect gh-release.
-     let _ = config::update_config(|st| {
-@@ -2284,8 +2417,31 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
+-    let _ = config::update_config(|st| {
+-        st.cli.installer = Some("gh-release".to_string());
+-    })
+-    .await;
++    persist_installer_marker("gh-release").await;
+ 
      Ok(())
  }
  
@@ -753,7 +840,7 @@ index b95cd59e..7e5ee0fb 100644
  fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<std::path::PathBuf>> {
      if let Ok(token) = std::env::var("NPM_TOKEN") {
          let token = token.trim();
-@@ -2317,6 +2473,7 @@ fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<std::path::Pat
+@@ -2317,6 +2509,7 @@ fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<std::path::Pat
  /// SIGKILL'd by the kernel. macOS (Apple Silicon in particular) can no longer verify the code signature of the mmap'd
  /// executable pages once the backing inode is unlinked.
  #[cfg(target_os = "macos")]
@@ -761,7 +848,7 @@ index b95cd59e..7e5ee0fb 100644
  fn warn_if_other_grok_processes_running() {
      let my_pid = std::process::id().to_string();
      let mut cmd = Command::new("pgrep");
-@@ -2339,7 +2496,7 @@ fn warn_if_other_grok_processes_running() {
+@@ -2339,7 +2532,7 @@ fn warn_if_other_grok_processes_running() {
              );
              eprintln!("    Processes running from the npm vendored binary path may be");
              eprintln!("    killed by macOS when npm replaces the package files.");
@@ -770,7 +857,7 @@ index b95cd59e..7e5ee0fb 100644
              eprintln!();
          }
      }
-@@ -2355,70 +2512,9 @@ pub fn install_npm_for_test(
+@@ -2355,70 +2548,9 @@ pub fn install_npm_for_test(
      install_npm(target, channel, npm_registry)
  }
  
@@ -844,7 +931,19 @@ index b95cd59e..7e5ee0fb 100644
  }
  
  pub async fn apply_channel_switch(channel_switch: Option<&str>, update_config: &mut UpdateConfig) {
-@@ -2485,8 +2581,8 @@ pub async fn run_update(
+@@ -2455,10 +2587,7 @@ pub async fn run_update(
+     // Persist installer if not already saved
+     let cfg = config::load_config().await;
+     if cfg.cli.installer.is_none() {
+-        let _ = config::update_config(|st| {
+-            st.cli.installer = Some(installer.to_string());
+-        })
+-        .await;
++        persist_installer_marker(installer).await;
+     }
+ 
+     heal_managed_install(installer).await;
+@@ -2485,8 +2614,8 @@ pub async fn run_update(
          {
              tracing::warn!("Failed to persist auto_update=false for pinned install: {e}");
          }
@@ -855,7 +954,7 @@ index b95cd59e..7e5ee0fb 100644
          return Ok(Some(version.to_string()));
      }
  
-@@ -2593,26 +2689,39 @@ pub async fn run_update(
+@@ -2593,26 +2722,39 @@ pub async fn run_update(
          .unwrap_or(true)
      {
          eprintln!(
@@ -900,7 +999,7 @@ index b95cd59e..7e5ee0fb 100644
      }
      Ok(Some(target_version.to_string()))
  }
-@@ -2639,7 +2748,7 @@ async fn refresh_deployment_config() {
+@@ -2639,7 +2781,7 @@ async fn refresh_deployment_config() {
          Err(e) if e.is_auth_rejection() => tracing::debug!("managed config not applied: {e}"),
          Err(e) if e.is_retryable() => {
              tracing::debug!("managed config refresh failed: {e}");
@@ -910,10 +1009,24 @@ index b95cd59e..7e5ee0fb 100644
          Err(e) => eprintln!("  Couldn't apply managed configuration. {e}"),
      }
 diff --git a/crates/codegen/xai-grok-update/src/auto_update_tests.rs b/crates/codegen/xai-grok-update/src/auto_update_tests.rs
-index 115fae28..c406dea6 100644
+index 115fae28..7152386b 100644
 --- a/crates/codegen/xai-grok-update/src/auto_update_tests.rs
 +++ b/crates/codegen/xai-grok-update/src/auto_update_tests.rs
-@@ -917,13 +917,16 @@ async fn test_cleanup_old_downloads_mixed_stable_and_alpha() {
+@@ -512,10 +512,11 @@ async fn test_atomic_symlink_swap_broken_symlink_target() {
+ 
+ #[test]
+ fn test_needs_update_prerelease_to_stable_forces_install() {
+-    // An inadmissible current version (a pre-release on the stable channel) forces an install even if the candidate is semver-lower
++    // Workshop: a pre-release suffix on the running build (`0.2.1-dev`) is not a channel to leave;
++    // the candidate still has to be newer. Upstream forced an install here even for a lower one.
+     assert_eq!(
+         needs_update("0.1.149-alpha.1", "0.1.148", "stable", false),
+-        Some(true)
++        Some(false)
+     );
+     assert_eq!(
+         needs_update("0.1.148-alpha.3", "0.1.148", "stable", false),
+@@ -917,13 +918,16 @@ async fn test_cleanup_old_downloads_mixed_stable_and_alpha() {
  // ──────────────────────────────────────────────────────────────────────
  
  #[test]
@@ -934,7 +1047,7 @@ index 115fae28..c406dea6 100644
  }
  
  #[test]
-@@ -934,78 +937,47 @@ fn test_reinstall_hint_gh_release_mentions_gh_command() {
+@@ -934,78 +938,47 @@ fn test_reinstall_hint_gh_release_mentions_gh_command() {
          "should suggest gh release download: {hint}"
      );
      assert!(
@@ -1051,7 +1164,7 @@ index 115fae28..c406dea6 100644
  }
  
  #[test]
-@@ -1022,6 +994,7 @@ fn test_reinstall_hint_empty_falls_back_to_internal() {
+@@ -1022,6 +995,7 @@ fn test_reinstall_hint_empty_falls_back_to_internal() {
      assert_eq!(hint, reinstall_hint("internal", "stable"));
  }
  
@@ -1059,7 +1172,42 @@ index 115fae28..c406dea6 100644
  #[test]
  fn test_smoke_test_failure_messages_distinguish_causes() {
      let timeout = SmokeTestFailure::Timeout.to_string();
-@@ -1630,7 +1603,7 @@ fn test_user_facing_constants_are_stable() {
+@@ -1373,14 +1347,15 @@ fn test_needs_update_downgrade_prerelease_still_rejected_on_stable() {
+ 
+ #[test]
+ fn test_needs_update_prerelease_current_forces_install_regardless_of_allow_downgrade() {
+-    // A pre-release current on the stable channel forces an install, independent of allow_downgrade
++    // Workshop: a pre-release current is compared like any other version — with allow_downgrade
++    // any different version counts, without it only a newer one (upstream forced the install).
+     assert_eq!(
+         needs_update("0.1.149-alpha.1", "0.1.148", "stable", true),
+         Some(true)
+     );
+     assert_eq!(
+         needs_update("0.1.149-alpha.1", "0.1.148", "stable", false),
+-        Some(true)
++        Some(false)
+     );
+ }
+ 
+@@ -1390,12 +1365,14 @@ fn test_needs_update_prerelease_current_forces_install_regardless_of_allow_downg
+ 
+ #[test]
+ fn test_installer_allows_downgrade_internal() {
+-    assert!(installer_allows_downgrade("internal"));
++    // Workshop: the channel file can lag behind a release, so no installer follows it backwards
++    // (upstream's managed installers did, as its rollback mechanism).
++    assert!(!installer_allows_downgrade("internal"));
+ }
+ 
+ #[test]
+ fn test_installer_allows_downgrade_gh_release() {
+-    assert!(installer_allows_downgrade("gh-release"));
++    assert!(!installer_allows_downgrade("gh-release"));
+ }
+ 
+ #[test]
+@@ -1630,7 +1607,7 @@ fn test_user_facing_constants_are_stable() {
      );
      assert_eq!(
          MSG_RUN_UPDATE_MANUAL,
@@ -1068,7 +1216,7 @@ index 115fae28..c406dea6 100644
      );
  }
  
-@@ -1647,6 +1620,7 @@ struct InstallerEnvGuard {
+@@ -1647,6 +1624,7 @@ struct InstallerEnvGuard {
  impl InstallerEnvGuard {
      fn isolate() -> Self {
          const VARS: &[&str] = &[
@@ -1076,7 +1224,7 @@ index 115fae28..c406dea6 100644
              "GROK_INSTALLER",
              "GROK_MANAGED_BY_NPM",
              "GROK_MANAGED_BY_INTERNAL",
-@@ -1685,17 +1659,18 @@ fn test_env_installer_no_vars_returns_none() {
+@@ -1685,17 +1663,18 @@ fn test_env_installer_no_vars_returns_none() {
  
  #[test]
  #[serial_test::serial]
@@ -1099,7 +1247,7 @@ index 115fae28..c406dea6 100644
      assert_eq!(env_installer(), Some("internal"));
  }
  
-@@ -1703,7 +1678,7 @@ fn test_env_installer_explicit_internal() {
+@@ -1703,7 +1682,7 @@ fn test_env_installer_explicit_internal() {
  #[serial_test::serial]
  fn test_env_installer_explicit_gh_release() {
      let _g = InstallerEnvGuard::isolate();
@@ -1108,7 +1256,7 @@ index 115fae28..c406dea6 100644
      assert_eq!(env_installer(), Some("gh-release"));
  }
  
-@@ -1712,7 +1687,7 @@ fn test_env_installer_explicit_gh_release() {
+@@ -1712,7 +1691,7 @@ fn test_env_installer_explicit_gh_release() {
  fn test_env_installer_explicit_gh_alias() {
      // `gh` is shorthand for `gh-release`.
      let _g = InstallerEnvGuard::isolate();
@@ -1117,7 +1265,7 @@ index 115fae28..c406dea6 100644
      assert_eq!(env_installer(), Some("gh-release"));
  }
  
-@@ -1720,10 +1695,10 @@ fn test_env_installer_explicit_gh_alias() {
+@@ -1720,10 +1699,10 @@ fn test_env_installer_explicit_gh_alias() {
  #[serial_test::serial]
  fn test_env_installer_explicit_uppercase_normalized() {
      let _g = InstallerEnvGuard::isolate();
@@ -1131,7 +1279,7 @@ index 115fae28..c406dea6 100644
      assert_eq!(env_installer(), Some("gh-release"));
  }
  
-@@ -1754,19 +1729,20 @@ fn test_env_installer_explicit_empty_returns_none() {
+@@ -1754,19 +1733,20 @@ fn test_env_installer_explicit_empty_returns_none() {
  
  #[test]
  #[serial_test::serial]
@@ -1158,7 +1306,7 @@ index 115fae28..c406dea6 100644
  }
  
  #[test]
-@@ -1779,9 +1755,8 @@ fn test_env_installer_managed_by_internal() {
+@@ -1779,9 +1759,8 @@ fn test_env_installer_managed_by_internal() {
  
  #[test]
  #[serial_test::serial]
@@ -1170,7 +1318,7 @@ index 115fae28..c406dea6 100644
      let _g = InstallerEnvGuard::isolate();
      unsafe {
          std::env::set_var(
-@@ -1789,15 +1764,15 @@ fn test_env_installer_npm_config_user_agent_implies_npm() {
+@@ -1789,15 +1768,15 @@ fn test_env_installer_npm_config_user_agent_implies_npm() {
              "npm/10.2.0 node/v20.11.0 darwin arm64 workspaces/false",
          )
      };
@@ -1190,7 +1338,7 @@ index 115fae28..c406dea6 100644
      }
      assert_eq!(env_installer(), Some("internal"));
 diff --git a/crates/codegen/xai-grok-update/src/version.rs b/crates/codegen/xai-grok-update/src/version.rs
-index 7bd398e5..b8a543c2 100644
+index 7bd398e5..b8850e9e 100644
 --- a/crates/codegen/xai-grok-update/src/version.rs
 +++ b/crates/codegen/xai-grok-update/src/version.rs
 @@ -2,7 +2,6 @@ use std::time::Duration;
@@ -1201,7 +1349,7 @@ index 7bd398e5..b8a543c2 100644
  use tokio::fs;
  use tokio::process::Command;
  
-@@ -10,35 +9,159 @@ use xai_grok_shell::env::GrokBuildEnvironment;
+@@ -10,35 +9,167 @@ use xai_grok_shell::env::GrokBuildEnvironment;
  use xai_grok_shell::util::grok_home::grok_home;
  
  const TTL_SECONDS_BEFORE_AUTO_UPDATE: Duration = Duration::from_secs(60 * 30);
@@ -1263,6 +1411,14 @@ index 7bd398e5..b8a543c2 100644
 +#[doc(hidden)]
 +pub fn cli_base_urls_for_test() -> Vec<String> {
 +    cli_base_urls()
++}
++
++/// `true` when `WORKSHOP_CLI_BASE_URL` names a loopback channel (a test's server). The one case in
++/// which a debug build runs the background updater at all, so the PTY gates in `workshop-gates`
++/// can drive the real update path against a channel they stand up; a debug build never reaches
++/// the published channel.
++pub fn loopback_channel_override() -> bool {
++    std::env::var("WORKSHOP_CLI_BASE_URL").is_ok_and(|base| is_loopback_base(base.trim()))
 +}
 +
 +/// `true` for `https://` URLs and for loopback `http://` (tests against `smoke-install.sh`'s server).
@@ -1375,7 +1531,7 @@ index 7bd398e5..b8a543c2 100644
  /// Parsed, not prefix-matched: `http://127.0.0.1:9@evil.com` starts with a
  /// loopback prefix but its host is `evil.com` (userinfo trick).
  /// `https` loopback is allowed so merge CI can smoke rustls/aws-lc against a
-@@ -133,27 +256,19 @@ fn semver_max(a: &str, b: &str) -> Result<String> {
+@@ -133,27 +264,19 @@ fn semver_max(a: &str, b: &str) -> Result<String> {
      Ok(std::cmp::max(va, vb).to_string())
  }
  
@@ -1409,7 +1565,7 @@ index 7bd398e5..b8a543c2 100644
  #[doc(hidden)]
  pub async fn fetch_npm_version_for_test(
      channel: &str,
-@@ -162,40 +277,8 @@ pub async fn fetch_npm_version_for_test(
+@@ -162,40 +285,8 @@ pub async fn fetch_npm_version_for_test(
      fetch_npm_version(channel, npm_registry).await
  }
  
@@ -1452,7 +1608,7 @@ index 7bd398e5..b8a543c2 100644
  }
  
  /// Fetch the latest version from GitHub Releases using `gh release list`.
-@@ -250,9 +333,9 @@ async fn fetch_gh_release_latest(exclude_pre: bool) -> Result<String> {
+@@ -250,9 +341,9 @@ async fn fetch_gh_release_latest(exclude_pre: bool) -> Result<String> {
      Ok(version)
  }
  
@@ -1464,7 +1620,7 @@ index 7bd398e5..b8a543c2 100644
  pub(crate) async fn fetch_gcs_version(channel: &str) -> Result<String> {
      let mut last_err: Option<anyhow::Error> = None;
      let bases = cli_base_urls();
-@@ -262,7 +345,7 @@ pub(crate) async fn fetch_gcs_version(channel: &str) -> Result<String> {
+@@ -262,7 +353,7 @@ pub(crate) async fn fetch_gcs_version(channel: &str) -> Result<String> {
              Err(e) => {
                  if i + 1 < bases.len() {
                      tracing::warn!(
@@ -1473,7 +1629,7 @@ index 7bd398e5..b8a543c2 100644
                          base,
                          e
                      );
-@@ -271,24 +354,20 @@ pub(crate) async fn fetch_gcs_version(channel: &str) -> Result<String> {
+@@ -271,24 +362,20 @@ pub(crate) async fn fetch_gcs_version(channel: &str) -> Result<String> {
              }
          }
      }
@@ -1506,7 +1662,7 @@ index 7bd398e5..b8a543c2 100644
      let client = xai_grok_extra_ca::build_reqwest_client(|builder| {
          builder.timeout(Duration::from_secs(15))
      })?;
-@@ -303,7 +382,7 @@ async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<Stri
+@@ -303,7 +390,7 @@ async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<Stri
              Ok(r) => r,
              Err(e) => {
                  last_err = Some(anyhow::anyhow!(
@@ -1515,7 +1671,7 @@ index 7bd398e5..b8a543c2 100644
                      url,
                      e
                  ));
-@@ -314,7 +393,7 @@ async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<Stri
+@@ -314,7 +401,7 @@ async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<Stri
              let status = resp.status();
              let body = resp.text().await.unwrap_or_default();
              last_err = Some(anyhow::anyhow!(
@@ -1524,7 +1680,7 @@ index 7bd398e5..b8a543c2 100644
                  status,
                  url,
                  body.chars().take(200).collect::<String>().trim()
-@@ -323,27 +402,16 @@ async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<Stri
+@@ -323,27 +410,16 @@ async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<Stri
          }
          match resp.text().await {
              Ok(body) => {
@@ -1559,7 +1715,7 @@ index 7bd398e5..b8a543c2 100644
                      url,
                      e
                  ));
-@@ -400,8 +468,8 @@ pub async fn write_version_cache(version: &str, stable_version: Option<&str>) {
+@@ -400,8 +476,8 @@ pub async fn write_version_cache(version: &str, stable_version: Option<&str>) {
  }
  
  /// Fetch the latest version for the given installer type and cache it. Each installer is fully independent: there is no
@@ -1570,7 +1726,7 @@ index 7bd398e5..b8a543c2 100644
  pub async fn get_latest_version(installer: &str, config: &UpdateConfig) -> Result<String> {
      let version = fetch_latest_version(installer, config).await?;
      let stable_ptr = try_fetch_stable_pointer().await;
-@@ -425,7 +493,7 @@ pub async fn is_version_cache_fresh() -> bool {
+@@ -425,7 +501,7 @@ pub async fn is_version_cache_fresh() -> bool {
  pub use xai_grok_version::installed as get_installed_grok_version;
  
  /// Returns `None` when there is no parseable managed symlink (Windows copy-based installs, dev builds) or when the
@@ -1579,7 +1735,7 @@ index 7bd398e5..b8a543c2 100644
  /// an installed version, or every updater would claim "already up to date" forever while no runnable binary exists.
  pub fn installed_on_disk_version() -> Option<String> {
      #[cfg(unix)]
-@@ -434,7 +502,7 @@ pub fn installed_on_disk_version() -> Option<String> {
+@@ -434,7 +510,7 @@ pub fn installed_on_disk_version() -> Option<String> {
          let target = std::fs::read_link(&app).ok()?;
          // metadata() follows the symlink: Err means the target is gone (dangling link) and the version it names is not actually on disk
          std::fs::metadata(&app).ok()?;
@@ -1588,7 +1744,7 @@ index 7bd398e5..b8a543c2 100644
      }
      #[cfg(not(unix))]
      {
-@@ -442,9 +510,10 @@ pub fn installed_on_disk_version() -> Option<String> {
+@@ -442,9 +518,10 @@ pub fn installed_on_disk_version() -> Option<String> {
      }
  }
  
@@ -1602,7 +1758,7 @@ index 7bd398e5..b8a543c2 100644
  pub(crate) fn version_from_versioned_binary_name(name: &str, bin_prefix: &str) -> Option<String> {
      const PLATFORM_OS: &[&str] = &["macos", "linux", "darwin", "windows"];
      let suffix = name.strip_prefix(bin_prefix)?.strip_prefix('-')?;
-@@ -464,7 +533,7 @@ pub(crate) fn version_from_versioned_binary_name(name: &str, bin_prefix: &str) -
+@@ -464,7 +541,7 @@ pub(crate) fn version_from_versioned_binary_name(name: &str, bin_prefix: &str) -
  pub(crate) async fn try_fetch_stable_pointer() -> Option<String> {
      tokio::time::timeout(Duration::from_millis(500), async {
          for base in cli_base_urls() {
@@ -1611,7 +1767,7 @@ index 7bd398e5..b8a543c2 100644
                  return Some(v);
              }
          }
-@@ -539,7 +608,7 @@ mod tests {
+@@ -539,7 +616,7 @@ mod tests {
          // Prefix-check bypass vectors.
          assert!(!is_loopback_base("http://127.0.0.1:9@evil.com"));
          assert!(!is_loopback_base("http://localhost.evil.com:80"));
@@ -1620,7 +1776,7 @@ index 7bd398e5..b8a543c2 100644
          assert!(!is_loopback_base("http://192.168.1.1:80"));
          assert!(!is_loopback_base(""));
      }
-@@ -559,39 +628,89 @@ mod tests {
+@@ -559,39 +636,89 @@ mod tests {
          );
      }
  

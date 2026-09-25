@@ -55,6 +55,14 @@ pub fn cli_base_urls_for_test() -> Vec<String> {
     cli_base_urls()
 }
 
+/// `true` when `WORKSHOP_CLI_BASE_URL` names a loopback channel (a test's server). The one case in
+/// which a debug build runs the background updater at all, so the PTY gates in `workshop-gates`
+/// can drive the real update path against a channel they stand up; a debug build never reaches
+/// the published channel.
+pub fn loopback_channel_override() -> bool {
+    std::env::var("WORKSHOP_CLI_BASE_URL").is_ok_and(|base| is_loopback_base(base.trim()))
+}
+
 /// `true` for `https://` URLs and for loopback `http://` (tests against `smoke-install.sh`'s server).
 pub(crate) fn is_https_or_loopback(url: &str) -> bool {
     let Ok(u) = url::Url::parse(url) else {

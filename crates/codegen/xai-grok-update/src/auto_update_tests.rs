@@ -512,10 +512,11 @@ async fn test_atomic_symlink_swap_broken_symlink_target() {
 
 #[test]
 fn test_needs_update_prerelease_to_stable_forces_install() {
-    // An inadmissible current version (a pre-release on the stable channel) forces an install even if the candidate is semver-lower
+    // Workshop: a pre-release suffix on the running build (`0.2.1-dev`) is not a channel to leave;
+    // the candidate still has to be newer. Upstream forced an install here even for a lower one.
     assert_eq!(
         needs_update("0.1.149-alpha.1", "0.1.148", "stable", false),
-        Some(true)
+        Some(false)
     );
     assert_eq!(
         needs_update("0.1.148-alpha.3", "0.1.148", "stable", false),
@@ -1346,14 +1347,15 @@ fn test_needs_update_downgrade_prerelease_still_rejected_on_stable() {
 
 #[test]
 fn test_needs_update_prerelease_current_forces_install_regardless_of_allow_downgrade() {
-    // A pre-release current on the stable channel forces an install, independent of allow_downgrade
+    // Workshop: a pre-release current is compared like any other version — with allow_downgrade
+    // any different version counts, without it only a newer one (upstream forced the install).
     assert_eq!(
         needs_update("0.1.149-alpha.1", "0.1.148", "stable", true),
         Some(true)
     );
     assert_eq!(
         needs_update("0.1.149-alpha.1", "0.1.148", "stable", false),
-        Some(true)
+        Some(false)
     );
 }
 
@@ -1363,12 +1365,14 @@ fn test_needs_update_prerelease_current_forces_install_regardless_of_allow_downg
 
 #[test]
 fn test_installer_allows_downgrade_internal() {
-    assert!(installer_allows_downgrade("internal"));
+    // Workshop: the channel file can lag behind a release, so no installer follows it backwards
+    // (upstream's managed installers did, as its rollback mechanism).
+    assert!(!installer_allows_downgrade("internal"));
 }
 
 #[test]
 fn test_installer_allows_downgrade_gh_release() {
-    assert!(installer_allows_downgrade("gh-release"));
+    assert!(!installer_allows_downgrade("gh-release"));
 }
 
 #[test]

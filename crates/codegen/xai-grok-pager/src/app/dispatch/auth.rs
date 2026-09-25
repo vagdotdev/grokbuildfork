@@ -339,7 +339,7 @@ pub(super) fn dispatch_workshop_engine_unavailable(
     let Some(kilo) = crate::app::workshop::kilo_fallback_model() else {
         return failed(app, "no fallback model in the catalog".into());
     };
-    let plan = match crate::app::workshop::activate_catalog_model(&kilo) {
+    let plan = match crate::app::workshop::activate_fallback_model(&kilo) {
         Ok(plan) => plan,
         Err(e) => return failed(app, e),
     };

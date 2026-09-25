@@ -1081,6 +1081,21 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 // would otherwise hold ↑/↓ until the tab is switched away and back.
                 picker.detail_open = false;
                 if exit == InteractiveExit::Interrupted {
+                    // A sign-in chained onto the one-keypress install: the rail still reads
+                    // `[Install]` although the CLI is on PATH now, so re-detect (it becomes
+                    // `[Sign in]`). A cancelled sign-in on an installed CLI changes nothing.
+                    let just_installed = picker
+                        .rails
+                        .iter()
+                        .any(|r| r.rail == rail && !r.installed);
+                    if just_installed {
+                        picker.set_status(format!(
+                            "{} installed \u{b7} sign-in cancelled (Ctrl+C); re-detecting\u{2026}",
+                            rail.display_name()
+                        ));
+                        picker.loading = true;
+                        return vec![Effect::WorkshopLoadPicker];
+                    }
                     picker.set_status(format!(
                         "{} sign-in cancelled (Ctrl+C); nothing changed.",
                         rail.display_name()

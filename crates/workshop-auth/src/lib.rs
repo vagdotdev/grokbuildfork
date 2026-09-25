@@ -1243,7 +1243,7 @@ fn row_detail_lines(row: &ModelsRow, xai_armed: bool, list_note: Option<String>)
             lines.push(row.badge.clone());
             lines.push(format!(
                 "Enter runs the official login in your terminal:  {}",
-                workshop_detect::login_argv(rail.vendor()).join(" ")
+                login_command(rail.vendor())
             ));
         }
         RowKind::RailNote(..) => {
@@ -1262,6 +1262,12 @@ fn row_detail_lines(row: &ModelsRow, xai_armed: bool, list_note: Option<String>)
         }
     }
     lines
+}
+
+/// The documented login command as the user would type it (`claude auth login`, `codex login`).
+fn login_command(vendor: workshop_detect::Vendor) -> String {
+    let bin = vendor.binary_names().first().copied().unwrap_or("the CLI");
+    format!("{bin} {}", workshop_detect::login_argv(vendor).join(" "))
 }
 
 fn rail_detail_lines(rail: &RailState, selected_model: usize) -> Vec<String> {
@@ -1289,7 +1295,7 @@ fn rail_detail_lines(rail: &RailState, selected_model: usize) -> Vec<String> {
     } else if !rail.is_ready() {
         lines.push(format!(
             "Enter runs the official login in your terminal:  {}",
-            workshop_detect::login_argv(rail.rail.vendor()).join(" ")
+            login_command(rail.rail.vendor())
         ));
     } else if !rail.models.is_empty() {
         let radios: Vec<String> = rail

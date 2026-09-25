@@ -511,13 +511,12 @@ fn needs_update(current: &str, target: &str, channel: &str, allow_downgrade: boo
                 );
                 return Some(false);
             }
-            if !current.pre.is_empty() {
-                return Some(true);
-            }
         }
         "alpha" => {}
         _ => return None,
     }
+    // Workshop: a build's `-dev`/commit suffix is not a channel to leave (upstream jumps any
+    // pre-release install onto the next stable pointer); only a strictly newer version installs.
     Some(if allow_downgrade {
         target != current
     } else {
@@ -529,10 +528,53 @@ fn needs_update(current: &str, target: &str, channel: &str, allow_downgrade: boo
 /// for backends like npm where stale corporate registries/proxies can return arbitrarily old versions. Users who
 /// installed via `install.sh` are classified as `"internal"` by `get_installer()`, so they also get rollback support.
 fn installer_allows_downgrade(installer: &str) -> bool {
-    match installer {
-        "internal" | "gh-release" => true,
-        "npm" => false,
-        _ => false,
+    // Upstream lets its managed installers (`internal`, `gh-release`) follow the pointer both ways:
+    // xAI's pointer is authoritative and moving it back is how they roll a release back. Workshop's
+    // channel is a file on a branch that can lag behind a published release, so following it back
+    // would replace a newer install with an older one (0.2.2 installed 0.2.1 over itself). Only
+    // strictly newer versions install, for every installer.
+    let _ = installer;
+    false
+}
+
+/// Write `[cli] installer = "<installer>"` into the user's config.toml and nothing else. Upstream
+/// saves the whole typed config here (`config::update_config`), which also writes every `[ui]`
+/// default — `yolo = false` among them — and Workshop reads a `[ui]` permission key as the user
+/// having chosen a mode (see `event_loop`'s launch mode); an update must not make that choice for
+/// them. One key, edited in place, the rest of the document untouched.
+async fn persist_installer_marker(installer: &str) {
+    let path = config::user_config_path();
+    let installer = installer.to_owned();
+    let result = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let content = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e),
+        };
+        let mut doc = content
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        let cli = doc
+            .entry("cli")
+            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+        if let Some(table) = cli.as_table_mut() {
+            if table.get("installer").and_then(|v| v.as_str()) == Some(installer.as_str()) {
+                return Ok(());
+            }
+            table.insert("installer", toml_edit::value(installer.as_str()));
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension(format!("toml.tmp.{}", std::process::id()));
+        std::fs::write(&tmp, doc.to_string())?;
+        std::fs::rename(&tmp, &path)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!(error = %e, "could not record the installer in config.toml"),
+        Err(e) => tracing::warn!(error = %e, "installer marker task failed"),
     }
 }
 
@@ -1744,10 +1786,7 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
     cleanup_old_downloads(&download_dir, "workshop", &download.version).await;
 
     // Persist installer to config.toml so future runs auto-detect internal.
-    let _ = config::update_config(|st| {
-        st.cli.installer = Some("internal".to_string());
-    })
-    .await;
+    persist_installer_marker("internal").await;
 
     regenerate_completions(&link_path, &grok_home).await;
 
@@ -2409,10 +2448,7 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
     cleanup_old_downloads(&download_dir, "workshop", &version).await;
 
     // Persist installer to config.toml so future runs auto-detect gh-release.
-    let _ = config::update_config(|st| {
-        st.cli.installer = Some("gh-release".to_string());
-    })
-    .await;
+    persist_installer_marker("gh-release").await;
 
     Ok(())
 }
@@ -2551,10 +2587,7 @@ pub async fn run_update(
     // Persist installer if not already saved
     let cfg = config::load_config().await;
     if cfg.cli.installer.is_none() {
-        let _ = config::update_config(|st| {
-            st.cli.installer = Some(installer.to_string());
-        })
-        .await;
+        persist_installer_marker(installer).await;
     }
 
     heal_managed_install(installer).await;

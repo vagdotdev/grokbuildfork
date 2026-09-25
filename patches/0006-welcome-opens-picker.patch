@@ -1359,7 +1359,7 @@ index 87f63aef..96f1e81d 100644
          let explicit = self.sandbox.as_deref().filter(|s| !s.is_empty());
          Self::resolve_startup_sandbox(explicit, saved.map(String::from))
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
-index 769d63a9..73ddc022 100644
+index 769d63a9..d0345b4e 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 @@ -10,6 +10,7 @@ use crate::app::agent_view::AgentView;
@@ -1517,7 +1517,7 @@ index 769d63a9..73ddc022 100644
 +    let Some(kilo) = crate::app::workshop::kilo_fallback_model() else {
 +        return failed(app, "no fallback model in the catalog".into());
 +    };
-+    let plan = match crate::app::workshop::activate_catalog_model(&kilo) {
++    let plan = match crate::app::workshop::activate_fallback_model(&kilo) {
 +        Ok(plan) => plan,
 +        Err(e) => return failed(app, e),
 +    };
@@ -1873,7 +1873,7 @@ index 89c36b27..ae9d42f9 100644
          Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
          Action::CopyAuthUrl => {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
-index b00317f2..83c2e937 100644
+index b00317f2..e860c02c 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 @@ -281,7 +281,7 @@ pub(super) fn maybe_show_x11_primary_paste_hint(
@@ -1885,7 +1885,7 @@ index b00317f2..83c2e937 100644
  /// Every other failure (`TextRead`, `TargetInsertion`, `AlreadyReported`) is a real dead end and must keep toasting.
  pub(super) fn wrap_host_image_request_eligible(completion: ClipboardPasteCompletion) -> bool {
      matches!(
-@@ -999,6 +999,108 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -999,6 +999,123 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              }
              vec![]
          }
@@ -1971,6 +1971,21 @@ index b00317f2..83c2e937 100644
 +                // would otherwise hold ↑/↓ until the tab is switched away and back.
 +                picker.detail_open = false;
 +                if exit == InteractiveExit::Interrupted {
++                    // A sign-in chained onto the one-keypress install: the rail still reads
++                    // `[Install]` although the CLI is on PATH now, so re-detect (it becomes
++                    // `[Sign in]`). A cancelled sign-in on an installed CLI changes nothing.
++                    let just_installed = picker
++                        .rails
++                        .iter()
++                        .any(|r| r.rail == rail && !r.installed);
++                    if just_installed {
++                        picker.set_status(format!(
++                            "{} installed \u{b7} sign-in cancelled (Ctrl+C); re-detecting\u{2026}",
++                            rail.display_name()
++                        ));
++                        picker.loading = true;
++                        return vec![Effect::WorkshopLoadPicker];
++                    }
 +                    picker.set_status(format!(
 +                        "{} sign-in cancelled (Ctrl+C); nothing changed.",
 +                        rail.display_name()
@@ -1994,7 +2009,7 @@ index b00317f2..83c2e937 100644
          TaskResult::ChangelogFetched { markdown, entries } => {
              app.changelog_markdown = markdown;
              app.changelog_bullets =
-@@ -1172,6 +1274,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1172,6 +1289,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              } = &app.auth_state
                  && *current_seq == request_seq
              {
@@ -2006,7 +2021,7 @@ index b00317f2..83c2e937 100644
                  app.auth_state = AuthState::Pending { error: Some(error) };
                  app.auth_code_input.reset();
              }
-@@ -1185,6 +1292,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1185,6 +1307,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
          } => handle_auth_url_ready(app, request_seq, auth_url, external, mode),
          TaskResult::AuthCodeSubmitted { .. } => vec![],
          TaskResult::AuthCancelComplete => vec![],
@@ -3131,7 +3146,7 @@ index 1c507697..89312ddd 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..53c7d833 100644
+index eda61b3c..91806bba 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -3262,9 +3277,18 @@ index eda61b3c..53c7d833 100644
          args.yolo,
          args.permission_mode_flag.as_deref(),
          remote_permission_mode,
-@@ -1103,6 +1165,19 @@ pub(crate) async fn run(
-         .and_then(xai_grok_shell::util::config::permission_mode_from_ui_if_set)
-         .is_some();
+@@ -1098,11 +1160,26 @@ pub(crate) async fn run(
+         .as_ref()
+         .and_then(|root| root.get("ui").cloned());
+     let cli_owns_mode = args.yolo || args.permission_mode_flag.is_some();
++    // Workshop: a mode the user chose (`permission_mode`, the legacy `approval_mode`, or
++    // `yolo = true`) is kept; a bare `yolo = false` is what any whole-config save writes as a
++    // default (the 0.2.2 updater did, on every silent update) and is not a choice.
+     let toml_owns_mode = launch_effective_ui
+         .as_ref()
+-        .and_then(xai_grok_shell::util::config::permission_mode_from_ui_if_set)
+-        .is_some();
++        .is_some_and(crate::app::workshop::explicit_permission_choice);
      app.permission_mode_from_soft_default = !cli_owns_mode && !toml_owns_mode;
 +    // Workshop: nothing chose a mode (no CLI flag, no `[ui]` permission key, no remote setting),
 +    // so the launch is always-approve. Plan and the asking mode stay one Shift+Tab away, and that
@@ -3282,7 +3306,7 @@ index eda61b3c..53c7d833 100644
      app.yolo_policy_block = launch_yolo.policy_block;
      if let Some(warning) = launch_yolo.blocked_warning {
          tracing::warn!("{warning}");
-@@ -1271,19 +1346,42 @@ pub(crate) async fn run(
+@@ -1271,19 +1348,42 @@ pub(crate) async fn run(
              "auto-triggering login at startup"
          );
      }
@@ -3332,7 +3356,7 @@ index eda61b3c..53c7d833 100644
      };
      app.has_external_auth_provider =
          crate::slash::commands::usage::detect_external_auth_provider(&app.auth_methods);
-@@ -1359,6 +1457,14 @@ pub(crate) async fn run(
+@@ -1359,6 +1459,14 @@ pub(crate) async fn run(
      }
      app.voice_config.client_identifier = crate::client_identity::HEADLESS_CLIENT_TYPE.to_string();
      app.voice_config.user_agent = crate::client_identity::client_user_agent();
@@ -3347,7 +3371,7 @@ index eda61b3c..53c7d833 100644
      app.zdr_access_enabled = xai_grok_shell::util::config::resolve_zdr_access_enabled(
          requirements.as_ref(),
          user_config.as_ref(),
-@@ -1632,6 +1738,15 @@ pub(crate) async fn run(
+@@ -1632,6 +1740,15 @@ pub(crate) async fn run(
      let (progress_tx, mut progress_rx) =
          tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
      let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
@@ -3363,7 +3387,7 @@ index eda61b3c..53c7d833 100644
      let voice_auth_factory = connection.auth_manager.clone();
      let mut tick_interval = tick_interval;
      let mut animation_tick_at: Option<Instant> = None;
-@@ -1759,6 +1874,16 @@ pub(crate) async fn run(
+@@ -1759,6 +1876,16 @@ pub(crate) async fn run(
                  git_ref: args.worktree_ref.clone(),
              })
          }
@@ -3380,7 +3404,7 @@ index eda61b3c..53c7d833 100644
          MaterializedStartup::NewAuto => None,
      };
      if let Some(action) = startup_action {
-@@ -1892,7 +2017,7 @@ pub(crate) async fn run(
+@@ -1892,7 +2019,7 @@ pub(crate) async fn run(
          if process_effects(workspace_effects, &mut tasks, &mut app, &progress_tx) {
              break;
          }
@@ -3389,7 +3413,7 @@ index eda61b3c..53c7d833 100644
              &mut app,
              terminal,
              &input_paused,
-@@ -1902,9 +2027,16 @@ pub(crate) async fn run(
+@@ -1902,9 +2029,16 @@ pub(crate) async fn run(
              &mut suspend_retry_after,
              &mut suspend_wait_reports,
          ) {
@@ -3409,7 +3433,7 @@ index eda61b3c..53c7d833 100644
          }
          if run_pending_mode_switch(
              &mut app,
-@@ -1921,6 +2053,22 @@ pub(crate) async fn run(
+@@ -1921,6 +2055,22 @@ pub(crate) async fn run(
          ) {
              break;
          }
@@ -3432,7 +3456,7 @@ index eda61b3c..53c7d833 100644
          if let VoiceState::ColdStart { hold, target } = app.voice_state {
              if app.voice_cmd_tx.is_none() && app.voice_can_start_pipeline() {
                  let voice_auth = crate::voice::build_voice_auth(voice_auth_factory.clone());
-@@ -2314,6 +2462,7 @@ pub(crate) async fn run(
+@@ -2314,6 +2464,7 @@ pub(crate) async fn run(
              maybe_ev = input_rx.recv() => {
                  // `None` means the dedicated terminal reader thread has ended.
                  let Some(ev) = maybe_ev else { break };
@@ -3440,7 +3464,7 @@ index eda61b3c..53c7d833 100644
                  let handled_at = std::time::Instant::now();
                  let waited =
                      super::event_loop_stall::input_wait(ev.arrived_at, handled_at, loop_entry);
-@@ -2331,6 +2480,9 @@ pub(crate) async fn run(
+@@ -2331,6 +2482,9 @@ pub(crate) async fn run(
                  if result.should_quit {
                      break;
                  }
@@ -3450,7 +3474,7 @@ index eda61b3c..53c7d833 100644
                  if !app.pending_effects.is_empty() {
                      let effs = std::mem::take(&mut app.pending_effects);
                      if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
-@@ -2885,6 +3037,23 @@ pub(crate) async fn run(
+@@ -2885,6 +3039,23 @@ pub(crate) async fn run(
                  presenter.request(false);
              }
  
@@ -3474,7 +3498,7 @@ index eda61b3c..53c7d833 100644
              // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
              // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
              // Voice is only serviced when nothing else is pending
-@@ -3096,6 +3265,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3096,6 +3267,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
      app.abandon_startup();
      let exit_info = app.active_agent().and_then(|agent| {
          let sid = agent.session.session_id.as_ref()?;
@@ -3484,7 +3508,7 @@ index eda61b3c..53c7d833 100644
          let summary = if app.screen_mode.is_fullscreen() {
              use crate::views::session_title;
              let last_prompt = session_title::last_user_prompt_line(agent);
-@@ -3109,7 +3281,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3109,7 +3283,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
              None
          };
          Some(super::ExitInfo {
@@ -3493,7 +3517,7 @@ index eda61b3c..53c7d833 100644
              minimal: app.screen_mode.is_minimal(),
              summary,
          })
-@@ -3143,7 +3315,9 @@ struct RoutedInputEvent {
+@@ -3143,7 +3317,9 @@ struct RoutedInputEvent {
      is_startup_replay: bool,
  }
  fn tty_suspend_armed(app: &AppView) -> bool {
@@ -3504,7 +3528,7 @@ index eda61b3c..53c7d833 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4108,559 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4110,559 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -3535,7 +3559,7 @@ index eda61b3c..53c7d833 100644
 +            .filter(|(name, _)| name == "bash")
 +            .filter_map(|(_, input)| input.get("command").and_then(|c| c.as_str()))
 +            .last()
-+            .map(str::to_owned);
++            .map(crate::app::workshop::scrub_scratch_paths);
 +        let title = crate::app::workshop_askpass::title_for(command.as_deref(), &prompt);
 +        if let Some(previous) = app.workshop_password_ask.take() {
 +            previous.answer(false);
@@ -4243,10 +4267,10 @@ index 60fe34f9..8b49336e 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..203fe550
+index 00000000..121a49c7
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,2469 @@
+@@ -0,0 +1,2548 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -4810,8 +4834,80 @@ index 00000000..203fe550
 +pub fn activate_catalog_model(
 +    model: &workshop_providers::CatalogModel,
 +) -> Result<ActivationPlan, String> {
++    activate_catalog_model_with(model, |_| {})
++}
++
++/// Whether `[ui]` records a permission mode the user chose: `permission_mode` or the legacy
++/// `approval_mode` key, or `yolo = true`. A bare `yolo = false` does not count — upstream's typed
++/// config save writes it as a default (the 0.2.2 updater did on every silent update), and Workshop's
++/// always-approve default must survive that; an explicit pick (persisted as `permission_mode`)
++/// still sticks.
++pub fn explicit_permission_choice(ui: &toml::Value) -> bool {
++    let Some(table) = ui.as_table() else {
++        return false;
++    };
++    table.contains_key("permission_mode")
++        || table.contains_key("approval_mode")
++        || table.get("yolo").and_then(|v| v.as_bool()) == Some(true)
++}
++
++/// `$WORKSHOP_HOME/tmp`: the engine's `TMPDIR`, so its scratch files (OpenCode's own temp dir is
++/// `<tmpdir>/opencode`) stay under the Workshop home.
++pub fn engine_scratch_dir() -> PathBuf {
++    workshop_home().join("tmp")
++}
++
++/// Rewrite the engine's scratch paths for the screen: `<$WORKSHOP_HOME/tmp>/opencode` becomes
++/// `~/.workshop/tmp`, so no "opencode" path reaches a tool row. Any other text is returned as is.
++pub fn scrub_scratch_paths(text: &str) -> String {
++    let dir = engine_scratch_dir();
++    let actual = format!("{}/opencode", dir.display());
++    if !text.contains(&actual) {
++        return text.to_owned();
++    }
++    let shown = crate::app::workshop_permissions::shorten_home(&dir.display().to_string());
++    text.replace(&actual, &shown)
++}
++
++/// [`scrub_scratch_paths`] over every string in a JSON value (a tool's input or metadata).
++pub fn scrub_scratch_json(value: &serde_json::Value) -> serde_json::Value {
++    match value {
++        serde_json::Value::String(s) => serde_json::Value::String(scrub_scratch_paths(s)),
++        serde_json::Value::Array(items) => {
++            serde_json::Value::Array(items.iter().map(scrub_scratch_json).collect())
++        }
++        serde_json::Value::Object(map) => serde_json::Value::Object(
++            map.iter()
++                .map(|(k, v)| (k.clone(), scrub_scratch_json(v)))
++                .collect(),
++        ),
++        other => other.clone(),
++    }
++}
++
++/// Request attempts upstream's sampler makes for the silent pool fallback before a step fails
++/// (`[model.<key>] max_retries`; 15 by default, with a backoff that grows to 30 s — a quarter of
++/// an hour of `Retrying…` offline). Two means one immediate retry on a rebuilt client, about a
++/// second per step. Upstream's turn loop still resubmits a failed step three times (2, 10 and
++/// 30 s apart, `MAX_TRANSIENT_TURN_RETRIES`), so offline the fallback gives up after roughly
++/// 45 s, then the user gets the plain line and the composer is theirs again.
++pub const FALLBACK_MAX_RETRIES: u32 = 2;
++
++/// [`activate_catalog_model`] for the silent pool fallback: the same entry with its retries
++/// capped at [`FALLBACK_MAX_RETRIES`].
++pub fn activate_fallback_model(
++    model: &workshop_providers::CatalogModel,
++) -> Result<ActivationPlan, String> {
++    activate_catalog_model_with(model, |spec| spec.max_retries = Some(FALLBACK_MAX_RETRIES))
++}
++
++fn activate_catalog_model_with(
++    model: &workshop_providers::CatalogModel,
++    adjust: impl FnOnce(&mut workshop_providers::ModelEntrySpec),
++) -> Result<ActivationPlan, String> {
 +    let broker = default_broker();
-+    let spec = resolve_model_entry(model, &broker).map_err(|e| e.to_string())?;
++    let mut spec = resolve_model_entry(model, &broker).map_err(|e| e.to_string())?;
++    adjust(&mut spec);
 +    let mut env = Vec::new();
 +    if let CredentialInjection::FromBroker { provider_id, var } = &spec.credential {
 +        let handle = broker.resolve(provider_id).map_err(|e| e.to_string())?;
@@ -5671,6 +5767,13 @@ index 00000000..203fe550
 +        && let Some(askpass) = askpass_server(slot, &ui_tx)
 +    {
 +        opts.extra_env = askpass.env();
++    }
++    // The engine's scratch space (OpenCode keeps it at `<tmpdir>/opencode`) lives under the
++    // Workshop home, and the tool rows show it as `~/.workshop/tmp` (see `scrub_scratch_paths`).
++    let scratch = engine_scratch_dir();
++    if std::fs::create_dir_all(&scratch).is_ok() {
++        opts.extra_env
++            .push(("TMPDIR".into(), scratch.into_os_string()));
 +    }
 +    opts.permission_handler = Some(engine_permission_handler(ui_tx.clone()));
 +    opts.question_handler = Some(engine_question_handler(ui_tx));

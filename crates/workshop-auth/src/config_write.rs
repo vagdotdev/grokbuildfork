@@ -88,6 +88,9 @@ pub fn model_table(spec: &ModelEntrySpec) -> toml::Table {
             toml::Value::Integer(m as i64),
         );
     }
+    if let Some(n) = spec.max_retries {
+        t.insert("max_retries".into(), toml::Value::Integer(i64::from(n)));
+    }
     if !spec.extra_headers.is_empty() {
         let mut h = toml::Table::new();
         for (k, v) in &spec.extra_headers {
@@ -138,6 +141,7 @@ pub fn activate_placeholder_session(
         context_window: std::num::NonZeroU64::new(window).expect("nonzero"),
         max_completion_tokens: None,
         stream_tool_calls: None,
+        max_retries: None,
         credential: CredentialInjection::None,
     };
     activate_model(path, &spec)

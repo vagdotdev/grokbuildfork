@@ -238,3 +238,56 @@ fn healthy_serve_with_a_silent_model_hits_the_90s_first_event_ceiling() {
     assert_plain_failure(&j, &line);
     assert_cause_recorded(&j, &["no answer from Big Pickle after 90 s"]);
 }
+
+/// Offline, the silent pool fallback gives up within a minute (its entry caps upstream's request
+/// retries at two; upstream's turn loop still resubmits a failed step three times, 2 + 10 + 30 s
+/// apart) and the user gets the plain line with the composer back on their own model — not a
+/// quarter of an hour of `Connection failed | Retrying (attempt 11)…`.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (closed ports, no network); run with --include-ignored"]
+fn offline_fallback_gives_up_within_a_short_budget() {
+    let Some(bin) = bin_from_env() else { return };
+    let fake = fake_opencode("crash");
+    // Nothing answers anywhere: the pool's endpoint and every proxy are closed loopback ports.
+    let mut j = spawn(
+        "engine-offline",
+        &bin,
+        &[
+            (
+                crate::pty_common::KILO_BASE_URL_ENV,
+                "http://127.0.0.1:9/v1",
+            ),
+            ("HTTP_PROXY", "http://127.0.0.1:9"),
+            ("HTTPS_PROXY", "http://127.0.0.1:9"),
+            ("ALL_PROXY", "http://127.0.0.1:9"),
+        ],
+        Some(fake.path()),
+    );
+    connect_big_pickle(&mut j);
+    send_prompt(&mut j, "hello");
+    let started = Instant::now();
+    let (line, took) = wait_for_failure_line(&mut j, 120);
+    snapshot(&j.h, &j.dir, "offline-failure-line");
+    assert_plain_failure(&j, &line);
+    assert!(
+        took < Duration::from_secs(60),
+        "the fallback's retries are capped: gave up after {took:?}"
+    );
+    let screen = j.h.screen_contents();
+    for attempt in ["(attempt 3)", "(attempt 5)", "(attempt 11)"] {
+        assert!(
+            !screen.contains(attempt),
+            "each step makes at most one retry:\n{screen}"
+        );
+    }
+    let config = std::fs::read_to_string(j.workshop_home().join("config.toml")).unwrap_or_default();
+    assert!(
+        config.contains("max_retries = 2"),
+        "the fallback entry carries the retry cap:\n{config}"
+    );
+    eprintln!(
+        "offline: plain line after {:.1?} (started {:?} ago)",
+        took,
+        started.elapsed()
+    );
+}

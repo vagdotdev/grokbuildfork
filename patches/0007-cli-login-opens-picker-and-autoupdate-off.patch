@@ -1,5 +1,5 @@
 diff --git a/crates/codegen/xai-grok-pager-bin/src/main.rs b/crates/codegen/xai-grok-pager-bin/src/main.rs
-index aa448be7..f5186511 100644
+index aa448be7..59b3e567 100644
 --- a/crates/codegen/xai-grok-pager-bin/src/main.rs
 +++ b/crates/codegen/xai-grok-pager-bin/src/main.rs
 @@ -261,7 +261,7 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
@@ -308,7 +308,16 @@ index aa448be7..f5186511 100644
              }
              Ok(())
          }
-@@ -2609,6 +2713,10 @@ fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
+@@ -2603,12 +2707,18 @@ fn build_update_config() -> UpdateConfig {
+ }
+ /// Central gate for auto-update checks; add new suppression rules here, not at call sites.
+ fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
+-    if cfg!(debug_assertions) {
++    // Workshop: a debug build updates only from a loopback channel a PTY gate stands up
++    // (`WORKSHOP_CLI_BASE_URL`, loopback-only), never from the published one.
++    if cfg!(debug_assertions) && !xai_grok_update::version::loopback_channel_override() {
+         return false;
+     }
      if no_auto_update_flag {
          return false;
      }
@@ -319,7 +328,7 @@ index aa448be7..f5186511 100644
      !std::env::var_os("GROK_DISABLE_AUTOUPDATER")
          .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
  }
-@@ -2699,7 +2807,7 @@ async fn run_update_command(
+@@ -2699,7 +2809,7 @@ async fn run_update_command(
          );
      }
      let telemetry_cfg = xai_grok_shell::config::load_agent_config_disk_only()
@@ -328,7 +337,7 @@ index aa448be7..f5186511 100644
          .ok();
      if let Some(agent_cfg) = telemetry_cfg {
          let auth_manager =
-@@ -2726,7 +2834,7 @@ async fn run_update_command(
+@@ -2726,7 +2836,7 @@ async fn run_update_command(
      result?;
      Ok(())
  }
@@ -337,7 +346,7 @@ index aa448be7..f5186511 100644
  /// to relaunch onto the new binary. Best-effort and non-fatal: discovery/connect/control failures are logged and
  /// skipped.
  #[tracing::instrument(level = "debug", skip_all)]
-@@ -2886,7 +2994,7 @@ mod tests {
+@@ -2886,7 +2996,7 @@ mod tests {
          );
          assert_eq!(
              resolve_worker_override("100000", cores).notice().unwrap(),
@@ -346,7 +355,7 @@ index aa448be7..f5186511 100644
          );
      }
      #[test]
-@@ -2899,7 +3007,7 @@ mod tests {
+@@ -2899,7 +3009,7 @@ mod tests {
          }
          assert_eq!(
              resolve_worker_override("abc", cores).notice().unwrap(),
@@ -355,7 +364,7 @@ index aa448be7..f5186511 100644
          );
      }
      #[test]
-@@ -2913,7 +3021,7 @@ mod tests {
+@@ -2913,7 +3023,7 @@ mod tests {
              let mut output = Vec::new();
              write_version(&mut output, label).unwrap();
              let output = String::from_utf8(output).unwrap();
@@ -364,7 +373,7 @@ index aa448be7..f5186511 100644
              assert!(output.contains(env!("VERSION_WITH_COMMIT")));
              assert!(output.ends_with(expected_suffix), "{output:?}");
          }
-@@ -3080,30 +3188,37 @@ mod tests {
+@@ -3080,30 +3190,37 @@ mod tests {
      }
      #[cfg(unix)]
      #[test]

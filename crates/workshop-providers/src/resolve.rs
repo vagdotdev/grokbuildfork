@@ -66,6 +66,11 @@ pub struct ModelEntrySpec {
     /// Upstream-only flag for the xAI proxy; always unset for BYOK endpoints.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,
+    /// Upstream's per-model `max_retries` (its request retry loop, 15 by default with a backoff
+    /// that grows to 30 s): set only for the silent pool fallback, whose offline retries must give
+    /// up in about half a minute rather than a quarter of an hour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
     /// Not an upstream field: how the overlay obtains the credential.
     #[serde(skip)]
     pub credential: CredentialInjection,
@@ -202,6 +207,7 @@ pub fn resolve_model_entry(
         context_window,
         max_completion_tokens: None,
         stream_tool_calls: None,
+        max_retries: None,
         credential,
     })
 }
