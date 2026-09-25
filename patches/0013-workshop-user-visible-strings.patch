@@ -9646,7 +9646,7 @@ index bc5d1a55..7310dac4 100644
      modal_window::render_centered_tip_footer(buf, area, theme, text.as_ref());
  }
 diff --git a/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs b/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs
-index 788104bb..76062118 100644
+index 788104bb..241724e2 100644
 --- a/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs
 @@ -174,7 +174,7 @@ fn enum_choice_gated_off_covers_voice_permission_and_terminal_theme() {
@@ -9744,12 +9744,12 @@ index 788104bb..76062118 100644
      );
      // For preview-supporting enums (theme), the breadcrumb-click revert dispatches `Action::PreviewTheme(original)`
 -    // The default theme's original canonical is `"groknight"`
-+    // The default theme's original canonical is `"night"`
++    // The default theme's original canonical is `"oscura-midnight"`
      match outcome {
          SettingsKeyOutcome::Action(Action::PreviewTheme(orig)) => {
              assert_eq!(
 -                orig, "groknight",
-+                orig, "night",
++                orig, "oscura-midnight",
                  "breadcrumb-click revert must carry the original canonical",
              );
          }
@@ -9758,7 +9758,7 @@ index 788104bb..76062118 100644
      match outcome {
          SettingsKeyOutcome::Action(Action::PreviewTheme(orig)) => {
 -            assert_eq!(orig, "groknight");
-+            assert_eq!(orig, "night");
++            assert_eq!(orig, "oscura-midnight");
          }
          other => panic!("expected preview revert Action, got {other:?}"),
      }
@@ -9776,11 +9776,12 @@ index 788104bb..76062118 100644
                  "OpenResetConfirm key must be the active picker setting",
              );
 -            // Default theme is `groknight`
-+            // Default theme is `night`
-             // Entering the picker captures `original_value = current value = groknight`, so the revert dispatches with that canonical
+-            // Entering the picker captures `original_value = current value = groknight`, so the revert dispatches with that canonical
++            // Default theme is `oscura-midnight`
++            // Entering the picker captures `original_value = current value = oscura-midnight`, so the revert dispatches with that canonical
              assert_eq!(
 -                orig, "groknight",
-+                orig, "night",
++                orig, "oscura-midnight",
                  "PreviewTheme revert must carry the original canonical",
              );
          }
