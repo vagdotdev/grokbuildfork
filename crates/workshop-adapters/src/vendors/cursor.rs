@@ -39,7 +39,7 @@
 
 use std::collections::HashSet;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::claude::truncate;
 use super::{json, tool};

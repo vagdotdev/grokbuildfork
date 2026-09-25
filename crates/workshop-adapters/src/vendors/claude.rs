@@ -31,8 +31,8 @@ use serde_json::{Value, json};
 
 use super::{json, tool};
 use crate::adapter::{
-    Adapter, AdapterId, AskReply, LoginState, NormalizeError, Normalizer, PermissionPolicy,
-    ProbeOutput, PromptDelivery, RunRequest, Terminal, VersionPin,
+    Adapter, AdapterId, AskReply, NormalizeError, Normalizer, PermissionPolicy,
+    PromptDelivery, RunRequest, Terminal, VersionPin,
 };
 use crate::event::{AdapterEvent, QuestionChoice, QuestionPrompt, Usage};
 

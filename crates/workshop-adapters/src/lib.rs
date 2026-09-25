@@ -50,9 +50,11 @@ pub mod vendors;
 pub mod worktree;
 
 pub use adapter::{
-    Adapter, AdapterId, AskReply, LoginState, NormalizeError, Normalizer, PermissionPolicy,
-    PinStatus, ProbeOutput, PromptDelivery, RunRequest, Terminal, VersionPin,
+    Adapter, AdapterId, AskReply, NormalizeError, Normalizer, PermissionPolicy, PinStatus,
+    PromptDelivery, RunRequest, Terminal, VersionPin,
 };
+pub use workshop_detect::LoginState;
+pub use workshop_detect::VendorProbe as ProbeOutput;
 pub use event::{AdapterEvent, QuestionChoice, QuestionPrompt, Usage, question_answers_prompt};
 pub use supervisor::{Replier, RunHandle, RunOutcome, SpawnError, SupervisorOptions, spawn};
 pub use workshop_detect::{DetectConfig, Detection, Identity as InstalledCli};
