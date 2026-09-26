@@ -418,25 +418,25 @@ async fn every_vendor_maps_plan_normal_and_always_approve_to_its_own_modes() {
             .unwrap()
     };
     use PermissionPolicy::{AlwaysApprove, ReadOnly, WorkspaceWrite};
-    use workshop_adapters::AdapterId::{Claude, Codex, Cursor, OpenCode};
-    assert!(argv(Claude, ReadOnly).contains("--permission-mode plan"));
-    assert!(argv(Claude, WorkspaceWrite).contains("--permission-mode acceptEdits"));
-    assert!(argv(Claude, AlwaysApprove).contains("--permission-mode bypassPermissions"));
-    assert!(argv(Codex, ReadOnly).contains("-s read-only"));
-    assert!(argv(Codex, WorkspaceWrite).contains("-s workspace-write"));
-    assert!(argv(Codex, AlwaysApprove).contains("-s danger-full-access"));
-    assert!(argv(Cursor, ReadOnly).contains("--mode plan"));
+    use workshop_adapters::AdapterId;
+    assert!(argv(AdapterId::Claude, ReadOnly).contains("--permission-mode plan"));
+    assert!(argv(AdapterId::Claude, WorkspaceWrite).contains("--permission-mode acceptEdits"));
+    assert!(argv(AdapterId::Claude, AlwaysApprove).contains("--permission-mode bypassPermissions"));
+    assert!(argv(AdapterId::Codex, ReadOnly).contains("-s read-only"));
+    assert!(argv(AdapterId::Codex, WorkspaceWrite).contains("-s workspace-write"));
+    assert!(argv(AdapterId::Codex, AlwaysApprove).contains("-s danger-full-access"));
+    assert!(argv(AdapterId::Cursor, ReadOnly).contains("--mode plan"));
     assert!(
-        !argv(Cursor, WorkspaceWrite).contains("--mode")
-            && !argv(Cursor, WorkspaceWrite).contains("--force")
+        !argv(AdapterId::Cursor, WorkspaceWrite).contains("--mode")
+            && !argv(AdapterId::Cursor, WorkspaceWrite).contains("--force")
     );
     assert!(
-        argv(Cursor, AlwaysApprove).contains("--force")
-            && !argv(Cursor, AlwaysApprove).contains("--mode")
+        argv(AdapterId::Cursor, AlwaysApprove).contains("--force")
+            && !argv(AdapterId::Cursor, AlwaysApprove).contains("--mode")
     );
-    assert!(argv(OpenCode, ReadOnly).contains("--agent plan"));
-    assert!(!argv(OpenCode, WorkspaceWrite).contains("--agent plan"));
-    assert!(!argv(OpenCode, AlwaysApprove).contains("--agent plan"));
+    assert!(argv(AdapterId::OpenCode, ReadOnly).contains("--agent plan"));
+    assert!(!argv(AdapterId::OpenCode, WorkspaceWrite).contains("--agent plan"));
+    assert!(!argv(AdapterId::OpenCode, AlwaysApprove).contains("--agent plan"));
 }
 
 #[tokio::test]

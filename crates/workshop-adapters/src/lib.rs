@@ -53,10 +53,10 @@ pub use adapter::{
     Adapter, AdapterId, AskReply, NormalizeError, Normalizer, PermissionPolicy, PinStatus,
     PromptDelivery, RunRequest, Terminal, VersionPin,
 };
-pub use workshop_detect::LoginState;
-pub use workshop_detect::VendorProbe as ProbeOutput;
 pub use event::{AdapterEvent, QuestionChoice, QuestionPrompt, Usage, question_answers_prompt};
 pub use supervisor::{Replier, RunHandle, RunOutcome, SpawnError, SupervisorOptions, spawn};
+pub use workshop_detect::LoginState;
+pub use workshop_detect::VendorProbe as ProbeOutput;
 pub use workshop_detect::{DetectConfig, Detection, Identity as InstalledCli};
 pub use worktree::{GitWorktreeIsolation, InPlace, IsolatedWorkspace, WorkspaceIsolation};
 
