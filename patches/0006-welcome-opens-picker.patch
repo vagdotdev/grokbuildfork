@@ -43,20 +43,23 @@ index d63bea59..5663ad57 100644
          });
          let (needs, label, method_id, mode) = startup_auth_metadata(&built.methods);
 diff --git a/crates/codegen/xai-grok-pager/src/app/actions.rs b/crates/codegen/xai-grok-pager/src/app/actions.rs
-index f1602289..7300f065 100644
+index f1602289..dc219224 100644
 --- a/crates/codegen/xai-grok-pager/src/app/actions.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/actions.rs
-@@ -618,7 +618,26 @@ pub enum Action {
+@@ -618,7 +618,29 @@ pub enum Action {
      /// Log out and immediately start a new login flow.
      SwitchAccount,
      /// User pressed login on the welcome screen.
 +    /// Workshop: opens the connection picker (Subscriptions); never starts an OAuth flow by itself.
      Login,
-+    /// Workshop: open the connection picker overlay on a view (`/model` → Models, `/auth` →
-+    /// Subscriptions).
-+    OpenConnectionPicker(workshop_auth::PickerTab),
++    /// Workshop: open the one connection picker overlay (`/model` → on the active model, with any
++    /// typed text as the filter; `/auth` → on the Subscriptions section).
++    OpenConnectionPicker(workshop_auth::PickerFocus),
 +    /// Workshop: a key press routed to the open connection picker.
 +    ConnectionPicker(workshop_auth::PickerInput),
++    /// Workshop: `/effort <level>` on the active OpenCode model — one of its catalog levels, or
++    /// `default`; an empty level prints the usage with the offered levels.
++    WorkshopSetEffort(String),
 +    /// Workshop: first run (nothing connected) — activate the OpenCode engine's default free model
 +    /// and land in the composer. No picker, no network.
 +    WorkshopFirstRun,
@@ -73,7 +76,7 @@ index f1602289..7300f065 100644
      /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
      /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
      CancelLogin,
-@@ -1772,9 +1791,54 @@ pub enum Effect {
+@@ -1772,9 +1794,54 @@ pub enum Effect {
          method_id: acp::AuthMethodId,
          use_oauth: bool,
          force_interactive: bool,
@@ -128,7 +131,7 @@ index f1602289..7300f065 100644
      /// Submit a manually-pasted auth code (ext request).
      SubmitAuthCode { request_seq: u64, code: String },
      /// Fetch MCP server list from the shell (x.ai/mcp/list).
-@@ -2659,6 +2723,29 @@ pub enum TaskResult {
+@@ -2659,6 +2726,29 @@ pub enum TaskResult {
          /// Forwarded from `Effect::SwitchModel.prev_model_id` for rollback on `IncompatibleAgent`.
          prev_model_id: Option<acp::ModelId>,
      },
@@ -159,7 +162,7 @@ index f1602289..7300f065 100644
      ChangelogFetched {
          markdown: Option<String>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..55212626 100644
+index fc9a4553..93c9e0b5 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -531,7 +534,7 @@ index fc9a4553..55212626 100644
      has_pending_update: bool,
      /// A recent foreign session is available to resume when no update is pending.
      has_foreign_resume: bool,
-@@ -3171,6 +3378,119 @@ struct WelcomeInputCtx<'a> {
+@@ -3171,6 +3378,120 @@ struct WelcomeInputCtx<'a> {
      #[cfg(feature = "local-workspace")]
      session_picker_open: bool,
  }
@@ -631,9 +634,10 @@ index fc9a4553..55212626 100644
 +            let input = match key.code {
 +                KeyCode::Up => PickerInput::Up,
 +                KeyCode::Down => PickerInput::Down,
-+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
-+                    PickerInput::SwitchTab
-+                }
++                KeyCode::Right => PickerInput::Open,
++                KeyCode::Left => PickerInput::Left,
++                // One list, no tabs: Tab is swallowed so it never reaches the composer.
++                KeyCode::Tab | KeyCode::BackTab => return InputOutcome::Changed,
 +                KeyCode::Enter => PickerInput::Enter,
 +                KeyCode::Esc => PickerInput::Back,
 +                KeyCode::Backspace => PickerInput::Backspace,
@@ -651,7 +655,7 @@ index fc9a4553..55212626 100644
  /// Welcome view input: overlays first, then composer, then the menu.
  fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
      if let Some(modal) = ctx.import_claude_modal.as_mut() {
-@@ -3750,6 +4070,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3750,6 +4071,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                  return dispatch_menu_action(
                      idx,
                      ctx.has_claude_import,
@@ -659,7 +663,7 @@ index fc9a4553..55212626 100644
                      ctx.show_changelog_action,
                      ctx.changelog_markdown.as_deref(),
                  );
-@@ -3888,6 +4209,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3888,6 +4210,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                          return dispatch_menu_action(
                              i,
                              ctx.has_claude_import,
@@ -667,7 +671,7 @@ index fc9a4553..55212626 100644
                              ctx.show_changelog_action,
                              ctx.changelog_markdown.as_deref(),
                          );
-@@ -4138,39 +4460,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
+@@ -4138,39 +4461,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
      }
  }
  /// Dispatch an action for a welcome menu item by index.
@@ -726,7 +730,7 @@ index fc9a4553..55212626 100644
      }
      if index == quit_idx {
          return InputOutcome::Action(Action::Quit);
-@@ -4381,6 +4706,9 @@ impl AppView {
+@@ -4381,6 +4707,9 @@ impl AppView {
          });
          let welcome_default_yolo = self.default_yolo;
          let welcome_auto_gate = self.auto_mode_gate;
@@ -736,7 +740,7 @@ index fc9a4553..55212626 100644
          let Self {
              active_view,
              agents,
-@@ -4477,11 +4805,39 @@ impl AppView {
+@@ -4477,11 +4806,39 @@ impl AppView {
                              } else {
                                  self.tip.as_deref()
                              };
@@ -781,7 +785,7 @@ index fc9a4553..55212626 100644
                              };
                              let hero_cta = crate::views::announcements::promo_cta(
                                  &self.active_announcements,
-@@ -4495,7 +4851,14 @@ impl AppView {
+@@ -4495,7 +4852,14 @@ impl AppView {
                                          &self.hidden_announcement_ids,
                                      )
                                  })
@@ -797,7 +801,7 @@ index fc9a4553..55212626 100644
                              let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                  prompt_focus: if self.welcome_prompt_focused {
                                      WelcomePromptFocus::Focused
-@@ -4508,6 +4871,7 @@ impl AppView {
+@@ -4508,6 +4872,7 @@ impl AppView {
                                  consent_state: &self.consent_state,
                                  consent_hover_link: self.welcome_consent_hover_link,
                                  login_label: self.login_label.as_deref(),
@@ -805,7 +809,7 @@ index fc9a4553..55212626 100644
                                  auth_code_input: self.auth_code_input.text(),
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
-@@ -4520,6 +4884,7 @@ impl AppView {
+@@ -4520,6 +4885,7 @@ impl AppView {
                                  team_name: self.team_name.as_deref(),
                                  has_access,
                                  has_claude_import: self.has_claude_import,
@@ -813,7 +817,7 @@ index fc9a4553..55212626 100644
                                  mouse_pos: self.last_mouse_pos,
                                  is_zdr_blocked: zdr_blocked_for_draw,
                                  session_picker: self.session_picker_entries.as_deref(),
-@@ -4534,6 +4899,7 @@ impl AppView {
+@@ -4534,6 +4900,7 @@ impl AppView {
                                  pending_hint,
                                  startup_warnings: &self.startup_warnings,
                                  pending_update_version: self.pending_update_version.as_deref(),
@@ -821,7 +825,7 @@ index fc9a4553..55212626 100644
                                  foreign_resume_hint: foreign_resume_hint.as_ref(),
                                  session_picker_content_results: self
                                      .session_picker_content_results
-@@ -4560,6 +4926,7 @@ impl AppView {
+@@ -4560,6 +4927,7 @@ impl AppView {
                                  welcome_announcement_expanded: self.welcome_announcement.expanded,
                                  upgrade_cta: hero_cta.map(|(_owner, label, _)| label),
                                  privacy_banner,
@@ -829,7 +833,7 @@ index fc9a4553..55212626 100644
                                  #[cfg(feature = "local-workspace")]
                                  workspace_mode: self.welcome_workspace_mode,
                                  #[cfg(feature = "local-workspace")]
-@@ -4576,7 +4943,9 @@ impl AppView {
+@@ -4576,7 +4944,9 @@ impl AppView {
                                  &mut self.session_picker_state,
                              );
                              self.welcome_menu_rects = result.menu_rects;
@@ -839,7 +843,7 @@ index fc9a4553..55212626 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4804,6 +5173,7 @@ impl AppView {
+@@ -4804,6 +5174,7 @@ impl AppView {
                                              .workspace_dashboard_enabled,
                                          overlay_header,
                                          overlay_stop_label: None,
@@ -847,7 +851,7 @@ index fc9a4553..55212626 100644
                                      },
                                  );
                                  if let Some(modal) = self.import_claude_modal.as_mut() {
-@@ -4824,6 +5194,28 @@ impl AppView {
+@@ -4824,6 +5195,28 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -876,7 +880,7 @@ index fc9a4553..55212626 100644
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5224,17 @@ impl AppView {
+@@ -4832,13 +5225,17 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
@@ -895,7 +899,7 @@ index fc9a4553..55212626 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5516,7 @@ impl AppView {
+@@ -5120,6 +5517,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -903,7 +907,7 @@ index fc9a4553..55212626 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5564,7 @@ impl AppView {
+@@ -5167,7 +5565,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -912,7 +916,7 @@ index fc9a4553..55212626 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5679,7 @@ impl AppView {
+@@ -5282,6 +5680,7 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
@@ -920,7 +924,7 @@ index fc9a4553..55212626 100644
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5300,11 +5698,7 @@ impl AppView {
+@@ -5300,11 +5699,7 @@ impl AppView {
              {
                  needs_redraw = true;
              } else {
@@ -933,7 +937,7 @@ index fc9a4553..55212626 100644
              }
          }
          if matches!(self.active_view, ActiveView::AgentDashboard)
-@@ -5355,7 +5749,10 @@ impl AppView {
+@@ -5355,7 +5750,10 @@ impl AppView {
              }
              let spinner_frame_tick =
                  agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
@@ -945,7 +949,7 @@ index fc9a4553..55212626 100644
              needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
                  && spinner_frame_tick;
              needs_redraw |= matches!(
-@@ -5623,6 +6020,20 @@ impl AppView {
+@@ -5623,6 +6021,20 @@ impl AppView {
          }
          needs_redraw
      }
@@ -966,7 +970,7 @@ index fc9a4553..55212626 100644
      /// Check if animation ticks should be scheduled.
      pub fn needs_animation(&self) -> bool {
          self.tick_demand() != TickDemand::None
-@@ -5637,6 +6048,15 @@ impl AppView {
+@@ -5637,6 +6049,15 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -982,7 +986,7 @@ index fc9a4553..55212626 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5781,9 +6201,94 @@ impl AppView {
+@@ -5781,9 +6202,94 @@ impl AppView {
                      TickDemand::None
                  }
              }
@@ -1005,8 +1009,8 @@ index fc9a4553..55212626 100644
 +                    TickDemand::None
 +                }
 +            }
-+        }
-+    }
+         }
+     }
 +    /// Workshop: whether the welcome hero should advance a frame on the next tick — the user has
 +    /// not turned it off (`[ui] hero_animation = false`), the terminal can show it (colour on, no
 +    /// legacy console), the last paint spun it (wide layout, logo shown) and the terminal is
@@ -1063,8 +1067,8 @@ index fc9a4553..55212626 100644
 +            .and_then(|id| self.agents.get_mut(&id))
 +        {
 +            agent.workshop_turn_activity = Some(activity);
-         }
-     }
++        }
++    }
 +    /// Workshop: the activity after a tool call started or finished.
 +    pub(crate) fn sync_workshop_tool_activity(&mut self) {
 +        let activity = match self.workshop_turn_running.last() {
@@ -1078,7 +1082,7 @@ index fc9a4553..55212626 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6310,9 @@ impl AppView {
+@@ -5805,7 +6311,9 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -1602,7 +1606,7 @@ index 87f63aef..96f1e81d 100644
          let explicit = self.sandbox.as_deref().filter(|s| !s.is_empty());
          Self::resolve_startup_sandbox(explicit, saved.map(String::from))
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
-index 769d63a9..d0345b4e 100644
+index 769d63a9..33dc8cad 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 @@ -10,6 +10,7 @@ use crate::app::agent_view::AgentView;
@@ -1613,7 +1617,7 @@ index 769d63a9..d0345b4e 100644
  
  /// `/logout`: ask the shell to clear auth, then return to the login screen.
  pub(super) fn dispatch_logout(_app: &mut AppView) -> Vec<Effect> {
-@@ -203,22 +204,347 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
+@@ -203,22 +204,401 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
      }
  }
  
@@ -1622,9 +1626,9 @@ index 769d63a9..d0345b4e 100644
 -/// A mid-session invocation therefore stashes the caller's view in `auth_return_view` and switches to `Welcome` so the flow is visible.
 +/// Login. Triggered by pressing 'l' on an auth-pending welcome screen, by `/login` and `/auth`.
 +///
-+/// Workshop: this opens the **Subscriptions** view of the connection picker and never sends an
++/// Workshop: this opens the connection picker on its **Subscriptions** section and never sends an
 +/// `AuthenticateRequest` by itself (gate:no-xai, Gate 2). The inherited interactive session login
-+/// runs only from the picker's labeled optional xAI card (`dispatch_connection_picker` →
++/// runs only from the picker's labeled optional xAI row (`dispatch_connection_picker` →
 +/// `start_optional_xai_login`). A first run never comes here: it activates the OpenCode engine's
 +/// default model directly (`dispatch_workshop_first_run`).
  pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
@@ -1633,16 +1637,17 @@ index 769d63a9..d0345b4e 100644
 -        app.auth_state = AuthState::Pending {
 -            error: Some(no_login_method_error(app)),
 -        };
-+    dispatch_open_connection_picker(app, workshop_auth::PickerTab::Subscriptions)
++    dispatch_open_connection_picker(app, workshop_auth::PickerFocus::Subscriptions)
 +}
 +
-+/// Open the connection picker overlay on `tab` (`/model` → Models, `/auth` → Subscriptions).
-+/// Idempotent while already open. The welcome and agent views paint the overlay themselves (an
-+/// agent keeps its transcript visible around it); any other view stashes itself in
-+/// `auth_return_view` and switches to `Welcome`. Esc restores the caller's view either way.
++/// Open the connection picker overlay with `focus` (`/model` → the active model, `/auth` → the
++/// Subscriptions section). An open picker is moved to the focus instead. The welcome and agent
++/// views paint the overlay themselves (an agent keeps its transcript visible around it); any
++/// other view stashes itself in `auth_return_view` and switches to `Welcome`. Esc restores the
++/// caller's view either way.
 +pub(super) fn dispatch_open_connection_picker(
 +    app: &mut AppView,
-+    tab: workshop_auth::PickerTab,
++    focus: workshop_auth::PickerFocus,
 +) -> Vec<Effect> {
 +    match app.active_view {
 +        ActiveView::Welcome => {}
@@ -1659,14 +1664,14 @@ index 769d63a9..d0345b4e 100644
 +    }
 +    match app.connection_picker.as_mut() {
 +        Some(picker) => {
-+            picker.tab = tab;
++            picker.focus(focus);
 +            vec![]
 +        }
 +        None => {
 +            app.connection_picker = Some(
 +                workshop_auth::PickerState::new()
-+                    .with_tab(tab)
-+                    .with_active(app.workshop_connection.active_row_id()),
++                    .with_active(app.workshop_connection.active_row_id())
++                    .with_focus(focus),
 +            );
 +            // Rows and rails load asynchronously: loopback local-server probe, the cached model
 +            // lists, and the official CLI detection (child processes on the blocking pool). No
@@ -1676,12 +1681,15 @@ index 769d63a9..d0345b4e 100644
 +    }
 +}
 +
-+/// `/model`: the Models view, and — because the user asked for the model lists — a live refresh.
-+/// A freshly opened picker shows its cached rows first; the refresh is queued behind that load
-+/// (`WorkshopPickerLoaded` starts it) so the live rows always land last. A picker that is already
-+/// open refreshes right away.
-+pub(super) fn dispatch_open_models_view(app: &mut AppView) -> Vec<Effect> {
-+    let effects = dispatch_open_connection_picker(app, workshop_auth::PickerTab::Models);
++/// `/model`: the picker on the active model, and — because the user asked for the model lists —
++/// a live refresh. A freshly opened picker shows its cached rows first; the refresh is queued
++/// behind that load (`WorkshopPickerLoaded` starts it) so the live rows always land last. A
++/// picker that is already open refreshes right away.
++pub(super) fn dispatch_open_models_view(
++    app: &mut AppView,
++    focus: workshop_auth::PickerFocus,
++) -> Vec<Effect> {
++    let effects = dispatch_open_connection_picker(app, focus);
 +    let freshly_opened = effects
 +        .iter()
 +        .any(|e| matches!(e, Effect::WorkshopLoadPicker));
@@ -1715,6 +1723,56 @@ index 769d63a9..d0345b4e 100644
 +    crate::app::workshop::save_active_connection(&conn);
 +    app.workshop_connection = conn;
 +    app.workshop_fallback = None;
++}
++
++/// `/effort <level>` on the active OpenCode model: one of the levels its catalog offers, or
++/// `default` for the model's own. The pick is saved like a `/model` pick and the composer label
++/// re-stamped (`Ling 3.0 Flash Fin Free (high)`); no picker, no new session. An empty or unknown
++/// level, or a model without levels, gets one system line in the transcript.
++pub(super) fn dispatch_workshop_set_effort(app: &mut AppView, level: String) -> Vec<Effect> {
++    use crate::app::workshop::WorkshopConnection;
++    let message = match &app.workshop_connection {
++        WorkshopConnection::Engine { model } if !model.variants.is_empty() => {
++            let offered = model.variants.join("|");
++            let current = model
++                .effort
++                .as_deref()
++                .map(|e| format!(" (current: {e})"))
++                .unwrap_or_default();
++            let wanted = level.trim().to_ascii_lowercase();
++            if wanted.is_empty() {
++                Some(format!("Usage: /effort <default|{offered}>{current}"))
++            } else if wanted == "default" || model.variants.contains(&wanted) {
++                let picked = model.with_effort((wanted != "default").then_some(wanted.as_str()));
++                let label = picked.display();
++                set_workshop_connection(app, WorkshopConnection::Engine { model: picked });
++                crate::app::workshop::sync_agent_views(app);
++                app.show_toast(&format!("Model: {label}"));
++                None
++            } else {
++                Some(format!(
++                    "unknown effort level '{wanted}' for {}; use one of: default|{offered}",
++                    model.name
++                ))
++            }
++        }
++        WorkshopConnection::Engine { model } => Some(format!(
++            "{} has no effort levels; /model lists the models that do",
++            model.name
++        )),
++        WorkshopConnection::Adapter { model, .. } => Some(format!(
++            "{} has no effort levels; /model lists the models that do",
++            model.display()
++        )),
++        WorkshopConnection::Shell => None,
++    };
++    if let Some(message) = message
++        && let ActiveView::Agent(id) = app.active_view
++        && let Some(agent) = app.agents.get_mut(&id)
++    {
++        agent.scrollback.push_block(RenderBlock::system(message));
++    }
++    vec![]
 +}
 +
 +/// First run (nothing connected yet): land in the composer with the OpenCode engine's default free
@@ -1923,9 +1981,7 @@ index 769d63a9..d0345b4e 100644
 +        }
 +    }
 +}
- 
--    // Show the auth UI when triggered from inside a session
--    // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
++
 +/// After config.toml gained `[model.<key>]`: reload the shell's model list, authenticate with the
 +/// non-interactive `xai.api_key` method (the anonymous sentinel or a real key counts), and switch
 +/// the active session. Completion arrives as `AuthComplete` / `AuthFailed` for `request_seq`.
@@ -1956,7 +2012,9 @@ index 769d63a9..d0345b4e 100644
 +        session,
 +    }]
 +}
-+
+ 
+-    // Show the auth UI when triggered from inside a session
+-    // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
 +/// The only path to the inherited xAI OIDC flow: the user selected the labeled optional xAI card
 +/// (and confirmed). Sends `grok.com` with `workshop_xai_opt_in`, which the shell requires before it
 +/// attaches the xAI OAuth2 provider when none is configured.
@@ -1972,7 +2030,7 @@ index 769d63a9..d0345b4e 100644
          show_welcome(app);
      }
  
-@@ -240,6 +566,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
+@@ -240,6 +620,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
              method_id,
              use_oauth: app.auth_use_oauth,
              force_interactive: true,
@@ -1980,7 +2038,7 @@ index 769d63a9..d0345b4e 100644
          },
          Effect::PollAuthUrl { request_seq },
      ]
-@@ -263,6 +590,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
+@@ -263,6 +644,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
      app.auth_state = AuthState::Done;
      app.auth_show_raw_url = false;
      app.auth_code_input.reset();
@@ -1989,7 +2047,7 @@ index 769d63a9..d0345b4e 100644
      restore_auth_return_view(app, return_view);
      // This runs on all agents because the login may have been started from the dashboard
      // Clearing the stash alone is not enough
-@@ -314,6 +643,15 @@ pub(super) fn handle_auth_complete(
+@@ -314,6 +697,15 @@ pub(super) fn handle_auth_complete(
          app.welcome_prompt_focused = !app.is_access_blocked();
          app.auth_code_input.reset();
  
@@ -2005,7 +2063,7 @@ index 769d63a9..d0345b4e 100644
          // Mid-session re-auth (`/login` or a 401 prompt): restore the view the user was on instead of running the startup load-session flow
          // The session state lives in `app.agents`, independent of `active_view`, so it is preserved across the auth detour
          if let Some(return_view) = app.auth_return_view.take() {
-@@ -327,6 +665,19 @@ pub(super) fn handle_auth_complete(
+@@ -327,6 +719,19 @@ pub(super) fn handle_auth_complete(
              // Auth is global, so handle every agent (the login may have been started from the dashboard, not the agent that 401'd)
              let mut retry_effects = Vec::new();
              let mut page_flips = Vec::new();
@@ -2106,10 +2164,10 @@ index 42279599..e023ec86 100644
      Some(feedback_send_effect(
          id,
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
-index 89c36b27..ae9d42f9 100644
+index 89c36b27..16836a5b 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
-@@ -1,7 +1,8 @@
+@@ -1,7 +1,9 @@
  //! Top-level action router: maps actions and action results to handlers.
  use super::auth::{
 -    dispatch_cancel_login, dispatch_login, dispatch_logout, dispatch_submit_auth_code,
@@ -2117,20 +2175,22 @@ index 89c36b27..ae9d42f9 100644
 +    dispatch_cancel_login, dispatch_connection_picker, dispatch_login, dispatch_logout,
 +    dispatch_open_connection_picker, dispatch_open_models_view, dispatch_submit_auth_code,
 +    dispatch_switch_account, dispatch_workshop_engine_unavailable, dispatch_workshop_first_run,
++    dispatch_workshop_set_effort,
  };
  use super::billing::dispatch_open_supergrok_url;
  use super::ctx::{
-@@ -1242,6 +1243,22 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
+@@ -1242,6 +1244,23 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
              vec![]
          }
          Action::Login => dispatch_login(app),
 +        // Workshop: an explicit `/model` is the user asking for the live model lists; the hermetic
 +        // doors (`Login`, `/auth`) only show what is cached.
-+        Action::OpenConnectionPicker(workshop_auth::PickerTab::Models) => {
-+            dispatch_open_models_view(app)
++        Action::OpenConnectionPicker(focus @ workshop_auth::PickerFocus::Models { .. }) => {
++            dispatch_open_models_view(app, focus)
 +        }
-+        Action::OpenConnectionPicker(tab) => dispatch_open_connection_picker(app, tab),
++        Action::OpenConnectionPicker(focus) => dispatch_open_connection_picker(app, focus),
 +        Action::ConnectionPicker(input) => dispatch_connection_picker(app, input),
++        Action::WorkshopSetEffort(level) => dispatch_workshop_set_effort(app, level),
 +        Action::WorkshopFirstRun => dispatch_workshop_first_run(app),
 +        Action::WorkshopEngineUnavailable {
 +            agent_id,
@@ -2144,7 +2204,7 @@ index 89c36b27..ae9d42f9 100644
          Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
          Action::CopyAuthUrl => {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
-index b00317f2..e860c02c 100644
+index b00317f2..33c0d5e2 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 @@ -281,7 +281,7 @@ pub(super) fn maybe_show_x11_primary_paste_hint(
@@ -2156,11 +2216,31 @@ index b00317f2..e860c02c 100644
  /// Every other failure (`TextRead`, `TargetInsertion`, `AlreadyReported`) is a real dead end and must keep toasting.
  pub(super) fn wrap_host_image_request_eligible(completion: ClipboardPasteCompletion) -> bool {
      matches!(
-@@ -999,6 +999,123 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -999,6 +999,140 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              }
              vec![]
          }
 +        TaskResult::WorkshopPickerLoaded(snap) => {
++            // The lists just read decide whether the picked model still exists (owner rule: it
++            // sticks unless it is gone). The engine list counts only once it was ever fetched —
++            // the pinned seed row is not evidence; a vendor counts once its probe finished.
++            let engine_known = snap
++                .catalog_status
++                .iter()
++                .find(|s| s.provider_id == workshop_auth::ENGINE_PROVIDER_ID)
++                .is_some_and(|s| s.freshness != workshop_auth::Freshness::Seed);
++            let engine: Vec<workshop_auth::EngineModel> = if engine_known {
++                snap.rows
++                    .iter()
++                    .filter_map(|r| match &r.kind {
++                        workshop_auth::RowKind::Engine(m) => Some(m.clone()),
++                        _ => None,
++                    })
++                    .collect()
++            } else {
++                Vec::new()
++            };
++            let mut effects = crate::app::workshop::apply_retired_pick(app, &engine, &snap.rails);
 +            if let Some(picker) = app.connection_picker.as_mut() {
 +                // The cursor lands on the active connection's row (never xAI, never Zen).
 +                picker.apply_snapshot(snap);
@@ -2169,22 +2249,24 @@ index b00317f2..e860c02c 100644
 +                // live rows (and any `refresh failed` note) always land after the cached ones.
 +                if picker.refresh_pending && !picker.refresh_in_flight {
 +                    picker.refresh_in_flight = true;
-+                    return vec![Effect::WorkshopRefreshCatalogs {
++                    effects.push(Effect::WorkshopRefreshCatalogs {
 +                        force: false,
 +                        engine: app.workshop_engine.clone(),
-+                    }];
++                    });
++                    return effects;
 +                }
 +                // Nothing live is queued (`/auth`, after a sign-in) but a signed-in rail has no
 +                // cached list yet: ask its CLI. That snapshot never comes back `Loading`.
 +                if !picker.refresh_pending
-+                    && picker.rails.iter().any(|r| {
-+                        matches!(r.subscription, workshop_detect::RailModels::Loading)
-+                    })
++                    && picker
++                        .rails
++                        .iter()
++                        .any(|r| matches!(r.subscription, workshop_detect::RailModels::Loading))
 +                {
-+                    return vec![Effect::WorkshopRefreshRailModels];
++                    effects.push(Effect::WorkshopRefreshRailModels);
 +                }
 +            }
-+            vec![]
++            effects
 +        }
 +        TaskResult::WorkshopConnectDone {
 +            provider_id,
@@ -2238,17 +2320,12 @@ index b00317f2..e860c02c 100644
 +        TaskResult::WorkshopLoginTerminalDone { rail, exit } => {
 +            use workshop_detect::process::InteractiveExit;
 +            if let Some(picker) = app.connection_picker.as_mut() {
-+                // Focus returns to the rail list: the detail panel that Connect's Enter opened
-+                // would otherwise hold ↑/↓ until the tab is switched away and back.
-+                picker.detail_open = false;
 +                if exit == InteractiveExit::Interrupted {
-+                    // A sign-in chained onto the one-keypress install: the rail still reads
-+                    // `[Install]` although the CLI is on PATH now, so re-detect (it becomes
-+                    // `[Sign in]`). A cancelled sign-in on an installed CLI changes nothing.
-+                    let just_installed = picker
-+                        .rails
-+                        .iter()
-+                        .any(|r| r.rail == rail && !r.installed);
++                    // A sign-in chained onto the one-keypress install: the row still reads
++                    // `install` although the CLI is on PATH now, so re-detect (it becomes
++                    // `sign in`). A cancelled sign-in on an installed CLI changes nothing.
++                    let just_installed =
++                        picker.rails.iter().any(|r| r.rail == rail && !r.installed);
 +                    if just_installed {
 +                        picker.set_status(format!(
 +                            "{} installed \u{b7} sign-in cancelled (Ctrl+C); re-detecting\u{2026}",
@@ -2280,7 +2357,7 @@ index b00317f2..e860c02c 100644
          TaskResult::ChangelogFetched { markdown, entries } => {
              app.changelog_markdown = markdown;
              app.changelog_bullets =
-@@ -1172,6 +1289,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1172,6 +1306,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              } = &app.auth_state
                  && *current_seq == request_seq
              {
@@ -2292,7 +2369,7 @@ index b00317f2..e860c02c 100644
                  app.auth_state = AuthState::Pending { error: Some(error) };
                  app.auth_code_input.reset();
              }
-@@ -1185,6 +1307,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1185,6 +1324,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
          } => handle_auth_url_ready(app, request_seq, auth_url, external, mode),
          TaskResult::AuthCodeSubmitted { .. } => vec![],
          TaskResult::AuthCancelComplete => vec![],
@@ -2301,7 +2378,7 @@ index b00317f2..e860c02c 100644
              use crate::views::extensions_modal::TabDataState;
              if let Some(agent) = app.agents.get_mut(&agent_id)
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
-index 0cbf3632..94a93b19 100644
+index 0cbf3632..3724147b 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 @@ -394,7 +394,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
@@ -2313,7 +2390,7 @@ index 0cbf3632..94a93b19 100644
      let seq = authenticating_seq(&app);
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -554,34 +554,625 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
+@@ -554,34 +554,656 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
      );
  }
  
@@ -2448,14 +2525,18 @@ index 0cbf3632..94a93b19 100644
 +    );
 +}
 +
-+/// `/model` opens the Models view, `/auth` (and `/login`) the Subscriptions view; while open the
-+/// other command just switches the view. The active engine row is preselected.
++/// `/model` opens the picker on the active model, `/auth` (and `/login`) the same picker on the
++/// Subscriptions section; while open the other command just moves the selection. The active
++/// engine row is preselected.
 +#[test]
-+fn model_and_auth_open_their_views_and_switch_while_open() {
-+    use workshop_auth::{PickerTab, RowKind};
++fn model_and_auth_open_one_picker_and_move_while_open() {
++    use workshop_auth::{PickerFocus, RowKind};
++    let models = || PickerFocus::Models {
++        filter: String::new(),
++    };
 +    let mut app = test_app();
 +    app.workshop_connection = crate::app::workshop::first_run_connection();
-+    let effects = dispatch(Action::OpenConnectionPicker(PickerTab::Models), &mut app);
++    let effects = dispatch(Action::OpenConnectionPicker(models()), &mut app);
 +    // `/model` loads the cached rows at once and, because the user asked for the model lists,
 +    // queues a refresh from their live sources behind that load (cache age respected; `r` forces).
 +    assert!(
@@ -2463,14 +2544,14 @@ index 0cbf3632..94a93b19 100644
 +        "got {effects:?}"
 +    );
 +    let picker = app.connection_picker.as_ref().expect("picker open");
-+    assert_eq!(picker.tab, PickerTab::Models);
++    assert_eq!(picker.title(), "Models");
 +    assert!(
 +        picker.refresh_pending && !picker.refresh_in_flight,
 +        "the overlay says the lists are refreshing; the fetch waits for the cached load"
 +    );
 +    assert!(
 +        picker.selected_row().is_some_and(
-+            |r| matches!(&r.kind, RowKind::Engine(m) if m.is_default) && picker.is_active(r)
++            |r| matches!(&r.kind, RowKind::Engine(m) if m.is_default) && picker.is_active(&r)
 +        ),
 +        "the active engine model is the highlighted row"
 +    );
@@ -2500,7 +2581,7 @@ index 0cbf3632..94a93b19 100644
 +    let picker = app.connection_picker.as_ref().expect("picker open");
 +    assert!(picker.refresh_pending && picker.refresh_in_flight);
 +    assert!(
-+        picker.selected_row().is_some_and(|r| picker.is_active(r)),
++        picker.selected_row().is_some_and(|r| picker.is_active(&r)),
 +        "the cached load keeps the active row highlighted"
 +    );
 +    // A second cached snapshot does not start a second refresh.
@@ -2510,16 +2591,16 @@ index 0cbf3632..94a93b19 100644
 +    );
 +    assert!(effects.is_empty(), "got {effects:?}");
 +    assert!(dispatch(Action::Login, &mut app).is_empty());
-+    assert_eq!(
-+        app.connection_picker.as_ref().unwrap().tab,
-+        PickerTab::Subscriptions
++    let picker = app.connection_picker.as_ref().unwrap();
++    assert_eq!(picker.title(), "Models", "one picker, one title");
++    assert!(
++        picker.selected_row().is_some_and(|r| r.is_vendor()),
++        "/auth lands on the first subscription row"
 +    );
-+    // `/model` on an already open picker: switch the view and refresh right away.
-+    let effects = dispatch(Action::OpenConnectionPicker(PickerTab::Models), &mut app);
-+    assert_eq!(
-+        app.connection_picker.as_ref().unwrap().tab,
-+        PickerTab::Models
-+    );
++    // `/model` on an already open picker: back to the active model and refresh right away.
++    let effects = dispatch(Action::OpenConnectionPicker(models()), &mut app);
++    let picker = app.connection_picker.as_ref().unwrap();
++    assert!(picker.selected_row().is_some_and(|r| picker.is_active(&r)));
 +    assert!(
 +        matches!(
 +            effects.as_slice(),
@@ -2527,6 +2608,15 @@ index 0cbf3632..94a93b19 100644
 +        ),
 +        "got {effects:?}"
 +    );
++    // `/model <text>` opens with the text already in the filter.
++    app.connection_picker = None;
++    dispatch(
++        Action::OpenConnectionPicker(PickerFocus::Models {
++            filter: "pickle".into(),
++        }),
++        &mut app,
++    );
++    assert_eq!(app.connection_picker.as_ref().unwrap().filter, "pickle");
 +}
 +
 +/// Zero egress before the user acts: `Login` (first run's picker path, `l`, `/login`) and `/auth`
@@ -2535,7 +2625,7 @@ index 0cbf3632..94a93b19 100644
 +/// engine list only from an engine that is already up.
 +#[test]
 +fn login_and_auth_never_refresh_catalogs_but_model_and_r_do() {
-+    use workshop_auth::{PickerInput, PickerTab};
++    use workshop_auth::{PickerFocus, PickerInput};
 +    let no_refresh = |effects: &[Effect]| {
 +        !effects
 +            .iter()
@@ -2552,7 +2642,7 @@ index 0cbf3632..94a93b19 100644
 +    assert!(!app.connection_picker.as_ref().unwrap().refresh_pending);
 +    // `/auth` while the picker is open: still nothing.
 +    let effects = dispatch(
-+        Action::OpenConnectionPicker(PickerTab::Subscriptions),
++        Action::OpenConnectionPicker(PickerFocus::Subscriptions),
 +        &mut app,
 +    );
 +    assert!(
@@ -2561,7 +2651,7 @@ index 0cbf3632..94a93b19 100644
 +    );
 +    app.connection_picker = None;
 +    let effects = dispatch(
-+        Action::OpenConnectionPicker(PickerTab::Subscriptions),
++        Action::OpenConnectionPicker(PickerFocus::Subscriptions),
 +        &mut app,
 +    );
 +    assert!(
@@ -2607,7 +2697,7 @@ index 0cbf3632..94a93b19 100644
 +/// a rail that lists its models needs nothing.
 +#[test]
 +fn a_loading_rail_after_a_load_queues_one_rail_models_refresh() {
-+    use workshop_auth::{PickerSnapshot, PickerTab};
++    use workshop_auth::{PickerFocus, PickerSnapshot};
 +    use workshop_detect::{Pill, Rail, RailModels, RailState, SubscriptionModels};
 +    let rails = |state: RailModels| -> Vec<RailState> {
 +        Rail::ALL
@@ -2628,7 +2718,7 @@ index 0cbf3632..94a93b19 100644
 +    };
 +    let mut app = test_app();
 +    dispatch(
-+        Action::OpenConnectionPicker(PickerTab::Subscriptions),
++        Action::OpenConnectionPicker(PickerFocus::Subscriptions),
 +        &mut app,
 +    );
 +    let effects = dispatch(loaded(RailModels::Loading), &mut app);
@@ -2656,7 +2746,7 @@ index 0cbf3632..94a93b19 100644
 +        "a failed rail waits for the user"
 +    );
 +    // Enter on it ("Couldn't load models — press Enter to retry") asks the CLIs again, and only
-+    // them: no hosted-list refresh.
++    // them: no hosted-list refresh. (`/auth` left the selection on the Claude row.)
 +    let effects = dispatch(
 +        Action::ConnectionPicker(workshop_auth::PickerInput::Enter),
 +        &mut app,
@@ -2668,7 +2758,12 @@ index 0cbf3632..94a93b19 100644
 +
 +    // `/model`: the queued live refresh asks the CLIs itself; no second probe.
 +    app.connection_picker = None;
-+    dispatch(Action::OpenConnectionPicker(PickerTab::Models), &mut app);
++    dispatch(
++        Action::OpenConnectionPicker(PickerFocus::Models {
++            filter: String::new(),
++        }),
++        &mut app,
++    );
 +    let effects = dispatch(loaded(RailModels::Loading), &mut app);
 +    assert!(
 +        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs { .. }]),
@@ -2773,20 +2868,22 @@ index 0cbf3632..94a93b19 100644
 +    );
 +}
 +
-+/// Enter on a non-xAI card (Local, OpenAI, …) opens setup details and never emits `Authenticate`.
++/// Enter on a non-xAI row (a model, a vendor, `API keys`, a connect row) opens a sub-menu or
++/// setup details and never emits `Authenticate`.
 +#[test]
 +fn picker_non_xai_cards_never_authenticate() {
 +    use workshop_auth::{PickerInput, XAI_ROW_ID};
 +    let mut app = test_app();
 +    dispatch(Action::Login, &mut app);
-+    let n = app.connection_picker.as_ref().unwrap().rows.len();
++    let n = app.connection_picker.as_ref().unwrap().visible_rows().len();
 +    for i in 0..n {
-+        let id = app.connection_picker.as_ref().unwrap().rows[i].id();
++        let picker = app.connection_picker.as_mut().unwrap();
++        picker.submenu = None;
++        picker.selected = i;
++        let id = picker.selected_row().map(|r| r.id()).unwrap_or_default();
 +        if id == XAI_ROW_ID {
 +            continue;
 +        }
-+        app.connection_picker.as_mut().unwrap().models_selected = i;
-+        app.connection_picker.as_mut().unwrap().detail_open = false;
 +        let effects = dispatch(Action::ConnectionPicker(PickerInput::Enter), &mut app);
 +        assert!(
 +            !effects
@@ -2794,12 +2891,18 @@ index 0cbf3632..94a93b19 100644
 +                .any(|e| matches!(e, Effect::Authenticate { .. })),
 +            "{id}: Enter must not authenticate"
 +        );
-+        assert!(
-+            !matches!(app.auth_state, AuthState::Authenticating { .. }),
-+            "{id}: no flow started"
-+        );
++        // Picking a model activates it in-process (`WorkshopActivateModel`, the anonymous
++        // session); that is the only thing allowed to leave `Authenticating` behind.
++        if matches!(app.auth_state, AuthState::Authenticating { .. }) {
++            assert!(
++                effects
++                    .iter()
++                    .any(|e| matches!(e, Effect::WorkshopActivateModel { .. })),
++                "{id}: only a model activation may be in flight, got {effects:?}"
++            );
++            app.auth_state = AuthState::Done;
++        }
 +        if app.connection_picker.is_none() {
-+            // "Add a connection later" closes the picker; reopen for the next card.
 +            dispatch(Action::Login, &mut app);
 +        }
 +    }
@@ -2835,7 +2938,7 @@ index 0cbf3632..94a93b19 100644
 +    );
 +}
 +
-+/// Picker on the Subscriptions view (`/auth`) with every rail signed out (Connect shown), Claude
++/// Picker opened by `/auth` with every vendor installed and signed out (Connect shown), Claude
 +/// selected.
 +fn picker_with_signed_out_rails(app: &mut AppView) {
 +    use workshop_auth::PickerSnapshot;
@@ -2843,7 +2946,7 @@ index 0cbf3632..94a93b19 100644
 +    dispatch(Action::Login, app);
 +    let picker = app.connection_picker.as_mut().unwrap();
 +    let mut rows = picker.rows.clone();
-+    rows.extend(picker.auth_rows.clone());
++    rows.extend(picker.connect_rows.clone());
 +    picker.apply_snapshot(PickerSnapshot {
 +        rows,
 +        rails: Rail::ALL
@@ -2857,26 +2960,36 @@ index 0cbf3632..94a93b19 100644
 +            .collect(),
 +        ..PickerSnapshot::default()
 +    });
++    let picker = app.connection_picker.as_ref().unwrap();
++    assert_eq!(picker.title(), "Models");
 +    assert_eq!(
-+        app.connection_picker.as_ref().unwrap().tab,
-+        workshop_auth::PickerTab::Subscriptions
++        picker.selected_row().map(|r| r.title()),
++        Some("Claude".into()),
++        "/auth lands on the Claude row"
 +    );
-+    assert_eq!(app.connection_picker.as_ref().unwrap().rail_selected, 0);
 +}
 +
-+/// The state Connect's Enter leaves behind (`PickerOutcome::RailConnect`): the rail detail is open
-+/// and the vendor login is queued for the event loop. Set directly so the test never probes this
-+/// machine's PATH for a real CLI (`rail_login_argv` does).
++/// The state Connect's Enter leaves behind (`PickerOutcome::RailConnect`): the vendor login is
++/// queued for the event loop. Set directly so the test never probes this machine's PATH for a
++/// real CLI (`rail_login_argv` does).
 +fn queue_rail_connect(app: &mut AppView) -> workshop_detect::Rail {
-+    let picker = app.connection_picker.as_mut().unwrap();
-+    picker.detail_open = true;
-+    let rail = picker.selected_rail().unwrap().rail;
++    let picker = app.connection_picker.as_ref().unwrap();
++    let Some(workshop_auth::RowKind::Vendor(rail)) = picker.selected_row().map(|r| r.kind) else {
++        panic!("a vendor row is selected");
++    };
 +    app.pending_workshop_login = Some((rail, vec!["claude".into(), "auth".into(), "login".into()]));
 +    rail
 +}
 +
-+/// After the vendor login returns, ↑/↓ move between rails again: Connect's Enter opened the rail
-+/// detail, and the login completion hands focus back to the rail list (no Tab away and back).
++fn selected_title(app: &AppView) -> Option<String> {
++    app.connection_picker
++        .as_ref()
++        .and_then(|p| p.selected_row())
++        .map(|r| r.title())
++}
++
++/// After the vendor login returns, ↑/↓ move between the vendor rows again and the picker
++/// re-probes them.
 +#[test]
 +fn picker_rail_login_done_restores_rail_navigation() {
 +    use workshop_auth::PickerInput;
@@ -2884,9 +2997,6 @@ index 0cbf3632..94a93b19 100644
 +    let mut app = test_app();
 +    picker_with_signed_out_rails(&mut app);
 +    let rail = queue_rail_connect(&mut app);
-+    // Before the fix: Down on an open rail detail without models is a no-op.
-+    dispatch(Action::ConnectionPicker(PickerInput::Down), &mut app);
-+    assert_eq!(app.connection_picker.as_ref().unwrap().rail_selected, 0);
 +    app.pending_workshop_login.take();
 +
 +    let effects = dispatch(
@@ -2902,19 +3012,17 @@ index 0cbf3632..94a93b19 100644
 +            .any(|e| matches!(e, Effect::WorkshopLoadPicker)),
 +        "a finished login re-probes the rails, got {effects:?}"
 +    );
-+    let picker = app.connection_picker.as_ref().unwrap();
-+    assert!(!picker.detail_open, "focus is back on the rail list");
-+    assert_eq!(picker.rail_selected, 0);
++    assert_eq!(selected_title(&app).as_deref(), Some("Claude"));
 +    dispatch(Action::ConnectionPicker(PickerInput::Down), &mut app);
 +    assert_eq!(
-+        app.connection_picker.as_ref().unwrap().rail_selected,
-+        1,
-+        "Down moves to the next rail right after the login returns"
++        selected_title(&app).as_deref(),
++        Some("Codex"),
++        "Down moves to the next vendor right after the login returns"
 +    );
 +}
 +
 +/// Ctrl+C in the terminal ends the vendor login only: the picker reports the cancellation, keeps
-+/// the rails as they were (no re-probe) and is navigable again.
++/// the vendor rows as they were (no re-probe) and is navigable again.
 +#[test]
 +fn picker_rail_login_interrupted_reports_cancel_without_reprobe() {
 +    use workshop_auth::PickerInput;
@@ -2944,13 +3052,13 @@ index 0cbf3632..94a93b19 100644
 +        "status: {:?}",
 +        picker.status
 +    );
-+    assert!(!picker.loading && !picker.detail_open);
++    assert!(!picker.loading);
 +    dispatch(Action::ConnectionPicker(PickerInput::Down), &mut app);
-+    assert_eq!(app.connection_picker.as_ref().unwrap().rail_selected, 1);
++    assert_eq!(selected_title(&app).as_deref(), Some("Codex"));
  }
  
  /// Puts the app in `Authenticating` with a live task's abort handle installed, as the event loop would.
-@@ -591,7 +1182,7 @@ fn install_live_auth_task(
+@@ -591,7 +1213,7 @@ fn install_live_auth_task(
      app: &mut AppView,
      rt: &tokio::runtime::Runtime,
  ) -> (tokio::task::JoinHandle<()>, u64) {
@@ -2959,7 +3067,7 @@ index 0cbf3632..94a93b19 100644
      let task = rt.spawn(std::future::pending::<()>());
      match &mut app.auth_state {
          AuthState::Authenticating {
-@@ -621,7 +1212,7 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -621,7 +1243,7 @@ fn login_while_authenticating_aborts_prior_task() {
      let mut app = test_app_with_agent();
      let (prior_task, first_seq) = install_live_auth_task(&mut app, &rt);
  
@@ -2968,7 +3076,7 @@ index 0cbf3632..94a93b19 100644
  
      rt.block_on(async {
          assert!(
-@@ -651,12 +1242,12 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -651,12 +1273,12 @@ fn login_while_authenticating_aborts_prior_task() {
  #[test]
  fn stale_auth_complete_after_relogin_is_ignored() {
      let mut app = test_app_with_agent();
@@ -2983,7 +3091,7 @@ index 0cbf3632..94a93b19 100644
  
      dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -722,7 +1313,7 @@ fn cancel_login_aborts_prior_task() {
+@@ -722,7 +1344,7 @@ fn cancel_login_aborts_prior_task() {
  #[test]
  fn cancel_login_restores_view() {
      let mut app = test_app_with_agent();
@@ -2993,7 +3101,7 @@ index 0cbf3632..94a93b19 100644
      let prior_seq = match &app.auth_state {
          AuthState::Authenticating { request_seq, .. } => *request_seq,
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs
-index 2049a2d9..3ec2aebf 100644
+index 2049a2d9..c620a71c 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs
 @@ -1048,7 +1048,7 @@ fn auth_complete_retries_stashed_prompt_from_dashboard() {
@@ -3005,8 +3113,32 @@ index 2049a2d9..3ec2aebf 100644
      let seq = authenticating_seq(&app);
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
+@@ -3044,9 +3044,21 @@ fn dashboard_slash_restricted_command_upsells_via_toast() {
+ #[test]
+ fn dashboard_slash_command_error_gets_error_glyph_prefix() {
+     let mut app = test_app();
+-    seed_model(&mut app, "grok-4.5", "Grok 4.5");
++    // A reasoning model: `/model <it> <unknown level>` is still a command error (`/model
++    // <unknown name>` opens the Workshop picker filtered instead).
++    let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
++    let mut meta = serde_json::Map::new();
++    meta.insert(
++        "supportsReasoningEffort".into(),
++        serde_json::Value::Bool(true),
++    );
++    app.models.available.insert(
++        model_id.clone(),
++        acp::ModelInfo::new(model_id, "Grok 4.5".to_string()).meta(Some(meta)),
++    );
+     open_dashboard(&mut app);
+-    let effects = dispatch_dashboard_dispatch_slash(&mut app, "/model nonexistent".into());
++    let effects =
++        dispatch_dashboard_dispatch_slash(&mut app, "/model Grok 4.5 nonexistent".into());
+     assert!(effects.is_empty(), "a failed command must not dispatch");
+     assert!(app.agents.is_empty(), "no session should be created");
+     let toast = app
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-index bf64193d..43241008 100644
+index bf64193d..762f3b70 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 @@ -181,6 +181,35 @@ fn test_app() -> AppView {
@@ -3078,23 +3210,26 @@ index bf64193d..43241008 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -585,6 +621,25 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
+@@ -585,6 +621,28 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
      std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
      sess_dir
  }
-+/// Workshop: `Action::Login` opens the connection picker (Subscriptions view) and never sends
-+/// `Authenticate` by itself. The inherited interactive flow these tests exercise starts only from
-+/// the picker's labeled optional xAI card — the last Subscriptions entry, two explicit Enters — so
-+/// drive the picker there.
++/// Workshop: `Action::Login` opens the connection picker (on its Subscriptions section) and never
++/// sends `Authenticate` by itself. The inherited interactive flow these tests exercise starts only
++/// from the picker's labeled optional xAI row — the last row, two explicit Enters — so drive the
++/// picker there.
 +pub(super) fn start_login_flow(app: &mut AppView) -> Vec<Effect> {
-+    use workshop_auth::{PickerInput, PickerTab};
++    use workshop_auth::PickerInput;
 +    dispatch(Action::Login, app);
 +    let picker = app
 +        .connection_picker
 +        .as_ref()
 +        .expect("Login must open the connection picker");
-+    assert_eq!(picker.tab, PickerTab::Subscriptions);
-+    let entries = picker.subscriptions_len();
++    assert!(
++        picker.selected_row().is_some_and(|r| r.is_vendor()),
++        "/auth lands on the Subscriptions section"
++    );
++    let entries = picker.visible_rows().len();
 +    for _ in 0..entries {
 +        dispatch(Action::ConnectionPicker(PickerInput::Down), app);
 +    }
@@ -3424,7 +3559,7 @@ index 1c507697..89312ddd 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..bbe610ea 100644
+index eda61b3c..d34c3802 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -3806,7 +3941,7 @@ index eda61b3c..bbe610ea 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4110,599 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4110,618 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -3823,10 +3958,28 @@ index eda61b3c..bbe610ea 100644
 +    use crate::scrollback::block::RenderBlock;
 +    use crate::scrollback::blocks::SessionEvent;
 +
-+    // The engine warm-up reports before any turn (and any agent) exists.
++    // The engine warm-up reports before any turn (and any agent) exists. Its start refreshed the
++    // live catalog: a picked model OpenCode no longer offers is routed to the default right here,
++    // with one plain line, before the first message.
 +    if let M::EngineWarm { engine } = msg {
 +        app.workshop_engine = Some(engine);
-+        return (false, vec![]);
++        let effects = crate::app::workshop::apply_retired_pick(
++            app,
++            &crate::app::workshop::cached_engine_models(),
++            &[],
++        );
++        return (!effects.is_empty(), effects);
++    }
++    // A turn found its picked model gone from the live catalog and runs on the default instead.
++    if let M::ModelRetired {
++        retired,
++        replacement,
++    } = msg
++    {
++        let line = crate::app::workshop::retired_line(&retired, &replacement.display());
++        let conn = crate::app::workshop::WorkshopConnection::Engine { model: replacement };
++        let effects = crate::app::workshop::apply_fallback(app, conn, line);
++        return (true, effects);
 +    }
 +    // `sudo` in one of the engine's commands wants the user's password: one masked prompt,
 +    // titled with the command that is running (the turn's shell tool) or sudo's own words.
@@ -3924,7 +4077,8 @@ index eda61b3c..bbe610ea 100644
 +        return (true, vec![]);
 +    }
 +    let redraw = match msg {
-+        M::EngineWarm { .. } => false,
++        // Both are handled before the turn's agent is looked up.
++        M::EngineWarm { .. } | M::ModelRetired { .. } => false,
 +        M::Progress(text) => {
 +            // The bring-up's phase for the turn-status row: the plain wait for the model, or the
 +            // first-time download as a described step (`First-time setup, 12 MB downloaded…`,
@@ -4586,10 +4740,10 @@ index 60fe34f9..ee4df3e7 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..1994dd4f
+index 00000000..1ad53fe8
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,3025 @@
+@@ -0,0 +1,3344 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -4621,9 +4775,10 @@ index 00000000..1994dd4f
 +use crate::app::workshop_engine_state::{self as state, EngineState};
 +use workshop_adapters::supervisor::{RunHandle, SupervisorOptions, spawn};
 +use workshop_adapters::{
-+    AdapterEvent, AdapterId, AskReply, DetectOptions, Detection, PermissionPolicy, Replier,
-+    RunRequest, Usage, detect, question_answers_prompt,
++    AdapterEvent, AdapterId, AskReply, Detection, PermissionPolicy, Replier, RunRequest, Usage,
++    detect, question_answers_prompt,
 +};
++use workshop_detect::DetectConfig;
 +use workshop_auth::{ENGINE_PROVIDER_ID, EngineModel, PickerSnapshot, models_rows};
 +use workshop_providers::catalog::live::{self as live_catalogs, HostedCatalogs};
 +use workshop_providers::{
@@ -4695,12 +4850,14 @@ index 00000000..1994dd4f
 +            ),
 +        }
 +    }
-+    /// Picker row id of the active connection (Engine rows only; rails are not Models rows and a
-+    /// Shell connection is the shell's own default model).
++    /// Picker row id of the active connection: the OpenCode model (at its picked level) or the
++    /// subscription model, so the picker marks it and its vendor; `None` for a Shell connection
++    /// (the shell's own default model).
 +    pub fn active_row_id(&self) -> Option<String> {
 +        match self {
 +            Self::Engine { model } => Some(model.row_id()),
-+            Self::Shell | Self::Adapter { .. } => None,
++            Self::Adapter { rail, model } => Some(workshop_auth::rail_model_row_id(*rail, model)),
++            Self::Shell => None,
 +        }
 +    }
 +}
@@ -5414,6 +5571,12 @@ index 00000000..1994dd4f
 +    EngineDefaultResolved {
 +        model: EngineModel,
 +    },
++    /// The picked OpenCode model is gone from the live catalog: the turn runs on `replacement`
++    /// (OpenCode's default) and the connection follows, with one plain line saying so.
++    ModelRetired {
++        retired: String,
++        replacement: EngineModel,
++    },
 +    Delta(String),
 +    /// A chunk of the model's reasoning: rendered as the pager's collapsed thinking block, never
 +    /// as part of the answer.
@@ -6087,7 +6250,7 @@ index 00000000..1994dd4f
 +        })),
 +        ..InstallOptions::default()
 +    };
-+    let detect_opts = DetectOptions::default();
++    let detect_opts = DetectConfig::default();
 +    let run_installer = |st: &mut EngineState, log: &Path| {
 +        st.last_phase = Some("install".into());
 +        st.save(&home);
@@ -6324,6 +6487,136 @@ index 00000000..1994dd4f
 +        })
 +}
 +
++/// How long the home screen keeps the "no longer offered" line over the composer.
++pub const RETIRED_NOTICE_FOR: Duration = Duration::from_secs(45);
++
++/// The plain line for a pick that is gone: `<gone> is no longer offered — using <replacement>`.
++pub fn retired_line(gone: &str, replacement: &str) -> String {
++    format!("{gone} is no longer offered \u{2014} using {replacement}")
++}
++
++/// The picked model sticks — unless it no longer exists (owner rule). `engine` is the live OpenCode
++/// catalog (empty while none was ever read: no verdict on an OpenCode pick); `rails` are the
++/// probed vendors (a vendor still detecting, or whose list has not come: no verdict). Returns the
++/// connection to route to and the one plain line that says so:
++///
++/// * an OpenCode model gone from the free list → OpenCode's default (`Muse Spark 1.3 Free is no
++///   longer offered — using Big Pickle`);
++/// * a vendor model gone from its signed-in vendor's list → that vendor's default (the first the
++///   CLI lists), or OpenCode's default when the CLI lists nothing;
++/// * a vendor that is signed out or whose CLI is gone → OpenCode's default (`Claude is signed out
++///   — using Big Pickle`).
++pub fn retired_pick(
++    conn: &WorkshopConnection,
++    engine: &[EngineModel],
++    rails: &[workshop_detect::RailState],
++) -> Option<(WorkshopConnection, String)> {
++    let engine_default = || live_engine_default(engine).unwrap_or_else(EngineModel::big_pickle_seed);
++    match conn {
++        WorkshopConnection::Shell => None,
++        WorkshopConnection::Engine { model } => {
++            if engine.is_empty() || engine.iter().any(|m| m.model_ref == model.model_ref) {
++                return None;
++            }
++            let replacement = engine_default();
++            let line = retired_line(&model.display(), &replacement.display());
++            Some((WorkshopConnection::Engine { model: replacement }, line))
++        }
++        WorkshopConnection::Adapter { rail, model } => {
++            let state = rails.iter().find(|r| r.rail == *rail)?;
++            if state.pill == workshop_detect::Pill::Detecting {
++                return None;
++            }
++            let to_engine = |why: String| {
++                let replacement = engine_default();
++                let line = format!("{why} \u{2014} using {}", replacement.display());
++                Some((WorkshopConnection::Engine { model: replacement }, line))
++            };
++            if !state.installed {
++                return to_engine(format!(
++                    "{} is not installed",
++                    rail.vendor().display_name()
++                ));
++            }
++            if !state.is_ready() {
++                return to_engine(format!("{} is signed out", rail.display_name()));
++            }
++            if !matches!(state.subscription, workshop_detect::RailModels::Listed { .. }) {
++                return None;
++            }
++            if state.models.iter().any(|m| m.key() == model.key()) {
++                return None;
++            }
++            match state.models.first() {
++                Some(default) => Some((
++                    WorkshopConnection::Adapter {
++                        rail: *rail,
++                        model: default.clone(),
++                    },
++                    retired_line(model.display(), default.display()),
++                )),
++                None => {
++                    let replacement = engine_default();
++                    let line = retired_line(model.display(), &replacement.display());
++                    Some((WorkshopConnection::Engine { model: replacement }, line))
++                }
++            }
++        }
++    }
++}
++
++/// Route to `conn` because the picked model is gone (see [`retired_pick`]): save it, re-stamp the
++/// composer, rename the shell's placeholder entry, and say `line` once — a system line in the
++/// open session, a toast on the home screen. Never an error, never a picker.
++pub fn apply_fallback(
++    app: &mut crate::app::app_view::AppView,
++    conn: WorkshopConnection,
++    line: String,
++) -> Vec<crate::app::actions::Effect> {
++    use crate::app::app_view::ActiveView;
++    use crate::scrollback::block::RenderBlock;
++    save_active_connection(&conn);
++    app.workshop_connection = conn;
++    app.workshop_fallback = None;
++    sync_agent_views(app);
++    if let Some(picker) = app.connection_picker.as_mut() {
++        picker.active_id = app.workshop_connection.active_row_id();
++    }
++    tracing::info!(%line, "workshop: picked model gone, routed to the default");
++    match app.active_view {
++        ActiveView::Agent(id) if app.agents.contains_key(&id) => {
++            if let Some(agent) = app.agents.get_mut(&id) {
++                agent.scrollback.push_block(RenderBlock::system(line));
++            }
++        }
++        // The home screen has no transcript: the line sits over the composer long enough to be
++        // read (the composer's label already names the model it now runs on).
++        ActiveView::Welcome => {
++            app.welcome_toast = Some((
++                crate::glyphs::sanitize_toast_message(&line).into_owned(),
++                std::time::Instant::now() + RETIRED_NOTICE_FOR,
++            ));
++        }
++        _ => app.show_toast(&line),
++    }
++    if activate_placeholder_session(&app.workshop_connection).is_ok() {
++        return vec![crate::app::actions::Effect::WorkshopReloadModels];
++    }
++    Vec::new()
++}
++
++/// [`retired_pick`] against the live lists, applied ([`apply_fallback`]) when the pick is gone.
++pub fn apply_retired_pick(
++    app: &mut crate::app::app_view::AppView,
++    engine: &[EngineModel],
++    rails: &[workshop_detect::RailState],
++) -> Vec<crate::app::actions::Effect> {
++    match retired_pick(&app.workshop_connection, engine, rails) {
++        Some((conn, line)) => apply_fallback(app, conn, line),
++        None => Vec::new(),
++    }
++}
++
 +/// What a silent continuation needs to prompt the same engine conversation again.
 +struct EngineFollowUp {
 +    engine: Arc<OpenCodeEngine>,
@@ -6554,6 +6847,20 @@ index 00000000..1994dd4f
 +            let engine = acquire_engine(slot, &spec.cwd, tx, tx)
 +                .await
 +                .map_err(TurnStartError::EngineUnavailable)?;
++            // A picked model that OpenCode no longer offers: the turn runs on OpenCode's default
++            // and the connection follows, with one plain line (owner rule: the pick sticks
++            // unless it is gone).
++            let live_catalog = cached_engine_models();
++            if !live_catalog.is_empty()
++                && !live_catalog.iter().any(|m| m.model_ref == model.model_ref)
++                && let Some(replacement) = live_engine_default(&live_catalog)
++            {
++                let _ = tx.send(WorkshopTurnMsg::ModelRetired {
++                    retired: model.display(),
++                    replacement: replacement.clone(),
++                });
++                model = replacement;
++            }
 +            // The default engine model is whichever model OpenCode's live catalog (read at
 +            // every engine start) marks as default; the pinned seed only stands in while that
 +            // catalog is unreachable.
@@ -6710,7 +7017,7 @@ index 00000000..1994dd4f
 +    {
 +        return Detection::Installed(verified.cli);
 +    }
-+    let detection = detect(adapter, &DetectOptions::default()).await;
++    let detection = detect(adapter, &DetectConfig::default()).await;
 +    if let Detection::Installed(cli) = &detection
 +        && let Ok(mut cache) = ADAPTER_CLI_CACHE.lock()
 +    {
@@ -7273,14 +7580,10 @@ index 00000000..1994dd4f
 +    }
 +}
 +
-+/// Map a subscription rail to its `workshop-adapters` CLI adapter id.
++/// Map a subscription rail to its CLI adapter id: the adapters share the detection stack's
++/// vendor identity, so a rail's vendor *is* its adapter.
 +pub fn rail_adapter_id(rail: workshop_detect::Rail) -> AdapterId {
-+    match rail.vendor() {
-+        workshop_detect::Vendor::Claude => AdapterId::Claude,
-+        workshop_detect::Vendor::Codex => AdapterId::Codex,
-+        workshop_detect::Vendor::Cursor => AdapterId::Cursor,
-+        workshop_detect::Vendor::OpenCode => AdapterId::OpenCode,
-+    }
++    rail.vendor()
 +}
 +
 +/// A vendor CLI installer the user started from an `Install` rail, while it runs: one at a time,
@@ -7400,9 +7703,9 @@ index 00000000..1994dd4f
 +#[cfg(test)]
 +mod tests {
 +    use super::{
-+        announces_unfinished_action, asks_to_write_files, claims_cannot_see_images,
-+        downloads_images, ends_with_code_block, engine_question_answers, engine_questions,
-+        vision_model,
++        EngineModel, WorkshopConnection, announces_unfinished_action, asks_to_write_files,
++        claims_cannot_see_images, downloads_images, ends_with_code_block,
++        engine_question_answers, engine_questions, retired_pick, vision_model,
 +    };
 +
 +    #[test]
@@ -7614,6 +7917,176 @@ index 00000000..1994dd4f
 +            assert!(!announces_unfinished_action(tail), "{tail:?}");
 +        }
 +    }
++
++    fn engine_model(name: &str, model_ref: &str, is_default: bool) -> EngineModel {
++        EngineModel {
++            model_ref: model_ref.into(),
++            name: name.into(),
++            is_default,
++            tool_call: true,
++            context_limit: None,
++            variants: Vec::new(),
++            effort: None,
++            image_input: false,
++        }
++    }
++
++    fn live_catalog() -> Vec<EngineModel> {
++        vec![
++            engine_model("Big Pickle", "opencode/big-pickle", true),
++            engine_model("MiMo Free", "opencode/mimo", false),
++        ]
++    }
++
++    fn rail(
++        rail: workshop_detect::Rail,
++        installed: bool,
++        ready: bool,
++        models: &[&str],
++    ) -> workshop_detect::RailState {
++        use workshop_detect::{Pill, RailModels, RailState, SubscriptionModel, SubscriptionModels};
++        let refs: Vec<workshop_detect::ModelRef> = models
++            .iter()
++            .map(|m| workshop_detect::ModelRef::new(rail.provider_id(), *m).with_display_name(*m))
++            .collect();
++        RailState {
++            rail,
++            pill: if ready {
++                Pill::Ready
++            } else if installed {
++                Pill::SignIn
++            } else {
++                Pill::Install
++            },
++            installed,
++            models: refs.clone(),
++            empty_copy: None,
++            show_connect: !ready,
++            subscription: if ready {
++                RailModels::Listed {
++                    list: SubscriptionModels {
++                        rail,
++                        models: models
++                            .iter()
++                            .map(|m| SubscriptionModel {
++                                id: (*m).into(),
++                                label: (*m).into(),
++                                is_default: false,
++                            })
++                            .collect(),
++                        account: None,
++                        documented_aliases: false,
++                        fetched_at_secs: 0,
++                    },
++                    cached: false,
++                    error: None,
++                }
++            } else {
++                RailModels::NotReady
++            },
++        }
++    }
++
++    /// The pick sticks while its model is listed, whatever else the lists say.
++    #[test]
++    fn a_listed_pick_sticks() {
++        let picked = WorkshopConnection::Engine {
++            model: engine_model("MiMo Free", "opencode/mimo", false),
++        };
++        assert_eq!(retired_pick(&picked, &live_catalog(), &[]), None);
++        assert_eq!(
++            retired_pick(&picked, &[], &[]),
++            None,
++            "no catalog was ever read: no verdict"
++        );
++        let claude = workshop_detect::Rail::Claude;
++        let sonnet = workshop_detect::ModelRef::new("anthropic", "sonnet").with_display_name("Sonnet");
++        let adapter = WorkshopConnection::Adapter {
++            rail: claude,
++            model: sonnet,
++        };
++        let rails = [rail(claude, true, true, &["default", "sonnet"])];
++        assert_eq!(retired_pick(&adapter, &live_catalog(), &rails), None);
++        assert_eq!(
++            retired_pick(&adapter, &live_catalog(), &[]),
++            None,
++            "the vendor was not probed: no verdict"
++        );
++        let mut detecting = workshop_detect::RailState::detecting(claude);
++        detecting.installed = true;
++        assert_eq!(
++            retired_pick(&adapter, &live_catalog(), &[detecting]),
++            None,
++            "still detecting: no verdict"
++        );
++        assert_eq!(retired_pick(&WorkshopConnection::Shell, &live_catalog(), &rails), None);
++    }
++
++    /// An OpenCode model gone from the free list routes to OpenCode's default with the plain line.
++    #[test]
++    fn a_retired_opencode_model_falls_back_to_the_default() {
++        let mut muse = engine_model("Muse Spark 1.3 Free", "opencode/muse-spark-1.3", false);
++        muse.effort = Some("high".into());
++        let picked = WorkshopConnection::Engine { model: muse };
++        let (conn, line) = retired_pick(&picked, &live_catalog(), &[]).expect("gone");
++        assert_eq!(
++            conn,
++            WorkshopConnection::Engine {
++                model: live_catalog()[0].clone()
++            }
++        );
++        assert_eq!(
++            line,
++            "Muse Spark 1.3 Free (high) is no longer offered \u{2014} using Big Pickle"
++        );
++        for word in ["error", "fail", "retired", "picker", "/model"] {
++            assert!(!line.to_ascii_lowercase().contains(word), "{line}");
++        }
++    }
++
++    /// A vendor model gone from its signed-in vendor's list routes to that vendor's default (the
++    /// first the CLI lists); a vendor that lists nothing, is signed out or has no CLI routes to
++    /// OpenCode's default.
++    #[test]
++    fn a_retired_vendor_model_falls_back_to_the_vendors_default_or_big_pickle() {
++        let claude = workshop_detect::Rail::Claude;
++        let sonnet = workshop_detect::ModelRef::new("anthropic", "sonnet").with_display_name("Sonnet");
++        let picked = WorkshopConnection::Adapter {
++            rail: claude,
++            model: sonnet,
++        };
++        let rails = [rail(claude, true, true, &["Default (recommended)", "opus"])];
++        let (conn, line) = retired_pick(&picked, &live_catalog(), &rails).expect("gone");
++        assert!(
++            matches!(&conn, WorkshopConnection::Adapter { rail, model } if *rail == claude && model.display() == "Default (recommended)"),
++            "{conn:?}"
++        );
++        assert_eq!(
++            line,
++            "Sonnet is no longer offered \u{2014} using Default (recommended)"
++        );
++
++        let empty = [rail(claude, true, true, &[])];
++        let (conn, line) = retired_pick(&picked, &live_catalog(), &empty).expect("gone");
++        assert!(conn.is_engine(), "{conn:?}");
++        assert_eq!(line, "Sonnet is no longer offered \u{2014} using Big Pickle");
++
++        let signed_out = [rail(claude, true, false, &[])];
++        let (conn, line) = retired_pick(&picked, &live_catalog(), &signed_out).expect("gone");
++        assert!(conn.is_engine(), "{conn:?}");
++        assert_eq!(line, "Claude is signed out \u{2014} using Big Pickle");
++
++        let uninstalled = [rail(claude, false, false, &[])];
++        let (conn, line) = retired_pick(&picked, &[], &uninstalled).expect("gone");
++        assert_eq!(
++            conn,
++            WorkshopConnection::Engine {
++                model: EngineModel::big_pickle_seed()
++            },
++            "no catalog read yet: the pinned seed stands in"
++        );
++        assert_eq!(line, "Claude Code is not installed \u{2014} using Big Pickle");
++    }
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_update.rs b/crates/codegen/xai-grok-pager/src/app/workshop_update.rs
 new file mode 100644
@@ -7727,14 +8200,15 @@ index 0fa73e17..9f0a99de 100644
  }
 diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/auth.rs b/crates/codegen/xai-grok-pager/src/slash/commands/auth.rs
 new file mode 100644
-index 00000000..f01744b8
+index 00000000..00eef3af
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/slash/commands/auth.rs
-@@ -0,0 +1,23 @@
-+//! Workshop overlay: `/auth` opens the Subscriptions view (`/models` is an alias of `/model`).
+@@ -0,0 +1,24 @@
++//! Workshop overlay: `/auth` opens the connection picker on its Subscriptions section (the same
++//! list `/model` opens; `/models` is an alias of `/model`).
 +//!
 +//! Neither command starts a login. The picker overlay is the only default auth surface; the
-+//! optional xAI card inside it is the single path to the inherited xAI OIDC flow.
++//! optional xAI row inside it is the single path to the inherited xAI OIDC flow.
 +
 +use crate::app::actions::Action;
 +use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand, slash_meta};
@@ -7744,37 +8218,94 @@ index 00000000..f01744b8
 +impl SlashCommand for AuthCommand {
 +    slash_meta! {
 +        name: "auth",
-+        description: "Connect a subscription CLI (Claude, Codex, Cursor) or an API key",
++        description: "Sign in to Claude, Codex or Cursor, or add an API key",
 +        usage: "/auth",
 +    }
 +
 +    fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
 +        CommandResult::Action(Action::OpenConnectionPicker(
-+            workshop_auth::PickerTab::Subscriptions,
++            workshop_auth::PickerFocus::Subscriptions,
 +        ))
 +    }
 +}
+diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/effort.rs b/crates/codegen/xai-grok-pager/src/slash/commands/effort.rs
+index 5049e213..63440d94 100644
+--- a/crates/codegen/xai-grok-pager/src/slash/commands/effort.rs
++++ b/crates/codegen/xai-grok-pager/src/slash/commands/effort.rs
+@@ -1,12 +1,17 @@
+ //! `/effort`: set reasoning effort on the current model without re-picking it.
+ //!
+ //! Thin wrapper over `Action::SwitchModel` with the session's current model id and the chosen effort (same wire path as `/model <name> <effort>`).
++//!
++//! Workshop: when the session runs on an OpenCode model (the shell's current model is the
++//! connection placeholder), the level is one of that model's catalog variants and goes to
++//! `Action::WorkshopSetEffort`, which validates it against the live catalog.
+ 
+ use crate::app::actions::Action;
+ use crate::slash::command::{
+     AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand, slash_meta,
+ };
+ use crate::slash::commands::effort_levels::build_effort_arg_items;
++use crate::slash::commands::model::is_workshop_stand_in;
+ 
+ /// Set reasoning effort for the active model.
+ pub struct EffortCommand;
+@@ -41,6 +46,9 @@ impl SlashCommand for EffortCommand {
+         let Some(model_id) = ctx.models.current.clone() else {
+             return CommandResult::Error("No active model".into());
+         };
++        if is_workshop_stand_in(&model_id) {
++            return CommandResult::Action(Action::WorkshopSetEffort(trimmed.to_owned()));
++        }
+ 
+         if trimmed.is_empty() {
+             let offered: Vec<String> = ctx
+@@ -285,6 +293,23 @@ mod tests {
+         ));
+     }
+ 
++    /// Workshop: on an OpenCode connection the shell's current model is the placeholder, and the
++    /// level is checked against the live catalog by the dispatcher, not the shell's menu.
++    #[test]
++    fn workshop_placeholder_routes_the_level_to_the_engine() {
++        let mut state = ModelState::default();
++        let (id, info) = plain_model("workshop-connection", "Ling 3.0 Flash Fin Free");
++        state.available.insert(id.clone(), info);
++        state.current = Some(id);
++        let mut ctx = dummy_exec_ctx(&state);
++        for (typed, level) in [("high", "high"), ("  Default ", "Default"), ("", "")] {
++            match EffortCommand.run(&mut ctx, typed) {
++                CommandResult::Action(Action::WorkshopSetEffort(l)) => assert_eq!(l, level),
++                other => panic!("expected WorkshopSetEffort for {typed:?}, got {other:?}"),
++            }
++        }
++    }
++
+     #[test]
+     fn no_current_model_errors() {
+         let mut state = ModelState::default();
 diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/login.rs b/crates/codegen/xai-grok-pager/src/slash/commands/login.rs
-index 87a4bd86..509a43f5 100644
+index 87a4bd86..90ebee37 100644
 --- a/crates/codegen/xai-grok-pager/src/slash/commands/login.rs
 +++ b/crates/codegen/xai-grok-pager/src/slash/commands/login.rs
-@@ -1,12 +1,13 @@
+@@ -1,12 +1,14 @@
  use crate::app::actions::Action;
  use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand, slash_meta};
  
-+/// Workshop: alias of `/auth` (opens the Subscriptions view; never a browser by default).
++/// Workshop: alias of `/auth` (opens the picker on its Subscriptions section; never a browser by
++/// default).
  pub struct LoginCommand;
  
  impl SlashCommand for LoginCommand {
      slash_meta! {
          name: "login",
 -        description: "Log in or re-authenticate with your account",
-+        description: "Same as /auth: connect a subscription CLI or an API key",
++        description: "Same as /auth: sign in to Claude, Codex or Cursor, or add an API key",
          usage: "/login",
      }
  
 diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs b/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs
-index 05d93b08..87f1f010 100644
+index 05d93b08..a5c6d1ea 100644
 --- a/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/slash/commands/mod.rs
 @@ -1,6 +1,8 @@
@@ -7794,8 +8325,31 @@ index 05d93b08..87f1f010 100644
          Arc::new(login::LoginCommand),
          Arc::new(logout::LogoutCommand),
          Arc::new(home::HomeCommand),
-@@ -417,21 +420,24 @@ mod tests {
-             other => panic!("expected Error, got {other:?}"),
+@@ -401,37 +404,39 @@ mod tests {
+             other => panic!("expected Action(SetDefaultModel), got {other:?}"),
+         }
+     }
++    /// Workshop: a name no shell model carries opens the picker with the text in its filter, so
++    /// the OpenCode models and subscriptions that match are one keypress away.
+     #[test]
+-    fn model_invalid_arg_returns_error() {
++    fn model_invalid_arg_opens_the_picker_filtered() {
+         let models = sample_models();
+         let mut ctx = make_ctx(&models);
+         let cmd = model::ModelCommand;
+         let result = cmd.run(&mut ctx, "nonexistent-model");
+         match result {
+-            CommandResult::Error(msg) => {
+-                assert!(
+-                    msg.contains("nonexistent-model"),
+-                    "error should contain the arg"
+-                );
+-            }
+-            other => panic!("expected Error, got {other:?}"),
++            CommandResult::Action(Action::OpenConnectionPicker(
++                workshop_auth::PickerFocus::Models { filter },
++            )) => assert_eq!(filter, "nonexistent-model"),
++            other => panic!("expected the filtered picker, got {other:?}"),
          }
      }
 +    /// Workshop: bare `/model` (no args, or whitespace) opens the Models overlay instead of erroring.
@@ -7821,8 +8375,8 @@ index 05d93b08..87f1f010 100644
 +                matches!(
 +                    result,
 +                    CommandResult::Action(Action::OpenConnectionPicker(
-+                        workshop_auth::PickerTab::Models
-+                    ))
++                        workshop_auth::PickerFocus::Models { ref filter }
++                    )) if filter.is_empty()
 +                ),
 +                "{args:?}: {result:?}"
 +            );
@@ -7831,19 +8385,38 @@ index 05d93b08..87f1f010 100644
      #[test]
      fn model_suggest_args_returns_available_models() {
 diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/model.rs b/crates/codegen/xai-grok-pager/src/slash/commands/model.rs
-index 51c3c5f1..aa5c8e13 100644
+index 51c3c5f1..344f2d54 100644
 --- a/crates/codegen/xai-grok-pager/src/slash/commands/model.rs
 +++ b/crates/codegen/xai-grok-pager/src/slash/commands/model.rs
-@@ -1,5 +1,8 @@
+@@ -1,5 +1,11 @@
  //! `/model` (alias `/m`): switch the model and optionally its reasoning effort.
  //! Chained autocomplete: after picking a reasoning-supported model, the trailing space re-opens the dropdown into a `low|medium|high|xhigh` sub-menu.
 +//!
-+//! Workshop: bare `/model` opens the Models overlay (`views::connection_picker`) — the OpenCode
-+//! free models, the Kilo pool, local servers and connected providers — instead of erroring.
++//! Workshop: bare `/model` opens the one connection picker (`views::connection_picker`) — the
++//! OpenCode free models, connected providers and the subscriptions — instead of erroring, and
++//! `/model <text>` that names no shell model opens it with `<text>` already in the filter. The
++//! argument dropdown lists real shell models only (the optional xAI account's, once signed in):
++//! never Workshop's session placeholder or the `No connection configured` stand-in.
  
  use agent_client_protocol as acp;
  use xai_grok_shell::sampling::types::{ReasoningEffortOption, supports_reasoning_effort_meta};
-@@ -17,11 +20,11 @@ pub struct ModelCommand;
+@@ -11,17 +17,27 @@ use crate::slash::command::{
+ };
+ use crate::slash::commands::effort_levels::build_effort_arg_items;
+ 
++/// Shell model ids that stand in for a Workshop connection rather than name a model a user can
++/// switch to: the Engine/Adapter session placeholder (`[model.workshop-connection]`) and the
++/// bundled `No connection configured` default.
++pub(crate) const WORKSHOP_STAND_IN_MODELS: [&str; 2] = ["workshop-connection", "workshop-unconfigured"];
++
++/// Whether a shell model is one of Workshop's stand-ins (see [`WORKSHOP_STAND_IN_MODELS`]).
++pub(crate) fn is_workshop_stand_in(id: &acp::ModelId) -> bool {
++    WORKSHOP_STAND_IN_MODELS.contains(&id.0.as_ref())
++}
++
+ /// Switch the active model (and optionally its reasoning effort).
+ pub struct ModelCommand;
+ 
  impl SlashCommand for ModelCommand {
      slash_meta! {
          name: "model",
@@ -7858,22 +8431,149 @@ index 51c3c5f1..aa5c8e13 100644
          session_scoped: true,
          // The dashboard offers `/model` to pick the model for the next spawned agent (intercepted in `dispatch_dashboard_dispatch_slash`).
          offered_when_session_less: true,
-@@ -54,7 +57,9 @@ impl SlashCommand for ModelCommand {
+@@ -37,7 +53,9 @@ impl SlashCommand for ModelCommand {
+         if let Some(model_id) = detect_effort_phase(ctx.models, args_query) {
+             return Some(build_effort_items(ctx.models, &model_id));
+         }
+-        Some(build_model_items(ctx.models))
++        // Workshop: with only stand-ins to list there is no dropdown; Enter opens the picker.
++        let items = build_model_items(ctx.models);
++        (!items.is_empty()).then_some(items)
+     }
+ 
+     fn preselected_arg(&self, ctx: &AppCtx, args_query: &str) -> Option<String> {
+@@ -54,12 +72,20 @@ impl SlashCommand for ModelCommand {
      fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
          let trimmed = args.trim();
          if trimmed.is_empty() {
 -            return CommandResult::Error("Usage: /model <name> [effort]".into());
 +            return CommandResult::Action(Action::OpenConnectionPicker(
-+                workshop_auth::PickerTab::Models,
++                workshop_auth::PickerFocus::Models {
++                    filter: String::new(),
++                },
 +            ));
          }
  
          // Prefer an exact full-string catalog match first. Model display names often contain spaces ("Grok 4.5").
-@@ -509,6 +514,19 @@ mod tests {
+         // If we split on the last token first, a shorter catalog entry ("Grok") would steal the prefix and treat "4.5" as an effort level
+-        if let Some(id) = ctx.models.resolve_by_name_or_id(trimmed) {
++        if let Some(id) = ctx
++            .models
++            .resolve_by_name_or_id(trimmed)
++            .filter(|id| !is_workshop_stand_in(id))
++        {
+             return CommandResult::Action(Action::SetDefaultModel(id));
+         }
+ 
+@@ -84,7 +110,13 @@ impl SlashCommand for ModelCommand {
+             };
+         }
+ 
+-        CommandResult::Error(format!("Unknown model: {trimmed}"))
++        // Workshop: no shell model of that name — the picker, filtered to what was typed, lists
++        // the OpenCode models and the subscriptions that match.
++        CommandResult::Action(Action::OpenConnectionPicker(
++            workshop_auth::PickerFocus::Models {
++                filter: trimmed.to_owned(),
++            },
++        ))
+     }
+ }
+ 
+@@ -136,10 +168,14 @@ fn detect_effort_phase(models: &ModelState, args_query: &str) -> Option<acp::Mod
+ 
+ /// One row per logical model.
+ /// Reasoning models get a trailing space in `insert_text` so the prompt widget chains into the effort sub-menu.
++/// Workshop's stand-in models are never rows (`GPT-6-Sol (current)` alone, or `No connection configured`).
+ fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
+     let current_id = models.current.as_ref();
+     let mut items: Vec<ArgItem> = Vec::with_capacity(models.available.len());
+     for (id, info) in &models.available {
++        if is_workshop_stand_in(id) {
++            continue;
++        }
+         let is_current = current_id == Some(id);
+         let supports = supports_reasoning_effort(info);
+ 
+@@ -487,8 +523,70 @@ mod tests {
+         state.available.insert(id, info);
+         let mut ctx = dummy_exec_ctx(&state);
+         let result = ModelCommand.run(&mut ctx, "Grok 4.5 high");
+-        // Falls through to "is the whole string a model name?", which it isn't, so we get an Unknown error
+-        assert!(matches!(result, CommandResult::Error(_)));
++        // Falls through to "is the whole string a model name?", which it isn't: Workshop opens
++        // the picker filtered to what was typed instead of an Unknown error.
++        assert!(matches!(
++            result,
++            CommandResult::Action(Action::OpenConnectionPicker(
++                workshop_auth::PickerFocus::Models { filter }
++            )) if filter == "Grok 4.5 high"
++        ));
++    }
++
++    /// Workshop's stand-in shell models are never dropdown rows and never a `/model` target: with
++    /// nothing else to list there is no dropdown at all, and a typed name opens the picker filtered.
++    #[test]
++    fn stand_in_models_are_hidden_from_the_dropdown_and_the_switch() {
++        let mut state = ModelState::default();
++        let (placeholder, info) = plain_model("workshop-connection", "GPT-6-Sol");
++        state.available.insert(placeholder.clone(), info);
++        let (unconfigured, info) = plain_model("workshop-unconfigured", "No connection configured");
++        state.available.insert(unconfigured, info);
++        state.current = Some(placeholder);
++        let cmd = ModelCommand;
++        let ctx = AppCtx {
++            models: &state,
++            cwd: std::path::Path::new("."),
++            has_session_announcements: false,
++            billing_surface_visible: true,
++            usage_command_visible: true,
++            workflows_available: true,
++            saved_workflows: &[],
++            workflow_runs: &[],
++            screen_mode: crate::app::ScreenMode::Fullscreen,
++            current_title: None,
++        };
++        assert!(cmd.suggest_args(&ctx, "").is_none(), "no lonely `(current)` row, no hint");
++        let mut exec = dummy_exec_ctx(&state);
++        assert!(matches!(
++            cmd.run(&mut exec, "GPT-6-Sol"),
++            CommandResult::Action(Action::OpenConnectionPicker(
++                workshop_auth::PickerFocus::Models { filter }
++            )) if filter == "GPT-6-Sol"
++        ));
++        // A real shell model beside them (the optional xAI account) still lists and switches.
++        let (grok, info) = plain_model("grok-4.5", "Grok 4.5");
++        state.available.insert(grok.clone(), info);
++        let ctx = AppCtx {
++            models: &state,
++            cwd: std::path::Path::new("."),
++            has_session_announcements: false,
++            billing_surface_visible: true,
++            usage_command_visible: true,
++            workflows_available: true,
++            saved_workflows: &[],
++            workflow_runs: &[],
++            screen_mode: crate::app::ScreenMode::Fullscreen,
++            current_title: None,
++        };
++        let items = cmd.suggest_args(&ctx, "").unwrap();
++        assert_eq!(items.len(), 1);
++        assert_eq!(items[0].match_text, "Grok 4.5");
++        let mut exec = dummy_exec_ctx(&state);
++        assert!(matches!(
++            cmd.run(&mut exec, "Grok 4.5"),
++            CommandResult::Action(Action::SetDefaultModel(id)) if id == grok
++        ));
+     }
+ 
+     /// The bare `/model <name>` form dispatches `Action::SetDefaultModel(<ModelId>)` instead of the legacy `Action::SwitchModel { effort: None }`.
+@@ -509,6 +607,26 @@ mod tests {
          }
      }
  
-+    /// Workshop: bare `/model` opens the Models overlay instead of a usage error.
++    /// Workshop: bare `/model` opens the picker on the active model instead of a usage error;
++    /// text that names no shell model opens it with that text in the filter.
 +    #[test]
 +    fn run_bare_model_opens_the_models_overlay() {
 +        let state = ModelState::default();
@@ -7881,8 +8581,14 @@ index 51c3c5f1..aa5c8e13 100644
 +        assert!(matches!(
 +            ModelCommand.run(&mut ctx, "  "),
 +            CommandResult::Action(Action::OpenConnectionPicker(
-+                workshop_auth::PickerTab::Models
-+            ))
++                workshop_auth::PickerFocus::Models { filter }
++            )) if filter.is_empty()
++        ));
++        assert!(matches!(
++            ModelCommand.run(&mut ctx, " claude "),
++            CommandResult::Action(Action::OpenConnectionPicker(
++                workshop_auth::PickerFocus::Models { filter }
++            )) if filter == "claude"
 +        ));
 +    }
 +
@@ -7891,18 +8597,19 @@ index 51c3c5f1..aa5c8e13 100644
      fn run_set_default_model_resolves_case_insensitively() {
 diff --git a/crates/codegen/xai-grok-pager/src/views/connection_picker.rs b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
 new file mode 100644
-index 00000000..131b3a92
+index 00000000..4fd4099f
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
-@@ -0,0 +1,426 @@
+@@ -0,0 +1,348 @@
 +//! Workshop connection picker overlay (ratatui view over `workshop_auth::PickerState`).
 +//!
-+//! `/model` opens the **Models** view: one line per usable model (`name  provider  badge`), the
-+//! active one marked. `/auth` opens the **Subscriptions** view: the Claude / Codex / Cursor rails
-+//! with a Detecting / Ready / Sign in pill, then the API-key providers, then the optional xAI card
-+//! last. Both are one compact bordered box: list, one to three lines about the highlighted row,
-+//! one key line. `Tab` switches views, `Esc` closes. Nothing here starts a login: outcomes are
-+//! decided by the picker state in the dispatcher.
++//! One list behind `/model` and `/auth`: `⌕ type to filter`, quiet group headers (`OpenCode`, a
++//! connected provider, `Subscriptions`), one line per row — `name  state` — with the row's state
++//! as a coloured suffix (`free`, `sign in`, `install`, `✓ Max ▸`, `optional · sign in`) and the
++//! active one marked. A row with `▸` opens a sub-menu (a vendor's models, a model's effort
++//! levels, the API-key providers) whose name joins the title: `Models › Claude`. Under the list:
++//! a rule, one to three detail lines about the highlighted row, one key line. Nothing here
++//! starts a login: outcomes are decided by the picker state in the dispatcher.
 +//!
 +//! Reusable: `render` draws the whole overlay into any `Rect`; the state it reads is the pure
 +//! `PickerState` from `workshop-auth`, so other menus (upstream's `/models`) can host it.
@@ -7913,14 +8620,14 @@ index 00000000..131b3a92
 +use ratatui::text::{Line, Span};
 +use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 +use unicode_width::UnicodeWidthStr;
-+use workshop_auth::{ModelsLine, ModelsRow, PickerState, PickerTab, Pill, RowKind};
++use workshop_auth::{ModelsLine, ModelsRow, PickerState, Tone};
 +
 +use crate::theme::Theme;
 +
 +/// Widest the overlay gets; narrower terminals shrink it.
 +const MAX_WIDTH: u16 = 100;
-+/// Detail slot: one to three lines about the highlighted row.
-+const DETAIL_ROWS: u16 = 3;
++/// Detail slot: at most three lines about the highlighted row.
++const MAX_DETAIL_ROWS: u16 = 3;
 +
 +/// Draw the overlay centered in `area` (inset by `h_margin` on both sides).
 +pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState, h_margin: u16) {
@@ -7938,9 +8645,11 @@ index 00000000..131b3a92
 +    }
 +
 +    let entries = list_lines(theme, picker);
++    let detail = detail_lines(theme, picker);
++    let detail_rows = (detail.len() as u16).clamp(1, MAX_DETAIL_ROWS);
 +    // Borders (2) + list + separator + detail + key line, capped to the area.
 +    let wanted =
-+        2 + entries.len() as u16 + 1 + DETAIL_ROWS + 1 + u16::from(picker.status.is_some());
++        2 + entries.len() as u16 + 1 + detail_rows + 1 + u16::from(picker.status.is_some());
 +    let height = wanted.min(avail.height);
 +    let width = avail.width.min(MAX_WIDTH);
 +    // Anchored at the top of its area: a list that shrinks while the user types must not jump
@@ -7953,22 +8662,15 @@ index 00000000..131b3a92
 +    };
 +    Clear.render(overlay, buf);
 +
-+    let other = picker.tab.other().title();
 +    let block = Block::default()
 +        .borders(Borders::ALL)
 +        .border_style(Style::default().fg(theme.gray_dim))
-+        .title(Line::from(vec![
-+            Span::styled(
-+                format!(" {} ", picker.tab.title()),
-+                Style::default()
-+                    .fg(theme.text_primary)
-+                    .add_modifier(Modifier::BOLD),
-+            ),
-+            Span::styled(
-+                format!("· Tab: {other} "),
-+                Style::default().fg(theme.gray_dim),
-+            ),
-+        ]));
++        .title(Line::from(Span::styled(
++            format!(" {} ", picker.title()),
++            Style::default()
++                .fg(theme.text_primary)
++                .add_modifier(Modifier::BOLD),
++        )));
 +    let inner = block.inner(overlay);
 +    block.render(overlay, buf);
 +    buf.set_style(inner, Style::default().bg(theme.bg_base));
@@ -7983,7 +8685,7 @@ index 00000000..131b3a92
 +    let [list_area, sep_area, detail_area, status_area, keys_area] = Layout::vertical([
 +        Constraint::Min(1),
 +        Constraint::Length(1),
-+        Constraint::Length(DETAIL_ROWS.min(inner.height.saturating_sub(3))),
++        Constraint::Length(detail_rows.min(inner.height.saturating_sub(3))),
 +        Constraint::Length(status_rows),
 +        Constraint::Length(1),
 +    ])
@@ -8008,19 +8710,6 @@ index 00000000..131b3a92
 +    )))
 +    .render(sep_area, buf);
 +
-+    let detail: Vec<Line> = picker
-+        .detail_lines()
-+        .into_iter()
-+        .enumerate()
-+        .map(|(i, l)| {
-+            let style = if i == 0 || l.starts_with("(•)") || l.starts_with("( )") {
-+                Style::default().fg(theme.text_primary)
-+            } else {
-+                Style::default().fg(theme.text_secondary)
-+            };
-+            Line::from(Span::styled(l, style))
-+        })
-+        .collect();
 +    Paragraph::new(detail)
 +        .wrap(Wrap { trim: false })
 +        .render(detail_area, buf);
@@ -8028,7 +8717,7 @@ index 00000000..131b3a92
 +    if let Some(status) = &picker.status {
 +        Paragraph::new(Line::from(Span::styled(
 +            status.clone(),
-+            Style::default().fg(theme.warning),
++            Style::default().fg(theme.text_secondary),
 +        )))
 +        .render(status_area, buf);
 +    }
@@ -8036,9 +8725,13 @@ index 00000000..131b3a92
 +    let keys = if picker.key_entry.is_some() {
 +        "Enter save · Esc cancel".to_owned()
 +    } else {
-+        let enter = match picker.tab {
-+            PickerTab::Models => "Enter select",
-+            PickerTab::Subscriptions => "Enter connect",
++        let enter = format!("Enter {}", picker.enter_verb());
++        let back = if !picker.filter.is_empty() {
++            "Esc clear"
++        } else if picker.submenu.is_some() {
++            "← back · Esc back"
++        } else {
++            "Esc close"
 +        };
 +        let refresh = if picker.loading {
 +            " · loading…"
@@ -8047,19 +8740,12 @@ index 00000000..131b3a92
 +        } else {
 +            " · Ctrl+R refresh"
 +        };
-+        let esc = if picker.tab == PickerTab::Models && !picker.filter.is_empty() {
-+            "Esc clear"
-+        } else {
-+            "Esc close"
-+        };
-+        let show_all = match (picker.tab, picker.hidden_models(), picker.show_all) {
-+            (PickerTab::Models, hidden, false) if hidden > 0 => {
-+                format!(" · Ctrl+A show {hidden} hidden")
-+            }
-+            (PickerTab::Models, _, true) => " · Ctrl+A hide non-chat".to_owned(),
++        let show_all = match (picker.submenu.is_some(), picker.hidden_models(), picker.show_all) {
++            (false, hidden, false) if hidden > 0 => format!(" · Ctrl+A show {hidden} hidden"),
++            (false, _, true) => " · Ctrl+A hide non-chat".to_owned(),
 +            _ => String::new(),
 +        };
-+        format!("↑↓ · {enter} · Tab {other} · {esc}{refresh}{show_all}")
++        format!("↑↓ · {enter} · {back}{refresh}{show_all}")
 +    };
 +    Paragraph::new(Line::from(Span::styled(
 +        keys,
@@ -8068,36 +8754,24 @@ index 00000000..131b3a92
 +    .render(keys_area, buf);
 +}
 +
-+/// Index of the highlighted line within [`list_lines`].
++/// Index of the highlighted line within [`list_lines`]: the search line, then the headers ahead
++/// of the selected row.
 +fn selected_line_index(picker: &PickerState) -> usize {
-+    match picker.tab {
-+        // The search line, then group headers ahead of the selected row.
-+        PickerTab::Models => {
-+            let mut rows = 0;
-+            let mut line = 1;
-+            for entry in picker.models_lines() {
-+                match entry {
-+                    ModelsLine::Header(_) => line += 1,
-+                    ModelsLine::Row(_) => {
-+                        if rows == picker.models_selected {
-+                            return line;
-+                        }
-+                        rows += 1;
-+                        line += 1;
-+                    }
++    let mut rows = 0;
++    let mut line = 1;
++    for entry in picker.models_lines() {
++        match entry {
++            ModelsLine::Header(_) => line += 1,
++            ModelsLine::Row(_) => {
++                if rows == picker.selected {
++                    return line;
 +                }
-+            }
-+            line
-+        }
-+        // Rails, then a blank spacer line, then the connect rows / xAI card.
-+        PickerTab::Subscriptions => {
-+            if picker.rail_selected < picker.rails.len() || picker.auth_rows.is_empty() {
-+                picker.rail_selected
-+            } else {
-+                picker.rail_selected + 1
++                rows += 1;
++                line += 1;
 +            }
 +        }
 +    }
++    line
 +}
 +
 +fn row_style(theme: &Theme, selected: bool) -> Style {
@@ -8111,29 +8785,14 @@ index 00000000..131b3a92
 +    }
 +}
 +
-+fn badge_style(theme: &Theme, row: &ModelsRow) -> Style {
-+    match &row.kind {
-+        RowKind::XaiOptional | RowKind::RailSignIn(_) => Style::default().fg(theme.warning),
-+        RowKind::RailNote(..) => Style::default().fg(theme.gray_bright),
-+        RowKind::ConnectProvider { .. } => Style::default().fg(theme.accent_tool),
-+        RowKind::Engine(_) => Style::default().fg(theme.accent_success),
-+        RowKind::RailModel { .. } => Style::default().fg(theme.accent_model),
-+        RowKind::Catalog { model, locked } => {
-+            if !*locked && model.is_keyless() {
-+                Style::default().fg(theme.accent_success)
-+            } else {
-+                Style::default().fg(theme.accent_model)
-+            }
-+        }
-+    }
-+}
-+
-+fn pill_style(theme: &Theme, pill: Pill) -> Style {
-+    match pill {
-+        Pill::Detecting => Style::default().fg(theme.gray_bright),
-+        Pill::Ready => Style::default().fg(theme.accent_success),
-+        Pill::SignIn => Style::default().fg(theme.warning),
-+        Pill::Install => Style::default().fg(theme.accent_tool),
++fn tone_style(theme: &Theme, tone: Tone, text: &str) -> Style {
++    match tone {
++        Tone::Good if text.contains("active") => Style::default()
++            .fg(theme.accent_success)
++            .add_modifier(Modifier::BOLD),
++        Tone::Good => Style::default().fg(theme.accent_success),
++        Tone::Dim => Style::default().fg(theme.gray_bright),
++        Tone::Plain => Style::default().fg(theme.text_secondary),
 +    }
 +}
 +
@@ -8147,14 +8806,14 @@ index 00000000..131b3a92
 +    format!("{s}{}", " ".repeat(width - w))
 +}
 +
-+/// `name  provider  badge` for a model / connect / xAI row.
++/// `name  [provider]  state` for one row.
 +fn row_line<'a>(
 +    theme: &Theme,
++    picker: &PickerState,
 +    row: &ModelsRow,
 +    selected: bool,
-+    active: bool,
 +    name_w: usize,
-+    prov_w: usize,
++    prov_w: Option<usize>,
 +) -> Line<'a> {
 +    let base = row_style(theme, selected);
 +    let marker = if selected { "› " } else { "  " };
@@ -8162,46 +8821,45 @@ index 00000000..131b3a92
 +        Span::styled(marker.to_owned(), base),
 +        Span::styled(pad(&row.title(), name_w), base),
 +        Span::styled(" ".to_owned(), base),
-+        Span::styled(
++    ];
++    if let Some(prov_w) = prov_w {
++        spans.push(Span::styled(
 +            pad(row.provider(), prov_w),
 +            if selected {
 +                base
 +            } else {
 +                Style::default().fg(theme.text_secondary)
 +            },
-+        ),
-+        Span::styled(" ".to_owned(), base),
-+        Span::styled(row.short_badge().to_owned(), badge_style(theme, row)),
-+    ];
-+    if active {
-+        spans.push(Span::styled(
-+            " · active".to_owned(),
-+            Style::default()
-+                .fg(theme.accent_success)
-+                .add_modifier(Modifier::BOLD),
 +        ));
++        spans.push(Span::styled(" ".to_owned(), base));
++    }
++    for (tone, text) in picker.row_suffix(row) {
++        let style = tone_style(theme, tone, &text);
++        spans.push(Span::styled(text, style));
 +    }
 +    Line::from(spans)
 +}
 +
-+/// Column widths shared by every row line of a view.
-+fn columns(rows: &[ModelsRow]) -> (usize, usize) {
++/// Column widths shared by every row line: the name column, and the provider column in the
++/// flat filtered list.
++fn columns(picker: &PickerState, rows: &[ModelsRow]) -> (usize, Option<usize>) {
 +    let name_w = rows
 +        .iter()
 +        .map(|r| UnicodeWidthStr::width(r.title().as_str()))
 +        .max()
 +        .unwrap_or(10)
 +        .clamp(10, 40);
-+    let prov_w = rows
-+        .iter()
-+        .map(|r| UnicodeWidthStr::width(r.provider()))
-+        .max()
-+        .unwrap_or(8)
-+        .clamp(8, 24);
++    let prov_w = picker.shows_provider_column().then(|| {
++        rows.iter()
++            .map(|r| UnicodeWidthStr::width(r.provider()))
++            .max()
++            .unwrap_or(8)
++            .clamp(8, 24)
++    });
 +    (name_w, prov_w)
 +}
 +
-+/// The type-to-filter line at the top of the Models view.
++/// The type-to-filter line at the top of the list.
 +fn search_line<'a>(theme: &Theme, picker: &PickerState) -> Line<'a> {
 +    let mut spans = vec![Span::styled(
 +        "  \u{2315} ".to_owned(),
@@ -8237,89 +8895,59 @@ index 00000000..131b3a92
 +}
 +
 +fn list_lines<'a>(theme: &Theme, picker: &PickerState) -> Vec<Line<'a>> {
-+    let mut lines = Vec::new();
-+    match picker.tab {
-+        PickerTab::Models => {
-+            lines.push(search_line(theme, picker));
-+            let visible = picker.visible_models();
-+            let (name_w, prov_w) = columns(&picker.rows);
-+            let mut i = 0;
-+            for entry in picker.models_lines() {
-+                match entry {
-+                    ModelsLine::Header(title) => lines.push(header_line(theme, title)),
-+                    ModelsLine::Row(row) => {
-+                        lines.push(row_line(
-+                            theme,
-+                            row,
-+                            i == picker.models_selected,
-+                            picker.is_active(row),
-+                            name_w,
-+                            prov_w,
-+                        ));
-+                        i += 1;
-+                    }
-+                }
-+            }
-+            if picker.rows.is_empty() {
-+                lines.push(Line::from(Span::styled(
-+                    "  loading…",
-+                    Style::default().fg(theme.gray_bright),
-+                )));
-+            } else if visible.is_empty() {
-+                lines.push(Line::from(Span::styled(
-+                    format!(
-+                        "  no model matches \u{201c}{}\u{201d}",
-+                        picker.filter.trim()
-+                    ),
-+                    Style::default().fg(theme.gray_bright),
-+                )));
-+            }
-+        }
-+        PickerTab::Subscriptions => {
-+            for (i, rail) in picker.rails.iter().enumerate() {
-+                let selected = i == picker.rail_selected;
-+                let base = row_style(theme, selected);
-+                let marker = if selected { "› " } else { "  " };
-+                let sub = match rail.empty_copy {
-+                    Some(copy) => copy.to_owned(),
-+                    None if rail.models.is_empty() => String::new(),
-+                    None => format!("{} models", rail.models.len()),
-+                };
-+                lines.push(Line::from(vec![
-+                    Span::styled(marker.to_owned(), base),
-+                    Span::styled(pad(rail.rail.display_name(), 8), base),
-+                    Span::styled(
-+                        pad(&format!("[{}]", rail.pill.label()), 12),
-+                        pill_style(theme, rail.pill),
-+                    ),
-+                    Span::styled(sub, Style::default().fg(theme.text_secondary)),
-+                ]));
-+            }
-+            if !picker.auth_rows.is_empty() {
-+                lines.push(Line::from(""));
-+                // One vocabulary for every connect row: `Provider — Sign in` / `Provider — API key`.
-+                let name_w = picker
-+                    .auth_rows
-+                    .iter()
-+                    .map(|r| UnicodeWidthStr::width(r.title().as_str()))
-+                    .max()
-+                    .unwrap_or(10)
-+                    .clamp(10, 48);
-+                for (i, row) in picker.auth_rows.iter().enumerate() {
-+                    let selected = picker.rails.len() + i == picker.rail_selected;
-+                    let base = row_style(theme, selected);
-+                    let marker = if selected { "› " } else { "  " };
-+                    lines.push(Line::from(vec![
-+                        Span::styled(marker.to_owned(), base),
-+                        Span::styled(pad(&row.title(), name_w), base),
-+                        Span::styled(" ".to_owned(), base),
-+                        Span::styled(row.short_badge().to_owned(), badge_style(theme, row)),
-+                    ]));
-+                }
++    let mut lines = vec![search_line(theme, picker)];
++    let visible = picker.visible_rows();
++    let (name_w, prov_w) = columns(picker, &visible);
++    let mut i = 0;
++    for entry in picker.models_lines() {
++        match entry {
++            ModelsLine::Header(title) => lines.push(header_line(theme, &title)),
++            ModelsLine::Row(row) => {
++                lines.push(row_line(
++                    theme,
++                    picker,
++                    &row,
++                    i == picker.selected,
++                    name_w,
++                    prov_w,
++                ));
++                i += 1;
 +            }
 +        }
 +    }
++    if picker.rows.is_empty() {
++        lines.push(Line::from(Span::styled(
++            "  loading…",
++            Style::default().fg(theme.gray_bright),
++        )));
++    } else if visible.is_empty() {
++        let what = if picker.filter.trim().is_empty() {
++            "  nothing to pick here".to_owned()
++        } else {
++            format!("  no match for \u{201c}{}\u{201d}", picker.filter.trim())
++        };
++        lines.push(Line::from(Span::styled(
++            what,
++            Style::default().fg(theme.gray_bright),
++        )));
++    }
 +    lines
++}
++
++fn detail_lines<'a>(theme: &Theme, picker: &PickerState) -> Vec<Line<'a>> {
++    picker
++        .detail_lines()
++        .into_iter()
++        .enumerate()
++        .map(|(i, l)| {
++            let style = if i == 0 {
++                Style::default().fg(theme.text_primary)
++            } else {
++                Style::default().fg(theme.text_secondary)
++            };
++            Line::from(Span::styled(l, style))
++        })
++        .collect()
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/views/mod.rs b/crates/codegen/xai-grok-pager/src/views/mod.rs
 index dcbe4033..b0a519b1 100644
