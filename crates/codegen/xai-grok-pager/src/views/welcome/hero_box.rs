@@ -293,11 +293,13 @@ pub(super) struct HeroBoxRects {
 }
 
 /// Render the bordered hero box with the logo on the left and the version, subtitle, and menu on the right.
+/// `hero_frame` is the frame of the logo's spin to paint (0 is the resting frame).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_hero_box(
     layout: &WelcomeLayout,
     buf: &mut Buffer,
     theme: &Theme,
+    hero_frame: u32,
     menu_items: &[(&str, &str)],
     selected: Option<usize>,
     mouse_pos: Option<(u16, u16)>,
@@ -321,7 +323,7 @@ pub(super) fn render_hero_box(
         .border_style(Style::default().fg(border_color));
     border_block.render(layout.hero_box, buf);
 
-    super::logo::render_logo_tier(layout.hero_logo, buf, theme, layout.logo_tier);
+    super::logo::render_logo_frame(layout.hero_logo, buf, theme, layout.logo_tier, hero_frame);
 
     super::render_version_badge(
         layout.hero_version,

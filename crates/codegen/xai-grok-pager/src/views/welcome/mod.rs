@@ -35,7 +35,7 @@ pub(crate) mod workspace_mode;
 /// Compact welcome/session/waiting/dock share this one-col left gutter.
 pub(crate) const PROMPT_GUTTER: u16 = 1;
 
-pub(crate) use logo::shimmer_frame;
+pub(crate) use logo::hero_animation_supported;
 use logo::{LogoTier, logo_line_count, render_logo, render_logo_tier};
 use menu::render_menu;
 pub(crate) use toast::paint_welcome_toast;
@@ -169,6 +169,10 @@ pub struct WelcomeRenderResult {
     pub privacy_banner_opt_out_rect: Option<Rect>,
     pub privacy_banner_terms_rect: Option<Rect>,
     pub privacy_banner_policy_rect: Option<Rect>,
+    /// Workshop: this frame painted the hero box's spinning logo (a frame from
+    /// [`WelcomeRenderParams::hero_frame`]), so the app keeps advancing it. False for the resting
+    /// frame: narrow (stacked) layouts, the session picker, hidden logo, animation off.
+    pub hero_animating: bool,
     /// Hit-test rects for the chat workspace-mode segmented control.
     #[cfg(feature = "local-workspace")]
     pub workspace_mode_rects: WorkspaceModeHitRects,
@@ -750,6 +754,10 @@ pub struct WelcomeRenderParams<'a> {
     pub upgrade_cta: Option<&'a str>,
     /// Non-blocking welcome privacy banner above the prompt.
     pub privacy_banner: bool,
+    /// Workshop: `Some(frame)` spins the hero logo (paints that frame of the donut's loop in the
+    /// hero box and reports [`WelcomeRenderResult::hero_animating`]); `None` paints the resting
+    /// frame everywhere (animation off, unfocused terminal).
+    pub hero_frame: Option<u32>,
     /// Chat-mode workspace picker selection (`local-workspace` feature).
     #[cfg(feature = "local-workspace")]
     pub workspace_mode: WelcomeWorkspaceMode,
@@ -1939,6 +1947,7 @@ fn render_welcome_done(
             &layout,
             buf,
             theme,
+            p.hero_frame.unwrap_or(0),
             menu_items,
             p.selected,
             p.mouse_pos,
@@ -2348,6 +2357,11 @@ fn render_welcome_done(
         privacy_banner_opt_out_rect,
         privacy_banner_terms_rect,
         privacy_banner_policy_rect,
+        // Only the hero box spins the logo; the stacked (narrow) layout paints the resting frame.
+        hero_animating: p.hero_frame.is_some()
+            && !show_picker
+            && layout.has_hero_box()
+            && layout.logo_tier.rows() > 0,
         #[cfg(feature = "local-workspace")]
         workspace_mode_rects,
     }
@@ -2964,6 +2978,7 @@ mod tests {
             welcome_announcement_expanded: false,
             upgrade_cta: None,
             privacy_banner: false,
+            hero_frame: None,
             #[cfg(feature = "local-workspace")]
             workspace_mode: WelcomeWorkspaceMode::Sandbox,
             #[cfg(feature = "local-workspace")]
@@ -3847,20 +3862,30 @@ mod tests {
         }
     }
 
-    /// Rows of the painted buffer that hold braille logo art.
+    /// Rows of the logo art painted in the buffer: the donut tier whose resting frame's lit cells
+    /// all match at some position (the full tier first, then the compact one); 0 when neither is there.
     fn painted_logo_rows(buf: &Buffer) -> u16 {
+        use workshop_brand::donut::{self, Size};
         let area = buf.area;
-        (area.top()..area.bottom())
-            .filter(|&y| {
-                (area.left()..area.right()).any(|x| {
-                    buf.cell((x, y))
-                        .map(|c| c.symbol())
-                        .unwrap_or("")
-                        .chars()
-                        .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c))
+        let painted = |size: Size| {
+            let frame = donut::frame(size, 0);
+            let matches_at = |x0: u16, y0: u16| {
+                (0..size.rows()).all(|r| {
+                    (0..size.cols()).all(|c| match frame.level(r, c) {
+                        None => true,
+                        Some(_) => buf
+                            .cell((x0 + c as u16, y0 + r as u16))
+                            .is_some_and(|cell| cell.symbol() == frame.glyph(r, c).to_string()),
+                    })
                 })
-            })
-            .count() as u16
+            };
+            (area.top()..area.bottom())
+                .any(|y0| (area.left()..area.right()).any(|x0| matches_at(x0, y0)))
+        };
+        [Size::Full, Size::Compact]
+            .into_iter()
+            .find(|&size| painted(size))
+            .map_or(0, |size| size.rows() as u16)
     }
 
     /// End to end: a draft that steps the logo tier down paints the compact art, not the full art clipped into fewer rows.

@@ -126,6 +126,30 @@ pub fn spawn_in_with_args(
     extra_path: Option<&Path>,
     home: tempfile::TempDir,
 ) -> Journey {
+    spawn_journey(journey, bin, args, extra_env, extra_path, home, false)
+}
+
+/// [`spawn_in`] with colour left on (no `NO_COLOR`), for gates about what colour buys: the
+/// welcome hero spins only on a colour terminal.
+pub fn spawn_in_colored(
+    journey: &str,
+    bin: &Path,
+    extra_env: &[(&str, &str)],
+    extra_path: Option<&Path>,
+    home: tempfile::TempDir,
+) -> Journey {
+    spawn_journey(journey, bin, &[], extra_env, extra_path, home, true)
+}
+
+fn spawn_journey(
+    journey: &str,
+    bin: &Path,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+    extra_path: Option<&Path>,
+    home: tempfile::TempDir,
+    color: bool,
+) -> Journey {
     let cwd = tempfile::tempdir().expect("tempdir");
     std::process::Command::new("git")
         .args(["init", "-q", "."])
@@ -146,9 +170,11 @@ pub fn spawn_in_with_args(
         ("WORKSHOP_HOME", wh_s.as_str()),
         ("PATH", path_s.as_str()),
         ("TERM", "xterm-256color"),
-        ("NO_COLOR", "1"),
         ("GROK_DISABLE_AUTOUPDATER", "1"),
     ];
+    if !color {
+        env.push(("NO_COLOR", "1"));
+    }
     env.extend_from_slice(extra_env);
     let mut h = PtyHarness::new_inherited_env(bin, 45, 140, args, &env, Some(cwd.path()))
         .expect("spawn workshop in pty");

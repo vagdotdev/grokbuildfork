@@ -1,6 +1,6 @@
 //! Minimal skips the full-screen welcome view entirely, so the start of a session is otherwise invisible: you land straight at the prompt.
 //! To make a fresh session obvious (and on `/new` / `Ctrl+N`), this commits a compact, rounded card once into native scrollback.
-//! The card holds the braille logo, the version, the cwd, the model, and a one-line hint.
+//! The card holds the logo, the version, the cwd, the model, and a one-line hint.
 //! It mirrors the full-TUI hero box's style (rounded dim border and logo) without its menu and onboarding.
 //!
 //! It is printed via [`xai_ratatui_inline::Terminal::insert_before`], the same one-shot mechanism the commit pipeline uses.

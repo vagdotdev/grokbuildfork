@@ -292,7 +292,8 @@ pub(crate) fn test_app() -> AppView {
         session_picker_entries_query: None,
         session_picker_pending_delete: None,
         welcome_tick: 0,
-        welcome_shimmer_frame: 0,
+        welcome_hero_frame: 0,
+        welcome_hero_animating: false,
         startup_warnings: Vec::new(),
         is_api_key_auth: false,
         pending_update_version: None,
@@ -810,16 +811,69 @@ fn tick_demand_follows_the_mcp_chip() {
         "the MCP chip spinner ticks while servers connect"
     );
 }
-/// The welcome screen shimmer only advances ~12fps, so a resting welcome screen must demand Slow ticks, not a 30fps loop.
-/// The deep-search spinner upgrades it to Fast while loading.
+/// Workshop: the welcome hero donut advances one frame per Slow tick (~12fps), never a 30fps loop,
+/// and only while the last paint spun it and the terminal is focused; otherwise the resting welcome
+/// screen parks. The deep-search spinner upgrades it to Fast while loading.
 #[test]
-fn tick_demand_welcome_is_slow_unless_loading() {
+fn tick_demand_welcome_is_slow_while_the_hero_spins() {
     let mut app = test_app();
     assert_eq!(app.active_view, ActiveView::Welcome);
+    assert_eq!(
+        app.tick_demand(),
+        TickDemand::None,
+        "before the first paint nothing spins, so nothing ticks"
+    );
+    app.welcome_hero_animating = true;
+    if !app.hero_animation_enabled() {
+        // `NO_COLOR` in the test environment: the resting frame is shown and the screen parks.
+        assert_eq!(app.tick_demand(), TickDemand::None);
+        assert!(!app.welcome_hero_spins());
+        return;
+    }
     assert_eq!(app.tick_demand(), TickDemand::Slow);
     assert!(app.needs_animation(), "slow still counts as animating");
+    assert!(app.welcome_hero_spins());
+    let frame = app.welcome_hero_frame;
+    assert!(app.tick(), "a tick advances the hero and asks for a redraw");
+    assert_eq!(
+        app.welcome_hero_frame,
+        (frame + 1) % workshop_brand::donut::FRAMES as u32
+    );
+    // An unfocused terminal holds the frame and parks the loop.
+    app.notification_service.focus_tracker.on_focus_lost();
+    assert!(!app.welcome_hero_spins());
+    assert_eq!(app.tick_demand(), TickDemand::None);
+    let held = app.welcome_hero_frame;
+    app.tick();
+    assert_eq!(
+        app.welcome_hero_frame, held,
+        "no frame advances while unfocused"
+    );
+    app.notification_service.focus_tracker.on_focus_gained();
+    assert_eq!(app.tick_demand(), TickDemand::Slow);
+    // `[ui] hero_animation = false` shows the resting frame: nothing to tick for.
+    app.current_ui.hero_animation = Some(false);
+    assert!(!app.hero_animation_enabled());
+    assert_eq!(app.tick_demand(), TickDemand::None);
+    app.current_ui.hero_animation = None;
+    // The loop wraps to the first frame.
+    app.welcome_hero_frame = workshop_brand::donut::FRAMES as u32 - 1;
+    app.tick();
+    assert_eq!(app.welcome_hero_frame, 0);
     app.session_picker_content_loading = true;
     assert_eq!(app.tick_demand(), TickDemand::Fast);
+}
+
+/// A welcome toast needs the clock to expire even when the hero rests.
+#[test]
+fn tick_demand_welcome_toast_keeps_slow_ticks_without_the_hero() {
+    let mut app = test_app();
+    assert_eq!(app.tick_demand(), TickDemand::None);
+    app.welcome_toast = Some((
+        "copied".to_owned(),
+        std::time::Instant::now() + std::time::Duration::from_secs(2),
+    ));
+    assert_eq!(app.tick_demand(), TickDemand::Slow);
 }
 /// An open modal session picker that is still fetching keeps fast ticks alive on an otherwise-idle agent (its loading spinner must animate).
 /// That holds even after the fast foreign scan lands rows the default Grok filter hides; once the native list settles the demand parks again.
