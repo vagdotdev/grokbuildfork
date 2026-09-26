@@ -2107,6 +2107,11 @@ fn main() {
     if let Some(code) = xai_grok_pager::app::workshop_askpass::maybe_run_helper() {
         std::process::exit(code);
     }
+    // Workshop: `workshop __engine-shell -c <command>` is the shell the engine runs commands
+    // through (background budget + detach; see app::workshop_engine_shell).
+    if let Some(code) = xai_grok_pager::app::workshop_engine_shell::maybe_run_helper() {
+        std::process::exit(code);
+    }
     set_release_channel(ReleaseChannel::from_label(
         xai_grok_update::channel_name().unwrap_or_default(),
     ));

@@ -5173,6 +5173,7 @@ impl AppView {
                                             .workspace_dashboard_enabled,
                                         overlay_header,
                                         overlay_stop_label: None,
+                                        workshop_password: self.workshop_password_ask.as_ref(),
                                     },
                                 );
                                 if let Some(modal) = self.import_claude_modal.as_mut() {
@@ -5212,25 +5213,9 @@ impl AppView {
                                         if compact { 1 } else { 4 },
                                     );
                                 }
-                                // Workshop: a `sudo` password prompt sits right above the
-                                // composer while one of the engine's commands waits for it.
-                                if let Some(ask) = self.workshop_password_ask.as_ref() {
-                                    let theme = crate::theme::Theme::current();
-                                    let margin: u16 = if compact { 1 } else { 4 };
-                                    // Ends one row above the composer's top border.
-                                    let above_composer = ratatui::layout::Rect {
-                                        x: view_area.x + margin,
-                                        y: view_area.y + 2,
-                                        width: view_area.width.saturating_sub(margin * 2),
-                                        height: view_area.height.saturating_sub(8),
-                                    };
-                                    crate::views::workshop_password::render(
-                                        above_composer,
-                                        f.buffer_mut(),
-                                        &theme,
-                                        ask,
-                                    );
-                                }
+                                // Workshop: the `sudo` password card is laid out inside the agent
+                                // view (in the composer slot, status row above it), like the
+                                // Normal-mode approval card — see `AppRenderParams::workshop_password`.
                                 if let Some(fps) = &fps_overlay {
                                     fps.render(full_area, f.buffer_mut());
                                 }

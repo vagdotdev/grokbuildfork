@@ -1,8 +1,27 @@
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
-index d9583697..24541f79 100644
+index d9583697..e8795929 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
-@@ -741,7 +741,9 @@ impl AgentView {
+@@ -53,6 +53,10 @@ pub struct AppRenderParams<'a> {
+     /// The footer's `Ctrl+X` label when this view stands in for another agent (a subagent's fullscreen takeover): the
+     /// parent's resolved stop/archive/close action, which the child cannot compute from its own state.
+     pub overlay_stop_label: Option<&'static str>,
++    /// Workshop: the pending `sudo` password prompt (an AppView-owned overlay). When set it is laid
++    /// out in the composer slot, exactly like a permission card, so the turn-status row sits above
++    /// it instead of drawing over it (fresh-eyes review issue 9).
++    pub workshop_password: Option<&'a crate::app::workshop_askpass::PendingPassword>,
+ }
+ /// What the dashboard overlay contributes to the header row (see [`AppRenderParams::overlay_header`]).
+ #[derive(Debug, Clone, Copy, Default)]
+@@ -588,6 +592,7 @@ impl AgentView {
+             workspace_dashboard_enabled,
+             overlay_header,
+             overlay_stop_label,
++            workshop_password,
+         } = app_params;
+         self.scrollback.begin_frame();
+         self.in_dashboard_overlay = in_dashboard_overlay;
+@@ -741,7 +746,9 @@ impl AgentView {
              } else {
                  None
              },
@@ -13,7 +32,28 @@ index d9583697..24541f79 100644
              placeholder_override: if let Some(ph) = self
                  .prompt_input_mode
                  .placeholder_override(self.multiline_mode)
-@@ -1058,7 +1060,10 @@ impl AgentView {
+@@ -940,7 +947,19 @@ impl AgentView {
+             0
+         };
+         let question_footer_h: u16 = if question_view_h > 0 { 3 } else { 0 };
+-        let prompt_height = if permission_view_h > 0 {
++        // Workshop: the `sudo` password card takes the composer slot like a permission card, so the
++        // turn-status row is reserved above it (issue 9). It outranks the others: a password ask
++        // only arrives mid-command, when none of them is up.
++        let password_view_h: u16 = if workshop_password.is_some()
++            && area.height >= crate::views::workshop_password::HEIGHT
++        {
++            crate::views::workshop_password::HEIGHT
++        } else {
++            0
++        };
++        let prompt_height = if password_view_h > 0 {
++            password_view_h
++        } else if permission_view_h > 0 {
+             if is_permission_followup && perm_inline_prompt_h > 1 {
+                 permission_view_h + perm_inline_prompt_h.saturating_sub(1)
+             } else {
+@@ -1058,7 +1077,10 @@ impl AgentView {
          };
          let turn_status_parked = if dock_covers_cues { false } else { parked };
          let wake_display_state = self.wake_display_state();
@@ -25,7 +65,7 @@ index d9583697..24541f79 100644
          let send_now_gap = self.send_now_awaiting_current() && display_state.is_idle();
          let status_state = if send_now_gap {
              crate::app::agent::AgentState::TurnRunning
-@@ -1314,13 +1319,21 @@ impl AgentView {
+@@ -1314,13 +1336,21 @@ impl AgentView {
                  Line::from(Span::styled(label, mode_style)),
              );
          }
@@ -54,7 +94,7 @@ index d9583697..24541f79 100644
          if let Some(ctx_line) = context_bar::context_bar_line_for_session(
              ctx_used,
              ctx_total,
-@@ -2109,7 +2122,13 @@ impl AgentView {
+@@ -2109,7 +2139,13 @@ impl AgentView {
                              watching_hovered: self.hit_watching_cue.hovered,
                          }),
                          has_running_execute,
@@ -69,7 +109,7 @@ index d9583697..24541f79 100644
                          session_starting_since: self.session_starting_since,
                          is_bash_turn: self.bash_turn,
                          is_pending_user_input,
-@@ -2252,18 +2271,26 @@ impl AgentView {
+@@ -2252,18 +2288,26 @@ impl AgentView {
                  dot,
                  Style::default().fg(dot_color).bg(bg),
              );
@@ -102,7 +142,7 @@ index d9583697..24541f79 100644
              let stop_fg = if self.hit_voice_stop_button.hovered {
                  theme.accent_error
              } else {
-@@ -2338,9 +2365,13 @@ impl AgentView {
+@@ -2338,9 +2382,13 @@ impl AgentView {
          let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
          let usage_warning = usage_warning_text.as_deref();
          let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
@@ -119,6 +159,20 @@ index d9583697..24541f79 100644
          };
          let info = match &self.prompt_mode {
              PromptMode::Normal => PromptInfo {
+@@ -2375,7 +2423,12 @@ impl AgentView {
+         };
+         let mut prompt_cursor_pos: Option<(u16, u16)> = None;
+         let mut prompt_post_flush: Option<crate::terminal::overlay::PostFlush> = None;
+-        if permission_view_h > 0 {
++        if password_view_h > 0 {
++            // Draw the masked password card in the composer slot; the status row stays above it.
++            if let Some(ask) = workshop_password {
++                crate::views::workshop_password::render(layout.prompt, buf, &theme, ask);
++            }
++        } else if permission_view_h > 0 {
+             let perm_area = layout.prompt;
+             if let Some(perm) = self.permission_queue.front() {
+                 let followup_text = self.prompt.text();
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/voice.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/voice.rs
 index e16c9d24..a0c4fa5c 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/voice.rs

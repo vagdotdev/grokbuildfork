@@ -104,7 +104,7 @@ jobs:
   no-xai:
     name: no-xai gates (required)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       # Strip debug symbols from the many dev/test builds so the shared `target/` stays small
       # enough for the hosted runner's disk (pairs with the reclaim step below).
@@ -280,6 +280,15 @@ jobs:
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test updater -- --nocapture --include-ignored
+      - name: Gate — engine shell (background budget, GUI/daemon detach, cancel)
+        # `workshop __engine-shell` (OpenCode's shell): a command that leaves a daemon/GUI holding the
+        # pipe ends the call as soon as the direct child returns and the detached process is NOT
+        # killed (owner task-3 F1); a command that blocks with no output past the budget is handed
+        # back with one marker line and left running, not killed (issue 3); SIGTERM (a cancel /
+        # OpenCode abort) kills the command's process group.
+        env:
+          WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
+        run: cargo test -p workshop-gates --test engine_shell -- --nocapture --include-ignored --test-threads=1
       - name: PTY smoke — live model lists (hermetic)
         # Zero egress before the user acts (logging proxy: first run, /auth, `workshop login` and
         # /model on a fresh home ask for nothing; once an API key is configured /model asks exactly

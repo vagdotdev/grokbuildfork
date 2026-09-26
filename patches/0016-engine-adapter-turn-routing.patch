@@ -859,10 +859,10 @@ index 40625217..6b47c26a 100644
      };
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_askpass.rs b/crates/codegen/xai-grok-pager/src/app/workshop_askpass.rs
 new file mode 100644
-index 00000000..93eb17fc
+index 00000000..9e9288b0
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_askpass.rs
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,508 @@
 +//! Workshop: `sudo` passwords for the engine's commands, the way Grok Build handles them.
 +//!
 +//! Grok Build's own shell tool runs commands with a null stdin and no PTY
@@ -897,6 +897,123 @@ index 00000000..93eb17fc
 +/// The engine-side environment: the helper `sudo` runs and the socket it reaches Workshop on.
 +pub const HELPER_ENV: &str = "SUDO_ASKPASS";
 +pub const SOCKET_ENV: &str = "WORKSHOP_ASKPASS_SOCK";
++
++// ── Caller authentication ────────────────────────────────────────────────────────────────────────
++//
++// The helper path and the socket are in every engine command's environment, and with the `sudo -A`
++// shim every sudo runs the helper. Without a check, a prompt-injected model command could run
++// `$SUDO_ASKPASS` itself (or connect to the socket directly), show Workshop's legitimate password
++// card, and read the typed password. So the password is delivered only when the *caller's parent is
++// a live `sudo` process* — verified two ways: the helper checks its own parent before it connects,
++// and the socket server checks the connecting peer's parent via `SO_PEERCRED`.
++//
++// "Real sudo" = a process whose *effective* uid is root and whose executable name is `sudo`. A
++// non-root attacker cannot impersonate that: obtaining euid 0 needs a setuid-root binary they cannot
++// create. An env-carried secret would not help instead — every engine command shares one
++// environment and can set variables inline, so any nonce would be readable and forgeable by the
++// attacker; the kernel-verified peer credential is the sound binding to the active sudo tool call.
++
++/// True when `pid` is a live process with effective uid 0 and executable name `sudo` (real,
++/// setuid-root sudo). Reads `/proc/<pid>/status` on Linux — world-readable even for a setuid,
++/// non-dumpable process, unlike `/proc/<pid>/exe`, which is root-only there, so an unprivileged
++/// helper/server can still check it. Falls back to `ps` on other unix.
++fn effective_root_sudo(pid: i32) -> bool {
++    if pid <= 1 {
++        return false;
++    }
++    #[cfg(target_os = "linux")]
++    {
++        let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
++            return false;
++        };
++        let mut name_sudo = false;
++        let mut euid_root = false;
++        for line in status.lines() {
++            if let Some(name) = line.strip_prefix("Name:") {
++                name_sudo = name.trim() == "sudo";
++            } else if let Some(uids) = line.strip_prefix("Uid:") {
++                // "Uid:\t<real>\t<effective>\t<saved>\t<fs>"
++                euid_root = uids.split_whitespace().nth(1) == Some("0");
++            }
++        }
++        name_sudo && euid_root
++    }
++    #[cfg(not(target_os = "linux"))]
++    {
++        let Ok(out) = std::process::Command::new("ps")
++            .args(["-o", "euid=", "-o", "comm=", "-p", &pid.to_string()])
++            .output()
++        else {
++            return false;
++        };
++        let text = String::from_utf8_lossy(&out.stdout);
++        let mut fields = text.split_whitespace();
++        let euid = fields.next();
++        let comm = fields.next();
++        euid == Some("0") && comm.is_some_and(|c| c == "sudo" || c.ends_with("/sudo"))
++    }
++}
++
++/// The parent pid of `pid`.
++fn parent_pid(pid: i32) -> Option<i32> {
++    #[cfg(target_os = "linux")]
++    {
++        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
++        // "<pid> (comm) <state> <ppid> …"; comm may itself contain ')', so split at the last one.
++        let after_comm = stat.rsplit_once(')')?.1;
++        let mut fields = after_comm.split_whitespace();
++        let _state = fields.next()?;
++        fields.next()?.parse().ok()
++    }
++    #[cfg(not(target_os = "linux"))]
++    {
++        let out = std::process::Command::new("ps")
++            .args(["-o", "ppid=", "-p", &pid.to_string()])
++            .output()
++            .ok()?;
++        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
++    }
++}
++
++/// The connecting socket peer's pid via `SO_PEERCRED` (Linux). `None` where the platform cannot
++/// report it.
++#[cfg(target_os = "linux")]
++fn peer_pid(fd: std::os::fd::RawFd) -> Option<i32> {
++    let mut cred = libc::ucred {
++        pid: 0,
++        uid: 0,
++        gid: 0,
++    };
++    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
++    // SAFETY: `getsockopt(SO_PEERCRED)` writes a `ucred` of `len` bytes into `cred`, which outlives
++    // the call; `len` is initialised to its size.
++    let rc = unsafe {
++        libc::getsockopt(
++            fd,
++            libc::SOL_SOCKET,
++            libc::SO_PEERCRED,
++            (&mut cred as *mut libc::ucred).cast(),
++            &mut len,
++        )
++    };
++    (rc == 0 && cred.pid > 0).then_some(cred.pid)
++}
++
++#[cfg(not(target_os = "linux"))]
++fn peer_pid(_fd: std::os::fd::RawFd) -> Option<i32> {
++    None
++}
++
++/// Whether the socket peer is a real sudo's askpass helper: its parent is real sudo. On a platform
++/// without `SO_PEERCRED` this cannot be verified server-side, so it defers to the helper's own
++/// parent check (the helper refused to connect unless launched by sudo).
++fn peer_is_real_sudo_child(stream: &tokio::net::UnixStream) -> bool {
++    use std::os::fd::AsRawFd;
++    match peer_pid(stream.as_raw_fd()) {
++        Some(pid) => parent_pid(pid).is_some_and(effective_root_sudo),
++        None => !cfg!(target_os = "linux"),
++    }
++}
 +
 +/// A password `sudo` is waiting for. Lives on `AppView` while the prompt is up; the typed bytes
 +/// are wiped when the answer goes out or the prompt is dropped.
@@ -992,7 +1109,12 @@ index 00000000..93eb17fc
 +        tracing::warn!(error = %e, "askpass: cannot create $WORKSHOP_HOME/run or bin");
 +        return None;
 +    }
-+    private_dir(&run_dir);
++    // Fail closed if the socket directory cannot be made private: a world-accessible askpass socket
++    // would let any local process reach the password prompt.
++    if !make_private(&run_dir) {
++        tracing::warn!(path = %run_dir.display(), "askpass: refusing to start — cannot make the socket directory private");
++        return None;
++    }
 +    let socket = run_dir.join(format!("askpass-{}.sock", std::process::id()));
 +    let _ = std::fs::remove_file(&socket);
 +    let listener = match tokio::net::UnixListener::bind(&socket) {
@@ -1002,6 +1124,11 @@ index 00000000..93eb17fc
 +            return None;
 +        }
 +    };
++    if !restrict_socket(&socket) {
++        tracing::warn!(path = %socket.display(), "askpass: refusing to start — cannot restrict the socket to the owner");
++        let _ = std::fs::remove_file(&socket);
++        return None;
++    }
 +    let helper = bin_dir.join("askpass");
 +    let exe = match std::env::current_exe() {
 +        Ok(p) => p,
@@ -1027,13 +1154,32 @@ index 00000000..93eb17fc
 +    Some(AskpassServer { socket, helper })
 +}
 +
++/// Make `dir` owner-only (0700) and confirm it took; the caller fails closed otherwise.
 +#[cfg(unix)]
-+fn private_dir(dir: &Path) {
++fn make_private(dir: &Path) -> bool {
 +    use std::os::unix::fs::PermissionsExt;
-+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
++    if std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).is_err() {
++        return false;
++    }
++    std::fs::metadata(dir)
++        .map(|m| m.permissions().mode() & 0o077 == 0)
++        .unwrap_or(false)
 +}
 +#[cfg(not(unix))]
-+fn private_dir(_dir: &Path) {}
++fn make_private(_dir: &Path) -> bool {
++    true
++}
++
++/// Restrict the socket file to the owner (0600); the caller fails closed otherwise.
++#[cfg(unix)]
++fn restrict_socket(path: &Path) -> bool {
++    use std::os::unix::fs::PermissionsExt;
++    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).is_ok()
++}
++#[cfg(not(unix))]
++fn restrict_socket(_path: &Path) -> bool {
++    true
++}
 +
 +async fn serve(listener: tokio::net::UnixListener, ui_tx: mpsc::UnboundedSender<WorkshopTurnMsg>) {
 +    loop {
@@ -1054,12 +1200,23 @@ index 00000000..93eb17fc
 +    ui_tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
 +) -> std::io::Result<()> {
 +    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
++    // Only a real sudo's askpass helper is answered: a command that connects directly (or runs
++    // `$SUDO_ASKPASS` itself) has a shell/other parent, never sudo, so no card is shown and no
++    // password is returned.
++    let authenticated = peer_is_real_sudo_child(&stream);
 +    let (reader, mut writer) = stream.into_split();
 +    let mut line = String::new();
 +    tokio::io::BufReader::new(reader)
 +        .take(4096)
 +        .read_line(&mut line)
 +        .await?;
++    if !authenticated {
++        tracing::warn!(
++            "askpass: refusing a client whose parent is not sudo (possible direct $SUDO_ASKPASS call)"
++        );
++        writer.write_all(b"{\"skipped\":true}\n").await?;
++        return writer.shutdown().await;
++    }
 +    let request: serde_json::Value = serde_json::from_str(line.trim()).unwrap_or_default();
 +    let prompt = request
 +        .get("prompt")
@@ -1106,6 +1263,17 @@ index 00000000..93eb17fc
 +}
 +
 +fn helper_main(prompt: &str) -> i32 {
++    // Fail closed unless our parent is real sudo: a model command that runs `$SUDO_ASKPASS` itself
++    // has a shell parent, so it never reaches the socket and never shows a card.
++    #[cfg(unix)]
++    {
++        // SAFETY: getppid takes no arguments and only reads the caller's parent pid.
++        let ppid = unsafe { libc::getppid() };
++        if !effective_root_sudo(ppid) {
++            eprintln!("{SKIPPED}");
++            return 1;
++        }
++    }
 +    let Some(socket) = std::env::var_os(SOCKET_ENV) else {
 +        eprintln!("{SKIPPED}");
 +        return 1;
@@ -1177,6 +1345,17 @@ index 00000000..93eb17fc
 +    }
 +
 +    #[test]
++    fn only_real_sudo_parents_are_trusted() {
++        // This test process is not sudo: not effective-root and not named `sudo`.
++        assert!(!effective_root_sudo(std::process::id() as i32));
++        assert!(!effective_root_sudo(1)); // init
++        assert!(!effective_root_sudo(0)); // degenerate
++        // Our own parent (cargo test harness / shell) is discoverable and is not sudo either.
++        let ppid = parent_pid(std::process::id() as i32).expect("own ppid");
++        assert!(!effective_root_sudo(ppid));
++    }
++
++    #[test]
 +    fn typed_bytes_are_wiped_on_answer_and_drop() {
 +        let (tx, rx) = oneshot::channel();
 +        let mut pending = PendingPassword::new("t".into(), tx);
@@ -1190,6 +1369,471 @@ index 00000000..93eb17fc
 +        let pending = PendingPassword::new("t".into(), tx);
 +        pending.answer(false);
 +        assert_eq!(rx.blocking_recv().unwrap(), None);
++    }
++}
+diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_engine_shell.rs b/crates/codegen/xai-grok-pager/src/app/workshop_engine_shell.rs
+new file mode 100644
+index 00000000..f76d90da
+--- /dev/null
++++ b/crates/codegen/xai-grok-pager/src/app/workshop_engine_shell.rs
+@@ -0,0 +1,459 @@
++//! Workshop: the shell the OpenCode engine runs its commands through, so a blocking command or a
++//! GUI the model launches behaves the way Grok Build's shell tool makes it behave.
++//!
++//! OpenCode's own bash tool waits for the command's output pipe to reach EOF and, on its timeout,
++//! kills the whole process group. Both hurt on Linux (the test platform):
++//!
++//!   * a command that leaves a background process holding the pipe (an AppImage's FUSE daemon, a
++//!     `foo &` daemon) never reaches EOF, so the tool call — and the turn — hang until the timeout
++//!     fires minutes later (fresh-eyes review issue 3);
++//!   * a GUI the model launches from a tool call (`xdg-open file.html`) inherits that pipe, so the
++//!     window is killed with the group when the tool times out — 30 s after the user saw it open,
++//!     while the answer said it was open (owner task-3 finding F1).
++//!
++//! Grok Build moves a foreground command that blocks past a budget to the background and carries
++//! on, and never kills a process that has detached. The engine cannot be changed, but the shell it
++//! runs commands through can: Workshop points OpenCode's `shell` at `workshop __engine-shell`,
++//! which
++//!
++//!   1. runs the command in its own session (`setsid`, via [`xai_tty_utils::detach_std_command`])
++//!      with its stdout/stderr going to a capture file, not the pipe OpenCode reads — so a daemon
++//!      or GUI the command leaves behind never holds that pipe open, and is never in the shim's
++//!      (or OpenCode's) process group;
++//!   2. streams the capture file to OpenCode and returns as soon as the *direct* child exits, so a
++//!      command that spawns a daemon and returns (or launches a GUI and returns) ends the call at
++//!      once, the window still up;
++//!   3. if the direct child itself blocks with no output for the budget, stops waiting, prints one
++//!      marker line, and returns — leaving the child running detached (Grok Build's background
++//!      move), so the turn continues instead of hanging;
++//!   4. on `SIGINT`/`SIGTERM`/`SIGHUP` (a cancelled turn, or OpenCode's own abort), kills the
++//!      command's process group before exiting.
++//!
++//! The marker line ([`BACKGROUND_MARKER`]) is what `workshop_tools` looks for to badge the tool
++//! row (finding F3: today a cut-off call shows nothing).
++
++use std::ffi::{OsStr, OsString};
++use std::io::{Read, Seek, SeekFrom, Write};
++use std::path::{Path, PathBuf};
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::time::{Duration, Instant};
++
++/// The one line the shim prints when it stops waiting on a still-running command and leaves it in
++/// the background. Human-readable for the model, and the stable marker `workshop_tools` matches to
++/// badge the row (see [`is_background_marker`]).
++pub const BACKGROUND_MARKER: &str = "[workshop] still running after the wait budget — left running in the background; \
++     the turn continues.";
++
++/// The stable substring of [`BACKGROUND_MARKER`] used to recognise it in a tool's output.
++pub const BACKGROUND_MARKER_KEY: &str = "left running in the background";
++
++/// True when a command's output carries the shim's background marker.
++pub fn is_background_marker(output: &str) -> bool {
++    output.contains(BACKGROUND_MARKER_KEY)
++}
++
++/// How long the direct child may block with no output before the shim backgrounds it. Grok Build's
++/// foreground block budget is 15 s; the review asks for ~15–30 s. Overridable for tests.
++const DEFAULT_BUDGET: Duration = Duration::from_secs(25);
++const BUDGET_ENV: &str = "WORKSHOP_ENGINE_SHELL_BUDGET_MS";
++
++fn budget() -> Duration {
++    std::env::var(BUDGET_ENV)
++        .ok()
++        .and_then(|s| s.parse::<u64>().ok())
++        .map(Duration::from_millis)
++        .unwrap_or(DEFAULT_BUDGET)
++}
++
++/// The paths Workshop points the engine at: the directory holding the `sudo` shim (prepended to
++/// the engine's `PATH`) and the engine-shell script (OpenCode's `shell`).
++pub struct EngineShims {
++    /// `$WORKSHOP_HOME/bin/shims` — prepend to the engine's `PATH` so the `sudo` shim wins.
++    pub shims_dir: PathBuf,
++    /// `$WORKSHOP_HOME/bin/engine-shell` — the value for OpenCode's `shell` config.
++    pub shell: PathBuf,
++    /// Whether a `sudo` shim was written (a real `sudo` was found to wrap).
++    pub has_sudo_shim: bool,
++}
++
++impl EngineShims {
++    /// The engine `PATH` with the shims directory first, so `sudo` resolves to the shim. `base` is
++    /// normally the current process `PATH` (the engine inherits it).
++    pub fn path_with_shims(&self, base: &OsStr) -> OsString {
++        let mut path = self.shims_dir.clone().into_os_string();
++        if !base.is_empty() {
++            path.push(":");
++            path.push(base);
++        }
++        path
++    }
++}
++
++/// Write the `sudo` shim and the engine-shell script under `$WORKSHOP_HOME/bin`, returning their
++/// paths. `None` (logged by the caller via the returned `Err`) when the home cannot hold them, in
++/// which case the engine simply runs without them, as it does today.
++pub fn prepare(home: &Path) -> std::io::Result<EngineShims> {
++    let bin = home.join("bin");
++    let shims_dir = bin.join("shims");
++    std::fs::create_dir_all(&shims_dir)?;
++    let exe = std::env::current_exe()?;
++
++    let shell = bin.join("engine-shell");
++    write_script(
++        &shell,
++        &format!(
++            "#!/bin/sh\n# Workshop's engine shell: runs OpenCode's commands with a background \
++             budget and detaches what they leave behind.\nexec '{}' __engine-shell \"$@\"\n",
++            shell_quote(&exe.to_string_lossy()),
++        ),
++    )?;
++
++    // `sudo -A` (Grok Build's `alias sudo='sudo -A'` equivalent): sudo only falls back to
++    // SUDO_ASKPASS on its own when DISPLAY is set, and the engine's environment need not have it,
++    // so force the askpass path. Skip silently when there is no real sudo to wrap.
++    let has_sudo_shim = match real_sudo(&shims_dir) {
++        Some(sudo) => {
++            write_script(
++                &shims_dir.join("sudo"),
++                &format!(
++                    "#!/bin/sh\n# Workshop: force sudo's askpass helper (Grok Build's `sudo -A`).\n\
++                     exec '{}' -A \"$@\"\n",
++                    shell_quote(&sudo.to_string_lossy()),
++                ),
++            )?;
++            true
++        }
++        None => false,
++    };
++
++    Ok(EngineShims {
++        shims_dir,
++        shell,
++        has_sudo_shim,
++    })
++}
++
++fn write_script(path: &Path, contents: &str) -> std::io::Result<()> {
++    std::fs::write(path, contents)?;
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::PermissionsExt;
++        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
++    }
++    Ok(())
++}
++
++/// `'` is the only character `'…'` cannot hold; close, escape, reopen. Paths under `$WORKSHOP_HOME`
++/// rarely contain one, but a home with an apostrophe must not break the script.
++fn shell_quote(s: &str) -> String {
++    s.replace('\'', "'\\''")
++}
++
++/// The real `sudo` to wrap: the first `sudo` on `PATH` that is not our own shims directory, else
++/// the conventional locations. `None` when there is no sudo to wrap.
++fn real_sudo(shims_dir: &Path) -> Option<PathBuf> {
++    if let Some(path) = std::env::var_os("PATH") {
++        for dir in std::env::split_paths(&path) {
++            if dir == shims_dir {
++                continue;
++            }
++            let candidate = dir.join("sudo");
++            if is_executable(&candidate) {
++                return Some(candidate);
++            }
++        }
++    }
++    for fixed in ["/usr/bin/sudo", "/bin/sudo", "/usr/local/bin/sudo"] {
++        let candidate = PathBuf::from(fixed);
++        if is_executable(&candidate) {
++            return Some(candidate);
++        }
++    }
++    None
++}
++
++#[cfg(unix)]
++fn is_executable(path: &Path) -> bool {
++    use std::os::unix::fs::PermissionsExt;
++    std::fs::metadata(path)
++        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
++        .unwrap_or(false)
++}
++
++#[cfg(not(unix))]
++fn is_executable(path: &Path) -> bool {
++    path.is_file()
++}
++
++// ── The `workshop __engine-shell -c <command>` process ──────────────────────────────────────────
++
++static TERMINATED: AtomicBool = AtomicBool::new(false);
++
++extern "C" fn on_terminate(_sig: libc::c_int) {
++    TERMINATED.store(true, Ordering::SeqCst);
++}
++
++/// Dispatch for `workshop __engine-shell …` (OpenCode invokes it as `<shell> -c <command>`).
++/// `None` when this is an ordinary launch.
++pub fn maybe_run_helper() -> Option<i32> {
++    let args: Vec<OsString> = std::env::args_os().collect();
++    if args.get(1).map(OsString::as_os_str) != Some(OsStr::new("__engine-shell")) {
++        return None;
++    }
++    let command = extract_command(args.get(2..).unwrap_or(&[]));
++    Some(run(&command))
++}
++
++/// The command from OpenCode's `<shell> -c <command>` invocation: the argument after `-c`. Lenient
++/// (last argument, else joined) so an unexpected shape still runs something rather than nothing.
++fn extract_command(rest: &[OsString]) -> String {
++    if let Some(pos) = rest.iter().position(|a| a == OsStr::new("-c"))
++        && let Some(cmd) = rest.get(pos + 1)
++    {
++        return cmd.to_string_lossy().into_owned();
++    }
++    rest.last()
++        .map(|a| a.to_string_lossy().into_owned())
++        .unwrap_or_default()
++}
++
++fn run(command: &str) -> i32 {
++    if command.trim().is_empty() {
++        return 0;
++    }
++    match run_with_watchdog(command) {
++        Ok(code) => code,
++        // Setting up the capture file failed: fall back to a plain shell so the command still runs
++        // (without the watchdog/detach), rather than failing the call.
++        Err(_) => exec_plain(command),
++    }
++}
++
++fn run_with_watchdog(command: &str) -> std::io::Result<i32> {
++    let path = capture_path();
++    let sink = std::fs::OpenOptions::new()
++        .create(true)
++        .write(true)
++        .truncate(true)
++        .open(&path)?;
++
++    let mut cmd = std::process::Command::new(user_shell());
++    cmd.arg("-c").arg(command);
++    cmd.stdin(xai_tty_utils::null_stdio());
++    cmd.stdout(sink.try_clone()?);
++    cmd.stderr(sink);
++    // `setsid`: the command runs in its own session, so a daemon or GUI it leaves behind survives
++    // this shim's exit and is out of OpenCode's process group (its timeout kill cannot reach it).
++    xai_tty_utils::detach_std_command(&mut cmd);
++    // Enrolling would tie the child to this process's scope; the whole point is that it outlives us
++    // (a backgrounded command, a detached GUI), so it is spawned deliberately unenrolled.
++    #[allow(clippy::disallowed_methods)]
++    let mut child = match cmd.spawn() {
++        Ok(child) => child,
++        Err(e) => {
++            let _ = std::fs::remove_file(&path);
++            return Err(e);
++        }
++    };
++
++    // The command's own group, for a cancel/abort kill (setsid ⇒ pgid == child pid).
++    let mut group = xai_tty_utils::ProcessGroup::new().ok();
++    if let Some(group) = group.as_mut() {
++        let _ = group.attach_std(&child);
++    }
++    install_signal_handlers();
++
++    let mut reader = std::fs::File::open(&path)?;
++    let mut offset: u64 = 0;
++    let mut out = std::io::stdout().lock();
++    let mut last_output = Instant::now();
++    let budget = budget();
++    let poll = Duration::from_millis(100);
++
++    let code = loop {
++        if pump(&mut reader, &mut offset, &mut out) {
++            last_output = Instant::now();
++        }
++
++        if TERMINATED.load(Ordering::SeqCst) {
++            if let Some(group) = &group {
++                let _ = group.terminate();
++            }
++            let _ = xai_tty_utils::wait_child_bounded(&mut child, Duration::from_secs(3));
++            pump(&mut reader, &mut offset, &mut out);
++            let _ = std::fs::remove_file(&path);
++            break 130;
++        }
++
++        match child.try_wait() {
++            Ok(Some(status)) => {
++                pump(&mut reader, &mut offset, &mut out);
++                // The direct child is gone. Anything it detached (setsid, or writing to the
++                // capture file's inode) lives on; the file is unlinked but its fd stays valid.
++                let _ = std::fs::remove_file(&path);
++                break exit_code(status);
++            }
++            Ok(None) => {}
++            Err(_) => break 0,
++        }
++
++        if last_output.elapsed() >= budget {
++            // The child is still blocking with no output: hand the turn back, as Grok Build does.
++            // The child keeps running, detached; its output keeps appending to the (now unlinked)
++            // capture file, which nothing reads — the model has what there was.
++            pump(&mut reader, &mut offset, &mut out);
++            let _ = writeln!(out, "\n{BACKGROUND_MARKER}");
++            let _ = out.flush();
++            break 0;
++        }
++
++        std::thread::sleep(poll);
++    };
++    Ok(code)
++}
++
++/// Copy any bytes appended since `offset` to `out`; returns whether anything was copied.
++fn pump(reader: &mut std::fs::File, offset: &mut u64, out: &mut impl Write) -> bool {
++    if reader.seek(SeekFrom::Start(*offset)).is_err() {
++        return false;
++    }
++    let mut buf = [0u8; 16 * 1024];
++    let mut wrote = false;
++    loop {
++        match reader.read(&mut buf) {
++            Ok(0) => break,
++            Ok(n) => {
++                if let Some(chunk) = buf.get(..n)
++                    && out.write_all(chunk).is_ok()
++                {
++                    *offset += n as u64;
++                    wrote = true;
++                }
++            }
++            Err(_) => break,
++        }
++    }
++    if wrote {
++        let _ = out.flush();
++    }
++    wrote
++}
++
++fn exit_code(status: std::process::ExitStatus) -> i32 {
++    #[cfg(unix)]
++    {
++        use std::os::unix::process::ExitStatusExt;
++        if let Some(code) = status.code() {
++            return code;
++        }
++        if let Some(sig) = status.signal() {
++            return 128 + sig;
++        }
++    }
++    #[cfg(not(unix))]
++    {
++        if let Some(code) = status.code() {
++            return code;
++        }
++    }
++    0
++}
++
++/// Fallback when the capture file cannot be created: replace this process with a plain shell so the
++/// command still runs (no watchdog, no detach). Never returns on success.
++fn exec_plain(command: &str) -> i32 {
++    #[cfg(unix)]
++    {
++        use std::os::unix::process::CommandExt;
++        let err = std::process::Command::new(user_shell())
++            .arg("-c")
++            .arg(command)
++            .exec();
++        eprintln!("workshop engine-shell: {err}");
++        127
++    }
++    #[cfg(not(unix))]
++    {
++        std::process::Command::new(user_shell())
++            .arg("-c")
++            .arg(command)
++            .status()
++            .map(|s| s.code().unwrap_or(1))
++            .unwrap_or(127)
++    }
++}
++
++fn install_signal_handlers() {
++    #[cfg(unix)]
++    unsafe {
++        let handler = on_terminate as *const () as libc::sighandler_t;
++        for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
++            libc::signal(sig, handler);
++        }
++    }
++}
++
++/// The shell the command runs under. `bash` is what OpenCode's models write for; fall back to
++/// `/bin/sh` where it is absent.
++fn user_shell() -> PathBuf {
++    for shell in ["/bin/bash", "/usr/bin/bash"] {
++        if Path::new(shell).exists() {
++            return PathBuf::from(shell);
++        }
++    }
++    PathBuf::from("/bin/sh")
++}
++
++/// A private capture file for one command's output. Under `$WORKSHOP_HOME/run` when available (kept
++/// off the user's project), else the temp dir; unique per invocation.
++fn capture_path() -> PathBuf {
++    let name = format!(
++        "engine-shell-{}-{}.out",
++        std::process::id(),
++        Instant::now().elapsed().as_nanos() ^ (std::process::id() as u128)
++    );
++    if let Some(home) = std::env::var_os("WORKSHOP_HOME") {
++        let run = PathBuf::from(home).join("run");
++        if std::fs::create_dir_all(&run).is_ok() {
++            return run.join(name);
++        }
++    }
++    std::env::temp_dir().join(name)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn extracts_command_after_dash_c() {
++        let argv = |a: &[&str]| a.iter().map(OsString::from).collect::<Vec<_>>();
++        assert_eq!(extract_command(&argv(&["-c", "echo hi"])), "echo hi");
++        // Lenient shapes still yield something to run.
++        assert_eq!(extract_command(&argv(&["echo hi"])), "echo hi");
++        assert_eq!(extract_command(&argv(&[])), "");
++    }
++
++    #[test]
++    fn background_marker_is_recognised() {
++        assert!(is_background_marker(&format!("out\n{BACKGROUND_MARKER}\n")));
++        assert!(!is_background_marker("ordinary output"));
++    }
++
++    #[test]
++    fn path_with_shims_prepends_the_dir() {
++        let shims = EngineShims {
++            shims_dir: PathBuf::from("/home/u/.workshop/bin/shims"),
++            shell: PathBuf::from("/home/u/.workshop/bin/engine-shell"),
++            has_sudo_shim: true,
++        };
++        assert_eq!(
++            shims.path_with_shims(OsStr::new("/usr/bin:/bin")),
++            OsString::from("/home/u/.workshop/bin/shims:/usr/bin:/bin")
++        );
++        assert_eq!(
++            shims.path_with_shims(OsStr::new("")),
++            OsString::from("/home/u/.workshop/bin/shims")
++        );
 +    }
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_engine_state.rs b/crates/codegen/xai-grok-pager/src/app/workshop_engine_state.rs
@@ -2776,10 +3420,10 @@ index 00000000..fdb7cfa5
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs b/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs
 new file mode 100644
-index 00000000..c9dc7ba0
+index 00000000..1c9bc28c
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_tools.rs
-@@ -0,0 +1,645 @@
+@@ -0,0 +1,719 @@
 +//! Workshop overlay: the engine's tool calls as the pager's own tool rows, with the work inside
 +//! them once the result lands — the diff an edit applied, the output and exit code of a command,
 +//! the text a read returned — so a row can be opened (`Enter`, fold keys) like any ACP tool row.
@@ -2967,8 +3611,15 @@ index 00000000..c9dc7ba0
 +            if let Some(desc) = str_of(input, "description").filter(|d| !d.trim().is_empty()) {
 +                block = block.with_description(desc);
 +            }
-+            let body = str_of(metadata, "output").unwrap_or(output);
-+            let body = tail(body);
++            let full = str_of(metadata, "output").unwrap_or(output);
++            // A call that did not simply finish gets a neutral badge on the row, so a cut-off call
++            // is not indistinguishable from a successful one (finding F3): the engine-shell
++            // backgrounds a still-running command (its marker), and OpenCode's own timeout kills
++            // one and notes it only to the model.
++            if let Some(note) = row_note(full) {
++                block = block.with_note(note);
++            }
++            let body = tail(full);
 +            if !body.trim().is_empty() && body.trim() != "(no output)" {
 +                block = block.with_output(body);
 +            }
@@ -3074,6 +3725,19 @@ index 00000000..c9dc7ba0
 +        ToolCallBlock::WebSearch(b) => b.set_error(error),
 +        ToolCallBlock::Other(b) => b.set_error(error),
 +        _ => {}
++    }
++}
++
++/// The neutral header badge for a command that did not simply finish, or `None` for one that did.
++/// Workshop's engine-shell backgrounds a still-running command (its own marker); OpenCode's bash
++/// tool kills one that exceeds its timeout and notes it in the output as `<shell_metadata>`.
++fn row_note(output: &str) -> Option<&'static str> {
++    if crate::app::workshop_engine_shell::is_background_marker(output) {
++        Some("moved to background")
++    } else if output.contains("terminated command after exceeding timeout") {
++        Some("timed out")
++    } else {
++        None
 +    }
 +}
 +
@@ -3334,6 +3998,60 @@ index 00000000..c9dc7ba0
 +    }
 +
 +    #[test]
++    fn bash_row_is_badged_when_backgrounded_or_timed_out() {
++        // The engine-shell backgrounded a still-running command (exit 0, its marker in the output):
++        // a neutral badge, not an error.
++        let backgrounded = finished_row(
++            "bash",
++            &json!({"command": "./app --serve"}),
++            true,
++            "starting…\n",
++            Some("./app --serve"),
++            &json!({
++                "output": format!("starting…\n{}", crate::app::workshop_engine_shell::BACKGROUND_MARKER),
++                "exit": 0
++            }),
++        );
++        let RenderBlock::ToolCall(ToolCallBlock::Execute(backgrounded)) = backgrounded else {
++            panic!("run row");
++        };
++        assert_eq!(backgrounded.note.as_deref(), Some("moved to background"));
++        assert!(backgrounded.is_success(), "backgrounding is not a failure");
++
++        // OpenCode's own timeout killed it (exit null, its note only to the model): badge it so the
++        // row is not indistinguishable from a clean finish (finding F3).
++        let timed_out = finished_row(
++            "bash",
++            &json!({"command": "./hang"}),
++            true,
++            "",
++            Some("./hang"),
++            &json!({
++                "output": "\n\n<shell_metadata>\nshell tool terminated command after exceeding timeout 30000 ms.\n</shell_metadata>",
++                "exit": Value::Null
++            }),
++        );
++        let RenderBlock::ToolCall(ToolCallBlock::Execute(timed_out)) = timed_out else {
++            panic!("run row");
++        };
++        assert_eq!(timed_out.note.as_deref(), Some("timed out"));
++
++        // An ordinary command carries no badge.
++        let plain = finished_row(
++            "bash",
++            &json!({"command": "ls"}),
++            true,
++            "a\nb\n",
++            Some("ls"),
++            &json!({"output": "a\nb\n", "exit": 0}),
++        );
++        let RenderBlock::ToolCall(ToolCallBlock::Execute(plain)) = plain else {
++            panic!("run row");
++        };
++        assert!(plain.note.is_none());
++    }
++
++    #[test]
 +    fn running_rows_use_the_pager_verbs() {
 +        assert!(matches!(
 +            running_row("bash", &json!({"command": "ls"})),
@@ -3494,6 +4212,84 @@ index 376b8482..382f17cf 100644
      }
  
      fn has_vpad_for(&self, _appearance: &AppearanceConfig) -> bool {
+diff --git a/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/execute.rs b/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/execute.rs
+index 883c9962..15de08b6 100644
+--- a/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/execute.rs
++++ b/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/execute.rs
+@@ -20,6 +20,9 @@ pub struct ExecuteToolCallBlock {
+     pub command: String,
+     /// Error message if the command failed (None means success).
+     pub error: Option<String>,
++    /// A neutral status badge shown on the header row when a call did not simply finish — e.g. it
++    /// was moved to the background or cut off by a timeout (Workshop; see `workshop_tools`).
++    pub note: Option<String>,
+     /// Optional description of what the command does.
+     pub description: Option<String>,
+     /// The terminal output. Streamed incrementally.
+@@ -40,6 +43,7 @@ impl ExecuteToolCallBlock {
+         Self {
+             command: command.into(),
+             error: None,
++            note: None,
+             description: None,
+             output: None,
+             started_at: None,
+@@ -55,6 +59,12 @@ impl ExecuteToolCallBlock {
+         self
+     }
+ 
++    /// Set the neutral status badge shown on the header (e.g. "moved to background", "timed out").
++    pub fn with_note(mut self, note: impl Into<String>) -> Self {
++        self.note = Some(note.into());
++        self
++    }
++
+     /// Set description.
+     pub fn with_description(mut self, desc: impl Into<String>) -> Self {
+         self.description = Some(desc.into());
+@@ -316,6 +326,22 @@ impl ExecuteToolCallBlock {
+ 
+     /// Description-first when a description exists; collapsed mode omits the command line for density.
+     /// When `muted`, command/description body uses muted gray. Prefix spans (`Run `, `(user) `, `$ `) are not selectable.
++    /// The neutral status badge (`· moved to background`) appended to the first header line, so a
++    /// call that was backgrounded or cut off is marked on the collapsed row, not just in its
++    /// output. Dim so it reads as chrome, never as the command.
++    fn append_note(&self, lines: &mut [(Line<'static>, usize)], theme: &Theme) {
++        let Some(note) = self.note.as_deref().map(str::trim).filter(|n| !n.is_empty()) else {
++            return;
++        };
++        if let Some((line, _)) = lines.first_mut() {
++            let style = ratatui::style::Style::default()
++                .fg(theme.text_secondary)
++                .add_modifier(Modifier::DIM);
++            line.spans
++                .push(Span::styled(format!("  \u{00b7} {note}"), style));
++        }
++    }
++
+     fn header_lines(
+         &self,
+         theme: &Theme,
+@@ -324,7 +350,7 @@ impl ExecuteToolCallBlock {
+         include_command: bool,
+     ) -> Vec<(Line<'static>, usize)> {
+         let strip_run = matches!(header_style, ExecuteHeaderStyle::Label);
+-        match self.description_display(strip_run) {
++        let mut result = match self.description_display(strip_run) {
+             Some(desc) => {
+                 let title = match header_style {
+                     ExecuteHeaderStyle::Label => {
+@@ -373,7 +399,9 @@ impl ExecuteToolCallBlock {
+                 };
+                 vec![(line, prefix_spans)]
+             }
+-        }
++        };
++        self.append_note(&mut result, theme);
++        result
+     }
+ 
+     /// `include_command` is false in collapsed mode so a description title alone is shown without the command line.
 diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/peek.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/peek.rs
 index 11f4ed27..0355c109 100644
 --- a/crates/codegen/xai-grok-pager/src/views/dashboard/peek.rs

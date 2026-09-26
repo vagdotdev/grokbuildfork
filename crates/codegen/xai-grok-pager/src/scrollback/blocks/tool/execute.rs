@@ -20,6 +20,9 @@ pub struct ExecuteToolCallBlock {
     pub command: String,
     /// Error message if the command failed (None means success).
     pub error: Option<String>,
+    /// A neutral status badge shown on the header row when a call did not simply finish — e.g. it
+    /// was moved to the background or cut off by a timeout (Workshop; see `workshop_tools`).
+    pub note: Option<String>,
     /// Optional description of what the command does.
     pub description: Option<String>,
     /// The terminal output. Streamed incrementally.
@@ -40,6 +43,7 @@ impl ExecuteToolCallBlock {
         Self {
             command: command.into(),
             error: None,
+            note: None,
             description: None,
             output: None,
             started_at: None,
@@ -52,6 +56,12 @@ impl ExecuteToolCallBlock {
     /// Set error (marks as failed).
     pub fn with_error(mut self, error: impl Into<String>) -> Self {
         self.error = Some(error.into());
+        self
+    }
+
+    /// Set the neutral status badge shown on the header (e.g. "moved to background", "timed out").
+    pub fn with_note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
         self
     }
 
@@ -316,6 +326,22 @@ impl ExecuteToolCallBlock {
 
     /// Description-first when a description exists; collapsed mode omits the command line for density.
     /// When `muted`, command/description body uses muted gray. Prefix spans (`Run `, `(user) `, `$ `) are not selectable.
+    /// The neutral status badge (`· moved to background`) appended to the first header line, so a
+    /// call that was backgrounded or cut off is marked on the collapsed row, not just in its
+    /// output. Dim so it reads as chrome, never as the command.
+    fn append_note(&self, lines: &mut [(Line<'static>, usize)], theme: &Theme) {
+        let Some(note) = self.note.as_deref().map(str::trim).filter(|n| !n.is_empty()) else {
+            return;
+        };
+        if let Some((line, _)) = lines.first_mut() {
+            let style = ratatui::style::Style::default()
+                .fg(theme.text_secondary)
+                .add_modifier(Modifier::DIM);
+            line.spans
+                .push(Span::styled(format!("  \u{00b7} {note}"), style));
+        }
+    }
+
     fn header_lines(
         &self,
         theme: &Theme,
@@ -324,7 +350,7 @@ impl ExecuteToolCallBlock {
         include_command: bool,
     ) -> Vec<(Line<'static>, usize)> {
         let strip_run = matches!(header_style, ExecuteHeaderStyle::Label);
-        match self.description_display(strip_run) {
+        let mut result = match self.description_display(strip_run) {
             Some(desc) => {
                 let title = match header_style {
                     ExecuteHeaderStyle::Label => {
@@ -373,7 +399,9 @@ impl ExecuteToolCallBlock {
                 };
                 vec![(line, prefix_spans)]
             }
-        }
+        };
+        self.append_note(&mut result, theme);
+        result
     }
 
     /// `include_command` is false in collapsed mode so a description title alone is shown without the command line.

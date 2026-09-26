@@ -125,7 +125,8 @@ pub struct PromptFile {
 pub struct EngineOptions {
     /// Project directory the server runs in — normally an isolated worktree.
     pub workspace: PathBuf,
-    /// Environment for the server; `None` = minimal env from this process.
+    /// Environment for the server; `None` = the user's environment minus the secret-shaped deny
+    /// list ([`crate::env::engine_env_from_process`]), never the strict probe allowlist.
     pub env: Option<BTreeMap<OsString, OsString>>,
     /// Variables added on top of the allowlisted environment — the host's own (`SUDO_ASKPASS`
     /// and the socket its askpass helper reports to); every command the engine runs inherits
@@ -365,9 +366,14 @@ impl OpenCodeEngine {
             _ => {}
         }
 
+        // The engine runs the user's own commands, so it gets the user's environment untouched
+        // (minus the secret-shaped deny list), not the strict allowlist used for vendor-CLI
+        // probes: `DISPLAY`/`WAYLAND_DISPLAY`/`DBUS_SESSION_BUS_ADDRESS`/… pass through so a GUI
+        // the model launches can open on the desktop, and `CI`/`TERM=dumb`/`NO_COLOR` are not
+        // forced onto the commands. See `crate::env::engine_env`.
         let mut env = match &opts.env {
-            Some(env) => crate::env::minimal_env(env.clone(), &[])?,
-            None => crate::env::minimal_env_from_process(&[])?,
+            Some(env) => crate::env::engine_env(env.clone(), &[])?,
+            None => crate::env::engine_env_from_process(&[])?,
         };
         // Loopback server; still password-protected so another local user
         // cannot drive the session. Generated per launch, never persisted.
