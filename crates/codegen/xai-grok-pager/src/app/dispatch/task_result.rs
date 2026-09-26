@@ -1000,6 +1000,26 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             vec![]
         }
         TaskResult::WorkshopPickerLoaded(snap) => {
+            // The lists just read decide whether the picked model still exists (owner rule: it
+            // sticks unless it is gone). The engine list counts only once it was ever fetched —
+            // the pinned seed row is not evidence; a vendor counts once its probe finished.
+            let engine_known = snap
+                .catalog_status
+                .iter()
+                .find(|s| s.provider_id == workshop_auth::ENGINE_PROVIDER_ID)
+                .is_some_and(|s| s.freshness != workshop_auth::Freshness::Seed);
+            let engine: Vec<workshop_auth::EngineModel> = if engine_known {
+                snap.rows
+                    .iter()
+                    .filter_map(|r| match &r.kind {
+                        workshop_auth::RowKind::Engine(m) => Some(m.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let mut effects = crate::app::workshop::apply_retired_pick(app, &engine, &snap.rails);
             if let Some(picker) = app.connection_picker.as_mut() {
                 // The cursor lands on the active connection's row (never xAI, never Zen).
                 picker.apply_snapshot(snap);
@@ -1008,22 +1028,24 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 // live rows (and any `refresh failed` note) always land after the cached ones.
                 if picker.refresh_pending && !picker.refresh_in_flight {
                     picker.refresh_in_flight = true;
-                    return vec![Effect::WorkshopRefreshCatalogs {
+                    effects.push(Effect::WorkshopRefreshCatalogs {
                         force: false,
                         engine: app.workshop_engine.clone(),
-                    }];
+                    });
+                    return effects;
                 }
                 // Nothing live is queued (`/auth`, after a sign-in) but a signed-in rail has no
                 // cached list yet: ask its CLI. That snapshot never comes back `Loading`.
                 if !picker.refresh_pending
-                    && picker.rails.iter().any(|r| {
-                        matches!(r.subscription, workshop_detect::RailModels::Loading)
-                    })
+                    && picker
+                        .rails
+                        .iter()
+                        .any(|r| matches!(r.subscription, workshop_detect::RailModels::Loading))
                 {
-                    return vec![Effect::WorkshopRefreshRailModels];
+                    effects.push(Effect::WorkshopRefreshRailModels);
                 }
             }
-            vec![]
+            effects
         }
         TaskResult::WorkshopConnectDone {
             provider_id,
@@ -1077,17 +1099,12 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::WorkshopLoginTerminalDone { rail, exit } => {
             use workshop_detect::process::InteractiveExit;
             if let Some(picker) = app.connection_picker.as_mut() {
-                // Focus returns to the rail list: the detail panel that Connect's Enter opened
-                // would otherwise hold ↑/↓ until the tab is switched away and back.
-                picker.detail_open = false;
                 if exit == InteractiveExit::Interrupted {
-                    // A sign-in chained onto the one-keypress install: the rail still reads
-                    // `[Install]` although the CLI is on PATH now, so re-detect (it becomes
-                    // `[Sign in]`). A cancelled sign-in on an installed CLI changes nothing.
-                    let just_installed = picker
-                        .rails
-                        .iter()
-                        .any(|r| r.rail == rail && !r.installed);
+                    // A sign-in chained onto the one-keypress install: the row still reads
+                    // `install` although the CLI is on PATH now, so re-detect (it becomes
+                    // `sign in`). A cancelled sign-in on an installed CLI changes nothing.
+                    let just_installed =
+                        picker.rails.iter().any(|r| r.rail == rail && !r.installed);
                     if just_installed {
                         picker.set_status(format!(
                             "{} installed \u{b7} sign-in cancelled (Ctrl+C); re-detecting\u{2026}",

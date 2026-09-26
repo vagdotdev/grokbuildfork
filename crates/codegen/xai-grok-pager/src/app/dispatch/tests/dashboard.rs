@@ -3044,9 +3044,21 @@ fn dashboard_slash_restricted_command_upsells_via_toast() {
 #[test]
 fn dashboard_slash_command_error_gets_error_glyph_prefix() {
     let mut app = test_app();
-    seed_model(&mut app, "grok-4.5", "Grok 4.5");
+    // A reasoning model: `/model <it> <unknown level>` is still a command error (`/model
+    // <unknown name>` opens the Workshop picker filtered instead).
+    let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "supportsReasoningEffort".into(),
+        serde_json::Value::Bool(true),
+    );
+    app.models.available.insert(
+        model_id.clone(),
+        acp::ModelInfo::new(model_id, "Grok 4.5".to_string()).meta(Some(meta)),
+    );
     open_dashboard(&mut app);
-    let effects = dispatch_dashboard_dispatch_slash(&mut app, "/model nonexistent".into());
+    let effects =
+        dispatch_dashboard_dispatch_slash(&mut app, "/model Grok 4.5 nonexistent".into());
     assert!(effects.is_empty(), "a failed command must not dispatch");
     assert!(app.agents.is_empty(), "no session should be created");
     let toast = app

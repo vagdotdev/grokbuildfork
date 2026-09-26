@@ -84,12 +84,12 @@ pub fn apply_voice_probe(report: &mut DiagnosticReport, emit_missing_issue: bool
 pub fn apply_engine_probe(report: &mut DiagnosticReport) {
     use crate::app::workshop_engine_state::{self as state, EngineState};
     use workshop_adapters::opencode_engine::{detect_opencode, quarantine_flag};
-    use workshop_adapters::{DetectOptions, Detection};
+    use workshop_adapters::{DetectConfig, Detection};
 
     let home = crate::app::workshop::workshop_home();
     let saved = EngineState::load(&home).unwrap_or_default();
     let detection = block_on_detached(async {
-        detect_opencode(&DetectOptions::default(), None).await
+        detect_opencode(&DetectConfig::default(), None).await
     });
     let (binary, version, binary_status) = match detection {
         Detection::Installed(cli) => (

@@ -379,7 +379,7 @@ async fn start_spawns_the_binary_parses_listening_line_and_shuts_down() {
     sandbox.set_serve_port(server.addr.port());
     let Detection::Installed(cli) = detect(
         vendors::by_id(OPENCODE.id).as_ref(),
-        &sandbox.detect_options(),
+        &sandbox.detect_config(),
     )
     .await
     else {

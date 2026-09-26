@@ -7,11 +7,16 @@
 //! vendor's own status command; login itself is the vendor's own login
 //! command attached to the user's terminal.
 //!
+//! Who the vendors are, where their CLIs live, whether a binary really is the
+//! vendor's and whether the user is signed in is `workshop-detect`'s job — the
+//! one detection stack, shared with the `/model` picker, so a vendor row and
+//! the turn that follows it always see the same CLI. This crate is spawn and
+//! stream normalization only.
+//!
 //! Flow:
 //!
 //! ```text
-//! detect::detect(adapter)        PATH, known dirs, --version/--help identity
-//!   -> status::probe_login       vendor status command -> Ready / Sign in
+//! detect(adapter, cfg)           workshop-detect: PATH, known dirs, --version/--help identity
 //!   -> worktree::prepare         isolated git worktree for the run
 //!   -> supervisor::spawn         pinned flags, process group, minimal env
 //!   -> RunHandle::next_event     TextDelta / Thinking / ToolCall / ToolResult /
@@ -36,23 +41,35 @@
 //! ```
 
 pub mod adapter;
-pub mod detect;
 pub mod env;
 pub mod event;
 pub mod opencode_engine;
-pub mod probe;
 mod spawn;
-pub mod status;
 pub mod supervisor;
 pub mod vendors;
 pub mod worktree;
 
 pub use adapter::{
-    Adapter, AdapterId, AskReply, LoginState, NormalizeError, Normalizer, PermissionPolicy,
-    PinStatus, ProbeOutput, PromptDelivery, RunRequest, Terminal, VersionPin,
+    Adapter, AdapterId, AskReply, NormalizeError, Normalizer, PermissionPolicy, PinStatus,
+    PromptDelivery, RunRequest, Terminal, VersionPin,
 };
-pub use detect::{DetectOptions, Detection, InstalledCli, detect};
 pub use event::{AdapterEvent, QuestionChoice, QuestionPrompt, Usage, question_answers_prompt};
-pub use status::{RailPill, RailStatus, probe_login, rail_status};
 pub use supervisor::{Replier, RunHandle, RunOutcome, SpawnError, SupervisorOptions, spawn};
+pub use workshop_detect::LoginState;
+pub use workshop_detect::VendorProbe as ProbeOutput;
+pub use workshop_detect::{DetectConfig, Detection, Identity as InstalledCli};
 pub use worktree::{GitWorktreeIsolation, InPlace, IsolatedWorkspace, WorkspaceIsolation};
+
+/// Locate and verify `adapter`'s CLI through the detection stack the picker uses (`PATH`, the
+/// known install dirs, `cfg.preferred_dirs`; the binary's own `--version` / `--help` as its
+/// identity). Blocking work runs off the async runtime's threads.
+pub async fn detect(adapter: &dyn Adapter, cfg: &DetectConfig) -> Detection {
+    let vendor = adapter.id();
+    let cfg = cfg.clone();
+    tokio::task::spawn_blocking(move || workshop_detect::detect_vendor(vendor, &cfg))
+        .await
+        .unwrap_or_else(|e| Detection::Unverified {
+            path: std::path::PathBuf::new(),
+            reason: format!("detection task failed: {e}"),
+        })
+}

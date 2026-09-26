@@ -3,8 +3,9 @@
 //!
 //! * The model name only: no provider, never "OpenCode".
 //! * `(effort)` only when the model has effort levels in OpenCode's live catalog and one was
-//!   picked on `/model` (one row per level); no level is ever invented. The pick reaches the
-//!   engine as the prompt's `variant` — the fake `opencode serve` records every prompt body.
+//!   picked — in `/model`'s effort sub-menu (one row per model, the levels a follow-up choice) or
+//!   with `/effort <level>`; no level is ever invented. The pick reaches the engine as the
+//!   prompt's `variant` — the fake `opencode serve` records every prompt body.
 //! * The mode comes from the same flags upstream draws (`--yolo` → `always-approve`).
 //! * On the first message nothing says "OpenCode", "Starting…" or "Waiting for OpenCode…".
 //!
@@ -94,35 +95,52 @@ fn composer_border_is_model_effort_and_mode_like_upstream() {
         prompts[0]
     );
 
-    // 3. `/model` after the live catalog: a model with effort levels is one row per level,
-    //    titled the way the composer will read.
+    // 3. `/model` after the live catalog: one row per model; a model with effort levels opens
+    //    (Enter) into its levels, `Default` first, as a follow-up choice — never a row per level.
     send_prompt(&mut j, "/model");
-    wait_for(&mut j.h, "Tab: Subscriptions", 15);
-    wait_for(&mut j.h, "Ling 3.0 Flash Fin Free (high)", 20);
+    wait_for(&mut j.h, PICKER_OPEN, 15);
+    wait_for(&mut j.h, "Ling 3.0 Flash Fin Free", 20);
+    wait_gone(&mut j.h, "refreshing lists", 15);
     let screen = j.h.screen_contents();
-    for row in [
-        "Ling 3.0 Flash Fin Free",
+    for level_row in [
         "Ling 3.0 Flash Fin Free (low)",
         "Ling 3.0 Flash Fin Free (medium)",
         "Ling 3.0 Flash Fin Free (high)",
+        "Big Pickle (",
     ] {
-        assert!(screen.contains(row), "level row {row:?} listed:\n{screen}");
-    }
-    assert!(
-        !screen.contains("Big Pickle ("),
-        "a model without levels gets no level rows:\n{screen}"
-    );
-    move_selection_to(&mut j.h, "Ling 3.0 Flash Fin Free (high)");
-    snapshot(&j.h, &j.dir, "03-picker-effort-rows");
-    j.h.inject_keys(b"\r").unwrap();
-    if let Err(e) =
-        j.h.wait_for_text_absent("Tab: Subscriptions", Duration::from_secs(30))
-    {
-        panic!(
-            "picker did not close after picking a level: {e}\n{}",
-            j.h.screen_contents()
+        assert!(
+            !screen.contains(level_row),
+            "one row per model, no level rows ({level_row:?}):\n{screen}"
         );
     }
+    move_selection_to(&mut j.h, "Ling 3.0 Flash Fin Free");
+    let line = selected_line(&j.h).unwrap_or_default();
+    assert!(
+        line.contains(OPENS_SUBMENU),
+        "a model with levels is marked as opening a sub-menu: {line}"
+    );
+    snapshot(&j.h, &j.dir, "03-picker-one-row-per-model");
+    j.h.inject_keys(b"\r").unwrap();
+    wait_for(&mut j.h, "Models \u{203a} Ling 3.0 Flash Fin Free", 10);
+    let screen = j.h.screen_contents();
+    let (d, l, m, h) = (
+        screen.find("Default").unwrap(),
+        screen.find(" low").unwrap(),
+        screen.find(" medium").unwrap(),
+        screen.find(" high").unwrap(),
+    );
+    assert!(
+        d < l && l < m && m < h,
+        "the levels follow `Default`, lowest first:\n{screen}"
+    );
+    assert!(
+        screen.contains("at its default effort"),
+        "the detail explains the highlighted level:\n{screen}"
+    );
+    move_selection_to(&mut j.h, "high");
+    snapshot(&j.h, &j.dir, "03b-picker-effort-sub-menu");
+    j.h.inject_keys(b"\r").unwrap();
+    wait_picker_closed(&mut j.h, 30);
 
     // 4. The border now carries the level in upstream's format, mode included.
     wait_for(
@@ -171,4 +189,38 @@ fn composer_border_is_model_effort_and_mode_like_upstream() {
     );
     assert_no_plumbing(&j.h, "after the second reply");
     snapshot(&j.h, &j.dir, "05-second-reply-at-high");
+
+    // 6. `/effort <level>` changes the level without the picker; the border and the saved pick
+    //    follow, and an unknown level is refused with the offered ones.
+    send_prompt(&mut j, "/effort medium");
+    wait_for(
+        &mut j.h,
+        "Ling 3.0 Flash Fin Free (medium) \u{b7} always-approve",
+        15,
+    );
+    snapshot(&j.h, &j.dir, "06-effort-command");
+    let conn = std::fs::read_to_string(j.workshop_home().join("active-connection.json"))
+        .expect("active connection saved");
+    assert!(
+        conn.contains("\"effort\": \"medium\""),
+        "/effort persists like a /model pick: {conn}"
+    );
+    send_prompt(&mut j, "/effort turbo");
+    wait_for(&mut j.h, "unknown effort level 'turbo'", 10);
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains("default|low|medium|high"),
+        "the refusal lists the catalog's levels:\n{screen}"
+    );
+    send_prompt(&mut j, "/effort default");
+    wait_for(
+        &mut j.h,
+        "Ling 3.0 Flash Fin Free \u{b7} always-approve",
+        15,
+    );
+    assert!(
+        !footer(&j).contains('('),
+        "the default level shows no `(effort)`: {}",
+        footer(&j)
+    );
 }

@@ -1,8 +1,8 @@
 //! Fake vendor CLIs: tiny `sh` scripts that answer `--version` / `--help`,
-//! the vendor status command, and replay a captured JSONL fixture for a run.
-//! State (logged in?, fixture, mode, exit code) lives in files under the
-//! sandbox so no environment variables are needed — the supervisor strips
-//! everything but an allowlist anyway.
+//! the vendor status command (as `workshop-detect` asks it), and replay a
+//! captured JSONL fixture for a run. State (logged in?, fixture, mode, exit
+//! code) lives in files under the sandbox so no environment variables are
+//! needed — the supervisor strips everything but an allowlist anyway.
 
 #![allow(dead_code)]
 
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tempfile::TempDir;
-use workshop_adapters::{AdapterId, DetectOptions, SupervisorOptions};
+use workshop_adapters::{AdapterId, DetectConfig, SupervisorOptions};
 
 pub struct FakeVendor {
     pub id: AdapterId,
@@ -38,7 +38,7 @@ pub const CLAUDE: FakeVendor = FakeVendor {
     binary: "claude",
     version_line: "2.1.278 (Claude Code)",
     help_text: "Usage: claude [options] [command] [prompt]\n\nClaude Code - starts an interactive session by default, use -p/--print for non-interactive output",
-    status_args: "auth status --json",
+    status_args: "auth status",
     status_logged_in: r#"{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty", "email": "user@example.com", "subscriptionType": "max"}"#,
     status_logged_in_exit: 0,
     status_logged_out: r#"{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty", "analyticsDisabled": false, "projectsDirectory": "/home/u/.claude/projects", "configDirectory": "/home/u/.claude"}"#,
@@ -245,13 +245,12 @@ impl Sandbox {
         env
     }
 
-    pub fn detect_options(&self) -> DetectOptions {
-        DetectOptions {
-            path_env: Some(self.bin().into_os_string()),
-            home: Some(self.home()),
-            known_dirs: Some(Vec::new()),
-            probe_env: Some(self.probe_env()),
-            probe_timeout: Duration::from_secs(10),
+    /// The detection stack's hermetic config: only the sandbox `bin/` is scanned, and the
+    /// probes run with the process's minimal environment (`PATH` for `sh`, `cat`, `sleep`).
+    pub fn detect_config(&self) -> DetectConfig {
+        DetectConfig {
+            timeout: Duration::from_secs(10),
+            ..DetectConfig::hermetic(self.bin().into_os_string(), self.home())
         }
     }
 

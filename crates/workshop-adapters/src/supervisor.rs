@@ -18,8 +18,8 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::adapter::{Adapter, AskReply, PinStatus, PromptDelivery, RunRequest, Terminal};
-use crate::detect::InstalledCli;
 use crate::event::AdapterEvent;
+use workshop_detect::Identity;
 
 type ReplyMsg = (AskReply, oneshot::Sender<bool>);
 
@@ -175,31 +175,31 @@ impl RunHandle {
     }
 }
 
-/// Spawn one whole-task run of `adapter` using the verified `cli`.
+/// Spawn one whole-task run of `adapter` using the verified `cli` (from [`crate::detect`]).
 pub async fn spawn(
     adapter: &dyn Adapter,
-    cli: &InstalledCli,
+    cli: &Identity,
     req: RunRequest,
     opts: &SupervisorOptions,
 ) -> Result<RunHandle, SpawnError> {
-    if cli.adapter != adapter.id() {
+    if cli.vendor != adapter.id() {
         return Err(SpawnError::AdapterMismatch {
             expected: adapter.id(),
-            actual: cli.adapter,
+            actual: cli.vendor,
         });
     }
     let pin = adapter.version_pin();
-    match cli.pin {
+    match pin.classify(&cli.version) {
         PinStatus::OlderThanSupported => {
             return Err(SpawnError::UnsupportedVersion {
-                adapter: cli.adapter,
+                adapter: cli.vendor,
                 version: cli.version.clone(),
                 min: pin.min_supported,
             });
         }
         PinStatus::NewerThanTested if !opts.allow_untested_versions => {
             return Err(SpawnError::UntestedVersion {
-                adapter: cli.adapter,
+                adapter: cli.vendor,
                 version: cli.version.clone(),
                 max: pin.max_tested,
             });

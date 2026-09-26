@@ -17,6 +17,9 @@ pub struct DetectConfig {
     pub search_path: Option<OsString>,
     /// Override for the home directory used to expand known install dirs.
     pub home: Option<PathBuf>,
+    /// Directories scanned right after `PATH`, before the known dirs: a Workshop-owned install
+    /// (the engine's `tools/opencode` tree) wins over a copy elsewhere.
+    pub preferred_dirs: Vec<PathBuf>,
     /// Also scan the known install directories after `PATH`.
     pub include_known_dirs: bool,
     /// Extra directories scanned after the known dirs.
@@ -42,6 +45,7 @@ impl Default for DetectConfig {
         Self {
             search_path: None,
             home: None,
+            preferred_dirs: Vec::new(),
             include_known_dirs: true,
             extra_dirs: Vec::new(),
             timeout: Duration::from_secs(8),
@@ -133,6 +137,8 @@ pub fn known_dirs(home: &Path) -> Vec<PathBuf> {
     // Vendor-owned install locations that are not always on PATH.
     dirs.push(home.join(".claude/local"));
     dirs.push(home.join(".opencode/bin"));
+    // `npm install -g` with a user prefix (Codex, Claude Code before the native installer).
+    dirs.push(home.join(".npm-global/bin"));
     // macOS app bundles that ship a bin folder.
     dirs.push(PathBuf::from(
         "/Applications/Cursor.app/Contents/Resources/app/bin",
@@ -186,14 +192,20 @@ fn executable_variants(dir: &Path, name: &str) -> Vec<PathBuf> {
 }
 
 /// All candidate executables for `vendor`, `PATH` first (in `PATH` order, each vendor name in
-/// preference order per directory), then known dirs, then `extra_dirs`. Duplicates that resolve
-/// to the same file are dropped.
+/// preference order per directory), then `preferred_dirs`, then known dirs, then `extra_dirs`.
+/// Duplicates that resolve to the same file are dropped.
 pub fn locate(vendor: Vendor, cfg: &DetectConfig) -> Vec<Candidate> {
     let mut dirs: Vec<(PathBuf, CandidateSource)> = cfg
         .path_entries()
         .into_iter()
         .map(|d| (d, CandidateSource::Path))
         .collect();
+    dirs.extend(
+        cfg.preferred_dirs
+            .iter()
+            .cloned()
+            .map(|d| (d, CandidateSource::KnownDir)),
+    );
     if cfg.include_known_dirs
         && let Some(home) = cfg.home_dir()
     {

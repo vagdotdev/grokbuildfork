@@ -13312,6 +13312,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "workshop-detect",
  "xai-tty-utils",
 ]
 

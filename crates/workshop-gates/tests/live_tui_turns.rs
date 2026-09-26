@@ -42,6 +42,15 @@ fn snapshot(h: &PtyHarness, dir: &Path, name: &str) {
     std::fs::write(dir.join(format!("{name}.html")), h.screen_html()).expect("write html");
 }
 
+fn wait_gone(h: &mut PtyHarness, text: &str, secs: u64) {
+    if let Err(e) = h.wait_for_text_absent(text, Duration::from_secs(secs)) {
+        panic!(
+            "timed out waiting for {text:?} to disappear: {e}\nscreen:\n{}",
+            h.screen_contents()
+        );
+    }
+}
+
 fn wait_for(h: &mut PtyHarness, text: &str, secs: u64) {
     if let Err(e) = h.wait_for_text(text, Duration::from_secs(secs)) {
         panic!(
@@ -136,8 +145,8 @@ fn which(name: &str) -> Option<PathBuf> {
 /// The type-and-go first run: the composer is up with the OpenCode default active, named by the
 /// model only.
 const FIRST_RUN_LABEL: &str = "Big Pickle";
-/// Frame text of the Subscriptions overlay (the title carries the Models view's Tab hint).
-const SUBSCRIPTIONS_OVERLAY: &str = "Tab: Models";
+/// The one picker overlay is on screen (its search line starts with this glyph).
+const SUBSCRIPTIONS_OVERLAY: &str = "\u{2315}";
 
 /// Type a slash command into the composer and submit it.
 fn slash(h: &mut PtyHarness, cmd: &str) {
@@ -400,9 +409,10 @@ fn opencode_big_pickle_turn_with_tool_call() {
 //
 // Hermetic: fake `claude` / `codex` / `cursor-agent` shell scripts (identity, login status, and a
 // turn that replays the adapter crate's own success fixture) stand in for the real CLIs, so no
-// network and no real account are needed. Proves: rails show Ready when the fake reports logged in;
-// selecting a model routes a turn through the adapter and renders it with the model's name as
-// the composer label (model only, no rail prefix); cancel works; and a logged-out fake shows Sign in, where Connect launches the vendor's
+// network and no real account are needed. Proves: a vendor row reads `✓` when the fake reports
+// logged in and opens into the CLI's own model list; selecting a model routes a turn through the
+// adapter and renders it with the model's name as the composer label (model only, no vendor
+// prefix); cancel works; and a logged-out fake reads `sign in`, where Enter launches the vendor's
 // documented login command in the terminal.
 
 struct FakeVendor {
@@ -593,7 +603,8 @@ fn install_fakes(logged_in: bool) -> Fakes {
     }
 }
 
-/// From the first-run composer, `/auth` opens the Subscriptions overlay; wait for the three rails.
+/// From the first-run composer, `/auth` opens the picker on its Subscriptions section; wait for
+/// the three vendor rows.
 fn open_subscriptions(j: &mut Journey) {
     wait_for(&mut j.h, FIRST_RUN_LABEL, 30);
     slash(&mut j.h, "/auth");
@@ -601,10 +612,18 @@ fn open_subscriptions(j: &mut Journey) {
     wait_for(&mut j.h, "Claude", 10);
     wait_for(&mut j.h, "Codex", 5);
     wait_for(&mut j.h, "Cursor", 5);
+    // The rows carry a real state once the CLI probe has finished.
+    wait_gone(&mut j.h, "detecting", 20);
+    assert!(
+        selected_line(&j.h).is_some_and(|l| l.contains("Claude")),
+        "/auth lands on the Claude row:\n{}",
+        j.h.screen_contents()
+    );
 }
 
-/// P3 (logged in): rails show Ready; selecting a Claude model routes a turn through the adapter and
-/// renders it; the composer names the model (`Claude Opus`, no rail prefix); Ctrl+C cancels a turn.
+/// P3 (logged in): the vendor row reads `✓ Max`; it opens into the CLI's own list; selecting a
+/// Claude model routes a turn through the adapter and renders it; the composer names the model
+/// (no vendor prefix); Ctrl+C cancels a turn.
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake CLIs, no network); run with --include-ignored"]
 fn rails_ready_adapter_turn_renders_and_cancels() {
@@ -612,9 +631,9 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
     let fakes = install_fakes(true);
     let mut j = spawn("rails-ready", &bin, &[], Some(&fakes.bin));
     open_subscriptions(&mut j);
-    // The Claude rail (first) reports logged in → Ready, then lists the models its CLI reported
-    // (the fake's `initialize` answer), never a placeholder list.
-    wait_for(&mut j.h, "[Ready]", 15);
+    // The Claude row (first) reports logged in → `✓ Max ▸` once its CLI has listed its models
+    // (the fake's `initialize` answer; the plan from its account), never a placeholder list.
+    wait_for(&mut j.h, "\u{2713} Max", 20);
     wait_for(&mut j.h, "3 models", 20);
     snapshot(&j.h, &j.dir, "01-rails-ready");
     let screen = j.h.screen_contents();
@@ -622,10 +641,32 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
         !screen.contains("Claude Opus") && !screen.contains("Codex default model"),
         "placeholder model rows are gone:\n{screen}"
     );
-    // Enter opens the Claude rail detail (its model radios), Enter again selects the first model:
-    // the CLI's default.
+    assert!(
+        !screen.contains("Opus (1M context)"),
+        "a vendor's models live in its sub-menu, not inline:\n{screen}"
+    );
+    for pill in [
+        "[Ready]",
+        "[Sign in]",
+        "[Install]",
+        "Tab: Models",
+        "Tab: Subscriptions",
+    ] {
+        assert!(
+            !screen.contains(pill),
+            "no pill, no tab ({pill}):\n{screen}"
+        );
+    }
+    // Enter opens the Claude sub-menu (the CLI's list, default first), Enter again selects the
+    // first model: the CLI's default.
     j.h.inject_keys(b"\r").unwrap();
+    wait_for(&mut j.h, "Models \u{203a} Claude", 10);
     wait_for(&mut j.h, "Opus (1M context)", 10);
+    assert!(
+        selected_line(&j.h).is_some_and(|l| l.contains("Default (recommended)")),
+        "the sub-menu opens on the CLI's default:\n{}",
+        j.h.screen_contents()
+    );
     snapshot(&j.h, &j.dir, "02-claude-rail-detail");
     j.h.inject_keys(b"\r").unwrap();
     // The anonymous session activates (async); the overlay closes and the agent composer names
@@ -701,12 +742,14 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
     );
 }
 
-/// From `/auth`, connect the Claude rail's default model; the composer then names it.
+/// From `/auth`, connect the Claude vendor's default model via the one picker; the composer then
+/// names it.
 fn connect_claude_default(j: &mut Journey) {
     open_subscriptions(j);
-    wait_for(&mut j.h, "[Ready]", 15);
+    wait_for(&mut j.h, "\u{2713} Max", 20);
     wait_for(&mut j.h, "3 models", 20);
     j.h.inject_keys(b"\r").unwrap();
+    wait_for(&mut j.h, "Models \u{203a} Claude", 10);
     wait_for(&mut j.h, "Opus (1M context)", 10);
     j.h.inject_keys(b"\r").unwrap();
     if let Err(e) =
@@ -895,7 +938,8 @@ fn rails_modes_normal_asks_with_the_approval_card_plan_is_read_only() {
     );
 }
 
-/// P3 (logged out): rails show Sign in; Connect on the Claude rail launches `claude auth login`.
+/// P3 (logged out): the vendor rows read `sign in`; Enter on the Claude row launches
+/// `claude auth login`.
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake CLIs, no network); run with --include-ignored"]
 fn rails_signin_connect_launches_login() {
@@ -903,11 +947,20 @@ fn rails_signin_connect_launches_login() {
     let fakes = install_fakes(false);
     let mut j = spawn("rails-signin", &bin, &[], Some(&fakes.bin));
     open_subscriptions(&mut j);
-    wait_for(&mut j.h, "[Sign in]", 15);
+    wait_for(&mut j.h, "sign in", 15);
+    let screen = j.h.screen_contents();
+    assert!(
+        selected_line(&j.h).is_some_and(|l| l.contains("Claude") && l.contains("sign in")),
+        "the signed-out Claude row reads `sign in`:\n{screen}"
+    );
+    assert!(
+        screen.contains("in your terminal:  claude auth login"),
+        "the detail names the login command:\n{screen}"
+    );
     snapshot(&j.h, &j.dir, "01-rails-signin");
-    // Enter on the signed-out Claude rail opens its detail and is Connect → suspends the TUI and
-    // runs the vendor's documented login command (`claude auth login`) attached to the terminal.
-    // (A second Enter would reach the login child's stdin, or start a second login.)
+    // Enter on the signed-out Claude row is Connect → suspends the TUI and runs the vendor's
+    // documented login command (`claude auth login`) attached to the terminal. (A second Enter
+    // would reach the login child's stdin, or start a second login.)
     j.h.inject_keys(b"\r").unwrap();
     // The fake `claude auth login` touches a marker and exits; the TUI resumes.
     let marker = fakes.state.join("claude").join("login_ran");
@@ -930,12 +983,13 @@ fn rails_signin_connect_launches_login() {
         j.h.terminal_modes().alt_screen,
         "TUI must re-enter the alternate screen after the login child exits"
     );
-    // Focus is back on the rail list: ↓ moves from Claude to Codex without a Tab away and back.
+    // Focus is back on the list: ↓ moves from Claude to Codex.
+    wait_gone(&mut j.h, "re-probing", 15);
     j.h.inject_keys(b"\x1b[B").unwrap();
     j.h.update(Duration::from_millis(400));
     assert!(
         selected_line(&j.h).is_some_and(|l| l.contains("Codex")),
-        "Down must move to the Codex rail right after the login returns:\n{}",
+        "Down must move to the Codex row right after the login returns:\n{}",
         j.h.screen_contents()
     );
     snapshot(&j.h, &j.dir, "03-down-moves-to-codex");
@@ -969,14 +1023,14 @@ fn rails_failed_models_retry_on_enter() {
     wait_for(&mut j.h, MODELS_FAILED, 20);
     snapshot(&j.h, &j.dir, "01-cursor-models-failed");
     let before = calls();
-    // Cursor is the third rail.
+    // Cursor is the third vendor row.
     for _ in 0..2 {
         j.h.inject_keys(b"\x1b[B").unwrap();
         j.h.update(Duration::from_millis(300));
     }
     assert!(
-        selected_line(&j.h).is_some_and(|l| l.contains("Cursor")),
-        "the Cursor rail is selected:\n{}",
+        selected_line(&j.h).is_some_and(|l| l.contains("Cursor") && l.contains(MODELS_FAILED)),
+        "the Cursor row is selected and carries the failure as its state:\n{}",
         j.h.screen_contents()
     );
     std::fs::remove_file(cursor.join("models_fail")).unwrap();
@@ -990,9 +1044,12 @@ fn rails_failed_models_retry_on_enter() {
         );
     }
     assert!(calls() > before, "Enter must ask cursor-agent again");
+    wait_for(&mut j.h, "2 models", 10);
     assert!(
-        selected_line(&j.h).is_some_and(|l| l.contains("Cursor") && l.contains("2 models")),
-        "the Cursor rail lists the models its CLI reported:\n{}",
+        selected_line(&j.h).is_some_and(|l| l.contains("Cursor")
+            && l.contains("\u{2713}")
+            && l.contains("\u{25b8}")),
+        "the Cursor row is signed in and opens into the models its CLI reported:\n{}",
         j.h.screen_contents()
     );
     snapshot(&j.h, &j.dir, "02-cursor-models-after-retry");
@@ -1008,7 +1065,7 @@ fn rails_failed_models_retry_on_enter() {
 fn selected_line(h: &PtyHarness) -> Option<String> {
     h.screen_contents()
         .lines()
-        .find(|l| l.contains('\u{203a}'))
+        .find(|l| l.contains('\u{203a}') && !l.contains("Models \u{203a}"))
         .map(str::to_owned)
 }
 
@@ -1024,12 +1081,12 @@ fn rails_signin_ctrl_c_cancels_only_the_vendor_login() {
     std::fs::write(claude_state.join("login_hang"), "1").unwrap();
     let mut j = spawn("rails-signin-ctrl-c", &bin, &[], Some(&fakes.bin));
     open_subscriptions(&mut j);
-    wait_for(&mut j.h, "[Sign in]", 15);
+    wait_for(&mut j.h, "sign in", 15);
     assert!(
         j.h.terminal_modes().alt_screen,
         "the TUI runs on the alternate screen"
     );
-    // Enter on a signed-out rail is Connect: the vendor login owns the terminal from here.
+    // Enter on a signed-out vendor row is Connect: the vendor login owns the terminal from here.
     j.h.inject_keys(b"\r").unwrap();
     let marker = claude_state.join("login_ran");
     let started = Instant::now();
@@ -1073,8 +1130,9 @@ fn rails_signin_ctrl_c_cancels_only_the_vendor_login() {
     );
     let screen = j.h.screen_contents();
     assert!(
-        screen.contains("[Sign in]") && !screen.contains("re-probing"),
-        "a cancelled login leaves the rails as they were:\n{screen}"
+        selected_line(&j.h).is_some_and(|l| l.contains("Claude") && l.contains("sign in"))
+            && !screen.contains("re-probing"),
+        "a cancelled login leaves the vendor rows as they were:\n{screen}"
     );
     snapshot(&j.h, &j.dir, "02-cancelled-back-in-picker");
     // The login child (and its `sleep`) is gone.
@@ -1087,12 +1145,12 @@ fn rails_signin_ctrl_c_cancels_only_the_vendor_login() {
         .map(|o| o.status.success())
         .unwrap_or(false);
     assert!(!still_running, "the fake login must not outlive Ctrl+C");
-    // Focus is back on the rail list.
+    // Focus is back on the list.
     j.h.inject_keys(b"\x1b[B").unwrap();
     j.h.update(Duration::from_millis(400));
     assert!(
         selected_line(&j.h).is_some_and(|l| l.contains("Codex")),
-        "Down must move to the Codex rail after the cancelled login:\n{}",
+        "Down must move to the Codex row after the cancelled login:\n{}",
         j.h.screen_contents()
     );
     snapshot(&j.h, &j.dir, "03-down-moves-to-codex");

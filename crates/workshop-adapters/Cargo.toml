@@ -19,6 +19,9 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util", "sync", "time", "rt", "macros", "net"] }
 tracing = { workspace = true }
+# The one CLI detection stack (vendor identity, locate, identify, status, minimal env), shared
+# with the picker so a turn never sees a different CLI than the vendor row does.
+workshop-detect = { workspace = true }
 xai-tty-utils = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]

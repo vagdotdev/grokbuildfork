@@ -1,12 +1,13 @@
-//! Hands-off subscriptions: a rail whose official CLI is not installed offers one action,
-//! `Install`. Enter runs the vendor's official installer (here: a fake, via the
+//! Hands-off subscriptions: a vendor whose official CLI is not installed offers one action, its
+//! row reads `install`. Enter runs the vendor's official installer (here: a fake, via the
 //! `WORKSHOP_RAIL_INSTALLER` hook) with one status line that follows its output, then flows
 //! straight into the vendor's own sign-in — no manual step, nothing started on its own, and the
-//! rail ends up Ready. Workshop never reads another app's credential files (the no-theft audit
-//! covers that; here the fake CLI's state lives in its own directory).
+//! row ends up `✓` with the CLI's own models behind it. Workshop never reads another app's
+//! credential files (the no-theft audit covers that; here the fake CLI's state lives in its own
+//! directory).
 //!
 //! `a_cancelled_chained_sign_in_still_shows_the_installed_cli`: Ctrl+C at the chained vendor
-//! sign-in leaves the CLI installed, so the rail re-detects at once and reads `[Sign in]` — no
+//! sign-in leaves the CLI installed, so the row re-detects at once and reads `sign in` — no
 //! Ctrl+R — and its detail names the whole command (`claude auth login`).
 //!
 //! Hermetic (fake installer + fake `claude`). Opt-in via `WORKSHOP_BIN`, `--include-ignored`.
@@ -108,14 +109,18 @@ fn a_missing_cli_installs_and_signs_in_on_one_keypress() {
         "nothing installs on its own before the user acts"
     );
 
-    // 1. `/auth`: the Claude rail offers one action, Install, and says what Enter does.
+    // 1. `/auth`: the Claude row offers one action, `install`, and its detail says what Enter does.
     send_prompt(&mut j, "/auth");
-    wait_for(&mut j.h, "Tab: Models", 15);
-    wait_for(&mut j.h, "[Install]", 15);
+    wait_for(&mut j.h, PICKER_OPEN, 15);
+    wait_gone(&mut j.h, "detecting", 15);
     let screen = j.h.screen_contents();
     assert!(
+        selected_line(&j.h).is_some_and(|l| l.contains("Claude") && l.contains("install")),
+        "the Claude row reads `install`:\n{screen}"
+    );
+    assert!(
         screen.contains("Enter installs Claude Code, then signs you in"),
-        "the rail's copy is the action, not manual steps:\n{screen}"
+        "the detail is the action, not manual steps:\n{screen}"
     );
     assert!(
         screen.contains("curl -fsSL https://claude.ai/install.sh | bash"),
@@ -143,7 +148,7 @@ fn a_missing_cli_installs_and_signs_in_on_one_keypress() {
         "the official installer was asked for exactly this vendor"
     );
 
-    // 3. Done: straight into the vendor's own sign-in (no keypress), then the rail is Ready.
+    // 3. Done: straight into the vendor's own sign-in (no keypress), then the row is signed in.
     let started = Instant::now();
     while !state.join("login_ran").exists() {
         assert!(
@@ -153,27 +158,45 @@ fn a_missing_cli_installs_and_signs_in_on_one_keypress() {
         );
         j.h.update(Duration::from_millis(200));
     }
-    wait_for(&mut j.h, "[Ready]", 30);
-    // …and the rail lists the CLI's own models (its default first), not a placeholder.
+    wait_for(&mut j.h, "\u{2713} Max", 30);
+    // …and the row holds the CLI's own models (its default first), not a placeholder.
     wait_for(&mut j.h, "3 models", 30);
     j.h.update(Duration::from_millis(800));
     let screen = j.h.screen_contents();
     assert!(
         !screen.contains("Claude Opus") && !screen.contains("Loading models"),
-        "the signed-in rail shows the CLI's list, no placeholder and no loading copy:\n{screen}"
+        "the signed-in row carries the CLI's list, no placeholder and no loading copy:\n{screen}"
     );
-    let claude_line = screen
-        .lines()
-        .find(|l| l.contains("Claude") && l.contains('['))
-        .unwrap_or_default();
+    let claude_line = selected_line(&j.h).unwrap_or_default();
     assert!(
-        claude_line.contains("[Ready]") && !claude_line.contains("[Install]"),
-        "the Claude rail no longer offers Install: {claude_line}\n{screen}"
+        claude_line.contains("Claude")
+            && claude_line.contains("\u{2713} Max")
+            && claude_line.contains("\u{25b8}")
+            && !claude_line.contains("install"),
+        "the Claude row no longer offers install: {claude_line}\n{screen}"
     );
+    let row_state = |name: &str| {
+        screen
+            .lines()
+            .find(|l| l.contains(name) && l.contains("install"))
+            .map(str::to_owned)
+    };
     assert!(
-        screen.contains("Codex   [Install]") && screen.contains("Cursor  [Install]"),
-        "the CLIs that are still missing keep their one Install action:\n{screen}"
+        row_state("Codex").is_some() && row_state("Cursor").is_some(),
+        "the CLIs that are still missing keep their one install action:\n{screen}"
     );
+    for pill in [
+        "[Ready]",
+        "[Install]",
+        "[Sign in]",
+        "Tab: Models",
+        "Tab: Subscriptions",
+    ] {
+        assert!(
+            !screen.contains(pill),
+            "no pill, no tab ({pill}):\n{screen}"
+        );
+    }
     assert!(
         !screen.contains("Couldn't install"),
         "no failure line on the happy path:\n{screen}"
@@ -197,7 +220,7 @@ fn a_missing_cli_installs_and_signs_in_on_one_keypress() {
 }
 
 /// Ctrl+C at the sign-in that follows the one-keypress install: the CLI is installed and signed
-/// out, and the rail says so at once (`[Sign in]`, its detail naming `claude auth login`) with no
+/// out, and the row says so at once (`sign in`, its detail naming `claude auth login`) with no
 /// Ctrl+R. The install is not undone and nobody is signed in.
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake installer + fake claude); run with --include-ignored"]
@@ -221,7 +244,13 @@ fn a_cancelled_chained_sign_in_still_shows_the_installed_cli() {
     );
     connect_big_pickle(&mut j);
     send_prompt(&mut j, "/auth");
-    wait_for(&mut j.h, "[Install]", 15);
+    wait_for(&mut j.h, PICKER_OPEN, 15);
+    wait_gone(&mut j.h, "detecting", 15);
+    assert!(
+        selected_line(&j.h).is_some_and(|l| l.contains("Claude") && l.contains("install")),
+        "the Claude row reads `install`:\n{}",
+        j.h.screen_contents()
+    );
 
     // Enter: the installer, then straight into the vendor's sign-in, which owns the terminal.
     j.h.inject_keys(b"\r").unwrap();
@@ -238,9 +267,9 @@ fn a_cancelled_chained_sign_in_still_shows_the_installed_cli() {
     snapshot(&j.h, &j.dir, "01-chained-sign-in-owns-the-terminal");
 
     // Ctrl+C in the (cooked-mode) terminal ends the vendor login only. Back in the picker, the
-    // rail must say what is true now — installed, signed out — without a Ctrl+R.
+    // row must say what is true now — installed, signed out — without a Ctrl+R.
     j.h.inject_keys(b"\x03").unwrap();
-    wait_for(&mut j.h, "[Sign in]", 20);
+    wait_for(&mut j.h, "sign in", 20);
     j.h.update(Duration::from_millis(800));
     assert!(
         j.h.is_running().unwrap_or(false),
@@ -248,22 +277,39 @@ fn a_cancelled_chained_sign_in_still_shows_the_installed_cli() {
         j.h.screen_contents()
     );
     let screen = j.h.screen_contents();
-    let claude_line = screen
-        .lines()
-        .find(|l| l.contains("Claude") && l.contains('['))
-        .unwrap_or_default();
+    let claude_line = selected_line(&j.h).unwrap_or_default();
     assert!(
-        claude_line.contains("[Sign in]") && !claude_line.contains("[Install]"),
-        "the installed CLI's rail re-detects to Sign in on its own: {claude_line}\n{screen}"
+        claude_line.contains("Claude")
+            && claude_line.contains("sign in")
+            && !claude_line.contains("install"),
+        "the installed CLI's row re-detects to sign in on its own: {claude_line}\n{screen}"
     );
     assert!(
         screen.contains("in your terminal:  claude auth login"),
         "the detail names the whole login command, binary included:\n{screen}"
     );
+    let row_state = |name: &str| {
+        screen
+            .lines()
+            .find(|l| l.contains(name) && l.contains("install"))
+            .map(str::to_owned)
+    };
     assert!(
-        screen.contains("Codex   [Install]") && screen.contains("Cursor  [Install]"),
-        "the CLIs that are still missing keep their one Install action:\n{screen}"
+        row_state("Codex").is_some() && row_state("Cursor").is_some(),
+        "the CLIs that are still missing keep their one install action:\n{screen}"
     );
+    for pill in [
+        "[Ready]",
+        "[Install]",
+        "[Sign in]",
+        "Tab: Models",
+        "Tab: Subscriptions",
+    ] {
+        assert!(
+            !screen.contains(pill),
+            "no pill, no tab ({pill}):\n{screen}"
+        );
+    }
     assert!(
         !state.join("logged_in").exists(),
         "a cancelled sign-in signs nobody in"

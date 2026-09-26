@@ -1,12 +1,17 @@
 //! `/effort`: set reasoning effort on the current model without re-picking it.
 //!
 //! Thin wrapper over `Action::SwitchModel` with the session's current model id and the chosen effort (same wire path as `/model <name> <effort>`).
+//!
+//! Workshop: when the session runs on an OpenCode model (the shell's current model is the
+//! connection placeholder), the level is one of that model's catalog variants and goes to
+//! `Action::WorkshopSetEffort`, which validates it against the live catalog.
 
 use crate::app::actions::Action;
 use crate::slash::command::{
     AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand, slash_meta,
 };
 use crate::slash::commands::effort_levels::build_effort_arg_items;
+use crate::slash::commands::model::is_workshop_stand_in;
 
 /// Set reasoning effort for the active model.
 pub struct EffortCommand;
@@ -41,6 +46,9 @@ impl SlashCommand for EffortCommand {
         let Some(model_id) = ctx.models.current.clone() else {
             return CommandResult::Error("No active model".into());
         };
+        if is_workshop_stand_in(&model_id) {
+            return CommandResult::Action(Action::WorkshopSetEffort(trimmed.to_owned()));
+        }
 
         if trimmed.is_empty() {
             let offered: Vec<String> = ctx
@@ -283,6 +291,23 @@ mod tests {
             result,
             CommandResult::Error(msg) if msg.contains("does not support reasoning effort")
         ));
+    }
+
+    /// Workshop: on an OpenCode connection the shell's current model is the placeholder, and the
+    /// level is checked against the live catalog by the dispatcher, not the shell's menu.
+    #[test]
+    fn workshop_placeholder_routes_the_level_to_the_engine() {
+        let mut state = ModelState::default();
+        let (id, info) = plain_model("workshop-connection", "Ling 3.0 Flash Fin Free");
+        state.available.insert(id.clone(), info);
+        state.current = Some(id);
+        let mut ctx = dummy_exec_ctx(&state);
+        for (typed, level) in [("high", "high"), ("  Default ", "Default"), ("", "")] {
+            match EffortCommand.run(&mut ctx, typed) {
+                CommandResult::Action(Action::WorkshopSetEffort(l)) => assert_eq!(l, level),
+                other => panic!("expected WorkshopSetEffort for {typed:?}, got {other:?}"),
+            }
+        }
     }
 
     #[test]

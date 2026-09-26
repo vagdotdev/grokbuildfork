@@ -5,28 +5,21 @@
 //! `packages/opencode/src/cli/cmd/providers.ts` + `packages/sdk/js/src/gen/types.gen.ts`
 //! at tag `v1.18.31`.
 //!
-//! * identity: `--version` -> `1.18.31`; `--help` (printed to stderr) lists
-//!   `opencode run`.
-//! * status:   `opencode auth list` -> `... N credentials` (exit 0). The
-//!   output names OpenCode's own `auth.json`; Workshop only counts, it never
-//!   opens that file or the OpenCode database.
-//! * login:    `opencode auth login` in the user's terminal.
+//! * identity, status, login: `workshop-detect` (the one detection stack, shared with the
+//!   picker) verifies the binary, asks the official status command and runs the login.
 //! * run:      `opencode run --format json --thinking [--agent plan] [--model P/M]
 //!   [--session ID] <message>`; message is positional, stdin is `/dev/null`.
 //!   JSON mode has no terminal event: exit 0 with no `error` event is success.
-
-use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 use super::claude::truncate;
 use super::json;
 use crate::adapter::{
-    Adapter, AdapterId, LoginState, NormalizeError, Normalizer, PermissionPolicy, ProbeOutput,
-    PromptDelivery, RunRequest, Terminal, VersionPin,
+    Adapter, AdapterId, NormalizeError, Normalizer, PermissionPolicy, PromptDelivery, RunRequest,
+    Terminal, VersionPin,
 };
 use crate::event::{AdapterEvent, Usage};
-use crate::probe::strip_ansi;
 
 pub struct OpenCodeAdapter;
 
@@ -35,76 +28,11 @@ impl Adapter for OpenCodeAdapter {
         AdapterId::OpenCode
     }
 
-    fn binary_names(&self) -> &'static [&'static str] {
-        &["opencode"]
-    }
-
-    fn extra_install_dirs(&self, home: &Path) -> Vec<PathBuf> {
-        vec![home.join(".opencode/bin")]
-    }
-
-    fn identity_probes(&self) -> &'static [&'static [&'static str]] {
-        &[&["--version"], &["--help"]]
-    }
-
-    fn identify(&self, outputs: &[ProbeOutput]) -> Option<String> {
-        let [version_out, help_out] = outputs else {
-            return None;
-        };
-        // yargs prints `--help` to stderr.
-        if !help_out.stdout.contains("opencode run") && !help_out.stderr.contains("opencode run") {
-            return None;
-        }
-        let version = version_out.stdout.lines().next()?.trim();
-        let semver_like = version.split('.').count() >= 2
-            && version
-                .chars()
-                .all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c.is_ascii_alphanumeric());
-        (semver_like && version.starts_with(|c: char| c.is_ascii_digit()))
-            .then(|| version.to_string())
-    }
-
     fn version_pin(&self) -> VersionPin {
         VersionPin {
             min_supported: "1.18.31",
             max_tested: "1.18.31",
         }
-    }
-
-    fn status_args(&self) -> &'static [&'static str] {
-        &["auth", "list"]
-    }
-
-    fn interpret_status(&self, output: &ProbeOutput) -> LoginState {
-        let text = strip_ansi(&output.stdout);
-        let count = text.lines().find_map(|line| {
-            let line = line.trim();
-            let idx = line.find(" credential")?;
-            line[..idx]
-                .rsplit(|c: char| !c.is_ascii_digit())
-                .next()
-                .and_then(|n| n.parse::<u64>().ok())
-        });
-        match count {
-            Some(0) => LoginState::SignIn,
-            Some(_) => LoginState::Ready {
-                method: Some("OpenCode credentials".to_string()),
-            },
-            None => LoginState::Unknown {
-                reason: format!(
-                    "`opencode auth list` exit {:?} printed no credential count",
-                    output.exit_code
-                ),
-            },
-        }
-    }
-
-    fn login_args(&self) -> &'static [&'static str] {
-        &["auth", "login"]
-    }
-
-    fn logout_args(&self) -> &'static [&'static str] {
-        &["auth", "logout"]
     }
 
     fn prompt_delivery(&self) -> PromptDelivery {
@@ -265,54 +193,6 @@ impl Normalizer for OpenCodeNormalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn out(stdout: &str) -> ProbeOutput {
-        ProbeOutput {
-            stdout: stdout.into(),
-            exit_code: Some(0),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn identifies_opencode() {
-        let a = OpenCodeAdapter;
-        let help_on_stderr = ProbeOutput {
-            stderr: "Commands:\n  opencode run [message..]  run opencode with a message\n".into(),
-            exit_code: Some(0),
-            ..Default::default()
-        };
-        assert_eq!(
-            a.identify(&[out("1.18.31\n"), help_on_stderr]),
-            Some("1.18.31".to_string())
-        );
-        assert_eq!(
-            a.identify(&[out("1.18.31\n"), out("Usage: something-else\n")]),
-            None
-        );
-    }
-
-    #[test]
-    fn credential_count_maps_to_login_state() {
-        let a = OpenCodeAdapter;
-        // The real output names OpenCode's own credential file after
-        // "Credentials"; only the count matters to us.
-        let logged_out =
-            "┌  Credentials \u{1b}[90m~/<opencode data dir>\u{1b}[0m\n│\n└  0 credentials\n";
-        assert_eq!(a.interpret_status(&out(logged_out)), LoginState::SignIn);
-        let logged_in =
-            "┌  Credentials ~/<opencode data dir>\n│\n│  Anthropic oauth\n│\n└  1 credentials\n";
-        assert_eq!(
-            a.interpret_status(&out(logged_in)),
-            LoginState::Ready {
-                method: Some("OpenCode credentials".into())
-            }
-        );
-        assert!(matches!(
-            a.interpret_status(&out("boom")),
-            LoginState::Unknown { .. }
-        ));
-    }
 
     #[test]
     fn pinned_run_flags() {

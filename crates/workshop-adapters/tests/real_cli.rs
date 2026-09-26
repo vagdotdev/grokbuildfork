@@ -12,17 +12,18 @@ use std::time::Duration;
 
 use workshop_adapters::vendors;
 use workshop_adapters::{
-    AdapterId, DetectOptions, Detection, LoginState, PinStatus, RunOutcome, RunRequest,
-    SupervisorOptions, detect, probe_login, spawn,
+    AdapterId, DetectConfig, Detection, PinStatus, RunOutcome, RunRequest, SupervisorOptions,
+    detect, spawn,
 };
+use workshop_detect::{LoginState, probe_vendor};
 
 async fn real(id: AdapterId) -> Option<(workshop_adapters::InstalledCli, LoginState)> {
     let adapter = vendors::by_id(id);
-    let opts = DetectOptions {
-        probe_timeout: Duration::from_secs(60),
-        ..DetectOptions::default()
+    let cfg = DetectConfig {
+        timeout: Duration::from_secs(60),
+        ..DetectConfig::default()
     };
-    match detect(adapter.as_ref(), &opts).await {
+    match detect(adapter.as_ref(), &cfg).await {
         Detection::NotInstalled => {
             eprintln!("[real_cli] {id}: not installed, skipping");
             None
@@ -35,22 +36,24 @@ async fn real(id: AdapterId) -> Option<(workshop_adapters::InstalledCli, LoginSt
             None
         }
         Detection::Installed(cli) => {
-            let state = probe_login(adapter.as_ref(), &cli, None, Duration::from_secs(60)).await;
+            let state = probe_vendor(id, &cfg)
+                .login
+                .expect("an installed CLI has a login state");
+            let pin = adapter.version_pin().classify(&cli.version);
             eprintln!(
-                "[real_cli] {id}: {} version {} ({:?}) login={state:?}",
+                "[real_cli] {id}: {} version {} ({pin:?}) login={state:?}",
                 cli.path.display(),
                 cli.version,
-                cli.pin
             );
             assert!(!cli.version.is_empty());
             assert!(
                 !matches!(state, LoginState::Unknown { .. }),
                 "{id}: vendor status output not understood: {state:?}"
             );
-            if cli.pin != PinStatus::Tested {
+            if pin != PinStatus::Tested {
                 eprintln!(
-                    "[real_cli] {id}: version {} is outside the tested pin ({:?})",
-                    cli.version, cli.pin
+                    "[real_cli] {id}: version {} is outside the tested pin ({pin:?})",
+                    cli.version
                 );
             }
             Some((cli, state))
@@ -63,7 +66,7 @@ async fn claude_real_detection_and_login_state() {
     let Some((cli, state)) = real(AdapterId::Claude).await else {
         return;
     };
-    if state != LoginState::SignIn {
+    if state != LoginState::LoggedOut {
         eprintln!("[real_cli] claude is logged in here; skipping the logged-out spawn check");
         return;
     }
@@ -113,7 +116,7 @@ async fn cursor_real_detection_and_login_state() {
     let Some((cli, state)) = real(AdapterId::Cursor).await else {
         return;
     };
-    if state != LoginState::SignIn {
+    if state != LoginState::LoggedOut {
         eprintln!("[real_cli] cursor-agent is logged in here; skipping the logged-out spawn check");
         return;
     }

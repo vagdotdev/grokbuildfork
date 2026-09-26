@@ -1,10 +1,11 @@
 //! PTY smoke of the built `workshop` binary: a first run lands in the composer with the OpenCode
 //! default model active (no picker; the engine install starts in the background, off screen —
-//! here against a closed proxy, so it fails at once and hermetically), `/model` opens the compact
-//! Models overlay, `/auth` the Subscriptions overlay with the Claude / Codex / Cursor rails — and
-//! nothing ever shows a `grok.com` login or an `auth.x.ai` URL. The terminal title is `Workshop`,
-//! never `grok`. Also captures evidence (asciinema cast, text and HTML screenshots) into
-//! `WORKSHOP_PTY_EVIDENCE_DIR` (default `target/pty-evidence`).
+//! here against a closed proxy, so it fails at once and hermetically), `/model` opens the one
+//! compact picker — OpenCode's models, then the Subscriptions section with the Claude / Codex /
+//! Cursor rows, `API keys` and the optional xAI row — and `/auth` opens the same picker on its
+//! Subscriptions section; nothing ever shows a `grok.com` login or an `auth.x.ai` URL. The
+//! terminal title is `Workshop`, never `grok`. Also captures evidence (asciinema cast, text and
+//! HTML screenshots) into `WORKSHOP_PTY_EVIDENCE_DIR` (default `target/pty-evidence`).
 //!
 //! Opt-in: set `WORKSHOP_BIN` to the built binary and run with `--include-ignored`.
 
@@ -12,6 +13,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use xai_grok_pager_pty_harness::PtyHarness;
+
+/// The picker overlay is on screen: its search line starts with this glyph.
+const PICKER: &str = "\u{2315}";
 
 fn evidence_dir() -> PathBuf {
     let dir = std::env::var_os("WORKSHOP_PTY_EVIDENCE_DIR")
@@ -45,7 +49,7 @@ fn assert_no_xai(h: &PtyHarness, step: &str) {
 fn selected_line(h: &PtyHarness) -> Option<String> {
     h.screen_contents()
         .lines()
-        .find(|l| l.contains('\u{203a}'))
+        .find(|l| l.contains('\u{203a}') && !l.contains("Models \u{203a}"))
         .map(str::to_owned)
 }
 
@@ -181,10 +185,12 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
         "the launch bring-up never shows on the composer:\n{screen}"
     );
 
-    // 2. `/model`: the compact Models overlay, active row highlighted, Esc closes.
+    // 2. `/model`: the compact picker, active row highlighted, the Subscriptions section below the
+    //    OpenCode models, Esc closes.
     slash(&mut h, "/model");
-    wait_for(&mut h, "Tab: Subscriptions", 10);
+    wait_for(&mut h, PICKER, 10);
     wait_for(&mut h, "OpenCode", 15);
+    wait_for(&mut h, "Subscriptions", 5);
     let screen = h.screen_contents();
     assert!(
         selected_line(&h).is_some_and(|l| l.contains("Big Pickle") && l.contains("active")),
@@ -192,20 +198,37 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
     );
     assert!(
         !screen.contains("Kilo") && !screen.contains("engine"),
-        "the Models view never names Kilo Gateway or the engine:\n{screen}"
+        "the picker never names Kilo Gateway or the engine:\n{screen}"
     );
     assert!(
         !screen.contains("never signs you in") && !screen.contains("Connection classes"),
         "no explanatory paragraph or footer sentence:\n{screen}"
     );
-    assert!(
-        !screen.contains("xAI \u{2014} Sign in"),
-        "the Models view lists models only:\n{screen}"
+    let (o, s) = (
+        screen.find("OpenCode").unwrap(),
+        screen.find("Subscriptions").unwrap(),
     );
+    assert!(
+        o < s,
+        "OpenCode's models come first, the subscriptions below:\n{screen}"
+    );
+    for pill in [
+        "Tab: Models",
+        "Tab: Subscriptions",
+        "[Install]",
+        "[Sign in]",
+        "[Detecting]",
+        "[Ready]",
+    ] {
+        assert!(
+            !screen.contains(pill),
+            "one picker: no tabs, no pills ({pill}):\n{screen}"
+        );
+    }
     assert_no_xai(&h, "/model overlay");
     snapshot(&h, &dir, "02-model-overlay");
     h.inject_keys(b"\x1b").unwrap();
-    wait_gone(&mut h, "Tab: Subscriptions", 5);
+    wait_gone(&mut h, PICKER, 5);
     // Esc lands in the session the command was typed into; its composer names the model.
     wait_for(&mut h, "Big Pickle", 5);
     assert!(
@@ -214,11 +237,13 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
         h.screen_contents()
     );
 
-    // 3. `/auth`: the Subscriptions overlay — rails Claude / Codex / Cursor with pills, the API-key
-    //    providers below, the optional xAI card last.
+    // 3. `/auth`: the same picker, opened on the Subscriptions section — the vendor rows Claude /
+    //    Codex / Cursor with their state as a plain suffix (no CLI here: `install`), `API keys`,
+    //    the optional xAI row last.
     slash(&mut h, "/auth");
-    wait_for(&mut h, "Tab: Models", 10);
+    wait_for(&mut h, PICKER, 10);
     wait_for(&mut h, "Claude", 5);
+    wait_gone(&mut h, "detecting", 15);
     let screen = h.screen_contents();
     let (c, x, u) = (
         screen.find("Claude").unwrap(),
@@ -227,56 +252,100 @@ fn first_run_types_and_goes_model_and_auth_are_the_only_doors() {
     );
     assert!(
         c < x && x < u,
-        "rail order Claude, Codex, Cursor:\n{screen}"
+        "vendor order Claude, Codex, Cursor:\n{screen}"
     );
     assert!(
-        screen.contains("[Install]")
-            || screen.contains("[Sign in]")
-            || screen.contains("[Detecting]")
-            || screen.contains("[Ready]"),
-        "a pill is shown:\n{screen}"
+        selected_line(&h).is_some_and(|l| l.contains("Claude")),
+        "/auth lands on the first vendor row:\n{screen}"
     );
     assert!(
-        screen.contains("xAI \u{2014} Sign in") && screen.contains("optional"),
-        "the optional xAI card is last on the Subscriptions view, worded like the other rows:\n{screen}"
+        screen.contains("OpenCode") && screen.contains("Big Pickle"),
+        "the same picker: the models are still listed above:\n{screen}"
     );
+    for pill in [
+        "[Install]",
+        "[Sign in]",
+        "[Detecting]",
+        "[Ready]",
+        "Tab: Models",
+        "Tab: Subscriptions",
+    ] {
+        assert!(
+            !screen.contains(pill),
+            "no pill, no tab ({pill}):\n{screen}"
+        );
+    }
+    let claude_line = screen
+        .lines()
+        .find(|l| l.contains("Claude"))
+        .unwrap_or_default();
+    assert!(
+        claude_line.contains("install") || claude_line.contains("sign in"),
+        "a vendor row carries its state as a plain suffix: {claude_line}\n{screen}"
+    );
+    assert!(
+        screen.contains("xAI") && screen.contains("optional"),
+        "the optional xAI row is last, in the row style:\n{screen}"
+    );
+    let (k, xai) = (
+        screen.find("API keys").unwrap(),
+        screen.find("xAI").unwrap(),
+    );
+    assert!(k < xai, "API keys before xAI, xAI last:\n{screen}");
+    assert_no_xai(&h, "/auth overlay");
+    snapshot(&h, &dir, "03-auth-overlay");
+
+    // 4. `API keys` opens the providers to connect (one vocabulary: `Provider — API key` |
+    //    `Provider — Sign in`); Enter on the OpenAI row opens a key-entry prompt (never a login,
+    //    never an echo of the key). Esc backs out of the sub-menu.
+    move_selection_to(&mut h, "API keys");
+    h.inject_keys(b"\r").unwrap();
+    wait_for(&mut h, "Models \u{203a} API keys", 5);
+    let screen = h.screen_contents();
     assert!(
         screen.contains("OpenAI \u{2014} API key")
             && screen.contains("OpenRouter \u{2014} Sign in"),
         "connect rows share one vocabulary (Provider — API key | Sign in):\n{screen}"
     );
-    assert_no_xai(&h, "/auth overlay");
-    snapshot(&h, &dir, "03-auth-overlay");
-
-    // 4. Enter on the OpenAI row opens a key-entry prompt (never a login, never an echo of the key).
+    assert!(
+        !screen.contains("xAI \u{2014} Sign in"),
+        "the xAI row is not an API key:\n{screen}"
+    );
+    snapshot(&h, &dir, "04-auth-api-keys");
     move_selection_to(&mut h, "OpenAI \u{2014} API key");
     h.inject_keys(b"\r").unwrap();
     wait_for(&mut h, "paste or type your key", 5);
     assert_no_xai(&h, "openai key entry");
-    snapshot(&h, &dir, "04-auth-openai-key-entry");
+    snapshot(&h, &dir, "05-auth-openai-key-entry");
     h.inject_keys(b"\x1b").unwrap(); // cancel key entry
     h.update(Duration::from_millis(300));
+    h.inject_keys(b"\x1b").unwrap(); // back to the list
+    wait_gone(&mut h, "Models \u{203a} API keys", 5);
+    assert!(
+        selected_line(&h).is_some_and(|l| l.contains("API keys")),
+        "Esc returns to the row the sub-menu came from:\n{}",
+        h.screen_contents()
+    );
 
     // 5. The last row (xAI optional): first Enter only shows the labeled copy; Esc disarms.
-    move_selection_to(&mut h, "xAI \u{2014} Sign in");
+    move_selection_to(&mut h, "xAI");
     h.inject_keys(b"\r").unwrap();
     wait_for(&mut h, "Not required.", 5);
     wait_for(&mut h, "Press Enter again", 5);
-    snapshot(&h, &dir, "05-auth-xai-optional-armed");
+    snapshot(&h, &dir, "06-auth-xai-optional-armed");
     h.inject_keys(b"\x1b").unwrap();
     wait_gone(&mut h, "Press Enter again", 5);
     assert_no_xai(&h, "after esc on xai card");
 
-    // 6. Tab switches between the two views; Esc closes back to the composer.
+    // 6. Tab is swallowed (one list, no views); Esc closes back to the composer.
     h.inject_keys(b"\t").unwrap();
-    wait_for(&mut h, "Tab: Subscriptions", 5);
-    h.inject_keys(b"\t").unwrap();
-    wait_for(&mut h, "Tab: Models", 5);
+    h.update(Duration::from_millis(300));
+    wait_for(&mut h, PICKER, 5);
     h.inject_keys(b"\x1b").unwrap();
-    wait_gone(&mut h, "Tab: Models", 5);
+    wait_gone(&mut h, PICKER, 5);
     wait_for(&mut h, "Big Pickle", 5);
     assert_no_xai(&h, "overlay closed");
-    snapshot(&h, &dir, "06-composer-after-overlays");
+    snapshot(&h, &dir, "07-composer-after-overlays");
 
     // 7. Terminal title: Workshop, never grok.
     let titles = titles_set(&h);

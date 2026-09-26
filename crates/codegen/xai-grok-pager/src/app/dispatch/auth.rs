@@ -206,22 +206,23 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
 
 /// Login. Triggered by pressing 'l' on an auth-pending welcome screen, by `/login` and `/auth`.
 ///
-/// Workshop: this opens the **Subscriptions** view of the connection picker and never sends an
+/// Workshop: this opens the connection picker on its **Subscriptions** section and never sends an
 /// `AuthenticateRequest` by itself (gate:no-xai, Gate 2). The inherited interactive session login
-/// runs only from the picker's labeled optional xAI card (`dispatch_connection_picker` →
+/// runs only from the picker's labeled optional xAI row (`dispatch_connection_picker` →
 /// `start_optional_xai_login`). A first run never comes here: it activates the OpenCode engine's
 /// default model directly (`dispatch_workshop_first_run`).
 pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
-    dispatch_open_connection_picker(app, workshop_auth::PickerTab::Subscriptions)
+    dispatch_open_connection_picker(app, workshop_auth::PickerFocus::Subscriptions)
 }
 
-/// Open the connection picker overlay on `tab` (`/model` → Models, `/auth` → Subscriptions).
-/// Idempotent while already open. The welcome and agent views paint the overlay themselves (an
-/// agent keeps its transcript visible around it); any other view stashes itself in
-/// `auth_return_view` and switches to `Welcome`. Esc restores the caller's view either way.
+/// Open the connection picker overlay with `focus` (`/model` → the active model, `/auth` → the
+/// Subscriptions section). An open picker is moved to the focus instead. The welcome and agent
+/// views paint the overlay themselves (an agent keeps its transcript visible around it); any
+/// other view stashes itself in `auth_return_view` and switches to `Welcome`. Esc restores the
+/// caller's view either way.
 pub(super) fn dispatch_open_connection_picker(
     app: &mut AppView,
-    tab: workshop_auth::PickerTab,
+    focus: workshop_auth::PickerFocus,
 ) -> Vec<Effect> {
     match app.active_view {
         ActiveView::Welcome => {}
@@ -238,14 +239,14 @@ pub(super) fn dispatch_open_connection_picker(
     }
     match app.connection_picker.as_mut() {
         Some(picker) => {
-            picker.tab = tab;
+            picker.focus(focus);
             vec![]
         }
         None => {
             app.connection_picker = Some(
                 workshop_auth::PickerState::new()
-                    .with_tab(tab)
-                    .with_active(app.workshop_connection.active_row_id()),
+                    .with_active(app.workshop_connection.active_row_id())
+                    .with_focus(focus),
             );
             // Rows and rails load asynchronously: loopback local-server probe, the cached model
             // lists, and the official CLI detection (child processes on the blocking pool). No
@@ -255,12 +256,15 @@ pub(super) fn dispatch_open_connection_picker(
     }
 }
 
-/// `/model`: the Models view, and — because the user asked for the model lists — a live refresh.
-/// A freshly opened picker shows its cached rows first; the refresh is queued behind that load
-/// (`WorkshopPickerLoaded` starts it) so the live rows always land last. A picker that is already
-/// open refreshes right away.
-pub(super) fn dispatch_open_models_view(app: &mut AppView) -> Vec<Effect> {
-    let effects = dispatch_open_connection_picker(app, workshop_auth::PickerTab::Models);
+/// `/model`: the picker on the active model, and — because the user asked for the model lists —
+/// a live refresh. A freshly opened picker shows its cached rows first; the refresh is queued
+/// behind that load (`WorkshopPickerLoaded` starts it) so the live rows always land last. A
+/// picker that is already open refreshes right away.
+pub(super) fn dispatch_open_models_view(
+    app: &mut AppView,
+    focus: workshop_auth::PickerFocus,
+) -> Vec<Effect> {
+    let effects = dispatch_open_connection_picker(app, focus);
     let freshly_opened = effects
         .iter()
         .any(|e| matches!(e, Effect::WorkshopLoadPicker));
@@ -294,6 +298,56 @@ fn set_workshop_connection(app: &mut AppView, conn: crate::app::workshop::Worksh
     crate::app::workshop::save_active_connection(&conn);
     app.workshop_connection = conn;
     app.workshop_fallback = None;
+}
+
+/// `/effort <level>` on the active OpenCode model: one of the levels its catalog offers, or
+/// `default` for the model's own. The pick is saved like a `/model` pick and the composer label
+/// re-stamped (`Ling 3.0 Flash Fin Free (high)`); no picker, no new session. An empty or unknown
+/// level, or a model without levels, gets one system line in the transcript.
+pub(super) fn dispatch_workshop_set_effort(app: &mut AppView, level: String) -> Vec<Effect> {
+    use crate::app::workshop::WorkshopConnection;
+    let message = match &app.workshop_connection {
+        WorkshopConnection::Engine { model } if !model.variants.is_empty() => {
+            let offered = model.variants.join("|");
+            let current = model
+                .effort
+                .as_deref()
+                .map(|e| format!(" (current: {e})"))
+                .unwrap_or_default();
+            let wanted = level.trim().to_ascii_lowercase();
+            if wanted.is_empty() {
+                Some(format!("Usage: /effort <default|{offered}>{current}"))
+            } else if wanted == "default" || model.variants.contains(&wanted) {
+                let picked = model.with_effort((wanted != "default").then_some(wanted.as_str()));
+                let label = picked.display();
+                set_workshop_connection(app, WorkshopConnection::Engine { model: picked });
+                crate::app::workshop::sync_agent_views(app);
+                app.show_toast(&format!("Model: {label}"));
+                None
+            } else {
+                Some(format!(
+                    "unknown effort level '{wanted}' for {}; use one of: default|{offered}",
+                    model.name
+                ))
+            }
+        }
+        WorkshopConnection::Engine { model } => Some(format!(
+            "{} has no effort levels; /model lists the models that do",
+            model.name
+        )),
+        WorkshopConnection::Adapter { model, .. } => Some(format!(
+            "{} has no effort levels; /model lists the models that do",
+            model.display()
+        )),
+        WorkshopConnection::Shell => None,
+    };
+    if let Some(message) = message
+        && let ActiveView::Agent(id) = app.active_view
+        && let Some(agent) = app.agents.get_mut(&id)
+    {
+        agent.scrollback.push_block(RenderBlock::system(message));
+    }
+    vec![]
 }
 
 /// First run (nothing connected yet): land in the composer with the OpenCode engine's default free

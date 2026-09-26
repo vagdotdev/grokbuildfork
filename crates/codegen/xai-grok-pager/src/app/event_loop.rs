@@ -4123,10 +4123,28 @@ fn handle_workshop_turn_msg(
     use crate::scrollback::block::RenderBlock;
     use crate::scrollback::blocks::SessionEvent;
 
-    // The engine warm-up reports before any turn (and any agent) exists.
+    // The engine warm-up reports before any turn (and any agent) exists. Its start refreshed the
+    // live catalog: a picked model OpenCode no longer offers is routed to the default right here,
+    // with one plain line, before the first message.
     if let M::EngineWarm { engine } = msg {
         app.workshop_engine = Some(engine);
-        return (false, vec![]);
+        let effects = crate::app::workshop::apply_retired_pick(
+            app,
+            &crate::app::workshop::cached_engine_models(),
+            &[],
+        );
+        return (!effects.is_empty(), effects);
+    }
+    // A turn found its picked model gone from the live catalog and runs on the default instead.
+    if let M::ModelRetired {
+        retired,
+        replacement,
+    } = msg
+    {
+        let line = crate::app::workshop::retired_line(&retired, &replacement.display());
+        let conn = crate::app::workshop::WorkshopConnection::Engine { model: replacement };
+        let effects = crate::app::workshop::apply_fallback(app, conn, line);
+        return (true, effects);
     }
     // `sudo` in one of the engine's commands wants the user's password: one masked prompt,
     // titled with the command that is running (the turn's shell tool) or sudo's own words.
@@ -4224,7 +4242,8 @@ fn handle_workshop_turn_msg(
         return (true, vec![]);
     }
     let redraw = match msg {
-        M::EngineWarm { .. } => false,
+        // Both are handled before the turn's agent is looked up.
+        M::EngineWarm { .. } | M::ModelRetired { .. } => false,
         M::Progress(text) => {
             // The bring-up's phase for the turn-status row: the plain wait for the model, or the
             // first-time download as a described step (`First-time setup, 12 MB downloaded…`,

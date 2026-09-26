@@ -88,7 +88,7 @@ fn model_picker_filters_as_you_type_and_swallows_stray_keys() {
     connect_big_pickle(&mut j);
 
     send_prompt(&mut j, "/model");
-    wait_for(&mut j.h, "Tab: Subscriptions", 15);
+    wait_for(&mut j.h, PICKER_OPEN, 15);
     wait_for(&mut j.h, "OpenCode", 15);
     j.h.update(Duration::from_millis(500));
     let screen = j.h.screen_contents();
@@ -116,18 +116,20 @@ fn model_picker_filters_as_you_type_and_swallows_stray_keys() {
     let screen = j.h.screen_contents();
     snapshot(&j.h, &j.dir, "03-model-filter-pickle");
     assert!(
-        screen.contains("Tab: Subscriptions"),
+        screen.contains(PICKER_OPEN),
         "typing filters instead of closing:\n{screen}"
     );
     assert!(
         screen.contains("pickle"),
         "the filter text is shown:\n{screen}"
     );
-    // Model rows sit inside the box (they end with its border) and carry the group's badge; the
-    // detail lines and the composer footer do not.
+    // Model rows sit inside the box (they end with its border) and, in the filtered list, carry
+    // the provider column and the group's badge; the detail lines and the composer footer do not.
     let rows: Vec<&str> = screen
         .lines()
-        .filter(|l| l.trim_end().ends_with('\u{2502}') && l.contains("OpenCode free"))
+        .filter(|l| {
+            l.trim_end().ends_with('\u{2502}') && l.contains("OpenCode") && l.contains("free")
+        })
         .collect();
     assert!(
         !rows.is_empty()
@@ -148,12 +150,12 @@ fn model_picker_filters_as_you_type_and_swallows_stray_keys() {
     j.h.update(Duration::from_millis(400));
     let screen = j.h.screen_contents();
     assert!(
-        screen.contains("Tab: Subscriptions") && screen.contains("type to filter"),
+        screen.contains(PICKER_OPEN) && screen.contains("type to filter"),
         "the first Esc clears the filter:\n{screen}"
     );
     j.h.inject_keys(b"\x1b").unwrap();
     if let Err(e) =
-        j.h.wait_for_text_absent("Tab: Subscriptions", Duration::from_secs(5))
+        j.h.wait_for_text_absent(PICKER_OPEN, Duration::from_secs(5))
     {
         panic!(
             "the second Esc closes the picker: {e}\n{}",

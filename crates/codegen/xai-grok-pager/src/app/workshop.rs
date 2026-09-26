@@ -29,9 +29,10 @@ use workshop_adapters::opencode_engine::{
 use crate::app::workshop_engine_state::{self as state, EngineState};
 use workshop_adapters::supervisor::{RunHandle, SupervisorOptions, spawn};
 use workshop_adapters::{
-    AdapterEvent, AdapterId, AskReply, DetectOptions, Detection, PermissionPolicy, Replier,
-    RunRequest, Usage, detect, question_answers_prompt,
+    AdapterEvent, AdapterId, AskReply, Detection, PermissionPolicy, Replier, RunRequest, Usage,
+    detect, question_answers_prompt,
 };
+use workshop_detect::DetectConfig;
 use workshop_auth::{ENGINE_PROVIDER_ID, EngineModel, PickerSnapshot, models_rows};
 use workshop_providers::catalog::live::{self as live_catalogs, HostedCatalogs};
 use workshop_providers::{
@@ -103,12 +104,14 @@ impl WorkshopConnection {
             ),
         }
     }
-    /// Picker row id of the active connection (Engine rows only; rails are not Models rows and a
-    /// Shell connection is the shell's own default model).
+    /// Picker row id of the active connection: the OpenCode model (at its picked level) or the
+    /// subscription model, so the picker marks it and its vendor; `None` for a Shell connection
+    /// (the shell's own default model).
     pub fn active_row_id(&self) -> Option<String> {
         match self {
             Self::Engine { model } => Some(model.row_id()),
-            Self::Shell | Self::Adapter { .. } => None,
+            Self::Adapter { rail, model } => Some(workshop_auth::rail_model_row_id(*rail, model)),
+            Self::Shell => None,
         }
     }
 }
@@ -822,6 +825,12 @@ pub enum WorkshopTurnMsg {
     EngineDefaultResolved {
         model: EngineModel,
     },
+    /// The picked OpenCode model is gone from the live catalog: the turn runs on `replacement`
+    /// (OpenCode's default) and the connection follows, with one plain line saying so.
+    ModelRetired {
+        retired: String,
+        replacement: EngineModel,
+    },
     Delta(String),
     /// A chunk of the model's reasoning: rendered as the pager's collapsed thinking block, never
     /// as part of the answer.
@@ -1495,7 +1504,7 @@ async fn start_engine(
         })),
         ..InstallOptions::default()
     };
-    let detect_opts = DetectOptions::default();
+    let detect_opts = DetectConfig::default();
     let run_installer = |st: &mut EngineState, log: &Path| {
         st.last_phase = Some("install".into());
         st.save(&home);
@@ -1732,6 +1741,136 @@ fn live_engine_default(models: &[EngineModel]) -> Option<EngineModel> {
         })
 }
 
+/// How long the home screen keeps the "no longer offered" line over the composer.
+pub const RETIRED_NOTICE_FOR: Duration = Duration::from_secs(45);
+
+/// The plain line for a pick that is gone: `<gone> is no longer offered — using <replacement>`.
+pub fn retired_line(gone: &str, replacement: &str) -> String {
+    format!("{gone} is no longer offered \u{2014} using {replacement}")
+}
+
+/// The picked model sticks — unless it no longer exists (owner rule). `engine` is the live OpenCode
+/// catalog (empty while none was ever read: no verdict on an OpenCode pick); `rails` are the
+/// probed vendors (a vendor still detecting, or whose list has not come: no verdict). Returns the
+/// connection to route to and the one plain line that says so:
+///
+/// * an OpenCode model gone from the free list → OpenCode's default (`Muse Spark 1.3 Free is no
+///   longer offered — using Big Pickle`);
+/// * a vendor model gone from its signed-in vendor's list → that vendor's default (the first the
+///   CLI lists), or OpenCode's default when the CLI lists nothing;
+/// * a vendor that is signed out or whose CLI is gone → OpenCode's default (`Claude is signed out
+///   — using Big Pickle`).
+pub fn retired_pick(
+    conn: &WorkshopConnection,
+    engine: &[EngineModel],
+    rails: &[workshop_detect::RailState],
+) -> Option<(WorkshopConnection, String)> {
+    let engine_default = || live_engine_default(engine).unwrap_or_else(EngineModel::big_pickle_seed);
+    match conn {
+        WorkshopConnection::Shell => None,
+        WorkshopConnection::Engine { model } => {
+            if engine.is_empty() || engine.iter().any(|m| m.model_ref == model.model_ref) {
+                return None;
+            }
+            let replacement = engine_default();
+            let line = retired_line(&model.display(), &replacement.display());
+            Some((WorkshopConnection::Engine { model: replacement }, line))
+        }
+        WorkshopConnection::Adapter { rail, model } => {
+            let state = rails.iter().find(|r| r.rail == *rail)?;
+            if state.pill == workshop_detect::Pill::Detecting {
+                return None;
+            }
+            let to_engine = |why: String| {
+                let replacement = engine_default();
+                let line = format!("{why} \u{2014} using {}", replacement.display());
+                Some((WorkshopConnection::Engine { model: replacement }, line))
+            };
+            if !state.installed {
+                return to_engine(format!(
+                    "{} is not installed",
+                    rail.vendor().display_name()
+                ));
+            }
+            if !state.is_ready() {
+                return to_engine(format!("{} is signed out", rail.display_name()));
+            }
+            if !matches!(state.subscription, workshop_detect::RailModels::Listed { .. }) {
+                return None;
+            }
+            if state.models.iter().any(|m| m.key() == model.key()) {
+                return None;
+            }
+            match state.models.first() {
+                Some(default) => Some((
+                    WorkshopConnection::Adapter {
+                        rail: *rail,
+                        model: default.clone(),
+                    },
+                    retired_line(model.display(), default.display()),
+                )),
+                None => {
+                    let replacement = engine_default();
+                    let line = retired_line(model.display(), &replacement.display());
+                    Some((WorkshopConnection::Engine { model: replacement }, line))
+                }
+            }
+        }
+    }
+}
+
+/// Route to `conn` because the picked model is gone (see [`retired_pick`]): save it, re-stamp the
+/// composer, rename the shell's placeholder entry, and say `line` once — a system line in the
+/// open session, a toast on the home screen. Never an error, never a picker.
+pub fn apply_fallback(
+    app: &mut crate::app::app_view::AppView,
+    conn: WorkshopConnection,
+    line: String,
+) -> Vec<crate::app::actions::Effect> {
+    use crate::app::app_view::ActiveView;
+    use crate::scrollback::block::RenderBlock;
+    save_active_connection(&conn);
+    app.workshop_connection = conn;
+    app.workshop_fallback = None;
+    sync_agent_views(app);
+    if let Some(picker) = app.connection_picker.as_mut() {
+        picker.active_id = app.workshop_connection.active_row_id();
+    }
+    tracing::info!(%line, "workshop: picked model gone, routed to the default");
+    match app.active_view {
+        ActiveView::Agent(id) if app.agents.contains_key(&id) => {
+            if let Some(agent) = app.agents.get_mut(&id) {
+                agent.scrollback.push_block(RenderBlock::system(line));
+            }
+        }
+        // The home screen has no transcript: the line sits over the composer long enough to be
+        // read (the composer's label already names the model it now runs on).
+        ActiveView::Welcome => {
+            app.welcome_toast = Some((
+                crate::glyphs::sanitize_toast_message(&line).into_owned(),
+                std::time::Instant::now() + RETIRED_NOTICE_FOR,
+            ));
+        }
+        _ => app.show_toast(&line),
+    }
+    if activate_placeholder_session(&app.workshop_connection).is_ok() {
+        return vec![crate::app::actions::Effect::WorkshopReloadModels];
+    }
+    Vec::new()
+}
+
+/// [`retired_pick`] against the live lists, applied ([`apply_fallback`]) when the pick is gone.
+pub fn apply_retired_pick(
+    app: &mut crate::app::app_view::AppView,
+    engine: &[EngineModel],
+    rails: &[workshop_detect::RailState],
+) -> Vec<crate::app::actions::Effect> {
+    match retired_pick(&app.workshop_connection, engine, rails) {
+        Some((conn, line)) => apply_fallback(app, conn, line),
+        None => Vec::new(),
+    }
+}
+
 /// What a silent continuation needs to prompt the same engine conversation again.
 struct EngineFollowUp {
     engine: Arc<OpenCodeEngine>,
@@ -1962,6 +2101,20 @@ async fn build_stream(
             let engine = acquire_engine(slot, &spec.cwd, tx, tx)
                 .await
                 .map_err(TurnStartError::EngineUnavailable)?;
+            // A picked model that OpenCode no longer offers: the turn runs on OpenCode's default
+            // and the connection follows, with one plain line (owner rule: the pick sticks
+            // unless it is gone).
+            let live_catalog = cached_engine_models();
+            if !live_catalog.is_empty()
+                && !live_catalog.iter().any(|m| m.model_ref == model.model_ref)
+                && let Some(replacement) = live_engine_default(&live_catalog)
+            {
+                let _ = tx.send(WorkshopTurnMsg::ModelRetired {
+                    retired: model.display(),
+                    replacement: replacement.clone(),
+                });
+                model = replacement;
+            }
             // The default engine model is whichever model OpenCode's live catalog (read at
             // every engine start) marks as default; the pinned seed only stands in while that
             // catalog is unreachable.
@@ -2118,7 +2271,7 @@ async fn detect_adapter_cli(adapter: &dyn workshop_adapters::Adapter) -> Detecti
     {
         return Detection::Installed(verified.cli);
     }
-    let detection = detect(adapter, &DetectOptions::default()).await;
+    let detection = detect(adapter, &DetectConfig::default()).await;
     if let Detection::Installed(cli) = &detection
         && let Ok(mut cache) = ADAPTER_CLI_CACHE.lock()
     {
@@ -2681,14 +2834,10 @@ async fn wait_cancelled(cancel_rx: &mut watch::Receiver<bool>) {
     }
 }
 
-/// Map a subscription rail to its `workshop-adapters` CLI adapter id.
+/// Map a subscription rail to its CLI adapter id: the adapters share the detection stack's
+/// vendor identity, so a rail's vendor *is* its adapter.
 pub fn rail_adapter_id(rail: workshop_detect::Rail) -> AdapterId {
-    match rail.vendor() {
-        workshop_detect::Vendor::Claude => AdapterId::Claude,
-        workshop_detect::Vendor::Codex => AdapterId::Codex,
-        workshop_detect::Vendor::Cursor => AdapterId::Cursor,
-        workshop_detect::Vendor::OpenCode => AdapterId::OpenCode,
-    }
+    rail.vendor()
 }
 
 /// A vendor CLI installer the user started from an `Install` rail, while it runs: one at a time,
@@ -2808,9 +2957,9 @@ pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        announces_unfinished_action, asks_to_write_files, claims_cannot_see_images,
-        downloads_images, ends_with_code_block, engine_question_answers, engine_questions,
-        vision_model,
+        EngineModel, WorkshopConnection, announces_unfinished_action, asks_to_write_files,
+        claims_cannot_see_images, downloads_images, ends_with_code_block,
+        engine_question_answers, engine_questions, retired_pick, vision_model,
     };
 
     #[test]
@@ -3021,5 +3170,175 @@ mod tests {
         ] {
             assert!(!announces_unfinished_action(tail), "{tail:?}");
         }
+    }
+
+    fn engine_model(name: &str, model_ref: &str, is_default: bool) -> EngineModel {
+        EngineModel {
+            model_ref: model_ref.into(),
+            name: name.into(),
+            is_default,
+            tool_call: true,
+            context_limit: None,
+            variants: Vec::new(),
+            effort: None,
+            image_input: false,
+        }
+    }
+
+    fn live_catalog() -> Vec<EngineModel> {
+        vec![
+            engine_model("Big Pickle", "opencode/big-pickle", true),
+            engine_model("MiMo Free", "opencode/mimo", false),
+        ]
+    }
+
+    fn rail(
+        rail: workshop_detect::Rail,
+        installed: bool,
+        ready: bool,
+        models: &[&str],
+    ) -> workshop_detect::RailState {
+        use workshop_detect::{Pill, RailModels, RailState, SubscriptionModel, SubscriptionModels};
+        let refs: Vec<workshop_detect::ModelRef> = models
+            .iter()
+            .map(|m| workshop_detect::ModelRef::new(rail.provider_id(), *m).with_display_name(*m))
+            .collect();
+        RailState {
+            rail,
+            pill: if ready {
+                Pill::Ready
+            } else if installed {
+                Pill::SignIn
+            } else {
+                Pill::Install
+            },
+            installed,
+            models: refs.clone(),
+            empty_copy: None,
+            show_connect: !ready,
+            subscription: if ready {
+                RailModels::Listed {
+                    list: SubscriptionModels {
+                        rail,
+                        models: models
+                            .iter()
+                            .map(|m| SubscriptionModel {
+                                id: (*m).into(),
+                                label: (*m).into(),
+                                is_default: false,
+                            })
+                            .collect(),
+                        account: None,
+                        documented_aliases: false,
+                        fetched_at_secs: 0,
+                    },
+                    cached: false,
+                    error: None,
+                }
+            } else {
+                RailModels::NotReady
+            },
+        }
+    }
+
+    /// The pick sticks while its model is listed, whatever else the lists say.
+    #[test]
+    fn a_listed_pick_sticks() {
+        let picked = WorkshopConnection::Engine {
+            model: engine_model("MiMo Free", "opencode/mimo", false),
+        };
+        assert_eq!(retired_pick(&picked, &live_catalog(), &[]), None);
+        assert_eq!(
+            retired_pick(&picked, &[], &[]),
+            None,
+            "no catalog was ever read: no verdict"
+        );
+        let claude = workshop_detect::Rail::Claude;
+        let sonnet = workshop_detect::ModelRef::new("anthropic", "sonnet").with_display_name("Sonnet");
+        let adapter = WorkshopConnection::Adapter {
+            rail: claude,
+            model: sonnet,
+        };
+        let rails = [rail(claude, true, true, &["default", "sonnet"])];
+        assert_eq!(retired_pick(&adapter, &live_catalog(), &rails), None);
+        assert_eq!(
+            retired_pick(&adapter, &live_catalog(), &[]),
+            None,
+            "the vendor was not probed: no verdict"
+        );
+        let mut detecting = workshop_detect::RailState::detecting(claude);
+        detecting.installed = true;
+        assert_eq!(
+            retired_pick(&adapter, &live_catalog(), &[detecting]),
+            None,
+            "still detecting: no verdict"
+        );
+        assert_eq!(retired_pick(&WorkshopConnection::Shell, &live_catalog(), &rails), None);
+    }
+
+    /// An OpenCode model gone from the free list routes to OpenCode's default with the plain line.
+    #[test]
+    fn a_retired_opencode_model_falls_back_to_the_default() {
+        let mut muse = engine_model("Muse Spark 1.3 Free", "opencode/muse-spark-1.3", false);
+        muse.effort = Some("high".into());
+        let picked = WorkshopConnection::Engine { model: muse };
+        let (conn, line) = retired_pick(&picked, &live_catalog(), &[]).expect("gone");
+        assert_eq!(
+            conn,
+            WorkshopConnection::Engine {
+                model: live_catalog()[0].clone()
+            }
+        );
+        assert_eq!(
+            line,
+            "Muse Spark 1.3 Free (high) is no longer offered \u{2014} using Big Pickle"
+        );
+        for word in ["error", "fail", "retired", "picker", "/model"] {
+            assert!(!line.to_ascii_lowercase().contains(word), "{line}");
+        }
+    }
+
+    /// A vendor model gone from its signed-in vendor's list routes to that vendor's default (the
+    /// first the CLI lists); a vendor that lists nothing, is signed out or has no CLI routes to
+    /// OpenCode's default.
+    #[test]
+    fn a_retired_vendor_model_falls_back_to_the_vendors_default_or_big_pickle() {
+        let claude = workshop_detect::Rail::Claude;
+        let sonnet = workshop_detect::ModelRef::new("anthropic", "sonnet").with_display_name("Sonnet");
+        let picked = WorkshopConnection::Adapter {
+            rail: claude,
+            model: sonnet,
+        };
+        let rails = [rail(claude, true, true, &["Default (recommended)", "opus"])];
+        let (conn, line) = retired_pick(&picked, &live_catalog(), &rails).expect("gone");
+        assert!(
+            matches!(&conn, WorkshopConnection::Adapter { rail, model } if *rail == claude && model.display() == "Default (recommended)"),
+            "{conn:?}"
+        );
+        assert_eq!(
+            line,
+            "Sonnet is no longer offered \u{2014} using Default (recommended)"
+        );
+
+        let empty = [rail(claude, true, true, &[])];
+        let (conn, line) = retired_pick(&picked, &live_catalog(), &empty).expect("gone");
+        assert!(conn.is_engine(), "{conn:?}");
+        assert_eq!(line, "Sonnet is no longer offered \u{2014} using Big Pickle");
+
+        let signed_out = [rail(claude, true, false, &[])];
+        let (conn, line) = retired_pick(&picked, &live_catalog(), &signed_out).expect("gone");
+        assert!(conn.is_engine(), "{conn:?}");
+        assert_eq!(line, "Claude is signed out \u{2014} using Big Pickle");
+
+        let uninstalled = [rail(claude, false, false, &[])];
+        let (conn, line) = retired_pick(&picked, &[], &uninstalled).expect("gone");
+        assert_eq!(
+            conn,
+            WorkshopConnection::Engine {
+                model: EngineModel::big_pickle_seed()
+            },
+            "no catalog read yet: the pinned seed stands in"
+        );
+        assert_eq!(line, "Claude Code is not installed \u{2014} using Big Pickle");
     }
 }

@@ -794,7 +794,7 @@ index 2dfa5642..f4c471bf 100644
              "source '{}'; source '{}'; ssh -p 2222 host; env | string match -rq '^ssh='; and exit 9; or exit 0",
              rc.display(),
 diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs b/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
-index 2bf69489..b5f82cff 100644
+index 2bf69489..76f477ee 100644
 --- a/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
 @@ -39,16 +39,23 @@ pub(crate) use model::{
@@ -834,12 +834,12 @@ index 2bf69489..b5f82cff 100644
 +pub fn apply_engine_probe(report: &mut DiagnosticReport) {
 +    use crate::app::workshop_engine_state::{self as state, EngineState};
 +    use workshop_adapters::opencode_engine::{detect_opencode, quarantine_flag};
-+    use workshop_adapters::{DetectOptions, Detection};
++    use workshop_adapters::{DetectConfig, Detection};
 +
 +    let home = crate::app::workshop::workshop_home();
 +    let saved = EngineState::load(&home).unwrap_or_default();
 +    let detection = block_on_detached(async {
-+        detect_opencode(&DetectOptions::default(), None).await
++        detect_opencode(&DetectConfig::default(), None).await
 +    });
 +    let (binary, version, binary_status) = match detection {
 +        Detection::Installed(cli) => (

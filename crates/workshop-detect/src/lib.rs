@@ -43,5 +43,5 @@ pub use models::{
     Account, ModelsCache, ModelsError, RailModels, Refresh, SubscriptionModel, SubscriptionModels,
     cached_subscription_models, picker_rails, rail_models, rails_models, subscription_models,
 };
-pub use probe::{Probe, Rejected, VendorProbe, probe_all, probe_vendor};
+pub use probe::{Detection, Probe, Rejected, VendorProbe, detect_vendor, probe_all, probe_vendor};
 pub use status::{LoginState, login_argv, status_argv, version_argv};

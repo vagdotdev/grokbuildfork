@@ -41,17 +41,27 @@ pub fn wait_for(h: &mut PtyHarness, text: &str, secs: u64) {
     }
 }
 
-/// Press Down until the `›`-marked row contains `needle`.
+pub fn wait_gone(h: &mut PtyHarness, text: &str, secs: u64) {
+    if let Err(e) = h.wait_for_text_absent(text, Duration::from_secs(secs)) {
+        panic!(
+            "timed out waiting for {text:?} to disappear: {e}\nscreen:\n{}",
+            h.screen_contents()
+        );
+    }
+}
+
+/// Press Down (then Up) until the `›`-marked row contains `needle`.
 pub fn move_selection_to(h: &mut PtyHarness, needle: &str) {
-    for _ in 0..40 {
-        if h.screen_contents()
-            .lines()
-            .any(|l| l.contains('\u{203a}') && l.contains(needle))
-        {
-            return;
+    for key in [b"\x1b[B", b"\x1b[A"] {
+        for _ in 0..40 {
+            if h.screen_contents().lines().any(|l| {
+                l.contains('\u{203a}') && !l.contains("Models \u{203a}") && l.contains(needle)
+            }) {
+                return;
+            }
+            h.inject_keys(key).unwrap();
+            h.update(Duration::from_millis(80));
         }
-        h.inject_keys(b"\x1b[B").unwrap();
-        h.update(Duration::from_millis(80));
     }
     panic!(
         "never reached a selected row containing {needle:?}\nscreen:\n{}",
@@ -172,7 +182,9 @@ fn spawn_journey(
         ("TERM", "xterm-256color"),
         ("GROK_DISABLE_AUTOUPDATER", "1"),
     ];
-    if !color {
+    // Text assertions want a colourless screen; `WORKSHOP_PTY_COLOR=1` on the test process keeps
+    // the colours for the HTML screenshots that become the project's evidence.
+    if !color && std::env::var_os("WORKSHOP_PTY_COLOR").is_none() {
         env.push(("NO_COLOR", "1"));
     }
     env.extend_from_slice(extra_env);
@@ -224,10 +236,46 @@ pub fn fake_opencode_answering(record: &Path) -> tempfile::TempDir {
 /// [`fake_opencode_answering`] replaying the given turn (JSON lines of `opencode serve` events)
 /// with `pace` seconds between events, so a gate can watch the transcript mid-turn.
 pub fn fake_opencode_answering_with(record: &Path, turn: &Path, pace: f64) -> tempfile::TempDir {
+    let providers = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../workshop-adapters/tests/fixtures/opencode_serve_providers.json");
+    fake_opencode_answering_serving(record, turn, pace, &providers)
+}
+
+/// The captured `/config/providers` answer without the models named in `dropped` (their catalog
+/// ids, `muse-spark-1.3-contributor-free`): what `opencode serve` reports once OpenCode retires
+/// them. Written next to `record`.
+pub fn providers_without(record: &Path, dropped: &[&str]) -> PathBuf {
+    let full = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../workshop-adapters/tests/fixtures/opencode_serve_providers.json");
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&full).expect("providers fixture"))
+            .expect("providers fixture is JSON");
+    if let Some(providers) = doc.get_mut("providers").and_then(|p| p.as_array_mut()) {
+        for provider in providers {
+            if let Some(models) = provider.get_mut("models").and_then(|m| m.as_object_mut()) {
+                for id in dropped {
+                    models.remove(*id);
+                }
+            }
+        }
+    }
+    let path = record
+        .parent()
+        .expect("record dir")
+        .join("providers-trimmed.json");
+    std::fs::write(&path, serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+    path
+}
+
+/// [`fake_opencode_answering_with`] serving `providers` as its `/config/providers` answer.
+pub fn fake_opencode_answering_serving(
+    record: &Path,
+    turn: &Path,
+    pace: f64,
+    providers: &Path,
+) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let adapter_fixtures =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../workshop-adapters/tests/fixtures");
     let script = format!(
         r#"#!/bin/sh
 case "$1" in
@@ -244,9 +292,7 @@ echo "fake opencode: unexpected $*" >&2
 exit 2
 "#,
         serve = fixtures.join("fake-opencode-serve-turn.py").display(),
-        providers = adapter_fixtures
-            .join("opencode_serve_providers.json")
-            .display(),
+        providers = providers.display(),
         turn = turn.display(),
         record = record.display(),
     );
@@ -279,6 +325,33 @@ pub fn connect_big_pickle(j: &mut Journey) {
 
 /// Test hook read by the binary: the silent fallback's base URL (see `workshop::KILO_BASE_URL_ENV`).
 pub const KILO_BASE_URL_ENV: &str = "WORKSHOP_KILO_BASE_URL";
+
+/// The one picker overlay (`/model`, `/auth`) is on screen: its search line starts with this
+/// glyph whatever is typed into the filter.
+pub const PICKER_OPEN: &str = "\u{2315}";
+/// The row marker of a row that opens a sub-menu (a signed-in vendor, a model with effort levels,
+/// `API keys`).
+pub const OPENS_SUBMENU: &str = "\u{25b8}";
+/// A signed-in vendor's row mark.
+pub const SIGNED_IN: &str = "\u{2713}";
+
+/// The `›`-marked (highlighted) line of the screen.
+pub fn selected_line(h: &PtyHarness) -> Option<String> {
+    h.screen_contents()
+        .lines()
+        .find(|l| l.contains('\u{203a}') && !l.contains("Models \u{203a}"))
+        .map(str::to_owned)
+}
+
+/// Wait until the picker overlay is gone.
+pub fn wait_picker_closed(h: &mut PtyHarness, secs: u64) {
+    if let Err(e) = h.wait_for_text_absent(PICKER_OPEN, Duration::from_secs(secs)) {
+        panic!(
+            "the picker did not close: {e}\nscreen:\n{}",
+            h.screen_contents()
+        );
+    }
+}
 
 /// Words a first-time user must never read on screen: runtime and fallback plumbing.
 pub const PLUMBING_WORDS: [&str; 6] = [

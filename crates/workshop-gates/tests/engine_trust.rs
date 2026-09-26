@@ -72,7 +72,9 @@ mod pty_common;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use pty_common::{Journey, bin_from_env, send_prompt, snapshot, wait_for};
+use pty_common::{
+    Journey, PICKER_OPEN, bin_from_env, send_prompt, snapshot, wait_for, wait_picker_closed,
+};
 
 /// The composer names the model only (`Big Pickle`, `Big Pickle · plan`), never the runtime.
 const FIRST_RUN_LABEL: &str = "Big Pickle";
@@ -949,13 +951,18 @@ fn prompts_with_models(log: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Pick `row` in `/model` (type to filter, Enter) and wait for the composer to name it.
+/// Pick `row` in `/model` (type to filter, Enter; a model with effort levels opens its levels
+/// first, where Enter on `Default` picks it) and wait for the composer to name it.
 fn pick_model(j: &mut Journey, filter: &str, label: &str) {
     send_prompt(j, "/model");
-    wait_for(&mut j.h, "Tab: Subscriptions", 15);
+    wait_for(&mut j.h, PICKER_OPEN, 15);
     j.h.inject_keys(filter.as_bytes()).unwrap();
     j.h.update(Duration::from_millis(600));
     j.h.inject_keys(b"\r").unwrap();
+    j.h.update(Duration::from_millis(600));
+    if j.h.screen_contents().contains("Models \u{203a}") {
+        j.h.inject_keys(b"\r").unwrap();
+    }
     wait_for(&mut j.h, label, 15);
     j.h.update(Duration::from_millis(800));
     snapshot(
@@ -2479,19 +2486,15 @@ fn picked_model_survives_the_next_warm_up() {
     send_prompt(&mut j, "hello");
     wait_for(&mut j.h, "Echo: hello", 60);
     send_prompt(&mut j, "/model");
-    wait_for(&mut j.h, "Tab: Subscriptions", 15);
+    wait_for(&mut j.h, PICKER_OPEN, 15);
     j.h.inject_keys(b"fin free").unwrap();
     wait_for(&mut j.h, LING, 15);
     j.h.update(Duration::from_millis(400));
+    // Ling has effort levels: Enter opens them, Enter on `Default` picks the model.
     j.h.inject_keys(b"\r").unwrap();
-    if let Err(e) =
-        j.h.wait_for_text_absent("Tab: Subscriptions", Duration::from_secs(30))
-    {
-        panic!(
-            "picker did not close after the pick: {e}\n{}",
-            j.h.screen_contents()
-        );
-    }
+    wait_for(&mut j.h, "Models \u{203a} Ling", 10);
+    j.h.inject_keys(b"\r").unwrap();
+    wait_picker_closed(&mut j.h, 30);
     border_names_ling(&mut j, 15);
     quit(&mut j);
 

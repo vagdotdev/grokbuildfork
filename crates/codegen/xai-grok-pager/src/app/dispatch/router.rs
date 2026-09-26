@@ -3,6 +3,7 @@ use super::auth::{
     dispatch_cancel_login, dispatch_connection_picker, dispatch_login, dispatch_logout,
     dispatch_open_connection_picker, dispatch_open_models_view, dispatch_submit_auth_code,
     dispatch_switch_account, dispatch_workshop_engine_unavailable, dispatch_workshop_first_run,
+    dispatch_workshop_set_effort,
 };
 use super::billing::dispatch_open_supergrok_url;
 use super::ctx::{
@@ -1245,11 +1246,12 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::Login => dispatch_login(app),
         // Workshop: an explicit `/model` is the user asking for the live model lists; the hermetic
         // doors (`Login`, `/auth`) only show what is cached.
-        Action::OpenConnectionPicker(workshop_auth::PickerTab::Models) => {
-            dispatch_open_models_view(app)
+        Action::OpenConnectionPicker(focus @ workshop_auth::PickerFocus::Models { .. }) => {
+            dispatch_open_models_view(app, focus)
         }
-        Action::OpenConnectionPicker(tab) => dispatch_open_connection_picker(app, tab),
+        Action::OpenConnectionPicker(focus) => dispatch_open_connection_picker(app, focus),
         Action::ConnectionPicker(input) => dispatch_connection_picker(app, input),
+        Action::WorkshopSetEffort(level) => dispatch_workshop_set_effort(app, level),
         Action::WorkshopFirstRun => dispatch_workshop_first_run(app),
         Action::WorkshopEngineUnavailable {
             agent_id,

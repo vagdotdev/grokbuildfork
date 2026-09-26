@@ -8,12 +8,8 @@
 //! proves it is the Cursor Agent. `--version` alone prints a bare
 //! `YYYY.MM.DD-hash` and is not an identity.
 //!
-//! * identity: `--version` -> `2026.09.23-86fc751`; `--help` contains
-//!   `Start the Cursor Agent`.
-//! * status:   `cursor-agent status --format json` ->
-//!   `{"status":"authenticated"|"partially-authenticated"|"unauthenticated","isAuthenticated":bool,...}`
-//!   (exit 0 either way). Workshop never reads `~/.cursor/sdk/auth.json`.
-//! * login:    `cursor-agent login` in the user's terminal.
+//! * identity, status, login: `workshop-detect` (the one detection stack, shared with the
+//!   picker) verifies the binary, asks the official status command and runs the login.
 //! * run:      `cursor-agent -p --output-format stream-json --stream-partial-output
 //!   --trust [--mode plan | --force] [--model M] [--resume=ID] <prompt>`; prompt is
 //!   the final positional argument (stdin prompt delivery is not verified for
@@ -42,15 +38,14 @@
 //!   `retry`, `connection`, `interaction_query`.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
 use super::claude::truncate;
 use super::{json, tool};
 use crate::adapter::{
-    Adapter, AdapterId, LoginState, NormalizeError, Normalizer, PermissionPolicy, ProbeOutput,
-    PromptDelivery, RunRequest, Terminal, VersionPin,
+    Adapter, AdapterId, NormalizeError, Normalizer, PermissionPolicy, PromptDelivery, RunRequest,
+    Terminal, VersionPin,
 };
 use crate::event::{AdapterEvent, QuestionChoice, QuestionPrompt, Usage};
 
@@ -61,79 +56,11 @@ impl Adapter for CursorAdapter {
         AdapterId::Cursor
     }
 
-    fn binary_names(&self) -> &'static [&'static str] {
-        &["cursor-agent", "agent"]
-    }
-
-    fn extra_install_dirs(&self, home: &Path) -> Vec<PathBuf> {
-        let _ = home;
-        vec![PathBuf::from(
-            "/Applications/Cursor.app/Contents/Resources/app/bin",
-        )]
-    }
-
-    fn identity_probes(&self) -> &'static [&'static [&'static str]] {
-        &[&["--version"], &["--help"]]
-    }
-
-    fn identify(&self, outputs: &[ProbeOutput]) -> Option<String> {
-        let [version_out, help_out] = outputs else {
-            return None;
-        };
-        if !help_out.stdout.contains("Start the Cursor Agent") {
-            return None;
-        }
-        let version = version_out.stdout.lines().next()?.trim();
-        let mut parts = version.splitn(3, '.');
-        let looks_dated = parts
-            .next()
-            .is_some_and(|y| y.len() == 4 && y.chars().all(|c| c.is_ascii_digit()))
-            && parts
-                .next()
-                .is_some_and(|m| m.len() == 2 && m.chars().all(|c| c.is_ascii_digit()))
-            && parts
-                .next()
-                .is_some_and(|d| d.len() >= 2 && d.starts_with(|c: char| c.is_ascii_digit()));
-        looks_dated.then(|| version.to_string())
-    }
-
     fn version_pin(&self) -> VersionPin {
         VersionPin {
             min_supported: "2026.09.18",
             max_tested: "2026.09.23",
         }
-    }
-
-    fn status_args(&self) -> &'static [&'static str] {
-        &["status", "--format", "json"]
-    }
-
-    fn interpret_status(&self, output: &ProbeOutput) -> LoginState {
-        let Ok(v) = serde_json::from_str::<Value>(output.stdout.trim()) else {
-            return LoginState::Unknown {
-                reason: format!(
-                    "`cursor-agent status --format json` did not print JSON (exit {:?})",
-                    output.exit_code
-                ),
-            };
-        };
-        match json::bool_of(&v, "isAuthenticated") {
-            Some(true) => LoginState::Ready {
-                method: Some("Cursor account".to_string()),
-            },
-            Some(false) => LoginState::SignIn,
-            None => LoginState::Unknown {
-                reason: "`isAuthenticated` missing from status JSON".to_string(),
-            },
-        }
-    }
-
-    fn login_args(&self) -> &'static [&'static str] {
-        &["login"]
-    }
-
-    fn logout_args(&self) -> &'static [&'static str] {
-        &["logout"]
     }
 
     fn prompt_delivery(&self) -> PromptDelivery {
@@ -633,65 +560,11 @@ fn canonical_result(name: &str, args: &Value, result: &Value) -> Outcome {
 mod tests {
     use super::*;
 
-    fn out(stdout: &str) -> ProbeOutput {
-        ProbeOutput {
-            stdout: stdout.into(),
-            exit_code: Some(0),
-            ..Default::default()
-        }
-    }
-
     fn feed(n: &mut CursorNormalizer, lines: &[&str]) -> Vec<AdapterEvent> {
         lines
             .iter()
             .flat_map(|l| n.on_line(l).expect("valid line"))
             .collect()
-    }
-
-    #[test]
-    fn a_bare_agent_binary_is_not_cursor() {
-        let a = CursorAdapter;
-        assert_eq!(
-            a.identify(&[
-                out("2026.09.18-9a7762b\n"),
-                out("Usage: agent [options] [command] [prompt...]\n\nStart the Cursor Agent\n")
-            ]),
-            Some("2026.09.18-9a7762b".to_string())
-        );
-        assert_eq!(
-            a.identify(&[out("1.2.3\n"), out("Usage: agent\nSome other agent\n")]),
-            None
-        );
-        assert_eq!(a.identify(&[out("2026.09.18-9a7762b\n")]), None);
-    }
-
-    #[test]
-    fn status_json_maps_to_login_state() {
-        let a = CursorAdapter;
-        assert_eq!(
-            a.interpret_status(&out(
-                r#"{"status":"unauthenticated","isAuthenticated":false,"hasAccessToken":false,"hasRefreshToken":false,"message":"Not logged in"}"#
-            )),
-            LoginState::SignIn
-        );
-        assert_eq!(
-            a.interpret_status(&out(
-                r#"{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true}"#
-            )),
-            LoginState::Ready {
-                method: Some("Cursor account".into())
-            }
-        );
-        assert_eq!(
-            a.interpret_status(&out(
-                r#"{"status":"partially-authenticated","isAuthenticated":false,"hasAccessToken":true,"hasRefreshToken":false}"#
-            )),
-            LoginState::SignIn
-        );
-        assert!(matches!(
-            a.interpret_status(&out("Not logged in\n")),
-            LoginState::Unknown { .. }
-        ));
     }
 
     #[test]
