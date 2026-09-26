@@ -19,7 +19,6 @@
 //! question event is raised here.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 

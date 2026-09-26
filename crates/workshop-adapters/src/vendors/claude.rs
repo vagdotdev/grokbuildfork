@@ -25,7 +25,6 @@
 //! resumed session.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
