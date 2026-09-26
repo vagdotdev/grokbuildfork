@@ -159,7 +159,7 @@ index f1602289..7300f065 100644
      ChangelogFetched {
          markdown: Option<String>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..186daf8d 100644
+index fc9a4553..55212626 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -839,7 +839,15 @@ index fc9a4553..186daf8d 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4824,6 +5193,44 @@ impl AppView {
+@@ -4804,6 +5173,7 @@ impl AppView {
+                                             .workspace_dashboard_enabled,
+                                         overlay_header,
+                                         overlay_stop_label: None,
++                                        workshop_password: self.workshop_password_ask.as_ref(),
+                                     },
+                                 );
+                                 if let Some(modal) = self.import_claude_modal.as_mut() {
+@@ -4824,6 +5194,28 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -862,29 +870,13 @@ index fc9a4553..186daf8d 100644
 +                                        if compact { 1 } else { 4 },
 +                                    );
 +                                }
-+                                // Workshop: a `sudo` password prompt sits right above the
-+                                // composer while one of the engine's commands waits for it.
-+                                if let Some(ask) = self.workshop_password_ask.as_ref() {
-+                                    let theme = crate::theme::Theme::current();
-+                                    let margin: u16 = if compact { 1 } else { 4 };
-+                                    // Ends one row above the composer's top border.
-+                                    let above_composer = ratatui::layout::Rect {
-+                                        x: view_area.x + margin,
-+                                        y: view_area.y + 2,
-+                                        width: view_area.width.saturating_sub(margin * 2),
-+                                        height: view_area.height.saturating_sub(8),
-+                                    };
-+                                    crate::views::workshop_password::render(
-+                                        above_composer,
-+                                        f.buffer_mut(),
-+                                        &theme,
-+                                        ask,
-+                                    );
-+                                }
++                                // Workshop: the `sudo` password card is laid out inside the agent
++                                // view (in the composer slot, status row above it), like the
++                                // Normal-mode approval card — see `AppRenderParams::workshop_password`.
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5239,17 @@ impl AppView {
+@@ -4832,13 +5224,17 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
@@ -903,7 +895,7 @@ index fc9a4553..186daf8d 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5531,7 @@ impl AppView {
+@@ -5120,6 +5516,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -911,7 +903,7 @@ index fc9a4553..186daf8d 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5579,7 @@ impl AppView {
+@@ -5167,7 +5564,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -920,7 +912,7 @@ index fc9a4553..186daf8d 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5694,7 @@ impl AppView {
+@@ -5282,6 +5679,7 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
@@ -928,7 +920,7 @@ index fc9a4553..186daf8d 100644
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5300,11 +5713,7 @@ impl AppView {
+@@ -5300,11 +5698,7 @@ impl AppView {
              {
                  needs_redraw = true;
              } else {
@@ -941,7 +933,7 @@ index fc9a4553..186daf8d 100644
              }
          }
          if matches!(self.active_view, ActiveView::AgentDashboard)
-@@ -5355,7 +5764,10 @@ impl AppView {
+@@ -5355,7 +5749,10 @@ impl AppView {
              }
              let spinner_frame_tick =
                  agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
@@ -953,7 +945,7 @@ index fc9a4553..186daf8d 100644
              needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
                  && spinner_frame_tick;
              needs_redraw |= matches!(
-@@ -5623,6 +6035,20 @@ impl AppView {
+@@ -5623,6 +6020,20 @@ impl AppView {
          }
          needs_redraw
      }
@@ -974,7 +966,7 @@ index fc9a4553..186daf8d 100644
      /// Check if animation ticks should be scheduled.
      pub fn needs_animation(&self) -> bool {
          self.tick_demand() != TickDemand::None
-@@ -5637,6 +6063,15 @@ impl AppView {
+@@ -5637,6 +6048,15 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -990,7 +982,7 @@ index fc9a4553..186daf8d 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5781,9 +6216,94 @@ impl AppView {
+@@ -5781,9 +6201,94 @@ impl AppView {
                      TickDemand::None
                  }
              }
@@ -1013,8 +1005,8 @@ index fc9a4553..186daf8d 100644
 +                    TickDemand::None
 +                }
 +            }
-         }
-     }
++        }
++    }
 +    /// Workshop: whether the welcome hero should advance a frame on the next tick — the user has
 +    /// not turned it off (`[ui] hero_animation = false`), the terminal can show it (colour on, no
 +    /// legacy console), the last paint spun it (wide layout, logo shown) and the terminal is
@@ -1071,8 +1063,8 @@ index fc9a4553..186daf8d 100644
 +            .and_then(|id| self.agents.get_mut(&id))
 +        {
 +            agent.workshop_turn_activity = Some(activity);
-+        }
-+    }
+         }
+     }
 +    /// Workshop: the activity after a tool call started or finished.
 +    pub(crate) fn sync_workshop_tool_activity(&mut self) {
 +        let activity = match self.workshop_turn_running.last() {
@@ -1086,7 +1078,7 @@ index fc9a4553..186daf8d 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6325,9 @@ impl AppView {
+@@ -5805,7 +6310,9 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -4415,16 +4407,17 @@ index eda61b3c..bbe610ea 100644
      effs: Vec<super::actions::Effect>,
      tasks: &mut JoinSet<TaskResult>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/mod.rs b/crates/codegen/xai-grok-pager/src/app/mod.rs
-index 60fe34f9..8b49336e 100644
+index 60fe34f9..ee4df3e7 100644
 --- a/crates/codegen/xai-grok-pager/src/app/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/mod.rs
-@@ -13,6 +13,14 @@ pub mod actions;
+@@ -13,6 +13,15 @@ pub mod actions;
  pub mod agent;
  pub mod agent_view;
  pub mod app_view;
 +/// Workshop overlay: connection picker loading and activation.
 +pub mod workshop;
 +pub mod workshop_askpass;
++pub mod workshop_engine_shell;
 +pub mod workshop_engine_state;
 +pub mod workshop_permissions;
 +pub mod workshop_sessions;
@@ -4433,7 +4426,7 @@ index 60fe34f9..8b49336e 100644
  pub mod bundle;
  pub(crate) mod cancel_latency;
  pub mod cli;
-@@ -815,9 +823,20 @@ pub async fn run(
+@@ -815,9 +824,20 @@ pub async fn run(
          }
          session_startup::set_active_local_workspace(lw)?;
      }
@@ -4455,7 +4448,7 @@ index 60fe34f9..8b49336e 100644
      let mut materialize_ctx = session_startup::MaterializeCtx::from_pager_args(&args);
      materialize_ctx.restore_progress_on_stdout =
          std::io::IsTerminal::is_terminal(&std::io::stdout());
-@@ -1154,6 +1173,7 @@ pub async fn run(
+@@ -1154,6 +1174,7 @@ pub async fn run(
          bg_update_rx,
          writer_event_rx,
          &mut reader_thread,
@@ -4463,7 +4456,7 @@ index 60fe34f9..8b49336e 100644
      )
      .await;
      signal_handler::clear_quit_notify();
-@@ -1233,7 +1253,7 @@ pub async fn run(
+@@ -1233,7 +1254,7 @@ pub async fn run(
          Err(run_error) => Err(run_error),
      }
  }
@@ -4472,7 +4465,7 @@ index 60fe34f9..8b49336e 100644
  /// Best-effort: closed-pane EIO/BrokenPipe must not panic (`panic = "abort"`).
  /// TODO: extend beyond --minimal by rebuilding resume argv from launch flags (see screen_mode_relaunch)
  fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write) {
-@@ -1253,11 +1273,12 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
+@@ -1253,11 +1274,12 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
          }
          let _ = writeln!(w);
      }
@@ -4488,7 +4481,7 @@ index 60fe34f9..8b49336e 100644
      }
  }
  /// Screen-mode relaunch failure fallback (same quit tail as plain resume).
-@@ -1474,6 +1495,11 @@ fn init_terminal(
+@@ -1474,6 +1496,11 @@ fn init_terminal(
          startup_typeahead.extend(event_loop::capture_startup_typeahead(
              std::time::Duration::from_millis(0),
          ));
@@ -4500,7 +4493,7 @@ index 60fe34f9..8b49336e 100644
          set_terminal_title("");
          if want_minimal && clear_main_screen {
              xai_grok_shell::util::with_locked_stderr(|stderr| {
-@@ -1671,10 +1697,10 @@ pub(crate) fn set_terminal_title(title: &str) {
+@@ -1671,10 +1698,10 @@ pub(crate) fn set_terminal_title(title: &str) {
  fn terminal_title_string(title: &str) -> String {
      let sanitized: String = title.chars().filter(|c| !c.is_control()).collect();
      if sanitized.is_empty() {
@@ -4514,7 +4507,7 @@ index 60fe34f9..8b49336e 100644
      }
  }
  #[cfg(test)]
-@@ -1724,11 +1750,11 @@ mod tests {
+@@ -1724,11 +1751,11 @@ mod tests {
      fn terminal_title_strips_control_characters() {
          assert_eq!(
              terminal_title_string("evil\x07\x1b]52;c;payload\x07title"),
@@ -4530,7 +4523,7 @@ index 60fe34f9..8b49336e 100644
      }
      #[test]
      fn hunk_tracker_mode_nothing_set_is_none() {
-@@ -2245,9 +2271,9 @@ mod tests {
+@@ -2245,9 +2272,9 @@ mod tests {
          assert!(!args.no_alt_screen);
      }
      #[test]
@@ -4542,7 +4535,7 @@ index 60fe34f9..8b49336e 100644
      }
      #[test]
      fn cli_help_output_header() {
-@@ -2257,9 +2283,9 @@ mod tests {
+@@ -2257,9 +2284,9 @@ mod tests {
          assert_eq!(
              first_5,
              vec![
@@ -4554,7 +4547,7 @@ index 60fe34f9..8b49336e 100644
                  "",
                  "Arguments:",
              ]
-@@ -2305,7 +2331,7 @@ mod tests {
+@@ -2305,7 +2332,7 @@ mod tests {
          print_exit_resume_hint(&bare_exit_info("sess-abc", false), 80, &mut buf);
          assert_eq!(
              String::from_utf8(buf).unwrap(),
@@ -4563,7 +4556,7 @@ index 60fe34f9..8b49336e 100644
          );
      }
      #[test]
-@@ -2314,7 +2340,7 @@ mod tests {
+@@ -2314,7 +2341,7 @@ mod tests {
          print_exit_resume_hint(&bare_exit_info("sess-abc", true), 80, &mut buf);
          assert_eq!(
              String::from_utf8(buf).unwrap(),
@@ -4572,7 +4565,7 @@ index 60fe34f9..8b49336e 100644
          );
      }
      #[test]
-@@ -2338,8 +2364,7 @@ mod tests {
+@@ -2338,8 +2365,7 @@ mod tests {
                  "> make the suite deterministic\n",
                  "  Pinned the seed; 200 consecutive green runs.\n",
                  "\n",
@@ -4582,7 +4575,7 @@ index 60fe34f9..8b49336e 100644
              )
          );
      }
-@@ -2360,7 +2385,7 @@ mod tests {
+@@ -2360,7 +2386,7 @@ mod tests {
          assert!(out.contains(&format!("\n{}…\n", "t".repeat(19))));
          assert!(out.contains(&format!("\n> {}…\n", "p".repeat(17))));
          assert!(out.contains(&format!("\n  {}…\n", "r".repeat(17))));
@@ -4593,10 +4586,10 @@ index 60fe34f9..8b49336e 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..ea3b9e29
+index 00000000..1994dd4f
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,3005 @@
+@@ -0,0 +1,3025 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -4611,6 +4604,7 @@ index 00000000..ea3b9e29
 +//! only after the user acted — an active connection at startup, `/model`, the picker's `r` — so
 +//! the first-run, `/login` and `/auth` screens stay hermetic.
 +
++use std::ffi::OsString;
 +use std::path::{Path, PathBuf};
 +use std::sync::Arc;
 +use std::time::{Duration, UNIX_EPOCH};
@@ -6003,16 +5997,20 @@ index 00000000..ea3b9e29
 +    )
 +}
 +
-+/// The engine's inline config: Workshop's base prompt for the agents its turns run on, and the
-+/// identity file for this launch. A home that cannot be written drops only the file; the cause
-+/// goes to the engine log.
-+fn engine_config(log: &Path) -> serde_json::Value {
++/// The engine's inline config: Workshop's base prompt for the agents its turns run on, the identity
++/// file for this launch, and the shell OpenCode runs commands through (Workshop's engine-shell,
++/// when it was written). A home that cannot be written drops only the file; the cause goes to the
++/// engine log.
++fn engine_config(log: &Path, shell: Option<&Path>) -> serde_json::Value {
 +    let mut config = match write_engine_instructions(log) {
 +        Some(path) => instructions_config(&[path]),
 +        None => serde_json::json!({}),
 +    };
 +    if let Some(fields) = config.as_object_mut() {
 +        fields.insert("agent".into(), agent_prompts(WORKSHOP_AGENT_PROMPT));
++        if let Some(shell) = shell {
++            fields.insert("shell".into(), serde_json::json!(shell.to_string_lossy()));
++        }
 +    }
 +    config
 +}
@@ -6159,6 +6157,7 @@ index 00000000..ea3b9e29
 +    // The engine asks before edits and commands; what happens next is the agent's permission
 +    // mode (Plan/Normal prompt, Auto/Always-approve allow), decided on the UI thread per ask.
 +    opts.permission = Some(ask_before_edit_and_bash());
++    let mut extra_env: Vec<(OsString, OsString)> = Vec::new();
 +    // `sudo` in the engine's commands has no terminal to ask on. Grok Build's shell tool defers
 +    // to the user's own `SUDO_ASKPASS` helper when one is set; so does the engine (the variable
 +    // passes through). With none, Workshop is the helper: `SUDO_ASKPASS` → this process's socket
@@ -6166,19 +6165,33 @@ index 00000000..ea3b9e29
 +    if std::env::var_os(crate::app::workshop_askpass::HELPER_ENV).is_none_or(|v| v.is_empty())
 +        && let Some(askpass) = askpass_server(slot, &ui_tx)
 +    {
-+        opts.extra_env = askpass.env();
++        extra_env.extend(askpass.env());
 +    }
++    // The `sudo` shim (Grok Build's `sudo -A`) and the engine shell (background budget + detach for
++    // GUIs/daemons). The shim wins by being first on the engine's PATH; the shell is named in the
++    // engine config below. A home that cannot hold them just runs without them.
++    let engine_shell = match crate::app::workshop_engine_shell::prepare(&home) {
++        Ok(shims) => {
++            let base = std::env::var_os("PATH").unwrap_or_default();
++            extra_env.push((OsString::from("PATH"), shims.path_with_shims(&base)));
++            Some(shims.shell)
++        }
++        Err(e) => {
++            state::append_log(&log, &format!("engine-shell: cannot write shims: {e}"));
++            None
++        }
++    };
 +    // The engine's scratch space (OpenCode keeps it at `<tmpdir>/opencode`) lives under the
 +    // Workshop home, and the tool rows show it as `~/.workshop/tmp` (see `scrub_scratch_paths`).
 +    let scratch = engine_scratch_dir();
 +    if std::fs::create_dir_all(&scratch).is_ok() {
-+        opts.extra_env
-+            .push(("TMPDIR".into(), scratch.into_os_string()));
++        extra_env.push((OsString::from("TMPDIR"), scratch.into_os_string()));
 +    }
++    opts.extra_env = extra_env;
 +    opts.permission_handler = Some(engine_permission_handler(ui_tx.clone()));
 +    opts.question_handler = Some(engine_question_handler(ui_tx));
 +    // The models answer as Workshop's assistant, not as "opencode".
-+    opts.config = Some(engine_config(&log));
++    opts.config = Some(engine_config(&log, engine_shell.as_deref()));
 +    let sink_path = log.clone();
 +    opts.log_sink = Some(Arc::new(move |line: &str| {
 +        state::append_log(&sink_path, line)
