@@ -266,7 +266,7 @@ mkdir -p "$tmp/h12/bin" "$tmp/x12"
 tar -xzf "$dist/$asset" -C "$tmp/x12"
 cp "$tmp/x12/$PRODUCT_BIN" "$tmp/h12/bin/$PRODUCT_BIN"
 chmod 755 "$tmp/h12/bin/$PRODUCT_BIN"
-if (env -u WORKSHOP_VOICE_TIER HOME="$tmp/home12" SHELL=/usr/bin/fish WORKSHOP_HOME="$tmp/h12" WORKSHOP_CHANNEL="$channel" WORKSHOP_MANIFEST_URL="$base/$channel.json" sh "$install_sh") 2>"$tmp/h12.err" \
+if (env -u WORKSHOP_VOICE_TIER -u XDG_CONFIG_HOME HOME="$tmp/home12" SHELL=/usr/bin/fish WORKSHOP_HOME="$tmp/h12" WORKSHOP_CHANNEL="$channel" WORKSHOP_MANIFEST_URL="$base/$channel.json" sh "$install_sh") 2>"$tmp/h12.err" \
   && check_cli "$tmp/h12" && grep -q "^Replaced the existing Workshop with $version\.$" "$tmp/h12.err" \
   && grep -q -x -F "fish_add_path $tmp/h12/bin" "$tmp/home12/.config/fish/config.fish" \
   && grep -q -F "first run:  fish_add_path $tmp/h12/bin" "$tmp/h12.err"; then
