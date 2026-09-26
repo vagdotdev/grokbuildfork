@@ -742,12 +742,14 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
     );
 }
 
-/// From `/auth`, connect the Claude rail's default model; the composer then names it.
+/// From `/auth`, connect the Claude vendor's default model via the one picker; the composer then
+/// names it.
 fn connect_claude_default(j: &mut Journey) {
     open_subscriptions(j);
-    wait_for(&mut j.h, "[Ready]", 15);
+    wait_for(&mut j.h, "\u{2713} Max", 20);
     wait_for(&mut j.h, "3 models", 20);
     j.h.inject_keys(b"\r").unwrap();
+    wait_for(&mut j.h, "Models \u{203a} Claude", 10);
     wait_for(&mut j.h, "Opus (1M context)", 10);
     j.h.inject_keys(b"\r").unwrap();
     if let Err(e) =
