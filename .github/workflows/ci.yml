@@ -104,7 +104,7 @@ jobs:
   no-xai:
     name: no-xai gates (required)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       # Strip debug symbols from the many dev/test builds so the shared `target/` stays small
       # enough for the hosted runner's disk (pairs with the reclaim step below).
