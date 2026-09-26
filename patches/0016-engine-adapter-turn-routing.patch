@@ -292,6 +292,33 @@ index ae3b381c..89810676 100644
          if let Some(activity) = self.session.turn_activity() {
              return Some(activity);
          }
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/dashboard.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/dashboard.rs
+index cb31424d..d5c61a17 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/dashboard.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/dashboard.rs
+@@ -1804,6 +1804,14 @@ pub(super) fn dispatch_dashboard_stop(app: &mut AppView) -> Vec<Effect> {
+     match &sel {
+         DashboardRowId::TopLevel(id) => {
+             let id = *id;
++            // Workshop: an Engine/Adapter turn runs outside the ACP session, so the row's stop is
++            // the cancel Ctrl+C sends (the status row reads `Cancelling…` until the turn ends).
++            if app.workshop_turn_active && app.workshop_turn_agent == Some(id) {
++                if let Some(d) = app.dashboard.as_mut() {
++                    d.delete_confirm = None;
++                }
++                return super::turn::dispatch_cancel_turn(app);
++            }
+             if app.workspace_dashboard_enabled {
+                 let Some(readiness) = app.agents.get(&id).map(dashboard_stop_readiness) else {
+                     return vec![];
+@@ -1962,6 +1970,7 @@ impl DashboardStopPlan {
+                 || agent.wake_turn_active()
+                 || agent.session.has_running_bg_tasks()
+                 || !agent.session.scheduled_tasks.is_empty()))
++            || agent.workshop_turn_active
+             || !agent.session.pending_prompts.is_empty()
+     }
+     pub(super) fn is_empty(&self) -> bool {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs
 index b04f0f9c..86049684 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs
@@ -2199,10 +2226,10 @@ index 00000000..63741ede
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs b/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs
 new file mode 100644
-index 00000000..e12673a6
+index 00000000..fdb7cfa5
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_sessions.rs
-@@ -0,0 +1,539 @@
+@@ -0,0 +1,544 @@
 +//! Workshop overlay: engine conversations on disk, so they can be resumed.
 +//!
 +//! An Engine (OpenCode) turn never enters the shell's session store — the shell session behind
@@ -2438,6 +2465,11 @@ index 00000000..e12673a6
 +    if !plausible_id(id) {
 +        return;
 +    }
++    // Turns are recorded from blocking tasks; one read-modify-write of a session file at a time.
++    static RECORD: std::sync::Mutex<()> = std::sync::Mutex::new(());
++    let _one_at_a_time = RECORD
++        .lock()
++        .unwrap_or_else(|poisoned| poisoned.into_inner());
 +    let now = now_unix();
 +    let mut session = load_in(root, id).unwrap_or_else(|| EngineSession {
 +        id: id.to_owned(),
@@ -3462,6 +3494,121 @@ index 376b8482..382f17cf 100644
      }
  
      fn has_vpad_for(&self, _appearance: &AppearanceConfig) -> bool {
+diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/peek.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/peek.rs
+index 11f4ed27..0355c109 100644
+--- a/crates/codegen/xai-grok-pager/src/views/dashboard/peek.rs
++++ b/crates/codegen/xai-grok-pager/src/views/dashboard/peek.rs
+@@ -738,12 +738,18 @@ pub fn extract_last_response_type(agent: &AgentView) -> String {
+ 
+     use crate::acp::tracker::TurnActivity;
+ 
+-    let running = !agent.session.state.is_idle();
++    // Workshop: an Engine/Adapter turn reports its activity through the event loop, not the ACP tracker.
++    let running = !agent.session.state.is_idle() || agent.workshop_turn_active;
++    let live_activity = if agent.workshop_turn_active {
++        agent.workshop_turn_activity.clone()
++    } else {
++        agent.session.turn_activity()
++    };
+     // While the turn is running, the live activity is the ground truth for what the agent is doing
+     // RIGHT NOW. Driving the status from this, not only from the scrollback scan, keeps the peek from
+     // dwelling on the previous, now-stale "Response".
+     if running {
+-        match agent.session.turn_activity() {
++        match live_activity {
+             Some(TurnActivity::Thinking) => return "Thinking".to_string(),
+             Some(TurnActivity::Responding) => return "Response".to_string(),
+             Some(TurnActivity::AutoCompacting) => return "Compacting".to_string(),
+diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/row.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/row.rs
+index e8482b41..e84af4fd 100644
+--- a/crates/codegen/xai-grok-pager/src/views/dashboard/row.rs
++++ b/crates/codegen/xai-grok-pager/src/views/dashboard/row.rs
+@@ -609,6 +609,7 @@ pub(crate) fn top_level_last_change_at(agent: &AgentView, state: RowState) -> Sy
+     let anchor: Instant = match state {
+         RowState::Working => agent
+             .turn_started_at
++            .or(agent.workshop_turn_started_at)
+             .or(agent.last_active_at)
+             .unwrap_or_else(fallback_epoch),
+         RowState::NeedsInput
+diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/row_activity.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/row_activity.rs
+index 4a759011..3c172cdb 100644
+--- a/crates/codegen/xai-grok-pager/src/views/dashboard/row_activity.rs
++++ b/crates/codegen/xai-grok-pager/src/views/dashboard/row_activity.rs
+@@ -7,8 +7,11 @@ use crate::views::dashboard::state::RowState;
+ 
+ /// Parent turn, wake, command, pending dispatch, or replay activity.
+ /// Background work alone can keep the row Working without making the parent's activity live.
++/// Workshop: an Engine/Adapter turn runs outside the ACP session (whose state stays idle), so it
++/// counts here too, else the row sits under "Idle" for the whole turn.
+ pub(crate) fn has_live_parent_activity(agent: &AgentView) -> bool {
+     !agent.session.state.is_idle()
++        || agent.workshop_turn_active
+         || agent.wake_turn_active()
+         || agent.session.turn_activity().is_some()
+         || !agent.session.pending_prompts.is_empty()
+diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/row_activity_tests.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/row_activity_tests.rs
+index df10bc1f..3c957759 100644
+--- a/crates/codegen/xai-grok-pager/src/views/dashboard/row_activity_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/views/dashboard/row_activity_tests.rs
+@@ -91,6 +91,57 @@ fn idle_monitor_and_loop_show_summary_and_watcher_chip() {
+     }
+ }
+ 
++/// Workshop: an Engine/Adapter turn runs with the ACP session idle; the row is Working for the
++/// whole turn and reads the turn's own activity, never "Idle".
++#[test]
++fn workshop_turn_is_working_with_its_activity() {
++    use crate::acp::tracker::{TurnActivity, WaitingReason};
++    let workshop_turn = |activity: TurnActivity| {
++        let mut agent = agent();
++        agent.workshop_turn_active = true;
++        agent.workshop_turn_started_at = Some(Instant::now());
++        agent.workshop_turn_activity = Some(activity);
++        assert!(
++            agent.session.state.is_idle(),
++            "the ACP session stays idle on a Workshop turn"
++        );
++        agent
++    };
++    let waiting = workshop_turn(TurnActivity::Waiting(WaitingReason::Model));
++    assert_eq!(
++        "Working",
++        crate::views::dashboard::peek::extract_last_response_type(&waiting),
++        "the peek follows the live Workshop activity, not the last finished response"
++    );
++    let waiting_row = row(waiting);
++    assert_eq!(
++        (RowState::Working, Some("Waiting for response…")),
++        (waiting_row.state, waiting_row.activity.as_deref())
++    );
++    assert!(!waiting_row.state.allows_delete());
++
++    let running = workshop_turn(TurnActivity::ToolRunning {
++        title: "ls".to_owned(),
++        description: Some("Run ls".to_owned()),
++    });
++    let running_row = row(running);
++    assert_eq!(RowState::Working, running_row.state);
++    assert!(
++        running_row
++            .activity
++            .as_deref()
++            .is_some_and(|a| a.contains("Run ls")),
++        "the row reads the running tool: {:?}",
++        running_row.activity
++    );
++
++    // The turn ended: the row is idle again.
++    let mut done = workshop_turn(TurnActivity::Responding);
++    done.workshop_turn_active = false;
++    done.workshop_turn_activity = None;
++    assert_eq!(RowState::Idle, row(done).state);
++}
++
+ #[test]
+ fn idle_background_without_summary_uses_assistant_preview_or_no_line() {
+     let mut agent = agent();
 diff --git a/crates/codegen/xai-grok-pager/src/views/usage_modal.rs b/crates/codegen/xai-grok-pager/src/views/usage_modal.rs
 index b7846cb9..e29aa255 100644
 --- a/crates/codegen/xai-grok-pager/src/views/usage_modal.rs

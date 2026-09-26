@@ -233,6 +233,11 @@ fn record_turn_in(
     if !plausible_id(id) {
         return;
     }
+    // Turns are recorded from blocking tasks; one read-modify-write of a session file at a time.
+    static RECORD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one_at_a_time = RECORD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let now = now_unix();
     let mut session = load_in(root, id).unwrap_or_else(|| EngineSession {
         id: id.to_owned(),

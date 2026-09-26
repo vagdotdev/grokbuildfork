@@ -159,7 +159,7 @@ index f1602289..7300f065 100644
      ChangelogFetched {
          markdown: Option<String>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..79d8e8d2 100644
+index fc9a4553..e1cb6afe 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -881,7 +881,20 @@ index fc9a4553..79d8e8d2 100644
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5355,7 +5758,10 @@ impl AppView {
+@@ -5300,11 +5703,7 @@ impl AppView {
+             {
+                 needs_redraw = true;
+             } else {
+-                let frame = crate::views::welcome::shimmer_frame();
+-                if frame != self.welcome_shimmer_frame {
+-                    self.welcome_shimmer_frame = frame;
+-                    needs_redraw = true;
+-                }
++                needs_redraw |= self.tick_welcome_hero();
+             }
+         }
+         if matches!(self.active_view, ActiveView::AgentDashboard)
+@@ -5355,7 +5754,10 @@ impl AppView {
              }
              let spinner_frame_tick =
                  agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
@@ -893,7 +906,29 @@ index fc9a4553..79d8e8d2 100644
              needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
                  && spinner_frame_tick;
              needs_redraw |= matches!(
-@@ -5637,6 +6043,15 @@ impl AppView {
+@@ -5623,6 +6025,21 @@ impl AppView {
+         }
+         needs_redraw
+     }
++    /// Workshop: the welcome hero's own animation clock, the one place that decides whether the
++    /// hero art has a new frame to paint. The welcome view redraws on a tick only when this frame
++    /// advances (today the logo shimmer, which holds still between glints); nothing outside the
++    /// hero changes on such a frame, so the terminal diff writes the hero cells only. A hero that
++    /// animates on its own replaces the frame source here (its own frame counter at its own rate)
++    /// and its cadence in [`Self::view_tick_demand`] (`ActiveView::Welcome`, [`SLOW_TICK_INTERVAL`]
++    /// today); the clock runs only while the welcome view is up, so it stops with the first message.
++    fn tick_welcome_hero(&mut self) -> bool {
++        let frame = crate::views::welcome::shimmer_frame();
++        if frame == self.welcome_shimmer_frame {
++            return false;
++        }
++        self.welcome_shimmer_frame = frame;
++        true
++    }
+     /// Check if animation ticks should be scheduled.
+     pub fn needs_animation(&self) -> bool {
+         self.tick_demand() != TickDemand::None
+@@ -5637,6 +6054,15 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -909,7 +944,7 @@ index fc9a4553..79d8e8d2 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5784,6 +6199,59 @@ impl AppView {
+@@ -5784,6 +6210,59 @@ impl AppView {
              ActiveView::Welcome => TickDemand::Slow,
          }
      }
@@ -969,7 +1004,7 @@ index fc9a4553..79d8e8d2 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6273,9 @@ impl AppView {
+@@ -5805,7 +6284,9 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -3229,7 +3264,7 @@ index 1c507697..89312ddd 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..8610de4b 100644
+index eda61b3c..bbe610ea 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -3611,7 +3646,7 @@ index eda61b3c..8610de4b 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4110,590 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4110,599 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -4061,15 +4096,24 @@ index eda61b3c..8610de4b 100644
 +                        if let Some(prompt) = app.workshop_turn_prompt_text.take()
 +                            && !items.is_empty()
 +                        {
-+                            crate::app::workshop_sessions::record_turn(
-+                                session,
-+                                &cwd,
-+                                &model.model_ref,
-+                                &model.name,
-+                                &prompt,
-+                                items,
-+                                app.workshop_context_used,
-+                            );
++                            // The record is the whole session re-read and re-written (every
++                            // turn, every tool output): off the UI thread, so the end of a long
++                            // session's turn does not stall input and the frame behind it.
++                            let session = session.clone();
++                            let model_ref = model.model_ref.clone();
++                            let model_name = model.name.clone();
++                            let context_used = app.workshop_context_used;
++                            tokio::task::spawn_blocking(move || {
++                                crate::app::workshop_sessions::record_turn(
++                                    &session,
++                                    &cwd,
++                                    &model_ref,
++                                    &model_name,
++                                    &prompt,
++                                    items,
++                                    context_used,
++                                );
++                            });
 +                        }
 +                    }
 +                    crate::app::workshop::WorkshopConnection::Shell => {}
@@ -4381,10 +4425,10 @@ index 60fe34f9..8b49336e 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..afa6f354
+index 00000000..ea3b9e29
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,2957 @@
+@@ -0,0 +1,3005 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -6419,7 +6463,7 @@ index 00000000..afa6f354
 +            model,
 +        } => {
 +            let adapter = workshop_adapters::vendors::by_id(*adapter_id);
-+            let cli = match detect(&*adapter, &DetectOptions::default()).await {
++            let cli = match detect_adapter_cli(&*adapter).await {
 +                Detection::Installed(cli) => cli,
 +                Detection::Unverified { reason, .. } => {
 +                    log_failure_cause(&format!("{} could not be verified: {reason}", adapter.id()));
@@ -6449,6 +6493,54 @@ index 00000000..afa6f354
 +            Ok((TurnStream::Adapter(handle), None))
 +        }
 +    }
++}
++
++/// The vendor CLI verified for one adapter, with the identity (modification time, size) of the
++/// binary it was verified from.
++#[derive(Clone)]
++struct VerifiedAdapterCli {
++    adapter: AdapterId,
++    cli: workshop_adapters::InstalledCli,
++    identity: Option<(std::time::SystemTime, u64)>,
++}
++
++/// The CLIs verified so far, reused for the next turn while their file is unchanged, so a turn on
++/// a subscription rail starts the CLI once — not `--version` first (a Node CLI start of its own)
++/// and then the run.
++static ADAPTER_CLI_CACHE: std::sync::Mutex<Vec<VerifiedAdapterCli>> =
++    std::sync::Mutex::new(Vec::new());
++
++fn binary_identity(path: &Path) -> Option<(std::time::SystemTime, u64)> {
++    let meta = std::fs::metadata(path).ok()?;
++    Some((meta.modified().ok()?, meta.len()))
++}
++
++/// [`detect`] for a turn: the adapter's CLI as verified on the last turn while its binary is the
++/// same file, else a fresh detection (the vendor updated or moved it).
++async fn detect_adapter_cli(adapter: &dyn workshop_adapters::Adapter) -> Detection {
++    let id = adapter.id();
++    let cached = ADAPTER_CLI_CACHE
++        .lock()
++        .ok()
++        .and_then(|cache| cache.iter().find(|v| v.adapter == id).cloned());
++    if let Some(verified) = cached
++        && verified.identity.is_some()
++        && binary_identity(&verified.cli.path) == verified.identity
++    {
++        return Detection::Installed(verified.cli);
++    }
++    let detection = detect(adapter, &DetectOptions::default()).await;
++    if let Detection::Installed(cli) = &detection
++        && let Ok(mut cache) = ADAPTER_CLI_CACHE.lock()
++    {
++        cache.retain(|v| v.adapter != id);
++        cache.push(VerifiedAdapterCli {
++            adapter: id,
++            cli: cli.clone(),
++            identity: binary_identity(&cli.path),
++        });
++    }
++    detection
 +}
 +
 +/// Drive one turn on the chosen backend, forwarding stream events to the UI over `tx` and honoring

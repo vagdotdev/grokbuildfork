@@ -1804,6 +1804,14 @@ pub(super) fn dispatch_dashboard_stop(app: &mut AppView) -> Vec<Effect> {
     match &sel {
         DashboardRowId::TopLevel(id) => {
             let id = *id;
+            // Workshop: an Engine/Adapter turn runs outside the ACP session, so the row's stop is
+            // the cancel Ctrl+C sends (the status row reads `Cancelling…` until the turn ends).
+            if app.workshop_turn_active && app.workshop_turn_agent == Some(id) {
+                if let Some(d) = app.dashboard.as_mut() {
+                    d.delete_confirm = None;
+                }
+                return super::turn::dispatch_cancel_turn(app);
+            }
             if app.workspace_dashboard_enabled {
                 let Some(readiness) = app.agents.get(&id).map(dashboard_stop_readiness) else {
                     return vec![];
@@ -1962,6 +1970,7 @@ impl DashboardStopPlan {
                 || agent.wake_turn_active()
                 || agent.session.has_running_bg_tasks()
                 || !agent.session.scheduled_tasks.is_empty()))
+            || agent.workshop_turn_active
             || !agent.session.pending_prompts.is_empty()
     }
     pub(super) fn is_empty(&self) -> bool {

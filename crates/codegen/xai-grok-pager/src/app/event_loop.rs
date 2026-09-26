@@ -4556,15 +4556,24 @@ fn handle_workshop_turn_msg(
                         if let Some(prompt) = app.workshop_turn_prompt_text.take()
                             && !items.is_empty()
                         {
-                            crate::app::workshop_sessions::record_turn(
-                                session,
-                                &cwd,
-                                &model.model_ref,
-                                &model.name,
-                                &prompt,
-                                items,
-                                app.workshop_context_used,
-                            );
+                            // The record is the whole session re-read and re-written (every
+                            // turn, every tool output): off the UI thread, so the end of a long
+                            // session's turn does not stall input and the frame behind it.
+                            let session = session.clone();
+                            let model_ref = model.model_ref.clone();
+                            let model_name = model.name.clone();
+                            let context_used = app.workshop_context_used;
+                            tokio::task::spawn_blocking(move || {
+                                crate::app::workshop_sessions::record_turn(
+                                    &session,
+                                    &cwd,
+                                    &model_ref,
+                                    &model_name,
+                                    &prompt,
+                                    items,
+                                    context_used,
+                                );
+                            });
                         }
                     }
                     crate::app::workshop::WorkshopConnection::Shell => {}

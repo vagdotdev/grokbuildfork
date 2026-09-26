@@ -91,6 +91,57 @@ fn idle_monitor_and_loop_show_summary_and_watcher_chip() {
     }
 }
 
+/// Workshop: an Engine/Adapter turn runs with the ACP session idle; the row is Working for the
+/// whole turn and reads the turn's own activity, never "Idle".
+#[test]
+fn workshop_turn_is_working_with_its_activity() {
+    use crate::acp::tracker::{TurnActivity, WaitingReason};
+    let workshop_turn = |activity: TurnActivity| {
+        let mut agent = agent();
+        agent.workshop_turn_active = true;
+        agent.workshop_turn_started_at = Some(Instant::now());
+        agent.workshop_turn_activity = Some(activity);
+        assert!(
+            agent.session.state.is_idle(),
+            "the ACP session stays idle on a Workshop turn"
+        );
+        agent
+    };
+    let waiting = workshop_turn(TurnActivity::Waiting(WaitingReason::Model));
+    assert_eq!(
+        "Working",
+        crate::views::dashboard::peek::extract_last_response_type(&waiting),
+        "the peek follows the live Workshop activity, not the last finished response"
+    );
+    let waiting_row = row(waiting);
+    assert_eq!(
+        (RowState::Working, Some("Waiting for response…")),
+        (waiting_row.state, waiting_row.activity.as_deref())
+    );
+    assert!(!waiting_row.state.allows_delete());
+
+    let running = workshop_turn(TurnActivity::ToolRunning {
+        title: "ls".to_owned(),
+        description: Some("Run ls".to_owned()),
+    });
+    let running_row = row(running);
+    assert_eq!(RowState::Working, running_row.state);
+    assert!(
+        running_row
+            .activity
+            .as_deref()
+            .is_some_and(|a| a.contains("Run ls")),
+        "the row reads the running tool: {:?}",
+        running_row.activity
+    );
+
+    // The turn ended: the row is idle again.
+    let mut done = workshop_turn(TurnActivity::Responding);
+    done.workshop_turn_active = false;
+    done.workshop_turn_activity = None;
+    assert_eq!(RowState::Idle, row(done).state);
+}
+
 #[test]
 fn idle_background_without_summary_uses_assistant_preview_or_no_line() {
     let mut agent = agent();

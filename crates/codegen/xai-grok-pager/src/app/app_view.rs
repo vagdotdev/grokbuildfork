@@ -5703,11 +5703,7 @@ impl AppView {
             {
                 needs_redraw = true;
             } else {
-                let frame = crate::views::welcome::shimmer_frame();
-                if frame != self.welcome_shimmer_frame {
-                    self.welcome_shimmer_frame = frame;
-                    needs_redraw = true;
-                }
+                needs_redraw |= self.tick_welcome_hero();
             }
         }
         if matches!(self.active_view, ActiveView::AgentDashboard)
@@ -6028,6 +6024,21 @@ impl AppView {
             }
         }
         needs_redraw
+    }
+    /// Workshop: the welcome hero's own animation clock, the one place that decides whether the
+    /// hero art has a new frame to paint. The welcome view redraws on a tick only when this frame
+    /// advances (today the logo shimmer, which holds still between glints); nothing outside the
+    /// hero changes on such a frame, so the terminal diff writes the hero cells only. A hero that
+    /// animates on its own replaces the frame source here (its own frame counter at its own rate)
+    /// and its cadence in [`Self::view_tick_demand`] (`ActiveView::Welcome`, [`SLOW_TICK_INTERVAL`]
+    /// today); the clock runs only while the welcome view is up, so it stops with the first message.
+    fn tick_welcome_hero(&mut self) -> bool {
+        let frame = crate::views::welcome::shimmer_frame();
+        if frame == self.welcome_shimmer_frame {
+            return false;
+        }
+        self.welcome_shimmer_frame = frame;
+        true
     }
     /// Check if animation ticks should be scheduled.
     pub fn needs_animation(&self) -> bool {

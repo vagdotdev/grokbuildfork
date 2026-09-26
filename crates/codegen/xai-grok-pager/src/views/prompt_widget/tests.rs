@@ -4971,9 +4971,15 @@
     #[test]
     #[serial_test::serial]
     fn teal_highlighting_on_second_line() {
-        // Asserts the full-TUI accent color
-        // The slash highlight reads the global `embedded` flag (monochrome when set)
-        // Pin it off and serialize against the modal_window embedded test that toggles it
+        // Asserts the full-TUI accent color.
+        // The slash highlight reads the global `embedded` flag (monochrome when set).
+        // Pin it off and serialize against the modal_window embedded test that toggles it.
+        // Theme::current() is process-global too. A parallel screen-mode reseed can turn the
+        // terminal-native lock on (accent_skill is named Blue) for the paint and off again
+        // before this assertion reads GrokNight's teal. Hold the theme lock across both, and
+        // clear the lock so the check is the full-TUI teal, not the terminal palette's Blue.
+        let _theme = crate::theme::cache::pin_theme();
+        crate::theme::cache::set_terminal_native_lock(false);
         crate::views::modal_window::set_embedded(false);
         let mut pw = PromptWidget::new();
         pw.textarea.insert_str("hello\n/model");
