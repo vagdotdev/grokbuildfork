@@ -384,7 +384,7 @@ fn repository_front_page_is_workshops() {
 /// and bundled release notes for its "Release notes" row.
 #[test]
 fn welcome_copy_is_one_name_and_an_invitation_to_type() {
-    assert_eq!(workshop_brand::title(), "Vagdev's Workshop");
+    assert_eq!(workshop_brand::title(), "Workshop");
     assert_eq!(workshop_brand::title(), workshop_brand::TITLE);
     assert!(workshop_brand::PROMPT_PLACEHOLDER.starts_with("Ask anything"));
     assert!(workshop_brand::PROMPT_PLACEHOLDER.contains("\"add a test for multiply\""));
