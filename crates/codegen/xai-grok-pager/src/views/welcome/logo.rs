@@ -1,4 +1,5 @@
-//! The welcome logo: Workshop's ASCII donut ([`workshop_brand::donut`]) at the upstream logo grids.
+//! The welcome logo: Workshop's ASCII donut with the `v` rising through it once a loop
+//! ([`workshop_brand::hero`]) at the upstream logo grids.
 //!
 //! The hero box spins it (one precomputed frame per slow tick while the welcome screen is up and
 //! focused); every other surface — the stacked narrow layout, the login and consent screens,
@@ -11,7 +12,8 @@ use ratatui::style::Color;
 
 use crate::render::color::blend_color;
 use crate::theme::Theme;
-use workshop_brand::donut::{self, Size};
+use workshop_brand::donut::Size;
+use workshop_brand::hero::{self, Cell};
 
 /// Height at or above which the small logo is shown (below it, no logo).
 const SMALL_LOGO_MIN_HEIGHT: u16 = 22;
@@ -138,8 +140,9 @@ fn band_color(level: u8, [weak, mid, strong]: [Color; 3], hilite: Color) -> Colo
     }
 }
 
-/// Paint one donut frame with its top-left at the area's top row, centred horizontally.
-fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, frame: &donut::Frame) {
+/// Paint one hero frame with its top-left at the area's top row, centred horizontally; the `v`
+/// is drawn in the text colour, the donut in its ramp bands.
+fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, frame: &hero::Frame) {
     let palette = shade_palette(theme);
     let hilite = theme.text_primary;
     let size = frame.size();
@@ -151,12 +154,16 @@ fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, frame: &donut::Frame
             let Some(cell) = buf.cell_mut(Position::new(x0 + col, area.y + row)) else {
                 continue;
             };
-            match frame.level(usize::from(row), usize::from(col)) {
-                Some(level) => {
-                    cell.set_char(frame.glyph(usize::from(row), usize::from(col)))
+            let glyph = frame.glyph(usize::from(row), usize::from(col));
+            match frame.cell(usize::from(row), usize::from(col)) {
+                Cell::Donut(level) => {
+                    cell.set_char(glyph)
                         .set_fg(band_color(level, palette, hilite));
                 }
-                None => {
+                Cell::Mark(_) => {
+                    cell.set_char(glyph).set_fg(hilite);
+                }
+                Cell::Blank => {
                     cell.set_char(' ');
                 }
             }
@@ -182,10 +189,10 @@ pub fn render_logo_tier(area: Rect, buf: &mut Buffer, theme: &Theme, tier: LogoT
     render_logo_frame(area, buf, theme, tier, 0);
 }
 
-/// Paint frame `frame` of the spin in the tier the layout reserved rows for, so the art can never outgrow its slot.
+/// Paint frame `frame` of the hero loop in the tier the layout reserved rows for, so the art can never outgrow its slot.
 pub fn render_logo_frame(area: Rect, buf: &mut Buffer, theme: &Theme, tier: LogoTier, frame: u32) {
     if let Some(size) = tier.size() {
-        render_into(area, buf, theme, donut::frame(size, frame as usize));
+        render_into(area, buf, theme, hero::frame(size, frame as usize));
     }
 }
 
@@ -209,6 +216,7 @@ pub fn render_compact_logo(area: Rect, buf: &mut Buffer, theme: &Theme) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use workshop_brand::donut;
 
     fn tier_for(window_height: u16, hidden: bool, large: bool) -> LogoTier {
         LogoTier::for_height_and_hidden(window_height, hidden, large)
@@ -395,6 +403,31 @@ mod tests {
         render_logo_frame(area, &mut blank, &theme, LogoTier::Hidden, 3);
         render_logo_frame(area, &mut blank, &theme, LogoTier::Large, 3);
         assert_eq!(blank, Buffer::empty(area));
+    }
+
+    #[test]
+    fn the_v_is_painted_in_the_text_colour_where_the_loop_shows_it() {
+        let theme = crate::theme::Theme::oscura_midnight();
+        let area = Rect::new(0, 0, 14, 7);
+        let index = (0..hero::FRAMES)
+            .find(|&i| matches!(hero::frame(Size::Full, i).cell(0, 1), Cell::Mark(_)))
+            .expect("the loop shows the v");
+        let mut buf = Buffer::empty(area);
+        render_logo_frame(area, &mut buf, &theme, LogoTier::Full, index as u32);
+        let frame = hero::frame(Size::Full, index);
+        let mut marks = 0;
+        for row in 0..7u16 {
+            for col in 0..14u16 {
+                let cell = buf.cell((col, row)).unwrap();
+                let (r, c) = (usize::from(row), usize::from(col));
+                assert_eq!(cell.symbol(), frame.glyph(r, c).to_string(), "{row},{col}");
+                if let Cell::Mark(_) = frame.cell(r, c) {
+                    assert_eq!(cell.fg, theme.text_primary, "{row},{col}");
+                    marks += 1;
+                }
+            }
+        }
+        assert!(marks > 0);
     }
 
     #[test]

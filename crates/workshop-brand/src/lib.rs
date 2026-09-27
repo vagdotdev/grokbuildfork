@@ -3,11 +3,13 @@
 //! Holds the welcome-hero mark and the product title so the upstream-owned pager modules only
 //! swap a constant or a string for the items exported here.
 //!
-//! The mark is an ASCII torus that spins on the welcome screen ([`donut`]), drawn at the same
-//! grid sizes as the upstream Grok logo it replaces (7 x 14 and 5 x 10 cells), so the pager's
-//! layout math applies unchanged; the pager maps the luminance ramp onto theme colours.
+//! The mark is an ASCII torus that spins on the welcome screen ([`donut`]), with the `v` monogram
+//! rising through it and sinking back once a loop ([`hero`]), drawn at the same grid sizes as the
+//! upstream Grok logo it replaces (7 x 14 and 5 x 10 cells), so the pager's layout math applies
+//! unchanged; the pager maps the luminance ramp onto theme colours.
 
 pub mod donut;
+pub mod hero;
 
 /// The one product name, everywhere a user reads it (hero, version line, exit card).
 pub const TITLE: &str = "Workshop";

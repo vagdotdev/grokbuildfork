@@ -1,7 +1,8 @@
-//! The welcome hero is an ASCII donut that spins only where it should: in the hero box of a
-//! focused colour terminal, at the slow tick, repainting its own cells and nothing else. It rests
-//! on its first frame under `NO_COLOR` and under `[ui] hero_animation = false`, and the first
-//! message ends it — the welcome view leaves and the binary goes quiet.
+//! The welcome hero is an ASCII donut, with the `v` rising through it once a loop, that spins
+//! only where it should: in the hero box of a focused colour terminal, at the slow tick,
+//! repainting its own cells and nothing else. It rests on its first frame under `NO_COLOR` and
+//! under `[ui] hero_animation = false`, and the first message ends it — the welcome view leaves
+//! and the binary goes quiet.
 //!
 //! Hermetic: the answering fake `opencode` on loopback. Opt-in via `WORKSHOP_BIN`,
 //! `--include-ignored`.
@@ -12,6 +13,7 @@ use std::time::Duration;
 
 use pty_common::*;
 use workshop_brand::donut::{self, Size};
+use workshop_brand::hero;
 
 /// The hero box's version row: the title followed by the version, not the subtitle's mention.
 fn is_version_row(line: &str) -> bool {
@@ -134,9 +136,9 @@ fn hero_donut_spins_in_the_hero_box_and_stops_at_the_first_prompt() {
         pictures.len(),
         pictures.join("\n---\n")
     );
-    let loop_frames: Vec<String> = (0..donut::FRAMES)
+    let loop_frames: Vec<String> = (0..hero::FRAMES)
         .map(|i| {
-            donut::frame(Size::Full, i)
+            hero::frame(Size::Full, i)
                 .text()
                 .lines()
                 .map(str::trim_end)
@@ -147,7 +149,7 @@ fn hero_donut_spins_in_the_hero_box_and_stops_at_the_first_prompt() {
     for picture in &pictures {
         assert!(
             loop_frames.contains(picture),
-            "every picture is a frame of the donut's loop:\n{picture}"
+            "every picture is a frame of the hero's loop:\n{picture}"
         );
     }
     assert_eq!(
@@ -155,10 +157,16 @@ fn hero_donut_spins_in_the_hero_box_and_stops_at_the_first_prompt() {
         before,
         "only the hero's cells change while the welcome screen idles"
     );
-    assert!(
-        pictures.iter().all(|p| !p.contains('\u{2800}')),
-        "no braille from the old mark"
-    );
+
+    // 1b. Once a loop (~12 s) the `v` comes up through the donut.
+    let saw_v = (0..60).any(|_| {
+        let picture = trimmed(&hero_region(&j.h.screen_contents()));
+        j.h.update(Duration::from_millis(250));
+        picture
+            .chars()
+            .any(|c| ('\u{2801}'..='\u{28FF}').contains(&c))
+    });
+    assert!(saw_v, "the v rises through the donut within one loop");
 
     // 2. Repaints reach only the hero: every cursor move the binary emits during a second of
     //    spinning lands inside the logo's rows.
