@@ -606,13 +606,23 @@ impl BackgroundUpdateCheck {
 /// binary is older than the channel pointer. If `auto_update` is enabled and the on-disk install is also behind the
 /// pointer, kicks off a download (a detached `grok update` child). Only the restart hint is shown.
 pub async fn check_update_background(update_config: &UpdateConfig) -> BackgroundUpdateCheck {
+    check_update(update_config, true).await
+}
+
+/// Workshop: the periodic check of a session left running. The same path as the launch check, but it
+/// asks the channel even while the 30-minute version cache is fresh (the session sets the cadence).
+pub async fn check_update_periodic(update_config: &UpdateConfig) -> BackgroundUpdateCheck {
+    check_update(update_config, false).await
+}
+
+async fn check_update(update_config: &UpdateConfig, respect_cache: bool) -> BackgroundUpdateCheck {
     let Some(installer) = get_installer().await else {
         return BackgroundUpdateCheck::none();
     };
 
     heal_managed_install(installer).await;
 
-    if is_version_cache_fresh().await {
+    if respect_cache && is_version_cache_fresh().await {
         return BackgroundUpdateCheck::none();
     }
 
@@ -1961,6 +1971,14 @@ enum LinkRollback {
         #[cfg(windows)]
         backup_path: std::path::PathBuf,
     },
+    /// Workshop (Unix): a plain `workshop` file, e.g. a release tarball unpacked into `bin/` by hand.
+    /// The swap replaces it with the managed symlink; `backup_path` is a hard link to the old file,
+    /// renamed back if the swap fails.
+    #[cfg(unix)]
+    PlainFile {
+        link_path: std::path::PathBuf,
+        backup_path: std::path::PathBuf,
+    },
 }
 
 impl LinkRollback {
@@ -1969,14 +1987,33 @@ impl LinkRollback {
 
         // `symlink_metadata` (lstat) handles valid symlinks, broken symlinks, and regular files alike
         // Any IO error other than NotFound aborts the swap before mutation
-        match tokio::fs::symlink_metadata(&lp).await {
-            Ok(_) => {}
+        #[cfg_attr(not(unix), allow(unused_variables))]
+        let meta = match tokio::fs::symlink_metadata(&lp).await {
+            Ok(meta) => meta,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(LinkRollback::Absent { link_path: lp });
             }
             Err(e) => {
                 return Err(e).with_context(|| format!("stat {} before swap", lp.display()));
             }
+        };
+
+        #[cfg(unix)]
+        if !meta.file_type().is_symlink() {
+            let backup_path = unique_temp_sibling(&lp, "rollback.bak");
+            tokio::fs::hard_link(&lp, &backup_path)
+                .await
+                .with_context(|| {
+                    format!(
+                        "keeping {} aside as {} before swap",
+                        lp.display(),
+                        backup_path.display()
+                    )
+                })?;
+            return Ok(LinkRollback::PlainFile {
+                link_path: lp,
+                backup_path,
+            });
         }
 
         #[cfg(unix)]
@@ -2011,6 +2048,8 @@ impl LinkRollback {
         match self {
             LinkRollback::Absent { link_path } => link_path,
             LinkRollback::Present { link_path, .. } => link_path,
+            #[cfg(unix)]
+            LinkRollback::PlainFile { link_path, .. } => link_path,
         }
     }
 
@@ -2024,7 +2063,10 @@ impl LinkRollback {
     }
     #[cfg(unix)]
     fn backup_path(&self) -> Option<&std::path::Path> {
-        None
+        match self {
+            LinkRollback::PlainFile { backup_path, .. } => Some(backup_path),
+            _ => None,
+        }
     }
 
     async fn restore(&self) -> Result<()> {
@@ -2048,6 +2090,19 @@ impl LinkRollback {
                 .await
                 .with_context(|| {
                     format!("restoring prior symlink target for {}", link_path.display())
+                }),
+            #[cfg(unix)]
+            LinkRollback::PlainFile {
+                link_path,
+                backup_path,
+            } => tokio::fs::rename(backup_path, link_path)
+                .await
+                .with_context(|| {
+                    format!(
+                        "restoring {} from {}",
+                        link_path.display(),
+                        backup_path.display()
+                    )
                 }),
             #[cfg(windows)]
             LinkRollback::Present {
@@ -2075,7 +2130,37 @@ impl LinkRollback {
             let _ = tokio::fs::remove_file(backup_path).await;
         }
         #[cfg(unix)]
-        let _ = self; // no on-disk backup on Unix
+        if let LinkRollback::PlainFile {
+            link_path,
+            backup_path,
+        } = self
+        {
+            // The old file may be the binary this session runs: park it under `downloads/` as a
+            // stale-able temp (swept by `cleanup_old_downloads`) instead of unlinking it here.
+            let parked = link_path
+                .parent()
+                .and_then(|bin| bin.parent())
+                .zip(backup_path.extension())
+                .map(|(home, _)| {
+                    let tag = backup_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .and_then(|n| n.split('.').nth(1))
+                        .unwrap_or("0");
+                    home.join("downloads")
+                        .join(format!("workshop-replaced.{tag}.tmp"))
+                });
+            if let Some(parked) = parked
+                && tokio::fs::metadata(backup_path).await.is_ok()
+                && let Err(e) = tokio::fs::rename(backup_path, &parked).await
+            {
+                tracing::warn!(
+                    "could not park the replaced {} at {}: {e}",
+                    backup_path.display(),
+                    parked.display()
+                );
+            }
+        }
     }
 }
 

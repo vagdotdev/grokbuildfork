@@ -2425,3 +2425,75 @@ fn npm_entry_is_recognized_by_the_binary_location() {
     assert!(super::is_under_node_modules(&resolved));
     assert!(!super::is_under_node_modules(&root.join("home/bin/grok")));
 }
+
+/// Workshop: a release tarball unpacked into `bin/` by hand leaves a plain `workshop` file. The first
+/// update links the managed binary in its place and parks the old file under `downloads/` for the
+/// stale-temp sweep, never unlinking it under a session that may be running it.
+#[cfg(unix)]
+#[tokio::test]
+async fn workshop_plain_file_bin_becomes_the_managed_symlink() {
+    let home = tempfile::tempdir().unwrap();
+    let bin = home.path().join("bin");
+    let downloads = home.path().join("downloads");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&downloads).unwrap();
+    std::fs::write(bin.join("workshop"), "old").unwrap();
+    let new = downloads.join("workshop-9.9.9-linux-x86_64");
+    std::fs::write(&new, "new").unwrap();
+
+    let link = swap_managed_bin_links(&new, &bin).await.unwrap();
+
+    assert!(link.is_symlink(), "bin/workshop is now the managed symlink");
+    assert_eq!(
+        std::fs::read_link(&link).unwrap(),
+        std::path::Path::new("../downloads/workshop-9.9.9-linux-x86_64")
+    );
+    assert_eq!(std::fs::read_to_string(&link).unwrap(), "new");
+    let names = |dir: &std::path::Path| -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
+    };
+    assert_eq!(names(&bin), ["workshop"], "no backup left on PATH");
+    let parked: Vec<String> = names(&downloads)
+        .into_iter()
+        .filter(|n| n.starts_with("workshop-replaced.") && n.ends_with(".tmp"))
+        .collect();
+    assert_eq!(
+        parked.len(),
+        1,
+        "the old file is parked: {:?}",
+        names(&downloads)
+    );
+    assert_eq!(
+        std::fs::read_to_string(downloads.join(&parked[0])).unwrap(),
+        "old"
+    );
+}
+
+/// Workshop: a swap that fails after the plain file was captured puts the old file back.
+#[cfg(unix)]
+#[tokio::test]
+async fn workshop_plain_file_rollback_restores_the_old_file() {
+    let home = tempfile::tempdir().unwrap();
+    let bin = home.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let link = bin.join("workshop");
+    std::fs::write(&link, "old").unwrap();
+    let new = home.path().join("workshop-9.9.9");
+    std::fs::write(&new, "new").unwrap();
+
+    let rollback = LinkRollback::capture(&link).await.unwrap();
+    assert!(matches!(rollback, LinkRollback::PlainFile { .. }));
+    atomic_symlink_swap(&new, &link).await.unwrap();
+    assert!(link.is_symlink());
+
+    rollback.restore().await.unwrap();
+    assert!(!link.is_symlink(), "the plain file is back");
+    assert_eq!(std::fs::read_to_string(&link).unwrap(), "old");
+    assert!(
+        rollback.backup_path().is_some_and(|b| !b.exists()),
+        "the backup was renamed back into place"
+    );
+}

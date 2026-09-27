@@ -10,6 +10,9 @@
 //! * `legacy_yolo_false_is_not_a_mode_choice` — a config that carries the bare `yolo = false` a
 //!   0.2.2 update left behind still opens in always-approve; an explicit `permission_mode = "ask"`
 //!   still opens in the asking mode.
+//! * `a_long_session_installs_a_release_published_after_launch` — a session left open keeps asking
+//!   the channel (`WORKSHOP_UPDATE_CHECK_INTERVAL_SECS`, an hour by default); a release published
+//!   after its launch is installed in the background while the composer stays usable.
 //!
 //! A debug build runs the background updater only against a loopback `WORKSHOP_CLI_BASE_URL` (the
 //! channel each gate stands up), so these gates drive the real update path of the CI binary.
@@ -88,7 +91,7 @@ fn version_behind(bin: &Path) -> String {
 /// A loopback release channel: `stable.json` pointing at one `tar.gz` (a `workshop` stub that
 /// answers `--version`) served from the same base, every request logged.
 struct Channel {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
     _server: KillOnDrop,
     base_url: String,
     log: PathBuf,
@@ -124,67 +127,77 @@ fn serve_channel(version: &str) -> Channel {
         .expect("server prints its url");
     let base_url = base_url.trim().trim_end_matches('/').to_owned();
 
-    // The release: a `workshop` that identifies itself, packed the way the release scripts do.
-    let stage = dir.path().join("stage");
-    std::fs::create_dir_all(&stage).unwrap();
-    std::fs::write(
-        stage.join("workshop"),
-        format!(
-            "#!/bin/sh\ncase \"$1\" in --version) echo 'Workshop - v{version}'; exit 0;; esac\necho 'stub workshop {version}: not a real build' >&2\nexit 2\n"
-        ),
-    )
-    .unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(
-            stage.join("workshop"),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
-    }
-    let asset = format!("workshop-{version}-{}.tar.gz", platform());
-    let status = std::process::Command::new("tar")
-        .args(["-czf"])
-        .arg(dir.path().join(&asset))
-        .args(["-C"])
-        .arg(&stage)
-        .arg("workshop")
-        .status()
-        .expect("tar");
-    assert!(status.success(), "tar packs the release");
-    let archive = std::fs::read(dir.path().join(&asset)).unwrap();
-    let manifest = serde_json::json!({
-        "schema_version": 1,
-        "product": "workshop",
-        "channel": "stable",
-        "version": version,
-        "tag": format!("v{version}"),
-        "published_at": "2026-09-23T00:00:00Z",
-        "release_repo": "example/workshop",
-        "release_url": format!("{base_url}/release"),
-        "checksums_url": format!("{base_url}/SHA256SUMS"),
-        "attested": false,
-        "artifacts": {
-            platform(): {
-                "url": format!("{base_url}/{asset}"),
-                "sha256": sha256_hex(&archive),
-                "size": archive.len(),
-                "format": "tar.gz",
-                "binary": "workshop",
-            }
-        }
-    });
-    std::fs::write(dir.path().join("stable.json"), manifest.to_string()).unwrap();
-    std::fs::write(
-        dir.path().join("SHA256SUMS"),
-        format!("{}  {asset}\n", sha256_hex(&archive)),
-    )
-    .unwrap();
-    Channel {
-        _dir: dir,
+    let channel = Channel {
+        dir,
         _server: KillOnDrop(child),
         base_url,
         log,
+    };
+    channel.publish(version);
+    channel
+}
+
+impl Channel {
+    /// Put `version` on the channel: its stub release archive, `stable.json` and `SHA256SUMS`.
+    #[allow(clippy::disallowed_methods)] // tar packs the stub the way the release scripts do
+    fn publish(&self, version: &str) {
+        let (dir, base_url) = (self.dir.path(), self.base_url.as_str());
+        // The release: a `workshop` that identifies itself, packed the way the release scripts do.
+        let stage = dir.join(format!("stage-{version}"));
+        std::fs::create_dir_all(&stage).unwrap();
+        std::fs::write(
+            stage.join("workshop"),
+            format!(
+                "#!/bin/sh\ncase \"$1\" in --version) echo 'Workshop - v{version}'; exit 0;; esac\necho 'stub workshop {version}: not a real build' >&2\nexit 2\n"
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                stage.join("workshop"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        let asset = format!("workshop-{version}-{}.tar.gz", platform());
+        let status = std::process::Command::new("tar")
+            .args(["-czf"])
+            .arg(dir.join(&asset))
+            .args(["-C"])
+            .arg(&stage)
+            .arg("workshop")
+            .status()
+            .expect("tar");
+        assert!(status.success(), "tar packs the release");
+        let archive = std::fs::read(dir.join(&asset)).unwrap();
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "product": "workshop",
+            "channel": "stable",
+            "version": version,
+            "tag": format!("v{version}"),
+            "published_at": "2026-09-23T00:00:00Z",
+            "release_repo": "example/workshop",
+            "release_url": format!("{base_url}/release"),
+            "checksums_url": format!("{base_url}/SHA256SUMS"),
+            "attested": false,
+            "artifacts": {
+                platform(): {
+                    "url": format!("{base_url}/{asset}"),
+                    "sha256": sha256_hex(&archive),
+                    "size": archive.len(),
+                    "format": "tar.gz",
+                    "binary": "workshop",
+                }
+            }
+        });
+        std::fs::write(dir.join("stable.json"), manifest.to_string()).unwrap();
+        std::fs::write(
+            dir.join("SHA256SUMS"),
+            format!("{}  {asset}\n", sha256_hex(&archive)),
+        )
+        .unwrap();
     }
 }
 
@@ -197,22 +210,29 @@ fn spawn_with_channel(
     fake: &Path,
     home: tempfile::TempDir,
 ) -> Journey {
-    spawn_in(
-        journey,
-        bin,
-        &[
-            ("GROK_DISABLE_AUTOUPDATER", ""),
-            ("WORKSHOP_CLI_BASE_URL", channel.base_url.as_str()),
-            ("WORKSHOP_INSTALLER", "internal"),
-            ("HTTP_PROXY", "http://127.0.0.1:9"),
-            ("HTTPS_PROXY", "http://127.0.0.1:9"),
-            ("ALL_PROXY", "http://127.0.0.1:9"),
-            ("NO_PROXY", "127.0.0.1,localhost"),
-            ("no_proxy", "127.0.0.1,localhost"),
-        ],
-        Some(fake),
-        home,
-    )
+    spawn_with_channel_env(journey, bin, channel, fake, home, &[])
+}
+
+fn spawn_with_channel_env(
+    journey: &str,
+    bin: &Path,
+    channel: &Channel,
+    fake: &Path,
+    home: tempfile::TempDir,
+    extra: &[(&str, &str)],
+) -> Journey {
+    let mut env = vec![
+        ("GROK_DISABLE_AUTOUPDATER", ""),
+        ("WORKSHOP_CLI_BASE_URL", channel.base_url.as_str()),
+        ("WORKSHOP_INSTALLER", "internal"),
+        ("HTTP_PROXY", "http://127.0.0.1:9"),
+        ("HTTPS_PROXY", "http://127.0.0.1:9"),
+        ("ALL_PROXY", "http://127.0.0.1:9"),
+        ("NO_PROXY", "127.0.0.1,localhost"),
+        ("no_proxy", "127.0.0.1,localhost"),
+    ];
+    env.extend_from_slice(extra);
+    spawn_in(journey, bin, &env, Some(fake), home)
 }
 
 fn unified_log(j: &Journey) -> String {
@@ -425,6 +445,85 @@ fn legacy_yolo_false_is_not_a_mode_choice() {
     assert!(
         !screen.contains("always-approve"),
         "an explicit `permission_mode = \"ask\"` opens in the asking mode:\n{screen}"
+    );
+    quit(&mut j);
+}
+
+/// A session left open keeps asking the channel: a release published after its launch is installed
+/// in the background, with the composer usable throughout and no restart asked of the user.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (loopback channel); run with --include-ignored"]
+fn a_long_session_installs_a_release_published_after_launch() {
+    let Some(bin) = bin_from_env() else { return };
+    let channel = serve_channel(&version_behind(&bin));
+    let fake = fake_opencode("crash");
+    let mut j = spawn_with_channel_env(
+        "updater-periodic",
+        &bin,
+        &channel,
+        fake.path(),
+        tempfile::tempdir().unwrap(),
+        &[("WORKSHOP_UPDATE_CHECK_INTERVAL_SECS", "2")],
+    );
+    wait_for(&mut j.h, ALWAYS_APPROVE, 45);
+    let asked = |c: &Channel| {
+        c.requests()
+            .iter()
+            .filter(|r| r.contains("stable.json"))
+            .count()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while asked(&channel) == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the launch check never asked the channel"
+        );
+        j.h.update(Duration::from_millis(300));
+    }
+    j.h.update(Duration::from_secs(3));
+    assert!(
+        !unified_log(&j).contains("update.download_started"),
+        "nothing newer at launch, nothing downloaded:\n{}",
+        unified_log(&j)
+    );
+
+    channel.publish("9.9.9");
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    while !unified_log(&j).contains("update.installed") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the release published after launch was never installed; channel saw {:?}\nlog:\n{}",
+            channel.requests(),
+            unified_log(&j)
+        );
+        j.h.update(Duration::from_millis(300));
+    }
+    assert!(
+        asked(&channel) >= 2,
+        "the session asked the channel again after launch"
+    );
+    j.h.update(Duration::from_millis(1500));
+    snapshot(&j.h, &j.dir, "01-installed-while-running");
+    j.h.inject_keys(b"xq7").unwrap();
+    wait_for(&mut j.h, "xq7", 10);
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains(ALWAYS_APPROVE)
+            && !screen.contains("Downloading")
+            && !screen.contains("Installing"),
+        "the session is untouched by the update:\n{screen}"
+    );
+    let target = std::fs::read_link(j.workshop_home().join("bin").join("workshop"))
+        .expect("bin/workshop links at the new version");
+    assert!(
+        target.to_string_lossy().contains("9.9.9"),
+        "bin/workshop -> {}",
+        target.display()
+    );
+    let config = config_toml(&j);
+    assert!(
+        !config.contains("yolo") && !config.contains("[ui]"),
+        "the install writes nothing but its marker:\n{config}"
     );
     quit(&mut j);
 }

@@ -2051,6 +2051,7 @@ const WORKSHOP_NATIVE_ENV: &[&str] = &[
     "WORKSHOP_HERO_ART",
     "WORKSHOP_BIN",
     "WORKSHOP_PTY_EVIDENCE_DIR",
+    "WORKSHOP_UPDATE_CHECK_INTERVAL_SECS",
 ];
 
 /// `WORKSHOP_<X>` is the documented spelling of every `GROK_<X>` switch the inherited code reads
@@ -2620,6 +2621,25 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                     *wait_slot.lock().await = Some(tokio::spawn(async move { child.wait().await }));
                 }
                 let _ = tx.send(check.update);
+                // Workshop: a session left open keeps asking the channel, so a release lands on disk
+                // while it runs and the next launch starts on it. Silent and newer-only; the running
+                // session is never replaced or interrupted.
+                let every = workshop_update_check_interval();
+                loop {
+                    tokio::time::sleep(every).await;
+                    if wait_slot
+                        .lock()
+                        .await
+                        .as_ref()
+                        .is_some_and(|launch_download| !launch_download.is_finished())
+                    {
+                        continue;
+                    }
+                    let check = auto_update::check_update_periodic(&update_config).await;
+                    if let Some(mut child) = check.download {
+                        let _ = child.wait().await;
+                    }
+                }
             });
             Some(rx)
         } else {
@@ -2711,6 +2731,17 @@ fn build_update_config() -> UpdateConfig {
     config
 }
 /// Central gate for auto-update checks; add new suppression rules here, not at call sites.
+/// How often a running session asks the release channel again: an hour, or
+/// `WORKSHOP_UPDATE_CHECK_INTERVAL_SECS` (the PTY gates use seconds).
+fn workshop_update_check_interval() -> std::time::Duration {
+    let secs = std::env::var("WORKSHOP_UPDATE_CHECK_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(60 * 60);
+    std::time::Duration::from_secs(secs)
+}
+
 fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
     // Workshop: a debug build updates only from a loopback channel a PTY gate stands up
     // (`WORKSHOP_CLI_BASE_URL`, loopback-only), never from the published one.
