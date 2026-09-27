@@ -71,8 +71,11 @@ pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState,
     };
     Clear.render(overlay, buf);
 
+    // The border cells take the theme's canvas too: `Clear` leaves them on the terminal's own
+    // background, a light ring around the box on a light-profile terminal.
     let block = Block::default()
         .borders(Borders::ALL)
+        .style(Style::default().bg(theme.bg_base))
         .border_style(Style::default().fg(theme.gray_dim))
         .title(Line::from(Span::styled(
             format!(" {} ", picker.title()),
@@ -366,4 +369,25 @@ fn detail_lines<'a>(theme: &Theme, picker: &PickerState) -> Vec<Line<'a>> {
             Line::from(Span::styled(l, style))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_box_sits_mid_screen_on_the_theme_canvas_border_included() {
+        let theme = Theme::oscura_midnight();
+        let area = Rect::new(0, 0, 120, 40);
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, &theme, &PickerState::new(), 0);
+        let (x, y) = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .find(|&(x, y)| buf.cell((x, y)).is_some_and(|c| c.symbol() == "\u{250c}"))
+            .expect("the box's top-left corner");
+        assert!(y > 0, "not pinned to the top of the screen");
+        assert_eq!(buf.cell((x, y)).unwrap().bg, theme.bg_base);
+        assert_eq!(buf.cell((x + 1, y)).unwrap().bg, theme.bg_base);
+        assert_eq!(buf.cell((x, y + 1)).unwrap().bg, theme.bg_base);
+    }
 }

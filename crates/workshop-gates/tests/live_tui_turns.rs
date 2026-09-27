@@ -1023,11 +1023,9 @@ fn rails_failed_models_retry_on_enter() {
     wait_for(&mut j.h, MODELS_FAILED, 20);
     snapshot(&j.h, &j.dir, "01-cursor-models-failed");
     let before = calls();
-    // Cursor is the third vendor row.
-    for _ in 0..2 {
-        j.h.inject_keys(b"\x1b[B").unwrap();
-        j.h.update(Duration::from_millis(300));
-    }
+    // Cursor is the third vendor row, after the signed-in vendors' listed models.
+    pty_common::move_selection_to(&mut j.h, "Cursor");
+    j.h.update(Duration::from_millis(300));
     assert!(
         selected_line(&j.h).is_some_and(|l| l.contains("Cursor") && l.contains(MODELS_FAILED)),
         "the Cursor row is selected and carries the failure as its state:\n{}",
