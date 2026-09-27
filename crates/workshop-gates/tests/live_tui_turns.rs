@@ -631,7 +631,7 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
     let fakes = install_fakes(true);
     let mut j = spawn("rails-ready", &bin, &[], Some(&fakes.bin));
     open_subscriptions(&mut j);
-    // The Claude row (first) reports logged in → `✓ Max ▸` once its CLI has listed its models
+    // The Claude row (first) reports logged in → `✓ Max` once its CLI has listed its models
     // (the fake's `initialize` answer; the plan from its account), never a placeholder list.
     wait_for(&mut j.h, "\u{2713} Max", 20);
     wait_for(&mut j.h, "3 models", 20);
@@ -642,8 +642,8 @@ fn rails_ready_adapter_turn_renders_and_cancels() {
         "placeholder model rows are gone:\n{screen}"
     );
     assert!(
-        !screen.contains("Opus (1M context)"),
-        "a vendor's models live in its sub-menu, not inline:\n{screen}"
+        screen.contains("Opus (1M context)"),
+        "a signed-in vendor's models are listed right under it:\n{screen}"
     );
     for pill in [
         "[Ready]",
@@ -1046,10 +1046,9 @@ fn rails_failed_models_retry_on_enter() {
     assert!(calls() > before, "Enter must ask cursor-agent again");
     wait_for(&mut j.h, "2 models", 10);
     assert!(
-        selected_line(&j.h).is_some_and(|l| l.contains("Cursor")
-            && l.contains("\u{2713}")
-            && l.contains("\u{25b8}")),
-        "the Cursor row is signed in and opens into the models its CLI reported:\n{}",
+        selected_line(&j.h).is_some_and(|l| l.contains("Cursor") && l.contains("\u{2713}"))
+            && j.h.screen_contents().contains("Composer 2.5"),
+        "the Cursor row is signed in and lists the models its CLI reported under it:\n{}",
         j.h.screen_contents()
     );
     snapshot(&j.h, &j.dir, "02-cursor-models-after-retry");

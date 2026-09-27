@@ -2,9 +2,10 @@
 //!
 //! One list behind `/model` and `/auth`: `⌕ type to filter`, quiet group headers (`OpenCode`, a
 //! connected provider, `Subscriptions`), one line per row — `name  state` — with the row's state
-//! as a coloured suffix (`free`, `sign in`, `install`, `✓ Max ▸`, `optional · sign in`) and the
-//! active one marked. A row with `▸` opens a sub-menu (a vendor's models, a model's effort
-//! levels, the API-key providers) whose name joins the title: `Models › Claude`. Under the list:
+//! as a coloured suffix (`free`, `sign in`, `install`, `✓ Max`, `optional · sign in`) and the
+//! active one marked. A signed-in vendor's models are listed, indented, right under its row. A
+//! row with `▸` opens a sub-menu (a model's effort levels, the API-key providers) whose name joins
+//! the title: `Models › API keys`. Under the list:
 //! a rule, one to three detail lines about the highlighted row, one key line. Nothing here
 //! starts a login: outcomes are decided by the picker state in the dispatcher.
 //!
@@ -47,15 +48,26 @@ pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState,
     // Borders (2) + list + separator + detail + key line, capped to the area.
     let wanted =
         2 + entries.len() as u16 + 1 + detail_rows + 1 + u16::from(picker.status.is_some());
-    let height = wanted.min(avail.height);
     let width = avail.width.min(MAX_WIDTH);
-    // Anchored at the top of its area: a list that shrinks while the user types must not jump
-    // around the screen the way a centered box would.
+    // Centred on the height of this menu's unfiltered list and held there by its top edge: the
+    // box sits in the middle of the screen, and a list that shrinks while the user types never
+    // moves the search line.
+    let mut unfiltered = picker.clone();
+    unfiltered.filter.clear();
+    let resting = (2
+        + 1
+        + unfiltered.models_lines().len() as u16
+        + 1
+        + MAX_DETAIL_ROWS
+        + 1
+        + u16::from(picker.status.is_some()))
+    .min(avail.height);
+    let y = avail.y + (avail.height - resting) / 2;
     let overlay = Rect {
         x: avail.x + (avail.width - width) / 2,
-        y: avail.y,
+        y,
         width,
-        height,
+        height: wanted.min(avail.y + avail.height - y),
     };
     Clear.render(overlay, buf);
 
@@ -216,7 +228,7 @@ fn row_line<'a>(
     let marker = if selected { "› " } else { "  " };
     let mut spans = vec![
         Span::styled(marker.to_owned(), base),
-        Span::styled(pad(&row.title(), name_w), base),
+        Span::styled(pad(&indented_title(picker, row), name_w), base),
         Span::styled(" ".to_owned(), base),
     ];
     if let Some(prov_w) = prov_w {
@@ -237,12 +249,21 @@ fn row_line<'a>(
     Line::from(spans)
 }
 
+/// The row's name, indented when it is a subscription model listed under its vendor.
+fn indented_title(picker: &PickerState, row: &ModelsRow) -> String {
+    if picker.is_inline_model(row) {
+        format!("  {}", row.title())
+    } else {
+        row.title()
+    }
+}
+
 /// Column widths shared by every row line: the name column, and the provider column in the
 /// flat filtered list.
 fn columns(picker: &PickerState, rows: &[ModelsRow]) -> (usize, Option<usize>) {
     let name_w = rows
         .iter()
-        .map(|r| UnicodeWidthStr::width(r.title().as_str()))
+        .map(|r| UnicodeWidthStr::width(indented_title(picker, r).as_str()))
         .max()
         .unwrap_or(10)
         .clamp(10, 40);
