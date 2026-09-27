@@ -82,11 +82,13 @@ on every engine start. Results are cached under `~/.workshop/catalog-cache/` so 
 instant, and every row says `fetched <age>` or, offline, `cached list from <date>` (the compiled
 seed). Nothing is fetched on a first run, by `/auth`, `/login` or `workshop login`.
 Telemetry is off and no Mixpanel token or events URL is baked in. Updates install silently: at
-launch Workshop reads the channel manifest (`stable.json` on the `release-channel` branch of the
+launch, and then every hour while a session stays open, Workshop reads the channel manifest (`stable.json` on the `release-channel` branch of the
 release repository baked at build time, `WORKSHOP_RELEASE_REPO`) and, when it names a newer version,
 a detached `workshop update` downloads the archive, checks its SHA-256 against the manifest,
-smoke-runs the binary and swaps `~/.workshop/bin/workshop` atomically; the running session is left
-alone, the welcome screen offers the restart, and the next launch says "Updated to <version>".
+smoke-runs the binary and swaps `~/.workshop/bin/workshop` atomically (a plain `workshop` unpacked
+there by hand becomes the managed link); only a strictly newer version installs, and only
+`[cli] installer` is written to the config. The running session is left alone, the welcome screen
+offers the restart, and the next launch says "Updated to <version>".
 Offline or on any failure it only logs. `--no-auto-update`, `WORKSHOP_DISABLE_AUTOUPDATER=1` or
 `[cli] auto_update = false` in `~/.workshop/config.toml` turn it off.
 
