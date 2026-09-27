@@ -13,19 +13,24 @@ use std::time::Duration;
 use pty_common::*;
 use workshop_brand::donut::{self, Size};
 
+/// The hero box's version row: the title followed by the version, not the subtitle's mention.
+fn is_version_row(line: &str) -> bool {
+    line.contains("Workshop  ") && line.contains('\u{2502}')
+}
+
 /// The hero logo's 7 x 14 cells as text: the rows from the version line down, between the box's
 /// left border and the title column.
 fn hero_region(screen: &str) -> Vec<String> {
     let lines: Vec<&str> = screen.lines().collect();
     let row = lines
         .iter()
-        .position(|l| l.contains("Vagdev's Workshop") && l.contains('\u{2502}'))
+        .position(|l| is_version_row(l))
         .unwrap_or_else(|| panic!("the hero box's version row is on screen:\n{screen}"));
     let version_line: Vec<char> = lines[row].chars().collect();
     let border = version_line.iter().position(|c| *c == '\u{2502}').unwrap();
     let title = version_line
         .windows(8)
-        .position(|w| w.iter().collect::<String>() == "Vagdev's")
+        .position(|w| w.iter().collect::<String>() == "Workshop")
         .unwrap();
     let logo_left = border + 3;
     assert!(
@@ -79,10 +84,7 @@ fn hero_pictures(j: &mut Journey) -> Vec<String> {
 /// Cells outside the hero region must not change between samples while the welcome screen idles.
 fn screen_without_hero(screen: &str) -> String {
     let lines: Vec<&str> = screen.lines().collect();
-    let row = lines
-        .iter()
-        .position(|l| l.contains("Vagdev's Workshop") && l.contains('\u{2502}'))
-        .unwrap();
+    let row = lines.iter().position(|l| is_version_row(l)).unwrap();
     lines
         .iter()
         .enumerate()
@@ -161,10 +163,7 @@ fn hero_donut_spins_in_the_hero_box_and_stops_at_the_first_prompt() {
     // 2. Repaints reach only the hero: every cursor move the binary emits during a second of
     //    spinning lands inside the logo's rows.
     let screen = j.h.screen_contents();
-    let logo_row = screen
-        .lines()
-        .position(|l| l.contains("Vagdev's Workshop") && l.contains('\u{2502}'))
-        .unwrap();
+    let logo_row = screen.lines().position(is_version_row).unwrap();
     let mark = j.h.raw_output().len();
     j.h.update(Duration::from_millis(1000));
     let fresh = String::from_utf8_lossy(&j.h.raw_output()[mark..]).to_string();
@@ -189,7 +188,7 @@ fn hero_donut_spins_in_the_hero_box_and_stops_at_the_first_prompt() {
     j.h.update(Duration::from_millis(1500));
     let screen = j.h.screen_contents();
     assert!(
-        !screen.contains("Vagdev's Workshop  "),
+        !screen.lines().any(is_version_row) && !screen.contains("Thanks for trying"),
         "the hero box is gone with the welcome view:\n{screen}"
     );
     snapshot(&j.h, &j.dir, "02-after-first-prompt");

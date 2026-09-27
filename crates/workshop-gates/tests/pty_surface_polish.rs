@@ -42,7 +42,7 @@ fn welcome_is_one_name_and_an_invitation_to_type() {
     let screen = j.h.screen_contents();
     snapshot(&j.h, &j.dir, "01-welcome");
     assert!(
-        screen.contains("Vagdev's Workshop"),
+        screen.contains("Workshop  ") && !screen.contains("Vagdev's Workshop  "),
         "one product name:\n{screen}"
     );
     assert!(

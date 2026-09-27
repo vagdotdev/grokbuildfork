@@ -10,7 +10,7 @@
 pub mod donut;
 
 /// The one product name, everywhere a user reads it (hero, version line, exit card).
-pub const TITLE: &str = "Vagdev's Workshop";
+pub const TITLE: &str = "Workshop";
 
 /// Hero title: always [`TITLE`]. One name per product, the same on every launch.
 pub fn title() -> &'static str {
@@ -22,10 +22,7 @@ pub const PROMPT_PLACEHOLDER: &str = "Ask anything\u{2026} \"add a test for mult
 
 /// Subtitle under the hero title.
 pub fn hero_subtitle() -> String {
-    format!(
-        "Thanks for trying {} \u{2014} /feedback saves a note and drafts a GitHub issue.",
-        title()
-    )
+    "Thanks for trying Vagdev's Workshop \u{2014} /feedback saves a note.".to_owned()
 }
 
 /// Workshop's own release notes, bundled so `/release-notes` works offline and without a CDN.
@@ -92,16 +89,17 @@ mod tests {
 
     #[test]
     fn one_product_name_on_every_launch() {
-        assert_eq!(title(), "Vagdev's Workshop");
+        assert_eq!(title(), "Workshop");
         assert_eq!(title(), TITLE);
-        assert!(!TITLE.contains("by Vagdev"), "the alternate name is gone");
+        assert!(!TITLE.contains("Vagdev"), "the hero title is the bare name");
     }
 
     #[test]
-    fn subtitle_carries_the_title_and_is_honest_about_feedback() {
-        let subtitle = hero_subtitle();
-        assert!(subtitle.starts_with(&format!("Thanks for trying {TITLE}")));
-        assert!(subtitle.contains("GitHub issue"), "{subtitle}");
+    fn subtitle_thanks_the_user_and_points_at_feedback() {
+        assert_eq!(
+            hero_subtitle(),
+            "Thanks for trying Vagdev's Workshop \u{2014} /feedback saves a note."
+        );
     }
 
     #[test]
