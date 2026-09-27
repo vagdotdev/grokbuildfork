@@ -101,7 +101,7 @@ index 5a5de0d0..5c5c4e98 100644
      );
  }
 diff --git a/crates/codegen/xai-grok-pager/src/slash/mod.rs b/crates/codegen/xai-grok-pager/src/slash/mod.rs
-index 32d1a5fa..d7d52a24 100644
+index 32d1a5fa..0be16ddc 100644
 --- a/crates/codegen/xai-grok-pager/src/slash/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/slash/mod.rs
 @@ -38,17 +38,85 @@ pub use mode_support::{ModeSupport, Remedy};
@@ -269,7 +269,25 @@ index 32d1a5fa..d7d52a24 100644
              }
          }
          // Resolve all recency scores under a single borrow (one keystroke means one borrow, not one per candidate)
-@@ -1701,9 +1800,12 @@ mod tests {
+@@ -1648,6 +1747,17 @@ mod tests {
+     use super::registry::CommandRegistry;
+     use super::*;
+ 
++    /// Workshop (#65): `/model` has an argument phase only with a shell model to suggest; the
++    /// argument-phase tests below use it as their arg-taking command.
++    fn models_with_a_shell_model() -> ModelState {
++        let mut models = ModelState::default();
++        let id = acp::ModelId::new(Arc::from("grok-4.5"));
++        models
++            .available
++            .insert(id.clone(), acp::ModelInfo::new(id, "Grok 4.5".to_string()));
++        models
++    }
++
+     #[test]
+     fn parses_invocation_with_args() {
+         let inv = parse_invocation("/model grok-code-fast-1").expect("parsed");
+@@ -1701,9 +1811,12 @@ mod tests {
      #[test]
      fn required_arg_command_blocks_without_args() {
          let reg = test_registry();
@@ -285,7 +303,16 @@ index 32d1a5fa..d7d52a24 100644
          assert!(is_command_complete("/model grok-4", &reg));
      }
  
-@@ -3004,6 +3106,35 @@ mod tests {
+@@ -2063,7 +2176,7 @@ mod tests {
+         // The placeholder must not appear
+         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
+         let state = SlashState::default();
+-        let models = ModelState::default();
++        let models = models_with_a_shell_model();
+ 
+         let text = "/model hello";
+         // Cursor at 7: right after "/model ", before 'h'.
+@@ -3004,6 +3117,35 @@ mod tests {
          assert_eq!(order, vec!["/alpha", "/zulu"]);
      }
  
@@ -321,3 +348,12 @@ index 32d1a5fa..d7d52a24 100644
      /// Within the command group the menu leads with what you actually use.
      #[test]
      fn empty_query_orders_commands_by_recency_then_registry_order() {
+@@ -3402,7 +3544,7 @@ mod tests {
+     fn mid_text_slash_args_after_token() {
+         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
+         let state = SlashState::default();
+-        let models = ModelState::default();
++        let models = models_with_a_shell_model();
+ 
+         let text = "hi /model ";
+         let cursor = text.len();
