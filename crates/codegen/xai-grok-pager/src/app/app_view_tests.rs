@@ -198,6 +198,7 @@ pub(crate) fn test_app() -> AppView {
         workshop_turn_running: Vec::new(),
         workshop_turn_errored: false,
         workshop_last_prompt: None,
+        workshop_last_images: Vec::new(),
         auth_clipboard_delivery: None,
         auth_clipboard_feedback_generation: 0,
         team_id: None,

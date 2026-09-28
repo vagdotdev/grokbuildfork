@@ -214,8 +214,10 @@ pub async fn spawn(
 
     let mut args = adapter.run_args(&req);
     let delivery = adapter.prompt_delivery();
+    let prompt_lines = adapter.prompt_lines(&req);
+    let prompt = prompt_lines.join("\n");
     if delivery == PromptDelivery::Argument {
-        args.push(req.prompt.clone());
+        args.push(prompt.clone());
     }
 
     let mut cmd = tokio::process::Command::new(&cli.path);
@@ -234,7 +236,7 @@ pub async fn spawn(
         adapter = %adapter.id(),
         program = %cli.path.display(),
         version = %cli.version,
-        args = ?redact_prompt(&args, delivery, &req.prompt),
+        args = ?redact_prompt(&args, delivery, &prompt),
         cwd = %req.cwd.display(),
         "spawning delegated cli"
     );
@@ -254,7 +256,6 @@ pub async fn spawn(
     match delivery {
         PromptDelivery::Stdin => {
             if let Some(mut stdin) = child.stdin.take() {
-                let prompt = req.prompt.clone();
                 tokio::spawn(async move {
                     let _ = stdin.write_all(prompt.as_bytes()).await;
                     let _ = stdin.shutdown().await;
@@ -265,8 +266,8 @@ pub async fn spawn(
             // The prompt goes first; stdin stays open for the run's asks and closes at the end.
             if let Some(mut stdin) = child.stdin.take() {
                 let mut framed = String::new();
-                for line in adapter.prompt_lines(&req.prompt) {
-                    framed.push_str(&line);
+                for line in &prompt_lines {
+                    framed.push_str(line);
                     framed.push('\n');
                 }
                 if let Err(e) = stdin.write_all(framed.as_bytes()).await {
