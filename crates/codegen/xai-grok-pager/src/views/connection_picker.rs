@@ -2,9 +2,10 @@
 //!
 //! One list behind `/model` and `/auth`: `⌕ type to filter`, quiet group headers (`OpenCode`, a
 //! connected provider, `Subscriptions`), one line per row — `name  state` — with the row's state
-//! as a coloured suffix (`free`, `sign in`, `install`, `✓ Max ▸`, `optional · sign in`) and the
-//! active one marked. A row with `▸` opens a sub-menu (a vendor's models, a model's effort
-//! levels, the API-key providers) whose name joins the title: `Models › Claude`. Under the list:
+//! as a coloured suffix (`free`, `sign in`, `install`, `✓ Max`, `optional · sign in`) and the
+//! active one marked. A signed-in vendor's models are listed, indented, right under its row. A
+//! row with `▸` opens a sub-menu (a model's effort levels, the API-key providers) whose name joins
+//! the title: `Models › API keys`. Under the list:
 //! a rule, one to three detail lines about the highlighted row, one key line. Nothing here
 //! starts a login: outcomes are decided by the picker state in the dispatcher.
 //!
@@ -47,20 +48,34 @@ pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState,
     // Borders (2) + list + separator + detail + key line, capped to the area.
     let wanted =
         2 + entries.len() as u16 + 1 + detail_rows + 1 + u16::from(picker.status.is_some());
-    let height = wanted.min(avail.height);
     let width = avail.width.min(MAX_WIDTH);
-    // Anchored at the top of its area: a list that shrinks while the user types must not jump
-    // around the screen the way a centered box would.
+    // Centred on the height of this menu's unfiltered list and held there by its top edge: the
+    // box sits in the middle of the screen, and a list that shrinks while the user types never
+    // moves the search line.
+    let mut unfiltered = picker.clone();
+    unfiltered.filter.clear();
+    let resting = (2
+        + 1
+        + unfiltered.models_lines().len() as u16
+        + 1
+        + MAX_DETAIL_ROWS
+        + 1
+        + u16::from(picker.status.is_some()))
+    .min(avail.height);
+    let y = avail.y + (avail.height - resting) / 2;
     let overlay = Rect {
         x: avail.x + (avail.width - width) / 2,
-        y: avail.y,
+        y,
         width,
-        height,
+        height: wanted.min(avail.y + avail.height - y),
     };
     Clear.render(overlay, buf);
 
+    // The border cells take the theme's canvas too: `Clear` leaves them on the terminal's own
+    // background, a light ring around the box on a light-profile terminal.
     let block = Block::default()
         .borders(Borders::ALL)
+        .style(Style::default().bg(theme.bg_base))
         .border_style(Style::default().fg(theme.gray_dim))
         .title(Line::from(Span::styled(
             format!(" {} ", picker.title()),
@@ -216,7 +231,7 @@ fn row_line<'a>(
     let marker = if selected { "› " } else { "  " };
     let mut spans = vec![
         Span::styled(marker.to_owned(), base),
-        Span::styled(pad(&row.title(), name_w), base),
+        Span::styled(pad(&indented_title(picker, row), name_w), base),
         Span::styled(" ".to_owned(), base),
     ];
     if let Some(prov_w) = prov_w {
@@ -237,12 +252,21 @@ fn row_line<'a>(
     Line::from(spans)
 }
 
+/// The row's name, indented when it is a subscription model listed under its vendor.
+fn indented_title(picker: &PickerState, row: &ModelsRow) -> String {
+    if picker.is_inline_model(row) {
+        format!("  {}", row.title())
+    } else {
+        row.title()
+    }
+}
+
 /// Column widths shared by every row line: the name column, and the provider column in the
 /// flat filtered list.
 fn columns(picker: &PickerState, rows: &[ModelsRow]) -> (usize, Option<usize>) {
     let name_w = rows
         .iter()
-        .map(|r| UnicodeWidthStr::width(r.title().as_str()))
+        .map(|r| UnicodeWidthStr::width(indented_title(picker, r).as_str()))
         .max()
         .unwrap_or(10)
         .clamp(10, 40);
@@ -345,4 +369,25 @@ fn detail_lines<'a>(theme: &Theme, picker: &PickerState) -> Vec<Line<'a>> {
             Line::from(Span::styled(l, style))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_box_sits_mid_screen_on_the_theme_canvas_border_included() {
+        let theme = Theme::oscura_midnight();
+        let area = Rect::new(0, 0, 120, 40);
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, &theme, &PickerState::new(), 0);
+        let (x, y) = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .find(|&(x, y)| buf.cell((x, y)).is_some_and(|c| c.symbol() == "\u{250c}"))
+            .expect("the box's top-left corner");
+        assert!(y > 0, "not pinned to the top of the screen");
+        assert_eq!(buf.cell((x, y)).unwrap().bg, theme.bg_base);
+        assert_eq!(buf.cell((x + 1, y)).unwrap().bg, theme.bg_base);
+        assert_eq!(buf.cell((x, y + 1)).unwrap().bg, theme.bg_base);
+    }
 }

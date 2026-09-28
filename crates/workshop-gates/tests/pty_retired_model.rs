@@ -220,7 +220,7 @@ fn a_retired_vendor_model_routes_to_the_vendors_default_then_big_pickle() {
     );
     connect_big_pickle(&mut j);
 
-    // 1. `/auth` → Claude (signed in, `✓ Max ▸`) → Sonnet. Saved for the next launch.
+    // 1. `/auth` → Claude (signed in, `✓ Max`) → Sonnet. Saved for the next launch.
     send_prompt(&mut j, "/auth");
     wait_for(&mut j.h, PICKER_OPEN, 15);
     wait_for(&mut j.h, "\u{2713} Max", 30);

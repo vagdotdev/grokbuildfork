@@ -1304,7 +1304,12 @@ impl AgentView {
                         return InputOutcome::Changed;
                     }
                 }
-                InputOutcome::Changed
+                // Workshop: no shell models to list; the one picker holds the models.
+                InputOutcome::Action(Action::OpenConnectionPicker(
+                    workshop_auth::PickerFocus::Models {
+                        filter: String::new(),
+                    },
+                ))
             }
             ActionId::ShortcutsHelp => {
                 use crate::views::shortcuts_help;

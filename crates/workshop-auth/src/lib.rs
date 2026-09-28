@@ -777,11 +777,15 @@ impl PickerState {
         self.connect_rows = connect;
     }
 
-    /// Index in [`Self::visible_rows`] of the active connection's row (an OpenCode model at any
-    /// level, a vendor holding the active model, a catalog model).
+    /// Index in [`Self::visible_rows`] of the active connection's row: the active model's own row
+    /// when it is listed (a subscription model under its vendor), else the row that holds it (an
+    /// OpenCode model at any level, a vendor, a catalog model).
     fn active_index(&self) -> Option<usize> {
-        self.active_id.as_ref()?;
-        self.visible_rows().iter().position(|r| self.is_active(r))
+        let active = self.active_id.as_deref()?;
+        let rows = self.visible_rows();
+        rows.iter()
+            .position(|r| r.id() == active)
+            .or_else(|| rows.iter().position(|r| self.is_active(r)))
     }
 
     fn select_active(&mut self) {
@@ -873,10 +877,24 @@ impl PickerState {
         self.show_all || self.is_active(row) || row.is_chat_model()
     }
 
+    /// Whether a signed-in vendor's models are listed right under its row: at the top level with
+    /// no filter typed, so the models a user already has are one arrow key away.
+    pub fn vendor_models_inline(&self, rail: Rail) -> bool {
+        self.submenu.is_none()
+            && self.filter.trim().is_empty()
+            && !self.vendor_rows(rail).is_empty()
+    }
+
+    /// Whether `row` is a subscription model listed under its vendor's row (drawn indented).
+    pub fn is_inline_model(&self, row: &ModelsRow) -> bool {
+        matches!(row.kind, RowKind::RailModel { rail, .. } if self.vendor_models_inline(rail))
+    }
+
     /// The rows in display order. At the top level without a filter: the list (non-chat models
-    /// hidden unless `show_all`; the active row is always shown). Inside a sub-menu: its rows. With
-    /// a filter typed: the flat list of everything that matches — the list rows plus every
-    /// signed-in vendor's models and the connect rows — so a model is found wherever it lives.
+    /// hidden unless `show_all`; the active row is always shown), each signed-in vendor followed
+    /// by its models. Inside a sub-menu: its rows. With a filter typed: the flat list of
+    /// everything that matches — the list rows plus every signed-in vendor's models and the
+    /// connect rows — so a model is found wherever it lives.
     pub fn visible_rows(&self) -> Vec<ModelsRow> {
         let filtered = !self.filter.trim().is_empty();
         match &self.submenu {
@@ -885,12 +903,16 @@ impl PickerState {
                 .into_iter()
                 .filter(|r| self.matches_filter(r))
                 .collect(),
-            None if !filtered => self
-                .rows
-                .iter()
-                .filter(|r| self.shown_by_default(r))
-                .cloned()
-                .collect(),
+            None if !filtered => {
+                let mut out = Vec::new();
+                for row in self.rows.iter().filter(|r| self.shown_by_default(r)) {
+                    out.push(row.clone());
+                    if let RowKind::Vendor(rail) = row.kind {
+                        out.extend(self.vendor_rows(rail));
+                    }
+                }
+                out
+            }
             None => {
                 let mut out = Vec::new();
                 for row in self.rows.iter().filter(|r| self.shown_by_default(r)) {
@@ -918,7 +940,9 @@ impl PickerState {
         let mut lines = Vec::with_capacity(rows.len() + 4);
         let mut current: Option<String> = None;
         for row in rows {
-            if grouped && current.as_deref() != Some(row.group.as_str()) {
+            // A vendor's inline models sit under the vendor's row, in its section.
+            let inline = matches!(row.kind, RowKind::RailModel { .. });
+            if grouped && !inline && current.as_deref() != Some(row.group.as_str()) {
                 lines.push(ModelsLine::Header(row.group.clone()));
                 current = Some(row.group.clone());
             }
@@ -1011,10 +1035,13 @@ impl PickerState {
             | RowKind::RailModel { .. }
             | RowKind::ConnectProvider { .. } => {}
         }
-        if self.is_active(row) {
+        // A vendor whose models are listed under it leaves `active` to the model's own row and
+        // needs no `▸`: there is nothing hidden to open.
+        let inline = matches!(row.kind, RowKind::Vendor(rail) if self.vendor_models_inline(rail));
+        if self.is_active(row) && !inline {
             out.push((Tone::Good, " \u{b7} active".into()));
         }
-        if self.is_expandable(row) {
+        if self.is_expandable(row) && !inline {
             out.push((Tone::Dim, " \u{25b8}".into()));
         }
         // No leading space on the first piece.
@@ -1747,7 +1774,8 @@ mod tests {
     }
 
     /// The owner's layout: OpenCode's models, then the Subscriptions section — every vendor as
-    /// one row whose suffix is its state, `API keys`, xAI last. No pills, no vendor models inline.
+    /// one row whose suffix is its state, a signed-in vendor's models listed right under it,
+    /// `API keys`, xAI last. No pills.
     #[test]
     fn one_list_opencode_then_subscriptions_with_state_suffixes() {
         let rails = [
@@ -1764,6 +1792,9 @@ mod tests {
                 "MiMo Free",
                 "# Subscriptions",
                 "Claude",
+                "Claude Opus",
+                "Claude Sonnet",
+                "Claude Haiku",
                 "Codex",
                 "Cursor",
                 "API keys",
@@ -1772,6 +1803,13 @@ mod tests {
             "{:?}",
             rendered(&p)
         );
+        let inline: Vec<String> = p
+            .visible_rows()
+            .into_iter()
+            .filter(|r| p.is_inline_model(r))
+            .map(|r| r.title())
+            .collect();
+        assert_eq!(inline, ["Claude Opus", "Claude Sonnet", "Claude Haiku"]);
         let by_title = |t: &str| {
             p.visible_rows()
                 .into_iter()
@@ -1783,10 +1821,8 @@ mod tests {
             "free \u{b7} active"
         );
         assert_eq!(suffix_text(&p, &by_title("MiMo Free")), "free");
-        assert_eq!(
-            suffix_text(&p, &by_title("Claude")),
-            "\u{2713} Max \u{25b8}"
-        );
+        // Its models are already on screen, so the vendor row has nothing to open.
+        assert_eq!(suffix_text(&p, &by_title("Claude")), "\u{2713} Max");
         assert_eq!(suffix_text(&p, &by_title("Codex")), "sign in");
         assert_eq!(suffix_text(&p, &by_title("Cursor")), "install");
         assert_eq!(suffix_text(&p, &by_title("API keys")), "\u{25b8}");
@@ -1794,8 +1830,8 @@ mod tests {
         assert!(
             !rendered(&p)
                 .iter()
-                .any(|l| l.contains("Opus") || l.contains("Sign in") || l.contains('[')),
-            "no vendor model inline, no pill: {:?}",
+                .any(|l| l.contains("Sign in") || l.contains('[')),
+            "no pill: {:?}",
             rendered(&p)
         );
         assert_eq!(p.title(), "Models");
@@ -2332,9 +2368,10 @@ mod tests {
         assert!(p.selected_row().is_some_and(|r| p.is_active(&r)));
     }
 
-    /// The active subscription model marks its vendor row and, inside the sub-menu, itself.
+    /// The active subscription model is preselected and marked on its own row under the vendor;
+    /// the vendor's sub-menu (`→`) still opens on it.
     #[test]
-    fn an_active_subscription_model_marks_its_vendor() {
+    fn an_active_subscription_model_is_preselected_under_its_vendor() {
         let rails = [
             rail(Rail::Claude, true, true),
             rail(Rail::Codex, true, false),
@@ -2345,19 +2382,23 @@ mod tests {
         p.active_id = Some(rail_model_row_id(Rail::Claude, &sonnet));
         p.selected = 0;
         p.select_active();
-        assert_eq!(p.selected_row().map(|r| r.title()), Some("Claude".into()));
+        let row = p.selected_row().unwrap();
+        assert_eq!(row.title(), "Claude Sonnet");
+        assert!(p.is_inline_model(&row));
+        assert_eq!(suffix_text(&p, &row), "active");
+        p.handle(PickerInput::Up);
+        p.handle(PickerInput::Up);
         let claude = p.selected_row().unwrap();
-        assert_eq!(
-            suffix_text(&p, &claude),
-            "\u{2713} Max \u{b7} active \u{25b8}"
-        );
-        p.handle(PickerInput::Enter);
+        assert_eq!(claude.title(), "Claude");
+        assert_eq!(suffix_text(&p, &claude), "\u{2713} Max");
+        p.handle(PickerInput::Open);
         assert_eq!(
             p.selected_row().map(|r| r.title()),
             Some("Claude Sonnet".into()),
             "the sub-menu opens on the active model"
         );
         let row = p.selected_row().unwrap();
+        assert!(!p.is_inline_model(&row));
         assert_eq!(suffix_text(&p, &row), "active");
     }
 

@@ -161,6 +161,24 @@ index f1602289..dc219224 100644
      /// Changelog fetched from CDN (both formats).
      ChangelogFetched {
          markdown: Option<String>,
+diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/input.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/input.rs
+index 05556693..41171fbf 100644
+--- a/crates/codegen/xai-grok-pager/src/app/agent_view/input.rs
++++ b/crates/codegen/xai-grok-pager/src/app/agent_view/input.rs
+@@ -1304,7 +1304,12 @@ impl AgentView {
+                         return InputOutcome::Changed;
+                     }
+                 }
+-                InputOutcome::Changed
++                // Workshop: no shell models to list; the one picker holds the models.
++                InputOutcome::Action(Action::OpenConnectionPicker(
++                    workshop_auth::PickerFocus::Models {
++                        filter: String::new(),
++                    },
++                ))
+             }
+             ActionId::ShortcutsHelp => {
+                 use crate::views::shortcuts_help;
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 index fc9a4553..93c9e0b5 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
@@ -8385,7 +8403,7 @@ index 05d93b08..a5c6d1ea 100644
      #[test]
      fn model_suggest_args_returns_available_models() {
 diff --git a/crates/codegen/xai-grok-pager/src/slash/commands/model.rs b/crates/codegen/xai-grok-pager/src/slash/commands/model.rs
-index 51c3c5f1..344f2d54 100644
+index 51c3c5f1..adf9568d 100644
 --- a/crates/codegen/xai-grok-pager/src/slash/commands/model.rs
 +++ b/crates/codegen/xai-grok-pager/src/slash/commands/model.rs
 @@ -1,5 +1,11 @@
@@ -8400,7 +8418,7 @@ index 51c3c5f1..344f2d54 100644
  
  use agent_client_protocol as acp;
  use xai_grok_shell::sampling::types::{ReasoningEffortOption, supports_reasoning_effort_meta};
-@@ -11,17 +17,27 @@ use crate::slash::command::{
+@@ -11,23 +17,40 @@ use crate::slash::command::{
  };
  use crate::slash::commands::effort_levels::build_effort_arg_items;
  
@@ -8431,7 +8449,20 @@ index 51c3c5f1..344f2d54 100644
          session_scoped: true,
          // The dashboard offers `/model` to pick the model for the next spawned agent (intercepted in `dispatch_dashboard_dispatch_slash`).
          offered_when_session_less: true,
-@@ -37,7 +53,9 @@ impl SlashCommand for ModelCommand {
+         arg_placeholder: "<model> [effort]",
+     }
+ 
++    // Workshop: with no shell model to suggest (only the stand-ins), `/model` has no argument
++    // phase — Tab or a typed space never leaves the composer waiting on `<model> [effort]`, and
++    // Enter opens the picker (filtered by anything typed after the command).
++    fn takes_args_now(&self, ctx: &AppCtx) -> bool {
++        !build_model_items(ctx.models).is_empty()
++    }
++
+     fn suggest_args(&self, ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
+         if ctx.models.is_empty() {
+             return None;
+@@ -37,7 +60,9 @@ impl SlashCommand for ModelCommand {
          if let Some(model_id) = detect_effort_phase(ctx.models, args_query) {
              return Some(build_effort_items(ctx.models, &model_id));
          }
@@ -8442,7 +8473,7 @@ index 51c3c5f1..344f2d54 100644
      }
  
      fn preselected_arg(&self, ctx: &AppCtx, args_query: &str) -> Option<String> {
-@@ -54,12 +72,20 @@ impl SlashCommand for ModelCommand {
+@@ -54,12 +79,20 @@ impl SlashCommand for ModelCommand {
      fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
          let trimmed = args.trim();
          if trimmed.is_empty() {
@@ -8465,7 +8496,7 @@ index 51c3c5f1..344f2d54 100644
              return CommandResult::Action(Action::SetDefaultModel(id));
          }
  
-@@ -84,7 +110,13 @@ impl SlashCommand for ModelCommand {
+@@ -84,7 +117,13 @@ impl SlashCommand for ModelCommand {
              };
          }
  
@@ -8480,7 +8511,7 @@ index 51c3c5f1..344f2d54 100644
      }
  }
  
-@@ -136,10 +168,14 @@ fn detect_effort_phase(models: &ModelState, args_query: &str) -> Option<acp::Mod
+@@ -136,10 +175,14 @@ fn detect_effort_phase(models: &ModelState, args_query: &str) -> Option<acp::Mod
  
  /// One row per logical model.
  /// Reasoning models get a trailing space in `insert_text` so the prompt widget chains into the effort sub-menu.
@@ -8495,7 +8526,7 @@ index 51c3c5f1..344f2d54 100644
          let is_current = current_id == Some(id);
          let supports = supports_reasoning_effort(info);
  
-@@ -487,8 +523,70 @@ mod tests {
+@@ -487,8 +530,75 @@ mod tests {
          state.available.insert(id, info);
          let mut ctx = dummy_exec_ctx(&state);
          let result = ModelCommand.run(&mut ctx, "Grok 4.5 high");
@@ -8535,6 +8566,10 @@ index 51c3c5f1..344f2d54 100644
 +            current_title: None,
 +        };
 +        assert!(cmd.suggest_args(&ctx, "").is_none(), "no lonely `(current)` row, no hint");
++        assert!(
++            !cmd.takes_args_now(&ctx),
++            "Tab or a space never waits on `<model> [effort]`"
++        );
 +        let mut exec = dummy_exec_ctx(&state);
 +        assert!(matches!(
 +            cmd.run(&mut exec, "GPT-6-Sol"),
@@ -8560,6 +8595,7 @@ index 51c3c5f1..344f2d54 100644
 +        let items = cmd.suggest_args(&ctx, "").unwrap();
 +        assert_eq!(items.len(), 1);
 +        assert_eq!(items[0].match_text, "Grok 4.5");
++        assert!(cmd.takes_args_now(&ctx));
 +        let mut exec = dummy_exec_ctx(&state);
 +        assert!(matches!(
 +            cmd.run(&mut exec, "Grok 4.5"),
@@ -8568,7 +8604,7 @@ index 51c3c5f1..344f2d54 100644
      }
  
      /// The bare `/model <name>` form dispatches `Action::SetDefaultModel(<ModelId>)` instead of the legacy `Action::SwitchModel { effort: None }`.
-@@ -509,6 +607,26 @@ mod tests {
+@@ -509,6 +619,26 @@ mod tests {
          }
      }
  
@@ -8597,17 +8633,18 @@ index 51c3c5f1..344f2d54 100644
      fn run_set_default_model_resolves_case_insensitively() {
 diff --git a/crates/codegen/xai-grok-pager/src/views/connection_picker.rs b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
 new file mode 100644
-index 00000000..4fd4099f
+index 00000000..37edb75a
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
-@@ -0,0 +1,348 @@
+@@ -0,0 +1,393 @@
 +//! Workshop connection picker overlay (ratatui view over `workshop_auth::PickerState`).
 +//!
 +//! One list behind `/model` and `/auth`: `⌕ type to filter`, quiet group headers (`OpenCode`, a
 +//! connected provider, `Subscriptions`), one line per row — `name  state` — with the row's state
-+//! as a coloured suffix (`free`, `sign in`, `install`, `✓ Max ▸`, `optional · sign in`) and the
-+//! active one marked. A row with `▸` opens a sub-menu (a vendor's models, a model's effort
-+//! levels, the API-key providers) whose name joins the title: `Models › Claude`. Under the list:
++//! as a coloured suffix (`free`, `sign in`, `install`, `✓ Max`, `optional · sign in`) and the
++//! active one marked. A signed-in vendor's models are listed, indented, right under its row. A
++//! row with `▸` opens a sub-menu (a model's effort levels, the API-key providers) whose name joins
++//! the title: `Models › API keys`. Under the list:
 +//! a rule, one to three detail lines about the highlighted row, one key line. Nothing here
 +//! starts a login: outcomes are decided by the picker state in the dispatcher.
 +//!
@@ -8650,20 +8687,34 @@ index 00000000..4fd4099f
 +    // Borders (2) + list + separator + detail + key line, capped to the area.
 +    let wanted =
 +        2 + entries.len() as u16 + 1 + detail_rows + 1 + u16::from(picker.status.is_some());
-+    let height = wanted.min(avail.height);
 +    let width = avail.width.min(MAX_WIDTH);
-+    // Anchored at the top of its area: a list that shrinks while the user types must not jump
-+    // around the screen the way a centered box would.
++    // Centred on the height of this menu's unfiltered list and held there by its top edge: the
++    // box sits in the middle of the screen, and a list that shrinks while the user types never
++    // moves the search line.
++    let mut unfiltered = picker.clone();
++    unfiltered.filter.clear();
++    let resting = (2
++        + 1
++        + unfiltered.models_lines().len() as u16
++        + 1
++        + MAX_DETAIL_ROWS
++        + 1
++        + u16::from(picker.status.is_some()))
++    .min(avail.height);
++    let y = avail.y + (avail.height - resting) / 2;
 +    let overlay = Rect {
 +        x: avail.x + (avail.width - width) / 2,
-+        y: avail.y,
++        y,
 +        width,
-+        height,
++        height: wanted.min(avail.y + avail.height - y),
 +    };
 +    Clear.render(overlay, buf);
 +
++    // The border cells take the theme's canvas too: `Clear` leaves them on the terminal's own
++    // background, a light ring around the box on a light-profile terminal.
 +    let block = Block::default()
 +        .borders(Borders::ALL)
++        .style(Style::default().bg(theme.bg_base))
 +        .border_style(Style::default().fg(theme.gray_dim))
 +        .title(Line::from(Span::styled(
 +            format!(" {} ", picker.title()),
@@ -8819,7 +8870,7 @@ index 00000000..4fd4099f
 +    let marker = if selected { "› " } else { "  " };
 +    let mut spans = vec![
 +        Span::styled(marker.to_owned(), base),
-+        Span::styled(pad(&row.title(), name_w), base),
++        Span::styled(pad(&indented_title(picker, row), name_w), base),
 +        Span::styled(" ".to_owned(), base),
 +    ];
 +    if let Some(prov_w) = prov_w {
@@ -8840,12 +8891,21 @@ index 00000000..4fd4099f
 +    Line::from(spans)
 +}
 +
++/// The row's name, indented when it is a subscription model listed under its vendor.
++fn indented_title(picker: &PickerState, row: &ModelsRow) -> String {
++    if picker.is_inline_model(row) {
++        format!("  {}", row.title())
++    } else {
++        row.title()
++    }
++}
++
 +/// Column widths shared by every row line: the name column, and the provider column in the
 +/// flat filtered list.
 +fn columns(picker: &PickerState, rows: &[ModelsRow]) -> (usize, Option<usize>) {
 +    let name_w = rows
 +        .iter()
-+        .map(|r| UnicodeWidthStr::width(r.title().as_str()))
++        .map(|r| UnicodeWidthStr::width(indented_title(picker, r).as_str()))
 +        .max()
 +        .unwrap_or(10)
 +        .clamp(10, 40);
@@ -8948,6 +9008,27 @@ index 00000000..4fd4099f
 +            Line::from(Span::styled(l, style))
 +        })
 +        .collect()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn the_box_sits_mid_screen_on_the_theme_canvas_border_included() {
++        let theme = Theme::oscura_midnight();
++        let area = Rect::new(0, 0, 120, 40);
++        let mut buf = Buffer::empty(area);
++        render(area, &mut buf, &theme, &PickerState::new(), 0);
++        let (x, y) = (0..area.height)
++            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
++            .find(|&(x, y)| buf.cell((x, y)).is_some_and(|c| c.symbol() == "\u{250c}"))
++            .expect("the box's top-left corner");
++        assert!(y > 0, "not pinned to the top of the screen");
++        assert_eq!(buf.cell((x, y)).unwrap().bg, theme.bg_base);
++        assert_eq!(buf.cell((x + 1, y)).unwrap().bg, theme.bg_base);
++        assert_eq!(buf.cell((x, y + 1)).unwrap().bg, theme.bg_base);
++    }
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/views/mod.rs b/crates/codegen/xai-grok-pager/src/views/mod.rs
 index dcbe4033..b0a519b1 100644

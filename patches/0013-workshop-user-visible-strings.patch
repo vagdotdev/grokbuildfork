@@ -9587,10 +9587,62 @@ index 91206bc1..2f995aac 100644
              let truncated =
                  crate::render::line_utils::truncate_str(placeholder, ta_area.width as usize);
 diff --git a/crates/codegen/xai-grok-pager/src/views/prompt_widget/tests.rs b/crates/codegen/xai-grok-pager/src/views/prompt_widget/tests.rs
-index a5143126..e9aa6884 100644
+index a5143126..29f26c42 100644
 --- a/crates/codegen/xai-grok-pager/src/views/prompt_widget/tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/prompt_widget/tests.rs
-@@ -4467,7 +4467,7 @@
+@@ -2,6 +2,15 @@
+     use super::*;
+     use crate::input::key::key;
+ 
++    /// Workshop (#65): `/model` has an argument phase only with a shell model to suggest; the
++    /// completion tests that use it as their arg-taking command give it one.
++    fn models_with_a_shell_model() -> crate::acp::model_state::ModelState {
++        let mut models = crate::acp::model_state::ModelState::default();
++        let id = agent_client_protocol::ModelId::new(std::sync::Arc::from("grok-4.5"));
++        models.available.insert(id.clone(), agent_client_protocol::ModelInfo::new(id, "Grok 4.5".to_string()));
++        models
++    }
++
+     fn at<'a, T>(xs: &'a [T], i: usize) -> &'a T {
+         match xs.get(i) {
+             Some(v) => v,
+@@ -1577,7 +1586,7 @@
+     #[test]
+     fn accept_completion_drops_active_highlight() {
+         let mut pw = PromptWidget::new();
+-        let models = crate::acp::model_state::ModelState::default();
++        let models = models_with_a_shell_model();
+         pw.textarea.insert_str("/mod");
+         pw.refresh_slash(&models);
+         pw.textarea.set_selection(1, 3);
+@@ -1590,7 +1599,7 @@
+     #[test]
+     fn accept_completion_adds_trailing_space_for_arg_command() {
+         let mut pw = PromptWidget::new();
+-        let models = crate::acp::model_state::ModelState::default();
++        let models = models_with_a_shell_model();
+ 
+         // Typing "/mod" should match "/model" which takes_args
+         pw.textarea.insert_str("/mod");
+@@ -1607,7 +1616,7 @@
+     #[test]
+     fn accept_inside_command_with_args_absorbs_existing_separator() {
+         let mut pw = PromptWidget::new();
+-        let models = crate::acp::model_state::ModelState::default();
++        let models = models_with_a_shell_model();
+ 
+         // Cursor inside the command token with args already present.
+         pw.textarea.insert_str("/mod grok-4");
+@@ -1640,7 +1649,7 @@
+     #[test]
+     fn accept_never_absorbs_into_adjacent_paste_chip() {
+         let mut pw = PromptWidget::new();
+-        let models = crate::acp::model_state::ModelState::default();
++        let models = models_with_a_shell_model();
+ 
+         // Snapshot taken while the composer is just the token…
+         pw.textarea.insert_str("/mod");
+@@ -4467,7 +4476,7 @@
              let mut buf = Buffer::empty(area);
              pw.draw(&mut buf, area, None, &style, None, None);
              assert!(
@@ -9599,7 +9651,7 @@ index a5143126..e9aa6884 100644
                  "placeholder text missing"
              );
              buf.cell((0, 0)).unwrap().style()
-@@ -4971,9 +4971,15 @@
+@@ -4971,9 +4980,15 @@
      #[test]
      #[serial_test::serial]
      fn teal_highlighting_on_second_line() {

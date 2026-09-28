@@ -1,7 +1,7 @@
 //! Every state of the one picker, captured as evidence (text + HTML screenshots under
 //! `WORKSHOP_PTY_EVIDENCE_DIR/picker-states/`) and checked: nothing signed in, `/auth` landing on
-//! the Subscriptions section, a vendor signed in (`✓ Max ▸`), that vendor expanded into its real
-//! models, a model's effort sub-menu, the typed filter over the whole tree, and the `API keys`
+//! the Subscriptions section, a vendor signed in (`✓ Max`, its real models listed under it), that
+//! vendor's own sub-menu, a model's effort sub-menu, the typed filter over the whole tree, and the `API keys`
 //! sub-menu. Hermetic: the answering fake `opencode serve` on loopback (eight free models, some
 //! with effort levels) and a fake `claude` that is signed out on the first launch and signed in on
 //! the second. Opt-in via `WORKSHOP_BIN`, `--include-ignored`.
@@ -166,7 +166,7 @@ fn every_picker_state_is_captured() {
     );
     wait_for(&mut j.h, "\u{276f}", 45);
 
-    // 4. Vendor signed in: `✓ Max ▸`, detail with the account.
+    // 4. Vendor signed in: `✓ Max` with its models listed right under it, detail with the account.
     send_prompt(&mut j, "/model");
     wait_for(&mut j.h, PICKER_OPEN, 15);
     wait_for(&mut j.h, "\u{2713} Max", 30);
@@ -177,8 +177,9 @@ fn every_picker_state_is_captured() {
     let screen = j.h.screen_contents();
     assert!(
         row_line(&j, "Claude").contains("\u{2713} Max")
-            && row_line(&j, "Claude").contains(OPENS_SUBMENU),
-        "signed in → `✓ Max ▸`:\n{screen}"
+            && !row_line(&j, "Claude").contains(OPENS_SUBMENU)
+            && screen.contains("Opus (1M context)"),
+        "signed in → `✓ Max`, its models under it:\n{screen}"
     );
     assert!(
         screen.contains("Signed in as user@example.com \u{b7} Max \u{b7} 3 models"),
@@ -258,8 +259,8 @@ fn every_picker_state_is_captured() {
     wait_for(&mut j.h, "\u{2713} Max", 30);
     j.h.update(Duration::from_millis(500));
     assert!(
-        row_line(&j, "Claude").contains("active"),
-        "the vendor holding the active model is marked:\n{}",
+        row_line(&j, "Sonnet").contains("active") && !row_line(&j, "Claude").contains("active"),
+        "the active model is marked on its own row under its vendor:\n{}",
         j.h.screen_contents()
     );
     snapshot(&j.h, &j.dir, "08-vendor-model-active");

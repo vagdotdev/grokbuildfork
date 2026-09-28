@@ -44,6 +44,13 @@ impl SlashCommand for ModelCommand {
         arg_placeholder: "<model> [effort]",
     }
 
+    // Workshop: with no shell model to suggest (only the stand-ins), `/model` has no argument
+    // phase — Tab or a typed space never leaves the composer waiting on `<model> [effort]`, and
+    // Enter opens the picker (filtered by anything typed after the command).
+    fn takes_args_now(&self, ctx: &AppCtx) -> bool {
+        !build_model_items(ctx.models).is_empty()
+    }
+
     fn suggest_args(&self, ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
         if ctx.models.is_empty() {
             return None;
@@ -557,6 +564,10 @@ mod tests {
             current_title: None,
         };
         assert!(cmd.suggest_args(&ctx, "").is_none(), "no lonely `(current)` row, no hint");
+        assert!(
+            !cmd.takes_args_now(&ctx),
+            "Tab or a space never waits on `<model> [effort]`"
+        );
         let mut exec = dummy_exec_ctx(&state);
         assert!(matches!(
             cmd.run(&mut exec, "GPT-6-Sol"),
@@ -582,6 +593,7 @@ mod tests {
         let items = cmd.suggest_args(&ctx, "").unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].match_text, "Grok 4.5");
+        assert!(cmd.takes_args_now(&ctx));
         let mut exec = dummy_exec_ctx(&state);
         assert!(matches!(
             cmd.run(&mut exec, "Grok 4.5"),

@@ -1747,6 +1747,17 @@ mod tests {
     use super::registry::CommandRegistry;
     use super::*;
 
+    /// Workshop (#65): `/model` has an argument phase only with a shell model to suggest; the
+    /// argument-phase tests below use it as their arg-taking command.
+    fn models_with_a_shell_model() -> ModelState {
+        let mut models = ModelState::default();
+        let id = acp::ModelId::new(Arc::from("grok-4.5"));
+        models
+            .available
+            .insert(id.clone(), acp::ModelInfo::new(id, "Grok 4.5".to_string()));
+        models
+    }
+
     #[test]
     fn parses_invocation_with_args() {
         let inv = parse_invocation("/model grok-code-fast-1").expect("parsed");
@@ -2165,7 +2176,7 @@ mod tests {
         // The placeholder must not appear
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         let state = SlashState::default();
-        let models = ModelState::default();
+        let models = models_with_a_shell_model();
 
         let text = "/model hello";
         // Cursor at 7: right after "/model ", before 'h'.
@@ -3533,7 +3544,7 @@ mod tests {
     fn mid_text_slash_args_after_token() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         let state = SlashState::default();
-        let models = ModelState::default();
+        let models = models_with_a_shell_model();
 
         let text = "hi /model ";
         let cursor = text.len();

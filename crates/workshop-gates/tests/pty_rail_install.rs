@@ -171,9 +171,13 @@ fn a_missing_cli_installs_and_signs_in_on_one_keypress() {
     assert!(
         claude_line.contains("Claude")
             && claude_line.contains("\u{2713} Max")
-            && claude_line.contains("\u{25b8}")
             && !claude_line.contains("install"),
         "the Claude row no longer offers install: {claude_line}\n{screen}"
+    );
+    // #65: a signed-in subscription lists the CLI's own models right under its row.
+    assert!(
+        screen.contains("Default (recommended)"),
+        "the signed-in row lists the CLI's models:\n{screen}"
     );
     let row_state = |name: &str| {
         screen
