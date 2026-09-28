@@ -11,8 +11,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CatalogModel, google_seed_models, kilo_seed_models, nvidia_seed_models, openrouter_seed_models,
-    sources,
+    CatalogModel, google_seed_models, kilo_seed_models, nvidia_seed_models, openai_seed_models,
+    openrouter_seed_models, sources,
 };
 use crate::manifest::{ModelCatalogSource, ProviderManifest};
 
@@ -107,6 +107,7 @@ pub fn seed_rows(provider_id: &str) -> Vec<CatalogModel> {
         "openrouter" => openrouter_seed_models(),
         "google" => google_seed_models(),
         "nvidia" => nvidia_seed_models(),
+        "openai" => openai_seed_models(),
         _ => Vec::new(),
     }
 }
