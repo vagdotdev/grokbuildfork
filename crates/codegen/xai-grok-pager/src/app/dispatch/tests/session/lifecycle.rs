@@ -40,7 +40,7 @@ fn voice_on_welcome_creates_session_and_records() {
     assert_eq!(app.voice_recording_target(), Some(VoiceTarget::Agent(id)));
     assert!(matches!(
         rx.try_recv(),
-        Ok(xai_grok_voice::VoiceCommand::PttPress)
+        Ok(xai_grok_voice::VoiceCommand::PttPress { .. })
     ));
 }
 #[test]
@@ -54,7 +54,8 @@ fn voice_final_routes_to_recording_session_not_active_view() {
     app.active_view = ActiveView::Agent(other);
     app.voice_state = VoiceState::Stopping {
         target: VoiceTarget::Agent(rec),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     crate::voice::handle_voice_event(
         &mut app,
@@ -87,7 +88,8 @@ fn voice_auto_stops_when_leaving_recording_session() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     app.active_view = ActiveView::Agent(id);
     app.enforce_voice_session_bound();
@@ -103,7 +105,7 @@ fn voice_auto_stops_when_leaving_recording_session() {
     );
     assert!(matches!(
         rx.try_recv(),
-        Ok(xai_grok_voice::VoiceCommand::PttRelease)
+        Ok(xai_grok_voice::VoiceCommand::Abort)
     ));
 }
 #[test]
@@ -909,13 +911,7 @@ fn switch_model_without_session_sends_nothing_to_server() {
     let id = AgentId(0);
     app.agents.get_mut(&id).unwrap().session.session_id = None;
     let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
-    let effects = dispatch(
-        Action::SwitchModel {
-            model_id,
-            effort: None,
-        },
-        &mut app,
-    );
+    let effects = dispatch(Action::SwitchModel(ModelChoice::new(model_id)), &mut app);
     assert!(
         !effects
             .iter()
@@ -1146,10 +1142,7 @@ fn switch_model_deferred_when_no_session_id() {
     let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
     app.agents.get_mut(&id).unwrap().session.session_id = None;
     let effects = dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     assert!(
@@ -1183,10 +1176,7 @@ fn deferred_switch_threads_stash_prev_into_effect() {
     agent.session.session_id = None;
     agent.session.models.current = Some(model_a.clone());
     dispatch(
-        Action::SwitchModel {
-            model_id: model_b.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_b.clone())),
         &mut app,
     );
     let effects = dispatch(
@@ -1200,8 +1190,8 @@ fn deferred_switch_threads_stash_prev_into_effect() {
     );
     assert!(effects.iter().any(|e| matches!(
         e,
-        Effect::SwitchModel { model_id, prev_model_id, .. }
-            if *model_id == model_b && *prev_model_id == Some(model_a.clone())
+        Effect::SwitchModel { choice, prev_model_id, .. }
+            if choice.model_id == model_b && *prev_model_id == Some(model_a.clone())
     )));
 }
 #[test]
@@ -1229,8 +1219,8 @@ fn deferred_switch_prefers_authoritative_current_as_prev() {
     );
     assert!(effects.iter().any(|e| matches!(
         e,
-        Effect::SwitchModel { model_id, prev_model_id, .. }
-            if *model_id == model_b && *prev_model_id == Some(server_model.clone())
+        Effect::SwitchModel { choice, prev_model_id, .. }
+            if choice.model_id == model_b && *prev_model_id == Some(server_model.clone())
     )));
 }
 #[test]
@@ -1270,8 +1260,8 @@ fn deferred_model_switch_applied_on_session_created() {
         Effect::SwitchModel {
             agent_id: a_id,
             session_id: s_id,
-            model_id: m_id,
-            .. } if *a_id == id && *s_id == session_id && *m_id == model_id
+            choice,
+            .. } if *a_id == id && *s_id == session_id && choice.model_id == model_id
     )));
 }
 #[test]
@@ -1321,8 +1311,8 @@ fn deferred_model_switch_applied_on_worktree_session_created() {
         Effect::SwitchModel {
             agent_id: a_id,
             session_id: s_id,
-            model_id: m_id,
-            .. } if *a_id == id && *s_id == session_id && *m_id == model_id
+            choice,
+            .. } if *a_id == id && *s_id == session_id && choice.model_id == model_id
     )));
 }
 /// The session-startup gate requires BOTH auth AND trust resolved.
@@ -1622,7 +1612,7 @@ fn trust_folder_continues_session_only_when_embedded_and_persist_denied() {
         .map(|(m, _)| m.as_str())
         .unwrap_or_default();
     assert!(
-        toast.contains("workshop --trust"),
+        toast.contains("grok --trust"),
         "a session-only grant must show how to persist: {toast}"
     );
 }
@@ -2031,48 +2021,31 @@ fn gated_worktree_with_none_companions_preserves_stashed_label_and_ref() {
     assert!(app.deferred_startup.session.is_none());
     assert!(!app.deferred_startup.worktree);
 }
-/// `/login` from inside a session opens the connection picker as an overlay over the session and
-/// stashes the agent view for restoration. Workshop: Login alone opens the picker (no
-/// Authenticate); the inherited flow starts only from the optional xAI card, which moves to the
-/// welcome screen (the only view that draws the browser / device-code flow) with the view stashed.
+/// `/login` from inside a session must move to the welcome screen and stash the agent view for restoration.
+/// The welcome screen is the only view that renders the auth flow / external-provider URL.
+/// Regression: "external auth provider /login does nothing mid-session".
 #[test]
 fn login_mid_session_switches_to_welcome_and_stashes_view() {
     let mut app = test_app_with_agent();
     assert_eq!(app.active_view, ActiveView::Agent(AgentId(0)));
     let effects = dispatch(Action::Login, &mut app);
-    assert_eq!(
-        app.active_view,
-        ActiveView::Agent(AgentId(0)),
-        "the picker is an overlay; the session stays up behind it"
-    );
-    assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
-    assert!(app.connection_picker.is_some(), "Login opens the picker");
-    // Opening the picker loads its rows/rails (`WorkshopLoadPicker`) — a data probe, not auth.
-    assert!(
-        effects
-            .iter()
-            .all(|e| matches!(e, Effect::WorkshopLoadPicker))
-            && !matches!(app.auth_state, AuthState::Authenticating { .. }),
-        "Login alone must not kick off an auth flow, got {effects:?}",
-    );
-    let effects = start_login_flow(&mut app);
-    assert_eq!(app.active_view, ActiveView::Welcome, "the xAI flow is drawn by the welcome view");
+    assert_eq!(app.active_view, ActiveView::Welcome);
     assert_eq!(app.auth_return_view, Some(ActiveView::Agent(AgentId(0))));
     assert!(matches!(app.auth_state, AuthState::Authenticating { .. }));
     assert!(
         effects
             .iter()
             .any(|e| matches!(e, Effect::Authenticate { .. })),
-        "the optional xAI card still kicks off the inherited auth flow",
+        "must still kick off the auth flow",
     );
 }
-/// A mid-session xAI sign-in switches to the welcome view to host the auth flow.
+/// A mid-session `/login` switches to the welcome view to host the auth flow.
 /// That transition must collapse any expanded announcement so it can't reappear stale if auth completion lands back on a welcome screen.
 #[test]
 fn login_mid_session_resets_welcome_announcement_expanded() {
     let mut app = test_app_with_agent();
     app.welcome_announcement.expanded = true;
-    start_login_flow(&mut app);
+    dispatch(Action::Login, &mut app);
     assert_eq!(app.active_view, ActiveView::Welcome);
     assert!(
         !app.welcome_announcement.expanded,
@@ -2091,7 +2064,7 @@ fn auth_complete_strips_reauth_prompt_after_mid_session_login() {
         .unwrap()
         .scrollback
         .push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
-    start_login_flow(&mut app);
+    dispatch(Action::Login, &mut app);
     let seq = authenticating_seq(&app);
     dispatch(
         Action::TaskComplete(TaskResult::AuthComplete {
@@ -2132,7 +2105,7 @@ fn auth_complete_retries_stashed_prompt_after_mid_session_login() {
             chip_elements: Vec::new(),
         });
     }
-    start_login_flow(&mut app);
+    dispatch(Action::Login, &mut app);
     let seq = authenticating_seq(&app);
     let effects = dispatch(
         Action::TaskComplete(TaskResult::AuthComplete {
@@ -3306,32 +3279,6 @@ fn session_id_resolver_round_trip_top_level() {
         session_id: "no-such-session".into(),
     };
     assert!(resolver.resolve(&absent).is_none());
-}
-/// Subagent resolver round-trip.
-#[test]
-fn session_id_resolver_round_trip_subagent() {
-    use crate::views::dashboard::{DashboardRowId, PersistedRowId, SessionIdResolver};
-    let mut app = test_app_with_agent();
-    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
-    let info = make_test_subagent("child-1", "sa-1");
-    agent
-        .subagent_sessions
-        .insert(info.child_session_id.to_string(), info);
-    let resolver = SessionIdResolver::from_agents(&app.agents);
-    let pid = PersistedRowId::Subagent {
-        parent_session_id: "test-session".into(),
-        child_session_id: "child-1".into(),
-    };
-    let live = resolver.resolve(&pid).expect("must resolve");
-    assert_eq!(
-        live,
-        DashboardRowId::Subagent {
-            parent: AgentId(0),
-            child_session_id: "child-1".into(),
-        }
-    );
-    let back = resolver.to_persisted(&live).expect("must reverse");
-    assert_eq!(back, pid);
 }
 #[cfg(feature = "local-workspace")]
 mod welcome_workspace_mode {

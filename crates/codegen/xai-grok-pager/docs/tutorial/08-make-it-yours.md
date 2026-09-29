@@ -2,7 +2,7 @@
 
 ## The easiest way: just ask
 
-Workshop knows its own capabilities and can configure itself. Try:
+Grok knows its own capabilities and can configure itself. Try:
 
 - *"add the Postgres MCP server for our staging db"*
 - *"switch to a light theme"*
@@ -10,10 +10,10 @@ Workshop knows its own capabilities and can configure itself. Try:
 
 If you'd rather drive, everything below has a command too.
 
-## Teach Workshop your project: AGENTS.md
+## Teach Grok your project: AGENTS.md
 
 Drop an `AGENTS.md` file in your repo root with build commands, conventions,
-and gotchas. Workshop reads it automatically in every session — it's the single
+and gotchas. Grok reads it automatically in every session — it's the single
 highest-leverage customization:
 
 ```markdown
@@ -22,7 +22,7 @@ highest-leverage customization:
 - Never edit files under generated/
 ```
 
-## Teach Workshop your facts: memory
+## Teach Grok your facts: memory
 
 Start a prompt with `#` (or use `/remember`) to save a note for future
 sessions: `# the staging deploy uses eu-west`.

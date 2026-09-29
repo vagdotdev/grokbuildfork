@@ -139,14 +139,27 @@ pub struct PromptContext {
     #[serde(default = "default_system_prompt_label")]
     pub system_prompt_label: String,
 }
-/// Default identity in the base template (`You are Workshop, a coding agent`). Workshop overlay:
-/// the product, not a vendor model name — connections are third-party models.
-pub const DEFAULT_SYSTEM_PROMPT_LABEL: &str = "Workshop";
+/// Default identity on trim-tool-descriptions (`You are Grok released by xAI`).
+pub const DEFAULT_SYSTEM_PROMPT_LABEL: &str = "Grok";
 fn default_system_prompt_label() -> String {
     DEFAULT_SYSTEM_PROMPT_LABEL.to_string()
 }
 fn is_template_override_none(t: &TemplateOverride) -> bool {
     matches!(t, TemplateOverride::None)
+}
+/// Trailing-separator temp directory for the `<scratch_files>` section; a literal path so the model never expands a shell variable.
+fn scratch_dir() -> String {
+    if cfg!(windows) {
+        let dir = std::env::temp_dir();
+        let text = dir.display().to_string();
+        if text.ends_with(std::path::MAIN_SEPARATOR) {
+            text
+        } else {
+            format!("{text}{}", std::path::MAIN_SEPARATOR)
+        }
+    } else {
+        "/tmp/".to_string()
+    }
 }
 impl PromptContext {
     /// For `Subagent` audience, applies the same suppression as the render path: persona summaries are cleared.
@@ -232,6 +245,7 @@ impl PromptContext {
             "is_non_interactive": self.is_non_interactive,
             "system_prompt_label": self.system_prompt_label.as_str(),
             "include_browser_verification": self.include_browser_verification,
+            "scratch_dir": scratch_dir(),
         })
     }
     /// Render the full system prompt via `ToolBridge`. Tool names are resolved inside the bridge.

@@ -155,6 +155,7 @@ pub(crate) fn test_app() -> AppView {
         bootstrap_acp_commands: Vec::new(),
         auth_methods: Vec::new(),
         auth_state: AuthState::Done,
+        logout_pending: false,
         trust_state: TrustState::Done,
         consent_state: crate::app::consent::ConsentState::Done,
         account_email: None,
@@ -169,41 +170,14 @@ pub(crate) fn test_app() -> AppView {
         auth_url_poll_handle: None,
         deferred_startup: Default::default(),
         auth_use_oauth: false,
-        connection_picker: None,
-        workshop_password_ask: None,
-        workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
-        workshop_engine: None,
-        workshop_engine_session: None,
-        workshop_turn_active: false,
-        workshop_turn_tx: None,
-        workshop_turn_cancel: None,
-        workshop_turn_stream_entry: None,
-        workshop_turn_agent: None,
-        workshop_turn_prompt_entry: None,
-        workshop_turn_thinking_entry: None,
-        workshop_turn_tools: std::collections::HashMap::new(),
-        workshop_turn_tool_inputs: std::collections::HashMap::new(),
-        workshop_turn_queue: std::collections::VecDeque::new(),
-        workshop_turn_decided_calls: std::collections::HashMap::new(),
-        workshop_context_used: None,
-        workshop_engine_resume: None,
-        workshop_turn_record: Vec::new(),
-        workshop_turn_prompt_text: None,
-        workshop_resend: None,
-        workshop_fallback: None,
-        workshop_fallback_prompt_at: None,
-        workshop_first_launch: false,
-        workshop_engine_slot: crate::app::workshop::new_engine_slot(),
-        workshop_engine_warm_started: false,
-        workshop_turn_running: Vec::new(),
-        workshop_turn_errored: false,
-        workshop_last_prompt: None,
         auth_clipboard_delivery: None,
         auth_clipboard_feedback_generation: 0,
         team_id: None,
+        is_team_principal: false,
         team_name: None,
         is_zdr: false,
         team_role: None,
+        can_administer_team: None,
         coding_data_retention_opt_out: true,
         privacy_notice_rollout: false,
         privacy_banner_reshow_days: None,
@@ -213,6 +187,9 @@ pub(crate) fn test_app() -> AppView {
         show_tips: None,
         auto_update: None,
         ask_user_question_timeout_enabled: None,
+        subagent_model_inheritance: crate::settings::FeatureOverrideState::new(
+            xai_grok_shell::agent::config::Feature::SubagentModelInheritance,
+        ),
         zdr_access_enabled: false,
         usage_billing_redirect_url: None,
         access_gate_shown_logged: false,
@@ -239,8 +216,6 @@ pub(crate) fn test_app() -> AppView {
         welcome_menu_index: None,
         welcome_menu_rects: Vec::new(),
         welcome_show_changelog_action: false,
-        welcome_show_resume_action: true,
-        welcome_has_resumable_sessions: std::cell::OnceCell::new(),
         welcome_import_banner_rect: None,
         last_mouse_pos: None,
         last_scroll_pos: None,
@@ -292,12 +267,10 @@ pub(crate) fn test_app() -> AppView {
         session_picker_entries_query: None,
         session_picker_pending_delete: None,
         welcome_tick: 0,
-        welcome_hero_frame: 0,
-        welcome_hero_animating: false,
+        welcome_shimmer_frame: 0,
         startup_warnings: Vec::new(),
         is_api_key_auth: false,
         pending_update_version: None,
-        workshop_updated_to: None,
         foreign_resume_launch_generation: 0,
         foreign_resume_launch: None,
         quit_for_update: false,
@@ -311,9 +284,6 @@ pub(crate) fn test_app() -> AppView {
         pending_effects: Vec::new(),
         pending_editor: None,
         pending_pager_path: None,
-        pending_workshop_login: None,
-        workshop_rail_install: None,
-        workshop_voice_prefetch: None,
         pending_pager_ansi: false,
         minimal_state: crate::minimal_api::MinimalState::default(),
         reconnect_pending: false,
@@ -348,9 +318,13 @@ pub(crate) fn test_app() -> AppView {
         dashboard_persisted: None,
         keyboard_normalizer: KeyboardNormalizer::from_terminal_context(),
         voice_mode_enabled: false,
+        distribution: xai_grok_config::Distribution::STOCK,
         voice_ui_active: false,
         voice_config: xai_grok_voice::VoiceConfig::default(),
         voice_auth: None,
+        voice_session: xai_grok_voice::VoiceSessionId::default(),
+        voice_trailing_final: None,
+        voice_clip_deadline: None,
         voice_cmd_tx: None,
         voice_state: VoiceState::Idle,
     }
@@ -652,7 +626,6 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
     );
 }
 #[test]
-#[ignore = "upstream time-dependent flake (history daemon delivery races the poll deadline); see PR #13"]
 fn needs_animation_gates_prompt_history_tick_delivery() {
     let mut app = test_app_with_agent();
     let id = super::super::agent::AgentId(0);
@@ -811,69 +784,16 @@ fn tick_demand_follows_the_mcp_chip() {
         "the MCP chip spinner ticks while servers connect"
     );
 }
-/// Workshop: the welcome hero donut advances one frame per Slow tick (~12fps), never a 30fps loop,
-/// and only while the last paint spun it and the terminal is focused; otherwise the resting welcome
-/// screen parks. The deep-search spinner upgrades it to Fast while loading.
+/// The welcome screen shimmer only advances ~12fps, so a resting welcome screen must demand Slow ticks, not a 30fps loop.
+/// The deep-search spinner upgrades it to Fast while loading.
 #[test]
-fn tick_demand_welcome_is_slow_while_the_hero_spins() {
+fn tick_demand_welcome_is_slow_unless_loading() {
     let mut app = test_app();
     assert_eq!(app.active_view, ActiveView::Welcome);
-    assert_eq!(
-        app.tick_demand(),
-        TickDemand::None,
-        "before the first paint nothing spins, so nothing ticks"
-    );
-    app.welcome_hero_animating = true;
-    if !app.hero_animation_enabled() {
-        // `NO_COLOR` in the test environment: the resting frame is shown and the screen parks.
-        assert_eq!(app.tick_demand(), TickDemand::None);
-        assert!(!app.welcome_hero_spins());
-        return;
-    }
     assert_eq!(app.tick_demand(), TickDemand::Slow);
     assert!(app.needs_animation(), "slow still counts as animating");
-    assert!(app.welcome_hero_spins());
-    let frame = app.welcome_hero_frame;
-    assert!(app.tick(), "a tick advances the hero and asks for a redraw");
-    assert_eq!(
-        app.welcome_hero_frame,
-        (frame + 1) % workshop_brand::donut::FRAMES as u32
-    );
-    // An unfocused terminal holds the frame and parks the loop.
-    app.notification_service.focus_tracker.on_focus_lost();
-    assert!(!app.welcome_hero_spins());
-    assert_eq!(app.tick_demand(), TickDemand::None);
-    let held = app.welcome_hero_frame;
-    app.tick();
-    assert_eq!(
-        app.welcome_hero_frame, held,
-        "no frame advances while unfocused"
-    );
-    app.notification_service.focus_tracker.on_focus_gained();
-    assert_eq!(app.tick_demand(), TickDemand::Slow);
-    // `[ui] hero_animation = false` shows the resting frame: nothing to tick for.
-    app.current_ui.hero_animation = Some(false);
-    assert!(!app.hero_animation_enabled());
-    assert_eq!(app.tick_demand(), TickDemand::None);
-    app.current_ui.hero_animation = None;
-    // The loop wraps to the first frame.
-    app.welcome_hero_frame = workshop_brand::donut::FRAMES as u32 - 1;
-    app.tick();
-    assert_eq!(app.welcome_hero_frame, 0);
     app.session_picker_content_loading = true;
     assert_eq!(app.tick_demand(), TickDemand::Fast);
-}
-
-/// A welcome toast needs the clock to expire even when the hero rests.
-#[test]
-fn tick_demand_welcome_toast_keeps_slow_ticks_without_the_hero() {
-    let mut app = test_app();
-    assert_eq!(app.tick_demand(), TickDemand::None);
-    app.welcome_toast = Some((
-        "copied".to_owned(),
-        std::time::Instant::now() + std::time::Duration::from_secs(2),
-    ));
-    assert_eq!(app.tick_demand(), TickDemand::Slow);
 }
 /// An open modal session picker that is still fetching keeps fast ticks alive on an otherwise-idle agent (its loading spinner must animate).
 /// That holds even after the fast foreign scan lands rows the default Grok filter hides; once the native list settles the demand parks again.
@@ -2358,26 +2278,12 @@ fn is_restricted_tier_classification() {
     assert!(!is_restricted_tier(Some("X Premium+")));
     assert!(!is_restricted_tier(Some("SomeFutureTier")));
 }
-/// Workshop overlay: the local engine has no tier, so `/voice` is never in the deny list.
 #[test]
-fn voice_not_in_tier_restricted_commands() {
-    assert!(!TIER_RESTRICTED_COMMANDS.contains(&"voice"));
-}
-#[test]
-fn is_voice_tier_restricted_only_for_the_xai_provider() {
+fn is_voice_tier_restricted_tracks_tier() {
     let mut app = test_app();
     app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
-    assert!(
-        !app.is_voice_tier_restricted(),
-        "local provider: no tier gate"
-    );
-    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
-    assert!(
-        app.is_voice_tier_restricted(),
-        "xAI provider on a free tier is gated"
-    );
+    assert!(app.is_voice_tier_restricted());
     let mut app = test_app();
-    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
     let meta = xai_grok_login::AuthMeta {
         subscription_tier: Some("SuperGrok".into()),
         ..Default::default()
@@ -3298,15 +3204,15 @@ fn welcome_ctrl_d_requires_confirmation() {
 #[test]
 fn menu_action_indices_without_changelog() {
     assert!(matches!(
-        dispatch_menu_action(0, false, true, false, None),
+        dispatch_menu_action(0, false, false, None),
         InputOutcome::Action(Action::OpenNewWorktreeDialog)
     ));
     assert!(matches!(
-        dispatch_menu_action(1, false, true, false, None),
+        dispatch_menu_action(1, false, false, None),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, false, true, false, None),
+        dispatch_menu_action(2, false, false, None),
         InputOutcome::Action(Action::Quit)
     ));
 }
@@ -3314,69 +3220,46 @@ fn menu_action_indices_without_changelog() {
 fn menu_action_changelog_sits_above_quit() {
     let md = Some("# notes");
     assert!(matches!(
-        dispatch_menu_action(1, false, true, true, md),
+        dispatch_menu_action(1, false, true, md),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, false, true, true, md),
+        dispatch_menu_action(2, false, true, md),
         InputOutcome::Action(Action::ShowReleaseNotes { .. })
     ));
     assert!(matches!(
-        dispatch_menu_action(3, false, true, true, md),
+        dispatch_menu_action(3, false, true, md),
         InputOutcome::Action(Action::Quit)
     ));
 }
-/// Workshop: the release-notes row never dead-ends; without fetched markdown it opens the bundled notes.
 #[test]
-fn menu_action_release_notes_before_fetch_opens_bundled_notes() {
-    match dispatch_menu_action(2, false, true, true, None) {
-        InputOutcome::Action(Action::ShowReleaseNotes { content, .. }) => {
-            assert!(content.contains("# Workshop release notes"), "{content}");
-        }
-        other => panic!("expected the bundled release notes, got {other:?}"),
-    }
-}
-/// Workshop: with nothing to resume the Resume row is absent and the indices close up.
-#[test]
-fn menu_action_indices_without_resume() {
+fn menu_action_changelog_before_fetch_is_noop() {
     assert!(matches!(
-        dispatch_menu_action(0, false, false, true, None),
-        InputOutcome::Action(Action::OpenNewWorktreeDialog)
-    ));
-    assert!(matches!(
-        dispatch_menu_action(1, false, false, true, None),
-        InputOutcome::Action(Action::ShowReleaseNotes { .. })
-    ));
-    assert!(matches!(
-        dispatch_menu_action(2, false, false, true, None),
-        InputOutcome::Action(Action::Quit)
-    ));
-    assert!(matches!(
-        dispatch_menu_action(1, false, false, false, None),
-        InputOutcome::Action(Action::Quit)
+        dispatch_menu_action(2, false, true, None),
+        InputOutcome::Unchanged
     ));
 }
 #[test]
 fn menu_action_indices_with_import_and_changelog() {
     let md = Some("# notes");
     assert!(matches!(
-        dispatch_menu_action(0, true, true, true, md),
+        dispatch_menu_action(0, true, true, md),
         InputOutcome::Action(Action::ImportClaudeSettings)
     ));
     assert!(matches!(
-        dispatch_menu_action(1, true, true, true, md),
+        dispatch_menu_action(1, true, true, md),
         InputOutcome::Action(Action::OpenNewWorktreeDialog)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, true, true, true, md),
+        dispatch_menu_action(2, true, true, md),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(3, true, true, true, md),
+        dispatch_menu_action(3, true, true, md),
         InputOutcome::Action(Action::ShowReleaseNotes { .. })
     ));
     assert!(matches!(
-        dispatch_menu_action(4, true, true, true, md),
+        dispatch_menu_action(4, true, true, md),
         InputOutcome::Action(Action::Quit)
     ));
 }
@@ -4971,6 +4854,20 @@ fn welcome_done_n_leaves_home() {
     assert!(app.welcome_prompt.text().is_empty());
 }
 #[test]
+fn welcome_done_ctrl_p_leaves_home() {
+    for focused in [true, false] {
+        let mut app = test_app();
+        app.auth_state = AuthState::Done;
+        app.welcome_prompt_focused = focused;
+        let outcome = app.handle_input(&key_event(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert!(
+            matches!(outcome, InputOutcome::ActionThenForward(Action::LeaveHome)),
+            "focused={focused}: Ctrl+P must leave home to open the command palette, got {outcome:?}"
+        );
+        assert!(app.welcome_prompt.text().is_empty());
+    }
+}
+#[test]
 fn welcome_done_ctrl_w_opens_new_worktree_dialog() {
     let mut app = test_app();
     app.auth_state = AuthState::Done;
@@ -5359,7 +5256,6 @@ fn moved_after_press_ends_gesture_instead_of_promoting() {
         None,
         false,
         crate::app::agent_view::BannerSlotParams::none(),
-        &BundleState::default(),
         false,
         &mut Vec::new(),
         crate::app::agent_view::AppRenderParams::default(),
@@ -5406,7 +5302,6 @@ fn moved_without_button_does_not_promote_pending_scrollback_drag() {
         None,
         false,
         crate::app::agent_view::BannerSlotParams::none(),
-        &BundleState::default(),
         false,
         &mut Vec::new(),
         crate::app::agent_view::AppRenderParams::default(),
@@ -5456,7 +5351,6 @@ fn scrollback_click_still_selects_entry_on_mouse_up() {
         None,
         false,
         crate::app::agent_view::BannerSlotParams::none(),
-        &BundleState::default(),
         false,
         &mut Vec::new(),
         crate::app::agent_view::AppRenderParams::default(),
@@ -6337,7 +6231,8 @@ fn esc_on_dashboard_while_listening_stops_voice() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::DashboardDispatch,
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
@@ -6356,7 +6251,8 @@ fn esc_stops_voice_before_closing_dashboard_picker() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::DashboardDispatch,
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
     assert!(matches!(outcome, InputOutcome::Action(Action::VoiceToggle)));
@@ -6391,12 +6287,40 @@ fn esc_cancels_pending_voice_cold_start() {
     let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
     assert!(matches!(outcome, InputOutcome::Changed));
     assert!(
-        !app.voice_state.pending_cold_start(),
+        !app.voice_state.is_pending_cold_start(),
         "Esc must cancel the queued cold-start"
     );
     assert!(
         app.voice_recording_target().is_none(),
         "target dropped on cancel"
+    );
+}
+/// Esc on a stopped/uploading clip aborts it rather than falling through to the surface's Esc.
+#[test]
+fn esc_abandons_an_outstanding_clip() {
+    let mut app = test_app();
+    pin_non_vscode_registry(&mut app);
+    app.active_view = ActiveView::AgentDashboard;
+    app.dashboard = Some(crate::views::dashboard::DashboardState::new());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    app.voice_cmd_tx = Some(tx);
+    app.voice_state = VoiceState::Transcribing {
+        target: VoiceTarget::DashboardDispatch,
+        partial: Partial::None,
+    };
+    let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Changed));
+    assert_eq!(VoiceState::Idle, app.voice_state);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(xai_grok_voice::VoiceCommand::Abort)
+    ));
+    assert_eq!(
+        Some(crate::voice::RECORDING_DISCARDED_TOAST),
+        app.dashboard
+            .as_ref()
+            .and_then(|d| d.error_toast.as_deref()),
+        "the key's effect is named; nothing else on screen showed a recording in flight"
     );
 }
 /// The dictation overlay must only render on the surface that owns the bound target.
@@ -6407,7 +6331,8 @@ fn voice_overlay_bound_to_target_surface() {
     let mut app = test_app();
     app.voice_state = VoiceState::Stopping {
         target: VoiceTarget::Agent(id),
-        interim: Some("partial".into()),
+        partial: Partial::Shown("partial".into()),
+        route: Some(xai_grok_voice::VoiceRoute::Streaming),
     };
     app.active_view = ActiveView::Agent(id);
     assert!(
@@ -6430,7 +6355,8 @@ fn voice_target_on_agent_entered_from_dashboard() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     app.active_view = ActiveView::Agent(id);
     app.dashboard = Some(crate::views::dashboard::DashboardState::new());

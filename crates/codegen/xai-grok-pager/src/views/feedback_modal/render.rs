@@ -373,7 +373,7 @@ impl FeedbackModalState {
         PromptStyle {
             show_prefix: false,
             placeholder_when_focused: true,
-            placeholder_override: Some("What happened? Saved under ~/.workshop; drafts a GitHub issue"),
+            placeholder_override: Some("Tell us what happened"),
             // Chips only: the fullscreen preview overlay would paint over the modal.
             image_preview: false,
             ..PromptStyle::overlay()

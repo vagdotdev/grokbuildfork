@@ -169,6 +169,35 @@ fn filter_matches_against_key_display() {
     );
 }
 
+/// Each query word matches on its own against every field, including the long help.
+#[test]
+fn filter_finds_stash_by_natural_queries() {
+    let registry = crate::actions::ActionRegistry::defaults();
+    let entries = build_entries(&[When::PromptFocused], &registry, false);
+    let stash_row = |filtered: &[usize]| {
+        filtered.iter().any(|&i| {
+            matches!(
+                entries.get(i),
+                Some(ShortcutsHelpEntry::Hint {
+                    action_id: Some(ActionId::StashPrompt),
+                    ..
+                })
+            )
+        })
+    };
+
+    for query in ["pop stash", "stash pop", "pop a stash", "unstash"] {
+        let filtered = filter_entries(&entries, query, false, &no_collapsed());
+        assert!(stash_row(&filtered), "{query:?} must find the stash row");
+    }
+
+    let filtered = filter_entries(&entries, "stash zzz", false, &no_collapsed());
+    assert!(
+        !stash_row(&filtered),
+        "a word matching nothing must exclude the row",
+    );
+}
+
 #[test]
 fn filter_keeps_both_headers_when_both_sections_match() {
     let entries = vec![
@@ -499,51 +528,6 @@ fn build_entries_includes_history_row_in_both_modes() {
             "history row should appear in vim={vim} mode"
         );
     }
-}
-
-/// Workshop: the `//` composer shortcut for `/voice` is a display-only Input row that follows the voice gate.
-#[test]
-fn build_entries_lists_double_slash_voice_row_when_voice_is_on() {
-    let registry = ActionRegistry::defaults();
-    let voice_row = |entries: &[ShortcutsHelpEntry]| -> Option<(bool, Option<ActionId>)> {
-        entries.iter().find_map(|e| match e {
-            ShortcutsHelpEntry::Hint {
-                item,
-                dimmed,
-                action_id,
-                ..
-            } if item.custom_display == Some(crate::slash::VOICE_DOUBLE_SLASH_HINT) => {
-                Some((*dimmed, *action_id))
-            }
-            _ => None,
-        })
-    };
-    let prev = crate::app::voice_mode_enabled();
-    crate::app::set_voice_mode_enabled_for_test(true);
-    let lit = build_entries(&all_contexts(), &registry, false);
-    let dimmed = build_entries(&[When::ScrollbackFocused], &registry, false);
-    crate::app::set_voice_mode_enabled_for_test(false);
-    let off = build_entries(&all_contexts(), &registry, false);
-    crate::app::set_voice_mode_enabled_for_test(prev);
-
-    assert_eq!(voice_row(&lit), Some((false, None)), "lit on the prompt, display-only");
-    assert_eq!(voice_row(&dimmed), Some((true, None)), "dimmed off the prompt");
-    assert!(voice_row(&off).is_none(), "hidden while voice is off");
-    let label = lit.iter().find_map(|e| match e {
-        ShortcutsHelpEntry::Hint { item, .. }
-            if item.custom_display == Some(crate::slash::VOICE_DOUBLE_SLASH_HINT) =>
-        {
-            Some((item.label.to_string(), item.description.clone()))
-        }
-        _ => None,
-    });
-    assert_eq!(
-        label,
-        Some((
-            "voice".to_owned(),
-            Some("Dictation, no menu needed (same as /voice)".into())
-        ))
-    );
 }
 
 #[test]
@@ -925,8 +909,6 @@ fn initial_state_selects_first_hint_not_header() {
     let state = build_initial_picker_state(&entries);
     assert_eq!(state.selected, 1, "selected should land on first Hint");
 }
-
-// ── handle_input tests ───────────────────────────────────────
 
 fn make_key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
     crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
@@ -1706,8 +1688,6 @@ fn vim_i_enters_search_and_printables_type_afterward() {
     assert_eq!(state.query(), "j", "printables must type in active search");
 }
 
-// ── vim_mode tests ───────────────────────────────────────────
-
 #[test]
 fn vim_mode_jk_navigate_without_starting_search() {
     let _vim_mode = VimModeGuard::set(true);
@@ -1945,8 +1925,6 @@ fn build_entries_sets_action_id_on_registry_hints() {
             "undo" => item.keys.contains(&undo_key),
             "redo" => item.keys.contains(&redo_key),
             "history" => item.keys.contains(&history_key),
-            // Workshop: `//` runs /voice from the composer (typed, not a chord)
-            "voice" => item.custom_display == Some(crate::slash::VOICE_DOUBLE_SLASH_HINT),
             _ => false,
         };
         if is_pseudo {

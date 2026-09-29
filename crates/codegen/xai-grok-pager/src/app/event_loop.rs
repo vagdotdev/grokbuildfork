@@ -331,15 +331,15 @@ fn reconnect_restore_outcome(
     (all_restored, active_restored)
 }
 /// Compute the folder-trust verdict for the session cwd and seed [`AppView::trust_state`].
-/// Pager-side mirror of the agent's resolve.
-/// Reads the local store, scans for repo-local code-exec config, and runs the pure [`decide`](xai_grok_workspace::folder_trust::decide) precedence.
+/// The agent makes the same decision with `resolve_trust`.
 fn seed_trust_state(
     app: &mut AppView,
     remote: Option<&xai_grok_shell::util::config::RemoteSettings>,
 ) {
     use std::io::IsTerminal;
     use xai_grok_workspace::folder_trust::{
-        TrustOutcome, decide, decide_inputs_with_interactive, feature_enabled,
+        PromptPolicy, TrustResolution, decide_inputs_with_interactive, feature_enabled,
+        resolve_trust,
     };
     use xai_grok_workspace::trust::workspace_key;
     let feature = feature_enabled(remote);
@@ -350,9 +350,9 @@ fn seed_trust_state(
     let cwd = app.cwd.clone();
     let key = workspace_key(&cwd);
     let inputs = decide_inputs_with_interactive(&cwd, &key, std::io::stdin().is_terminal());
-    app.trust_state = match decide(feature, &inputs) {
-        TrustOutcome::Prompt => TrustState::Pending { workspace: key },
-        TrustOutcome::Trusted | TrustOutcome::Untrusted => TrustState::Done,
+    app.trust_state = match resolve_trust(feature, &inputs, PromptPolicy::MayPrompt) {
+        TrustResolution::NeedsPrompt => TrustState::Pending { workspace: key },
+        TrustResolution::Decided(_) => TrustState::Done,
     };
 }
 /// Must run before the first render, or the startup-intent block opens a session behind the gate and the first frame shows the normal welcome.
@@ -627,6 +627,9 @@ impl Presenter {
                 if force {
                     let _ = terminal.clear();
                     crate::terminal::overlay::reset_owner();
+                    for agent in app.agents.values_mut() {
+                        agent.forget_transmitted_inline_media();
+                    }
                 }
                 app.draw(terminal);
             },
@@ -765,79 +768,18 @@ fn run_pending_suspends(
     presenter: &mut Presenter,
     suspend_retry_after: &mut Option<Instant>,
     suspend_wait_reports: &mut SuspendWaitReports,
-) -> anyhow::Result<Vec<super::actions::Effect>> {
-    let mut follow_up: Vec<super::actions::Effect> = Vec::new();
+) -> anyhow::Result<()> {
     let editor_pending = app.pending_editor.is_some();
     let pager_pending = app.pending_pager_path.is_some();
-    let login_pending = app.pending_workshop_login.is_some();
     suspend_wait_reports.reset_missing(editor_pending, pager_pending);
     if !suspend_retry_ready(*suspend_retry_after, Instant::now()) {
-        return Ok(follow_up);
+        return Ok(());
     }
-    if !editor_pending && !pager_pending && !login_pending {
+    if !editor_pending && !pager_pending {
         *suspend_retry_after = None;
-        return Ok(follow_up);
+        return Ok(());
     }
     *suspend_retry_after = None;
-    // Workshop: the vendor CLI's own login owns the terminal for its duration; Workshop never
-    // captures or parses its output, and re-probes the rail when it exits.
-    if let Some((rail, argv)) = app.pending_workshop_login.take() {
-        let screen_mode = app.screen_mode;
-        let mut exit = workshop_detect::process::InteractiveExit::Failed;
-        let moved_cursor = match suspend_for_child(
-            screen_mode,
-            terminal,
-            input_paused,
-            reader_parked,
-            input_rx,
-            || {
-                // The TUI parks fd 2 on /dev/null (xai_tty_utils::redirect_native_stderr) and
-                // draws through a dup of the real terminal. An inherited stderr would swallow a
-                // vendor CLI that prints its sign-in instructions there (`codex login` prints
-                // its auth URL on stderr), so hand the child the terminal explicitly.
-                let banner = format!(
-                    "\nWorkshop: running `{}` — sign in, then this returns to Workshop.\n",
-                    argv.join(" ")
-                );
-                xai_grok_shell::util::with_locked_stderr(|stderr| {
-                    use std::io::Write as _;
-                    // Unlike `$EDITOR` / `$PAGER`, a login CLI prints plain lines and expects
-                    // the shell's screen and a visible cursor: leave the alternate screen so its
-                    // prompt is not drawn over the TUI frame (`suspend_for_child` re-enters it and
-                    // the caller's full repaint restores the cursor state).
-                    let _ = crossterm::execute!(stderr, crossterm::cursor::Show);
-                    if screen_mode.is_fullscreen() {
-                        let _ =
-                            crossterm::execute!(stderr, crossterm::terminal::LeaveAlternateScreen);
-                    }
-                    let _ = stderr.write_all(banner.as_bytes());
-                });
-                let stderr = xai_tty_utils::dup_tui_stderr()
-                    .ok()
-                    .map(std::process::Stdio::from);
-                // Ctrl+C in the terminal ends the vendor login only, never Workshop.
-                exit = workshop_detect::process::run_interactive(&argv, stderr);
-            },
-        ) {
-            Ok(moved_cursor) => moved_cursor,
-            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
-                requeue_after_suspend_timeout(&mut app.pending_workshop_login, (rail, argv));
-                let _ = defer_suspend_retry(
-                    suspend_retry_after,
-                    &mut suspend_wait_reports.editor_reported,
-                    Instant::now(),
-                );
-                return Ok(follow_up);
-            }
-            Err(error) => return Err(error.into()),
-        };
-        restore_after_child(terminal, app.screen_mode, moved_cursor);
-        follow_up.extend(dispatch::dispatch(
-            Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone { rail, exit }),
-            app,
-        ));
-        presenter.request_presentation(app, terminal, true);
-    }
     if let Some(request) = app.pending_editor.take() {
         let retry_request = request.clone();
         match crate::app::external_editor::prepare(app, request) {
@@ -879,7 +821,7 @@ fn run_pending_suspends(
                             report_suspend_wait(app, EDITOR_SUSPEND_WAIT);
                             presenter.request_presentation(app, terminal, false);
                         }
-                        return Ok(follow_up);
+                        return Ok(());
                     }
                     Err(error) => return Err(error.into()),
                 };
@@ -953,7 +895,7 @@ fn run_pending_suspends(
                     report_suspend_wait(app, TRANSCRIPT_SUSPEND_WAIT);
                     presenter.request_presentation(app, terminal, false);
                 }
-                return Ok(follow_up);
+                return Ok(());
             }
             Err(error) => return Err(error.into()),
         };
@@ -962,7 +904,7 @@ fn run_pending_suspends(
         presenter.request_presentation(app, terminal, true);
         suspend_wait_reports.pager_reported = false;
     }
-    Ok(follow_up)
+    Ok(())
 }
 /// Consume a pending in-process switch between `/minimal` and `/fullscreen`.
 /// Returns `true` when the caller must quit (exec fallback armed on `app.relaunch`).
@@ -1105,7 +1047,6 @@ pub(crate) async fn run(
     >,
     mut writer_event_rx: tokio::sync::mpsc::UnboundedReceiver<WriterEvent>,
     reader_thread: &mut ReaderThread,
-    workshop_engine_resume: Option<crate::app::workshop_sessions::EngineSession>,
 ) -> anyhow::Result<RunResult> {
     crate::unified_log::init(connection.tx.clone());
     crate::unified_log::info("pager started", None, None);
@@ -1137,7 +1078,7 @@ pub(crate) async fn run(
     let remote_permission_mode = remote_settings
         .as_ref()
         .and_then(|s| s.permission_mode.as_deref());
-    let mut launch_yolo = xai_grok_shell::util::config::effective_yolo_for_launch(
+    let launch_yolo = xai_grok_shell::util::config::effective_yolo_for_launch(
         args.yolo,
         args.permission_mode_flag.as_deref(),
         remote_permission_mode,
@@ -1160,26 +1101,11 @@ pub(crate) async fn run(
         .as_ref()
         .and_then(|root| root.get("ui").cloned());
     let cli_owns_mode = args.yolo || args.permission_mode_flag.is_some();
-    // Workshop: a mode the user chose (`permission_mode`, the legacy `approval_mode`, or
-    // `yolo = true`) is kept; a bare `yolo = false` is what any whole-config save writes as a
-    // default (the 0.2.2 updater did, on every silent update) and is not a choice.
     let toml_owns_mode = launch_effective_ui
         .as_ref()
-        .is_some_and(crate::app::workshop::explicit_permission_choice);
+        .and_then(xai_grok_shell::util::config::permission_mode_from_ui_if_set)
+        .is_some();
     app.permission_mode_from_soft_default = !cli_owns_mode && !toml_owns_mode;
-    // Workshop: nothing chose a mode (no CLI flag, no `[ui]` permission key, no remote setting),
-    // so the launch is always-approve. Plan and the asking mode stay one Shift+Tab away, and that
-    // pick persists as an explicit `[ui] permission_mode`, which wins on every later launch. A
-    // managed policy that pins bypass off still wins here too (the launch stays in the asking
-    // mode, as upstream).
-    if app.permission_mode_from_soft_default
-        && remote_permission_mode.is_none()
-        && !launch_auto
-        && launch_yolo.policy_block.is_none()
-    {
-        launch_yolo.yolo = true;
-        app.default_yolo = true;
-    }
     app.yolo_policy_block = launch_yolo.policy_block;
     if let Some(warning) = launch_yolo.blocked_warning {
         tracing::warn!("{warning}");
@@ -1348,48 +1274,32 @@ pub(crate) async fn run(
             "auto-triggering login at startup"
         );
     }
-    // Workshop: Engine/Adapter connections are not shell models; restore the one this home last
-    // activated so a restart lands on the same runtime (`OpenCode · Big Pickle`, `Claude · …`).
-    app.workshop_connection = crate::app::workshop::load_active_connection();
-    // Workshop: the first launch of a version the silent updater installed says so once.
-    if !xai_grok_version::IS_DEV_BUILD {
-        app.workshop_updated_to = crate::app::workshop_update::note_launch(
-            &xai_dirs::grok_home(),
-            xai_grok_version::VERSION,
-        );
-    }
-    // Workshop: `--resume ses_…` / `-c` on an engine conversation (resolved by `app::run`, which
-    // kept the shell on a new session) is replayed into the first agent shown.
-    app.workshop_engine_resume = workshop_engine_resume;
     let mut post_render_effects = if needs_interactive_login {
-        // Workshop: an empty method list is the default cold start (no session-login provider,
-        // no key, no cached session). Nothing connected yet → first run: land in the composer with
-        // the OpenCode engine's default free model active, no picker, no network. Otherwise (a
-        // configured model whose credential is unavailable) open the picker, never a browser.
         if connection.auth_methods.is_empty() {
-            app.auth_state = super::app_view::AuthState::Pending { error: None };
-            if crate::app::workshop::is_first_run() {
-                dispatch::dispatch(Action::WorkshopFirstRun, &mut app)
-            } else {
-                dispatch::dispatch(Action::Login, &mut app)
-            }
+            app.auth_state = super::app_view::AuthState::Pending {
+                error: Some(
+                    xai_grok_shell::agent::auth_method::PREFERRED_API_KEY_UNAVAILABLE.to_string(),
+                ),
+            };
+            vec![]
         } else {
             dispatch::dispatch(Action::Login, &mut app)
         }
     } else {
-        // Workshop: a connection is already active (a returning launch), so the model lists may
-        // be refreshed from their live sources in the background — never on a first run or while
-        // a credential is still missing, which stay hermetic until the user acts.
-        vec![super::actions::Effect::WorkshopRefreshCatalogs {
-            force: false,
-            engine: None,
-        }]
+        vec![]
     };
     app.has_external_auth_provider =
         crate::slash::commands::usage::detect_external_auth_provider(&app.auth_methods);
     if let Some(meta) = connection.auth_meta.as_ref() {
         match serde_json::from_value::<xai_grok_login::AuthMeta>(meta.clone()) {
-            Ok(auth_meta) => app.apply_auth_meta(&auth_meta),
+            Ok(auth_meta) => {
+                app.apply_auth_meta(&auth_meta);
+                if app.needs_team_capability_hydration() {
+                    post_render_effects.push(Effect::HydrateTeamCapability {
+                        identity: app.auth_identity(),
+                    });
+                }
+            }
             Err(e) => tracing::warn!("failed to deserialize auth_meta: {e}"),
         }
     } else {
@@ -1425,26 +1335,26 @@ pub(crate) async fn run(
     let requirements = xai_grok_shell::config::load_merged_requirements();
     let user_config = xai_grok_shell::config::load_from_disk().ok();
     let managed_config = xai_grok_shell::config::load_managed_config().ok();
-    let effective_config = {
+    let config_layers = {
         let _t = xai_grok_telemetry::instrumentation::timer("startup.app_init.effective_config");
-        match xai_grok_shell::config::load_effective_config() {
-            Ok(raw) => Some(raw),
-            Err(e) => {
+        xai_grok_shell::config::load_effective_config_with_layers()
+            .inspect_err(|e| {
                 tracing::debug!(error = %e, "failed to load effective config, using partial layers");
-                None
-            }
-        }
+            })
+            .ok()
     };
-    let compat = xai_grok_shell::agent::config::resolve_compat_sessions_from_raw(
-        effective_config.as_ref().ok_or(()),
+    let effective_config = config_layers.as_ref().map(|loaded| &loaded.effective);
+    let compat = xai_grok_config::compat::resolve_compat_sessions(
+        effective_config,
+        &xai_grok_config::compat::CompatEnv::from_process(),
         remote_settings.as_ref(),
     );
     app.foreign_session_compat = xai_grok_foreign_sessions::EnabledForeignSessionSources {
-        claude: compat.claude.sessions,
-        codex: compat.codex.sessions,
-        cursor: compat.cursor.sessions,
+        claude: compat.claude,
+        codex: compat.codex,
+        cursor: compat.cursor,
     };
-    if let Some(ref raw) = effective_config {
+    if let Some(raw) = effective_config {
         app.notification_service = crate::notifications::NotificationService::new(
             crate::notifications::load_notification_config(raw),
             app.escape_writer.clone(),
@@ -1459,18 +1369,15 @@ pub(crate) async fn run(
     }
     app.voice_config.client_identifier = crate::client_identity::HEADLESS_CLIENT_TYPE.to_string();
     app.voice_config.user_agent = crate::client_identity::client_user_agent();
-    // Workshop: on a returning launch voice gets ready in the background half a minute in (a
-    // first run waits for its first reply, see `handle_workshop_turn_msg`).
-    if !needs_interactive_login {
-        post_render_effects.extend(crate::app::workshop::maybe_start_voice_prefetch(
-            &mut app,
-            std::time::Duration::from_secs(30),
-        ));
-    }
     app.zdr_access_enabled = xai_grok_shell::util::config::resolve_zdr_access_enabled(
         requirements.as_ref(),
         user_config.as_ref(),
         managed_config.as_ref(),
+        remote_settings.as_ref(),
+    );
+    app.subagent_model_inheritance = crate::settings::FeatureOverrideState::from_layers(
+        xai_grok_shell::agent::config::Feature::SubagentModelInheritance,
+        config_layers.as_ref(),
         remote_settings.as_ref(),
     );
     app.subscription_watch_interval_secs = remote_settings
@@ -1544,11 +1451,11 @@ pub(crate) async fn run(
             .as_ref()
             .and_then(|s| s.slash_command_tags.as_ref());
         let empty_toml = toml::Value::Table(Default::default());
-        let tags_config = effective_config.as_ref().unwrap_or(&empty_toml);
+        let tags_config = effective_config.unwrap_or(&empty_toml);
         *app.command_tags.borrow_mut() = resolve_slash_command_tags(tags_config, remote_slash_tags);
     }
     let hints = xai_grok_shell::util::config::resolve_hints(
-        effective_config.as_ref(),
+        effective_config,
         requirements.as_ref(),
         user_config.as_ref(),
         managed_config.as_ref(),
@@ -1668,7 +1575,7 @@ pub(crate) async fn run(
     );
     app.apply_contextual_hints(resolved_hints);
     let mouse_toggle = xai_grok_shell::util::config::resolve_mouse_reporting_toggle(
-        effective_config.as_ref(),
+        effective_config,
         &app.current_ui,
     );
     app.registry = crate::actions::ActionRegistry::defaults_with_config_for(
@@ -1739,16 +1646,7 @@ pub(crate) async fn run(
     let mut acp_peek: Option<AcpClientMessage> = None;
     let (progress_tx, mut progress_rx) =
         tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
-    let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
-    // Workshop: a persistent channel for streaming Engine/Adapter turns. Submit handlers clone the
-    // sender (stored on `app`) into a detached turn task; the `select!` arm below renders its events.
-    // The sender lives as long as the loop, so the receiver never closes and the arm idles cleanly.
-    let (workshop_turn_tx, mut workshop_turn_rx) =
-        tokio::sync::mpsc::unbounded_channel::<crate::app::workshop::WorkshopTurnMsg>();
-    app.workshop_turn_tx = Some(workshop_turn_tx);
-    // Workshop: with an engine model active (a first run, or a home that last used one), the
-    // engine starts now, in the background, so the first message finds it ready.
-    maybe_warm_engine_at_launch(&mut app);
+    let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::TaggedVoiceEvent>>;
     let voice_auth_factory = connection.auth_manager.clone();
     let mut tick_interval = tick_interval;
     let mut animation_tick_at: Option<Instant> = None;
@@ -1875,16 +1773,6 @@ pub(crate) async fn run(
                 label: args.worktree.as_ref().filter(|s| !s.is_empty()).cloned(),
                 git_ref: args.worktree_ref.clone(),
             })
-        }
-        // Workshop: `--resume ses_…` / `-c` on an engine conversation opens it like a loaded
-        // session (the load path replays Workshop's record; deferred while auth is pending).
-        MaterializedStartup::NewAuto if app.workshop_engine_resume.is_some() => {
-            let id = app
-                .workshop_engine_resume
-                .as_ref()
-                .map(|s| s.id.clone())
-                .unwrap_or_default();
-            Some(Action::LoadSession(id, None, false))
         }
         MaterializedStartup::NewAuto => None,
     };
@@ -2019,7 +1907,7 @@ pub(crate) async fn run(
         if process_effects(workspace_effects, &mut tasks, &mut app, &progress_tx) {
             break;
         }
-        match run_pending_suspends(
+        if let Err(e) = run_pending_suspends(
             &mut app,
             terminal,
             &input_paused,
@@ -2029,16 +1917,9 @@ pub(crate) async fn run(
             &mut suspend_retry_after,
             &mut suspend_wait_reports,
         ) {
-            Ok(follow_up) => {
-                if process_effects(follow_up, &mut tasks, &mut app, &progress_tx) {
-                    break;
-                }
-            }
-            Err(e) => {
-                app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
-                flush_pending_stall(&mut stall_rollup);
-                return Err(e);
-            }
+            app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
+            flush_pending_stall(&mut stall_rollup);
+            return Err(e);
         }
         if run_pending_mode_switch(
             &mut app,
@@ -2055,35 +1936,19 @@ pub(crate) async fn run(
         ) {
             break;
         }
-        // Workshop: a default install ships no voice helper or model; they arrive in the
-        // background. A press before both are here says how far along that is (and asks for the
-        // setup if it is not running) instead of starting a pipeline that would fail.
-        if matches!(app.voice_state, VoiceState::ColdStart { .. })
-            && app.voice_cmd_tx.is_none()
-            && app.voice_config.provider == xai_grok_voice::VoiceProvider::Local
-            && let Some((line, setup)) = crate::app::workshop::voice_getting_ready(&mut app)
-        {
-            app.voice_state = VoiceState::Idle;
-            app.voice_ui_active = false;
-            app.show_toast(&line);
-            if process_effects(setup, &mut tasks, &mut app, &progress_tx) {
-                break;
-            }
-            presenter.request_presentation(&mut app, terminal, false);
-        }
         if let VoiceState::ColdStart { hold, target } = app.voice_state {
             if app.voice_cmd_tx.is_none() && app.voice_can_start_pipeline() {
-                let voice_auth = crate::voice::build_voice_auth(voice_auth_factory.clone());
+                let stt_routes = crate::voice::build_stt_routes(voice_auth_factory.clone());
+                app.voice_auth = Some(stt_routes.auth.clone());
                 let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(32);
                 let (event_tx, event_rx) = tokio::sync::mpsc::channel(128);
                 let voice_config = app.voice_config.clone();
                 tokio::spawn(xai_grok_voice::run_voice_pipeline(
                     voice_config,
-                    voice_auth.clone(),
+                    stt_routes,
                     cmd_rx,
                     event_tx,
                 ));
-                app.voice_auth = Some(voice_auth);
                 app.voice_cmd_tx = Some(cmd_tx);
                 voice_rx = Some(event_rx);
                 tracing::info!("voice pipeline started (/voice or Ctrl+Space)");
@@ -2093,19 +1958,20 @@ pub(crate) async fn run(
                 ) {
                     app.voice_begin_recording(target, hold);
                 } else {
-                    app.voice_state = VoiceState::Idle;
+                    app.voice_reset();
                     app.voice_ui_active = false;
                 }
             } else if app.voice_cmd_tx.is_none() {
-                app.voice_state = VoiceState::Idle;
+                app.voice_reset();
                 app.voice_ui_active = false;
                 app.show_toast("Voice could not start. Restart Grok.");
             } else {
-                app.voice_state = VoiceState::Idle;
+                app.voice_reset();
             }
             presenter.request_presentation(&mut app, terminal, false);
         }
         app.enforce_voice_session_bound();
+        app.voice_expire_outstanding_clip(std::time::Instant::now());
         let want_gboom_keyboard = app.gboom_active();
         if want_gboom_keyboard {
             if !gboom_keyboard_pushed {
@@ -2319,8 +2185,85 @@ pub(crate) async fn run(
                 );
             }
 
-            // Biased order: cancellation/quit, writer acks/failures, blocked-writer report, ACP, task/progress results, updates, input, and render/poll timers
-            // All of them precede the deliberately-last voice STT arm (see its note below)
+            // These self-limiting timers sit above ACP: during heavy streaming acp_rx is ready on
+            // nearly every `biased` pass and starves everything below it
+
+            // Gated: an overdue gap tick must not end the scroll stream while a wheel event waits
+            _ = scroll_tick, if input_rx.is_empty() => {
+                if app.tick_scroll() {
+                    presenter.request(false);
+                }
+                // Scroll dispatch can start work that animates (e.g. viewport state)
+                schedule_tick(&mut animation_tick_at, &app, tick_interval);
+            }
+
+            _ = deferred_draw => {
+                presenter.draw_scheduled_at = None;
+                presenter.request(false);
+            }
+
+            _ = animation_tick => {
+                animation_tick_at = None;
+                // Lost-cancel recovery
+                if let Some(resends) = dispatch::reconcile_overdue_cancels(&mut app)
+                    && process_effects(resends, &mut tasks, &mut app, &progress_tx)
+                {
+                    break;
+                }
+
+                // Unacknowledged-prompt recovery
+                if let Some(effs) =
+                    dispatch::reconcile_overdue_prompt_acks(&mut app, &ack_deadlines)
+                {
+                    if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
+                        break;
+                    }
+                    presenter.request(false);
+                }
+
+                // Lost-response recovery
+                let reconciled = dispatch::reconcile_overdue_turn_ends(&mut app);
+                // The reconcile queues image notices without dispatching an action
+                let notice_shown = app.flush_image_notices_if_root();
+                if let Some(effs) = reconciled {
+                    if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
+                        break;
+                    }
+                    presenter.request(false);
+                } else {
+                    let ticked = app.tick();
+                    if ticked || notice_shown {
+                        presenter.request(false);
+                    }
+                }
+
+                schedule_tick(&mut animation_tick_at, &app, tick_interval);
+            }
+
+            // Gated: an overdue deadline must not paint an intermediate size while a resize event waits
+            _ = resize_debounce, if input_rx.is_empty() => {
+                resize_debounce_at = None;
+                presenter.request(false);
+                schedule_tick(&mut animation_tick_at, &app, tick_interval);
+            }
+
+            _ = status_line_refresh => {
+                status_line_refresh_at = None;
+                // This queues an effect in `pending_effects` for the drain below
+                app.note_status_line_refresh_due();
+                schedule_tick(&mut animation_tick_at, &app, tick_interval);
+                if app.status_line.take_changed() {
+                    presenter.request(false);
+                }
+                // The interval restarts at fire time; `status_line_tick_demand` stops a slow script
+                // from stacking runs behind the timer
+                if let Some(interval) = status_line_refresh_interval {
+                    status_line_refresh_at = Some(Instant::now() + interval);
+                }
+            }
+
+            // Biased order: cancel/quit, writer acks/failures, blocked-writer report, timers, ACP,
+            // task/progress results, updates, input, slow polls, and the deliberately-last voice STT arm
 
             // Without the gate, buffered wheel/key events sat in input_rx until the stream went quiet
             // Gating, not reordering: moving input above ACP would flip the starvation direction (streaming redraws starving behind held keys)
@@ -2464,7 +2407,6 @@ pub(crate) async fn run(
             maybe_ev = input_rx.recv() => {
                 // `None` means the dedicated terminal reader thread has ended.
                 let Some(ev) = maybe_ev else { break };
-                let typed_char = typed_character(&ev.event);
                 let handled_at = std::time::Instant::now();
                 let waited =
                     super::event_loop_stall::input_wait(ev.arrived_at, handled_at, loop_entry);
@@ -2481,9 +2423,6 @@ pub(crate) async fn run(
                 }
                 if result.should_quit {
                     break;
-                }
-                if typed_char {
-                    maybe_warm_engine_on_first_message_keystroke(&mut app);
                 }
                 if !app.pending_effects.is_empty() {
                     let effs = std::mem::take(&mut app.pending_effects);
@@ -2527,71 +2466,9 @@ pub(crate) async fn run(
 
             _ = stall_flush => {}
 
-            // Debounced resize: draw once the terminal size has stabilized.
-            _ = resize_debounce => {
-                resize_debounce_at = None;
-                presenter.request(false);
-                schedule_tick(&mut animation_tick_at, &app, tick_interval);
-            }
-
-            // Deferred draw: fires when an ACP-triggered draw was throttled.
-            _ = deferred_draw => {
-                presenter.draw_scheduled_at = None;
-                presenter.request(false);
-            }
-
             // Only opens the gate; the next loop-top attempt owns the blocking handoff so no select arm performs it inline
             _ = suspend_retry => {
                 suspend_retry_after = None;
-            }
-
-            // Scroll clock: flush residual wheel/trackpad lines and detect the 80ms stream gap
-            // Runs on the 16ms redraw cadence, not the slower animation fps
-            // The next deadline is re-derived at loop top from the post-tick scroll state
-            _ = scroll_tick => {
-                if app.tick_scroll() {
-                    presenter.request(false);
-                }
-                // Scroll dispatch can start work that animates (e.g. viewport state), so keep the animation arm in sync too.
-                schedule_tick(&mut animation_tick_at, &app, tick_interval);
-            }
-
-            _ = animation_tick => {
-                animation_tick_at = None;
-                // Lost-cancel recovery: re-send cancels for panes still cancelling past the grace (`dispatch::reconcile_overdue_cancels`)
-                // `needs_animation()` keeps ticks alive while either recovery is armed, so these checks cannot be starved
-                if let Some(resends) = dispatch::reconcile_overdue_cancels(&mut app)
-                    && process_effects(resends, &mut tasks, &mut app, &progress_tx)
-                {
-                    break;
-                }
-                // Unacknowledged-prompt recovery (see `dispatch::reconcile_overdue_prompt_acks`)
-                if let Some(effs) =
-                    dispatch::reconcile_overdue_prompt_acks(&mut app, &ack_deadlines)
-                {
-                    if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
-                        break;
-                    }
-                    presenter.request(false);
-                }
-                // Lost-response recovery (see `dispatch::reconcile_overdue_turn_ends`)
-                // Finish any turn whose `prompt_complete` broadcast outlived the grace window without its `session/prompt` RPC response arriving
-                let reconciled = dispatch::reconcile_overdue_turn_ends(&mut app);
-                // The reconcile drains queues outside any dispatched action; its image notices show now.
-                let notice_shown = app.flush_image_notices_if_root();
-                if let Some(effs) = reconciled {
-                    if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
-                        break;
-                    }
-                    presenter.request(false);
-                } else {
-                    let ticked = app.tick();
-                    if ticked || notice_shown {
-                        presenter.request(false);
-                    }
-                }
-                // Keep ticking as long as there are running animations or pending actions waiting to expire
-                schedule_tick(&mut animation_tick_at, &app, tick_interval);
             }
 
             _ = billing_poll => {
@@ -2619,22 +2496,6 @@ pub(crate) async fn run(
                 }
                 if !app.has_access() {
                     gate_poll_at = Some(Instant::now() + GATE_POLL_INTERVAL);
-                }
-            }
-
-            _ = status_line_refresh => {
-                status_line_refresh_at = None;
-                // Lands in `pending_effects`, drained below like every arm's
-                app.note_status_line_refresh_due();
-                // A run is owed; `status_line_tick_demand` owns the routing
-                schedule_tick(&mut animation_tick_at, &app, tick_interval);
-                if app.status_line.take_changed() {
-                    presenter.request(false);
-                }
-                // Re-armed at fire time, so the cadence is independent of how long a run takes
-                // The owed-run rule above is what keeps a slow script from stacking runs behind the timer
-                if let Some(interval) = status_line_refresh_interval {
-                    status_line_refresh_at = Some(Instant::now() + interval);
                 }
             }
 
@@ -3039,23 +2900,6 @@ pub(crate) async fn run(
                 presenter.request(false);
             }
 
-            // Workshop: stream one Engine/Adapter turn's events into the active agent's scrollback.
-            // Serviced only when nothing else is pending, so it never starves ACP, input, or timers.
-            // Placed before the ACP-independent voice arm; the ACP path is untouched by all of this.
-            Some(msg) = workshop_turn_rx.recv() => {
-                let (redraw, effects) = handle_workshop_turn_msg(&mut app, msg);
-                if process_effects(effects, &mut tasks, &mut app, &progress_tx) {
-                    return Ok(finish_run_with_stall_flush(&mut app, &mut stall_rollup));
-                }
-                if redraw {
-                    schedule_tick(&mut animation_tick_at, &app, tick_interval);
-                    let now = Instant::now();
-                    if presenter.request_throttled(now, min_draw_interval) {
-                        app.update_notifications();
-                    }
-                }
-            }
-
             // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
             // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
             // Voice is only serviced when nothing else is pending
@@ -3067,7 +2911,7 @@ pub(crate) async fn run(
             } => {
                 match ev {
                     Some(ev) => {
-                        let needs_draw = crate::voice::handle_voice_event(&mut app, ev);
+                        let needs_draw = crate::voice::handle_tagged_voice_event(&mut app, ev);
                         if needs_draw {
                             schedule_tick(&mut animation_tick_at, &app, tick_interval);
                             let now = Instant::now();
@@ -3267,9 +3111,6 @@ fn finish_run(app: &mut AppView) -> RunResult {
     app.abandon_startup();
     let exit_info = app.active_agent().and_then(|agent| {
         let sid = agent.session.session_id.as_ref()?;
-        // Workshop: name the id that resumes what was actually said — the engine conversation
-        // for an Engine connection — and print no hint for a session nothing was said in.
-        let sid = crate::app::workshop_sessions::exit_resume_id(app, sid.0.as_ref())?;
         let summary = if app.screen_mode.is_fullscreen() {
             use crate::views::session_title;
             let last_prompt = session_title::last_user_prompt_line(agent);
@@ -3283,7 +3124,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
             None
         };
         Some(super::ExitInfo {
-            session_id: sid,
+            session_id: sid.0.to_string(),
             minimal: app.screen_mode.is_minimal(),
             summary,
         })
@@ -3317,9 +3158,7 @@ struct RoutedInputEvent {
     is_startup_replay: bool,
 }
 fn tty_suspend_armed(app: &AppView) -> bool {
-    app.pending_editor.is_some()
-        || app.pending_pager_path.is_some()
-        || app.pending_workshop_login.is_some()
+    app.pending_editor.is_some() || app.pending_pager_path.is_some()
 }
 fn normalize_input_event(
     timed: TimedInputEvent,
@@ -3475,7 +3314,7 @@ async fn drain_and_process(
             && is_voice_chord(ke)
             && !app.voice_hold_owned()
             && !app.voice_listening()
-            && !app.voice_state.pending_cold_start()
+            && !app.voice_state.is_pending_cold_start()
             && active_feedback_modal_open(app)
         {
             return false;
@@ -4110,618 +3949,6 @@ pub(crate) fn dispatch_then_forward(
     effects
 }
 /// Spawn effects into the task set. Returns `true` if the app should quit.
-/// Render one streamed Workshop turn message (OpenCode engine / vendor CLI adapter) into the active
-/// agent's scrollback. Returns whether a redraw is warranted plus any effects to run (the Kilo
-/// fallback activation). Mirrors the ACP renderer's block vocabulary (`agent_message_streaming` +
-/// `push_chunk_to_agent`, `tool_call`, `system`) but is entirely separate from the ACP path, which
-/// only runs for `Shell` (Direct/Local) connections.
-fn handle_workshop_turn_msg(
-    app: &mut AppView,
-    msg: crate::app::workshop::WorkshopTurnMsg,
-) -> (bool, Vec<super::actions::Effect>) {
-    use crate::app::workshop::WorkshopTurnMsg as M;
-    use crate::scrollback::block::RenderBlock;
-    use crate::scrollback::blocks::SessionEvent;
-
-    // The engine warm-up reports before any turn (and any agent) exists. Its start refreshed the
-    // live catalog: a picked model OpenCode no longer offers is routed to the default right here,
-    // with one plain line, before the first message.
-    if let M::EngineWarm { engine } = msg {
-        app.workshop_engine = Some(engine);
-        let effects = crate::app::workshop::apply_retired_pick(
-            app,
-            &crate::app::workshop::cached_engine_models(),
-            &[],
-        );
-        return (!effects.is_empty(), effects);
-    }
-    // A turn found its picked model gone from the live catalog and runs on the default instead.
-    if let M::ModelRetired {
-        retired,
-        replacement,
-    } = msg
-    {
-        let line = crate::app::workshop::retired_line(&retired, &replacement.display());
-        let conn = crate::app::workshop::WorkshopConnection::Engine { model: replacement };
-        let effects = crate::app::workshop::apply_fallback(app, conn, line);
-        return (true, effects);
-    }
-    // `sudo` in one of the engine's commands wants the user's password: one masked prompt,
-    // titled with the command that is running (the turn's shell tool) or sudo's own words.
-    if let M::PasswordAsk { prompt, reply } = msg {
-        let command = app
-            .workshop_turn_tool_inputs
-            .values()
-            .filter(|(name, _)| name == "bash")
-            .filter_map(|(_, input)| input.get("command").and_then(|c| c.as_str()))
-            .last()
-            .map(crate::app::workshop::scrub_scratch_paths);
-        let title = crate::app::workshop_askpass::title_for(command.as_deref(), &prompt);
-        if let Some(previous) = app.workshop_password_ask.take() {
-            previous.answer(false);
-        }
-        app.workshop_password_ask = Some(crate::app::workshop_askpass::PendingPassword::new(
-            title, reply,
-        ));
-        return (true, vec![]);
-    }
-    let Some(agent_id) = app.workshop_turn_agent else {
-        return (false, vec![]);
-    };
-    // A stall ends the turn on a failure line or the fallback resend, never on `Worked for …`.
-    if matches!(
-        msg,
-        M::Error(_) | M::EngineUnavailable { .. } | M::Stalled { .. }
-    ) {
-        app.workshop_turn_errored = true;
-    }
-    // Reasoning is its own (collapsed) block: the first answer text, tool call, or the end of
-    // the turn closes it, so thinking is never printed as part of the answer.
-    let keeps_thinking_open = match &msg {
-        M::Thinking(_) | M::Usage(_) | M::Progress(_) | M::PermissionDecided { .. } => true,
-        M::Delta(text) => text.trim().is_empty(),
-        _ => false,
-    };
-    if !keeps_thinking_open
-        && let Some(id) = app.workshop_turn_thinking_entry.take()
-        && let Some(agent) = app.agents.get_mut(&agent_id)
-    {
-        agent.scrollback.finish_running(id);
-    }
-    if let M::EngineUnavailable { reason, text } = msg {
-        // The resent turn runs on the shell fallback, whose clock starts now; remember when the
-        // user's original turn started so its `Worked for …` counts from the prompt, not the
-        // fallback (its `PromptResponse` consumes this).
-        app.workshop_fallback_prompt_at = app
-            .agents
-            .get(&agent_id)
-            .and_then(|a| a.workshop_turn_started_at);
-        let effects = dispatch::dispatch(
-            Action::WorkshopEngineUnavailable {
-                agent_id,
-                reason,
-                text,
-            },
-            app,
-        );
-        return (true, effects);
-    }
-    if let M::Stalled {
-        model,
-        text,
-        engine,
-    } = msg
-    {
-        // A model that stopped mid-answer: an engine turn is resent through the pool fallback
-        // (the same seam a failed bring-up uses); with no pool to fall back to — or on a CLI
-        // rail — the user gets one plain line and Enter retries.
-        let reason = format!("{model} stopped responding");
-        if engine && crate::app::workshop::kilo_fallback_model().is_some() {
-            // As with EngineUnavailable: the resent turn's `Worked for …` counts from the user's
-            // prompt, not from the fallback that follows the stall.
-            app.workshop_fallback_prompt_at = app
-                .agents
-                .get(&agent_id)
-                .and_then(|a| a.workshop_turn_started_at);
-            let effects = dispatch::dispatch(
-                Action::WorkshopEngineUnavailable {
-                    agent_id,
-                    reason,
-                    text,
-                },
-                app,
-            );
-            return (true, effects);
-        }
-        if let Some(agent) = app.agents.get_mut(&agent_id) {
-            agent
-                .scrollback
-                .push_block(RenderBlock::system_error(crate::app::workshop::stall_line(&model)));
-            agent.workshop_retry_prompt = Some(text);
-        }
-        return (true, vec![]);
-    }
-    let redraw = match msg {
-        // Both are handled before the turn's agent is looked up.
-        M::EngineWarm { .. } | M::ModelRetired { .. } => false,
-        M::Progress(text) => {
-            // The bring-up's phase for the turn-status row: the plain wait for the model, or the
-            // first-time download as a described step (`First-time setup, 12 MB downloaded…`,
-            // one phase whose byte count refines its description). A tool call underway keeps
-            // its own activity.
-            if app.workshop_turn_running.is_empty() {
-                let activity = if text == crate::app::workshop::THINKING {
-                    crate::acp::tracker::TurnActivity::Waiting(
-                        crate::acp::tracker::WaitingReason::Model,
-                    )
-                } else {
-                    crate::acp::tracker::TurnActivity::ToolRunning {
-                        title: crate::app::workshop::FIRST_TIME_SETUP.to_owned(),
-                        description: Some(text),
-                    }
-                };
-                app.set_workshop_turn_activity(activity);
-            }
-            true
-        }
-        M::QuestionAsk { request, reply } => {
-            // OpenCode's `question` tool opens Grok Build's own question view; the answers (or the
-            // user's Esc, a decline) go back to the engine, which continues the turn with them.
-            use crate::views::question_view::QuestionViewState;
-            use xai_grok_tools::implementations::grok_build::ask_user_question::{
-                AskUserQuestionExtResponse, AskUserQuestionMode,
-            };
-            let Some(agent) = app.agents.get_mut(&agent_id) else {
-                let _ = reply.send(None);
-                return (false, vec![]);
-            };
-            let stashed = match agent.question_view.take() {
-                Some(mut open) => {
-                    open.send_ext_response(AskUserQuestionExtResponse::Cancelled);
-                    open.stashed_prompt
-                }
-                None => agent.prompt.stash(),
-            };
-            let (answer_tx, answer_rx) = tokio::sync::oneshot::channel();
-            agent.question_view = Some(QuestionViewState::with_response_tx(
-                request.call_id.clone().unwrap_or_else(|| request.id.clone()),
-                crate::app::workshop::engine_questions(&request),
-                stashed,
-                Some(answer_tx),
-                AskUserQuestionMode::Default,
-            ));
-            agent.prompt.set_text("");
-            tokio::spawn(async move {
-                let answers = match answer_rx.await {
-                    Ok(Ok(response)) => serde_json::from_str::<AskUserQuestionExtResponse>(
-                        response.0.get(),
-                    )
-                    .ok()
-                    .and_then(|r| crate::app::workshop::engine_question_answers(&request, &r)),
-                    _ => None,
-                };
-                let _ = reply.send(answers);
-            });
-            true
-        }
-        M::Answering { model } => {
-            // The composer names the model answering; the connection (the user's pick) is unchanged.
-            let label = crate::app::workshop::WorkshopConnection::Engine { model }.composer_label();
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent.workshop_model_label = label;
-            }
-            true
-        }
-        // A model the user picked in /model is kept; only a connection still on the default follows it.
-        M::EngineDefaultResolved { .. }
-            if !matches!(
-                &app.workshop_connection,
-                crate::app::workshop::WorkshopConnection::Engine { model } if model.is_default
-            ) =>
-        {
-            false
-        }
-        M::EngineDefaultResolved { model } => {
-            // OpenCode's live default replaces the pinned seed the first run activated; a picked
-            // effort level stays while the model still offers it.
-            let model = match &app.workshop_connection {
-                crate::app::workshop::WorkshopConnection::Engine { model: current } => {
-                    model.carrying_effort_from(current)
-                }
-                _ => model,
-            };
-            let conn = crate::app::workshop::WorkshopConnection::Engine { model };
-            crate::app::workshop::save_active_connection(&conn);
-            app.workshop_connection = conn;
-            crate::app::workshop::sync_agent_views(app);
-            // The shell's placeholder entry names the model too (dashboard, session list):
-            // rename it and have the shell re-read its list.
-            if crate::app::workshop::activate_placeholder_session(&app.workshop_connection).is_ok() {
-                return (true, vec![super::actions::Effect::WorkshopReloadModels]);
-            }
-            true
-        }
-        M::EngineReady { engine, session } => {
-            // Cache the engine + session so the next turn reuses this `opencode serve` and the same
-            // conversation; the conversation itself is recorded per turn (`workshop_sessions`).
-            app.workshop_engine = Some(engine);
-            app.workshop_engine_session = Some(session);
-            false
-        }
-        M::Delta(text) => {
-            // A whitespace-only part before the answer (models emit `"\n\n"` after reasoning)
-            // would open an empty bubble; wait for real text.
-            if app.workshop_turn_stream_entry.is_none() && text.trim().is_empty() {
-                return (false, vec![]);
-            }
-            crate::app::workshop_sessions::record_text(&mut app.workshop_turn_record, &text);
-            let entry = app.workshop_turn_stream_entry;
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                match entry {
-                    Some(id) => {
-                        agent.scrollback.push_chunk_to_agent(id, &text);
-                    }
-                    None => {
-                        let id = agent
-                            .scrollback
-                            .push_block(RenderBlock::agent_message_streaming());
-                        agent.scrollback.push_chunk_to_agent(id, &text);
-                        app.workshop_turn_stream_entry = Some(id);
-                    }
-                }
-            }
-            app.set_workshop_turn_activity(crate::acp::tracker::TurnActivity::Responding);
-            true
-        }
-        M::Thinking(text) => {
-            crate::app::workshop_sessions::record_thinking(&mut app.workshop_turn_record, &text);
-            // Reasoning after answer text starts a new paragraph for the answer that follows.
-            if let Some(id) = app.workshop_turn_stream_entry.take()
-                && let Some(agent) = app.agents.get_mut(&agent_id)
-            {
-                agent.scrollback.finish_running(id);
-            }
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                let id = match app.workshop_turn_thinking_entry {
-                    Some(id) => id,
-                    None => {
-                        let id = agent
-                            .scrollback
-                            .push_block(RenderBlock::thinking_streaming());
-                        agent.scrollback.set_entry_running(id, true);
-                        app.workshop_turn_thinking_entry = Some(id);
-                        id
-                    }
-                };
-                agent.scrollback.push_chunk_to_thinking(id, &text);
-            }
-            app.set_workshop_turn_activity(crate::acp::tracker::TurnActivity::Thinking);
-            true
-        }
-        M::Tool { id, name, input } => {
-            // A tool call ends the current assistant paragraph; the next delta starts a fresh block.
-            if let Some(id) = app.workshop_turn_stream_entry.take()
-                && let Some(agent) = app.agents.get_mut(&agent_id)
-            {
-                agent.scrollback.finish_running(id);
-            }
-            // A to-do update feeds the upstream task list (the Ctrl+T pane), not a scrollback row,
-            // exactly as Grok Build does — no empty `todowrite` row is ever left in the transcript.
-            if crate::app::workshop_tools::is_todo_tool(&name) {
-                if let Some(items) = crate::app::workshop_tools::todo_items_from_input(&input)
-                    && let Some(agent) = app.agents.get_mut(&agent_id)
-                {
-                    agent.todo.update_todos(items);
-                }
-                return (true, vec![]);
-            }
-            // The turn-status row reads `Run <command>` with the call's own timer while it runs,
-            // as it does for a shell turn's tool, so a long command never looks frozen.
-            let activity = crate::app::workshop_tools::turn_activity(&name, &input);
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                let entry = agent
-                    .scrollback
-                    .push_block(crate::app::workshop_tools::running_row(&name, &input));
-                agent.scrollback.set_entry_running(entry, true);
-                app.workshop_turn_tools.insert(id.clone(), entry);
-                app.workshop_turn_tool_inputs.insert(entry, (name, input));
-            }
-            app.workshop_turn_running.push((id, activity));
-            app.sync_workshop_tool_activity();
-            true
-        }
-        M::ToolResult {
-            id,
-            ok,
-            output,
-            title,
-            metadata,
-        } => {
-            // The result lands on the row that announced the call: the row becomes the pager's
-            // Edit block with the diff, or Run block with output + exit code, and stops running.
-            // The status row goes back to the wait for the model (or the newest call still running).
-            app.workshop_turn_running.retain(|(call, _)| call != &id);
-            app.sync_workshop_tool_activity();
-            let Some(entry) = app.workshop_turn_tools.remove(&id) else {
-                return (false, vec![]);
-            };
-            let Some((name, input)) = app.workshop_turn_tool_inputs.remove(&entry) else {
-                return (false, vec![]);
-            };
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                let block = crate::app::workshop_tools::finished_row(
-                    &name,
-                    &input,
-                    ok,
-                    &output,
-                    title.as_deref(),
-                    &metadata,
-                );
-                agent.scrollback.replace_tool_block(entry, block, None);
-                agent.scrollback.finish_running(entry);
-            }
-            app.workshop_turn_record
-                .push(crate::app::workshop_sessions::Item::Tool {
-                    name,
-                    input,
-                    ok,
-                    output,
-                    title,
-                    metadata,
-                });
-            true
-        }
-        M::PermissionAsk { request, reply } => {
-            use workshop_adapters::opencode_engine::PermissionReply;
-            let Some(agent) = app.agents.get_mut(&agent_id) else {
-                let _ = reply.send(PermissionReply::Reject);
-                return (false, vec![]);
-            };
-            // The mode as of *now*, not of the prompt: a user who switched to always-approve
-            // mid-turn gets the remaining asks approved.
-            if dispatch::workshop_permission_mode(agent).auto_approves() {
-                let _ = reply.send(PermissionReply::Once);
-                return (false, vec![]);
-            }
-            // One question per tool call: an out-of-folder command asks `external_directory`
-            // and then `bash`; the user answered the first, the second follows that answer.
-            if let Some(call_id) = request.call_id.as_deref()
-                && let Some(decided) = app.workshop_turn_decided_calls.get(call_id)
-            {
-                let _ = reply.send(match decided {
-                    PermissionReply::Reject => PermissionReply::Reject,
-                    _ => PermissionReply::Once,
-                });
-                return (false, vec![]);
-            }
-            // Read-only commands (`ls`, `cat`, `git status`, …) run without a prompt, as they do
-            // in Claude Code and OpenCode; anything that writes, installs or runs another program
-            // asks. The row in the transcript still shows what ran.
-            if let Some(command) = request.command()
-                && crate::app::workshop_permissions::is_read_only_command(command)
-            {
-                if let Some(call_id) = request.call_id.clone() {
-                    app.workshop_turn_decided_calls
-                        .insert(call_id, PermissionReply::Once);
-                }
-                let _ = reply.send(PermissionReply::Once);
-                return (false, vec![]);
-            }
-            let ui_tx = app.workshop_turn_tx.clone();
-            crate::app::workshop_permissions::enqueue_engine_permission(agent, request, reply, ui_tx);
-            true
-        }
-        M::PermissionDecided { call_id, decision } => {
-            app.workshop_turn_decided_calls.insert(call_id, decision);
-            false
-        }
-        M::Usage(usage) => {
-            // The engine reports the whole prompt per step (input + cached + output), which is
-            // the model's context after that step; keep the latest as the live usage.
-            let used = usage.input_tokens
-                + usage.cache_read_tokens
-                + usage.cache_write_tokens
-                + usage.output_tokens
-                + usage.reasoning_tokens;
-            if used > 0 {
-                app.workshop_context_used = Some(used);
-                crate::app::workshop::sync_agent_views(app);
-            }
-            true
-        }
-        M::FollowUp(text) => {
-            app.workshop_turn_queue.push_back(text);
-            false
-        }
-        M::Error(line) => {
-            // Red, plain, and actionable: Enter on the empty composer resends the prompt that
-            // failed (the technical cause is in the log, never on screen).
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent.scrollback.push_block(RenderBlock::system_error(line));
-                agent.workshop_retry_prompt = app.workshop_last_prompt.clone();
-            }
-            true
-        }
-        M::Notice(line) => {
-            // A plain, non-failing note (no free model can see images): the turn keeps going and
-            // its own answer still stands, so this pushes no error and arms no retry.
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent.scrollback.push_block(RenderBlock::system(line));
-            }
-            true
-        }
-        M::Done {
-            session_id,
-            cancelled,
-        } => {
-            if let Some(id) = app.workshop_turn_stream_entry.take()
-                && let Some(agent) = app.agents.get_mut(&agent_id)
-            {
-                agent.scrollback.finish_running(id);
-            }
-            if let Some(session) = &session_id
-                && let Some(agent) = app.agents.get(&agent_id)
-            {
-                let cwd = agent.session.cwd.clone();
-                match &app.workshop_connection {
-                    crate::app::workshop::WorkshopConnection::Adapter { rail, .. } => {
-                        crate::app::workshop::save_resume_id(rail.vendor().id(), &cwd, session);
-                    }
-                    crate::app::workshop::WorkshopConnection::Engine { model } => {
-                        // The engine conversation is Workshop's own record: what the resume
-                        // picker lists, what `--resume`/`-c` replay. Nothing is recorded for a
-                        // turn that produced nothing (cancelled before the model answered).
-                        let items = std::mem::take(&mut app.workshop_turn_record);
-                        if let Some(prompt) = app.workshop_turn_prompt_text.take()
-                            && !items.is_empty()
-                        {
-                            // The record is the whole session re-read and re-written (every
-                            // turn, every tool output): off the UI thread, so the end of a long
-                            // session's turn does not stall input and the frame behind it.
-                            let session = session.clone();
-                            let model_ref = model.model_ref.clone();
-                            let model_name = model.name.clone();
-                            let context_used = app.workshop_context_used;
-                            tokio::task::spawn_blocking(move || {
-                                crate::app::workshop_sessions::record_turn(
-                                    &session,
-                                    &cwd,
-                                    &model_ref,
-                                    &model_name,
-                                    &prompt,
-                                    items,
-                                    context_used,
-                                );
-                            });
-                        }
-                    }
-                    crate::app::workshop::WorkshopConnection::Shell => {}
-                }
-            }
-            app.workshop_turn_record.clear();
-            app.workshop_turn_prompt_text = None;
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent.workshop_turn_active = false;
-                // A row still "running" when the turn ends (cancelled mid-call) stops animating,
-                // and an approval prompt nobody answered is withdrawn (its reject is implied).
-                for entry in app.workshop_turn_tools.drain().map(|(_, e)| e) {
-                    agent.scrollback.finish_running(entry);
-                }
-                app.workshop_turn_tool_inputs.clear();
-                app.workshop_turn_decided_calls.clear();
-                dispatch::drain_workshop_permission_queue(agent);
-                // The turn ends the way a shell turn does: the pager's own marker (`Worked for
-                // 2m31s`, `Turn cancelled by user in 10s.`); a failed turn already showed its
-                // red failure line.
-                let elapsed = agent.workshop_turn_started_at.map(|t| t.elapsed());
-                agent.workshop_turn_activity = None;
-                agent.workshop_turn_started_at = None;
-                agent.workshop_turn_cancelling = false;
-                if cancelled {
-                    agent.scrollback.push_block(RenderBlock::session_event(
-                        SessionEvent::TurnCancelled {
-                            elapsed,
-                            cause: crate::scrollback::blocks::CancelledBy::User,
-                        },
-                    ));
-                } else if !app.workshop_turn_errored {
-                    agent.scrollback.push_block(RenderBlock::session_event(
-                        SessionEvent::TurnCompleted { elapsed },
-                    ));
-                }
-            }
-            app.workshop_turn_active = false;
-            app.workshop_turn_cancel = None;
-            app.workshop_turn_agent = None;
-            app.workshop_turn_prompt_entry = None;
-            app.workshop_turn_running.clear();
-            // A model that answered only this turn (it could see its images) hands the composer
-            // back to the picked model.
-            crate::app::workshop::sync_agent_views(app);
-            // The first reply of a first run is when voice starts getting ready in the background
-            // (no-op once started, off, or already in place).
-            let mut effects = crate::app::workshop::maybe_start_voice_prefetch(
-                app,
-                std::time::Duration::ZERO,
-            );
-            // Prompts typed during the turn go out now, one turn each, oldest first. A cancel
-            // drops them: the user stopped the conversation, not just this answer.
-            if cancelled {
-                app.workshop_turn_queue.clear();
-                return (true, effects);
-            }
-            effects.extend(dispatch::dispatch(
-                Action::WorkshopNextQueuedPrompt { agent_id },
-                app,
-            ));
-            return (true, effects);
-        }
-        // Handled above (needs the dispatcher).
-        M::EngineUnavailable { .. } | M::Stalled { .. } => false,
-        // Handled above (before any agent is needed).
-        M::PasswordAsk { .. } => false,
-    };
-    (redraw, vec![])
-}
-
-/// A plain character key press (not a Ctrl/Alt chord, not a release).
-fn typed_character(event: &Event) -> bool {
-    let Event::Key(key) = event else { return false };
-    matches!(key.code, KeyCode::Char(_))
-        && key.kind != KeyEventKind::Release
-        && !key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
-}
-
-/// Workshop: the OpenCode engine is brought up (installed on a first run, then `opencode serve`)
-/// in the background the moment the composer opens with an engine model active, so it is ready
-/// by the time the first message is sent. Nothing is drawn and nothing waits: the composer is live
-/// while the engine starts, and a message sent before it is ready joins the same start. Only the
-/// vendor's installer and the loopback server are contacted — never a model host.
-fn maybe_warm_engine_at_launch(app: &mut AppView) {
-    if !app.workshop_connection.is_engine() {
-        return;
-    }
-    spawn_engine_warm_up(app);
-}
-
-/// Workshop: the engine model was picked after launch (`/model` on a home that opened on another
-/// connection) — the first typed *message* character brings the engine up, never a slash command.
-fn maybe_warm_engine_on_first_message_keystroke(app: &mut AppView) {
-    if app.workshop_engine_warm_started || !app.workshop_connection.is_engine() {
-        return;
-    }
-    let composer = match app.active_view {
-        ActiveView::Welcome => app.welcome_prompt.text(),
-        ActiveView::Agent(id) => match app.agents.get(&id) {
-            Some(agent) => agent.prompt.text(),
-            None => return,
-        },
-        _ => return,
-    };
-    let text = composer.trim_start();
-    if text.is_empty() || text.starts_with('/') {
-        return;
-    }
-    spawn_engine_warm_up(app);
-}
-
-/// One warm-up per process: `warm_engine` on the shared engine slot, quiet (no progress lines).
-fn spawn_engine_warm_up(app: &mut AppView) {
-    if app.workshop_engine_warm_started {
-        return;
-    }
-    let Some(tx) = app.workshop_turn_tx.clone() else { return };
-    app.workshop_engine_warm_started = true;
-    let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    tokio::spawn(crate::app::workshop::warm_engine(
-        app.workshop_engine_slot.clone(),
-        workspace,
-        tx,
-    ));
-}
-
 fn process_effects(
     effs: Vec<super::actions::Effect>,
     tasks: &mut JoinSet<TaskResult>,

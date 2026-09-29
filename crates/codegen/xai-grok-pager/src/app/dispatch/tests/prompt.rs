@@ -1490,6 +1490,28 @@ fn prompt_response_resets_turn_state() {
     assert_eq!(agent_ref(&app, id).scrollback.len(), 1);
 }
 
+/// A turn that ends through its prompt response returns freed pages exactly once, counted on the dispatching thread.
+#[test]
+fn prompt_response_releases_retained_memory_once() {
+    use crate::memory_release::test_support;
+    test_support::install_counting_hook();
+
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().session.state = AgentState::TurnRunning;
+    let before = test_support::calls();
+    dispatch(
+        Action::TaskComplete(TaskResult::PromptResponse {
+            agent_id: id,
+            result: Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)),
+            http_status: None,
+            prompt_id: None,
+        }),
+        &mut app,
+    );
+    assert_eq!(test_support::calls(), before + 1);
+}
+
 /// Turn end with prompt suggestions enabled fires the `x.ai/suggestPrompt` fetch (before the billing refresh).
 /// The loaded suggestion routes back into the agent's controller by id and generation.
 #[test]
@@ -2845,7 +2867,7 @@ fn published_cycle_leave_abandons_and_blocks_approve() {
 
     let cycle = dispatch(Action::CycleMode, &mut app);
     assert!(
-        matches!(cycle.as_slice(), [Effect::SetSessionMode { .. }]),
+        matches!(cycle.first(), Some(Effect::SetSessionMode { .. })),
         "published Shift+Tab must still emit set_mode, got {cycle:?}"
     );
     let agent = agent_ref(&app, id);
@@ -3465,10 +3487,7 @@ fn switch_model_holds_prompt_until_complete() {
     let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
 
     dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     assert!(agent_ref(&app, id).session.model_switch_pending);
@@ -3483,8 +3502,7 @@ fn switch_model_holds_prompt_until_complete() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id,
-            effort: None,
+            choice: ModelChoice::new(model_id),
             result: Ok(()),
             prev_model_id: None,
         }),
@@ -3504,15 +3522,10 @@ fn slash_compact_enqueues_command() {
     let id = AgentId(0);
 
     let effects = dispatch(Action::SendPrompt("/compact".into()), &mut app);
+
     // /compact enqueues as Command and drains immediately (agent was idle).
     assert_eq!(effects.len(), 1);
-    assert!(matches!(
-        effects.first(),
-        Some(Effect::Compact {
-            user_context: None,
-            ..
-        })
-    ));
+    assert!(matches!(effects.first(), Some(Effect::Compact { .. })));
     assert!(agent_ref(&app, id).prompt.text().is_empty());
 }
 
@@ -3611,19 +3624,24 @@ fn palette_dispatch_preserves_prompt_draft() {
 }
 
 #[test]
-fn slash_compact_with_context_enqueues_command() {
+fn slash_compact_with_trailing_text_is_refused() {
     let mut app = test_app_with_agent();
+    let id = AgentId(0);
+
     let effects = dispatch(
         Action::SendPrompt("/compact focus on auth".into()),
         &mut app,
     );
-    assert_eq!(effects.len(), 1);
-    assert!(matches!(effects.first(),Some(
-        Effect::Compact {
-            user_context: Some(ctx),
-            ..
-        }) if ctx == "focus on auth"
-    ));
+
+    assert!(effects.is_empty(), "nothing runs, got {effects:?}");
+    assert_eq!(
+        agent_ref(&app, id)
+            .toast
+            .as_ref()
+            .map(|(text, _)| text.as_str()),
+        Some("/compact takes no arguments."),
+        "the send path refuses before the command runs"
+    );
 }
 
 #[test]
@@ -6202,13 +6220,7 @@ fn compact_with_images_toasts_and_drops() {
     let effects = dispatch(Action::SendPrompt(text), &mut app);
 
     assert!(
-        matches!(
-            effects.as_slice(),
-            [Effect::Compact {
-                user_context: None,
-                ..
-            }]
-        ),
+        matches!(effects.as_slice(), [Effect::Compact { .. }]),
         "the command must still run, got {effects:?}"
     );
     assert_eq!(
@@ -6707,36 +6719,4 @@ fn send_now_from_dashboard_view_still_flushes_image_notice() {
         Some("Image #1 not attached — placeholder sent as text")
     );
     assert!(toast_text(&app, AgentId(0)).is_none());
-}
-
-// gate:overlay-isolation — the Workshop adapter/engine routing must not perturb the ACP path for
-// Direct/Local (`Shell`) connections. If these fail, an overlay change leaked into upstream turn flow.
-#[test]
-fn gate_acp_path_only_diverts_for_a_live_adapter_connection() {
-    use crate::app::dispatch::prompt::routes_off_acp_path;
-    use crate::app::workshop::WorkshopConnection;
-
-    let shell = WorkshopConnection::Shell;
-    let engine = WorkshopConnection::Engine {
-        model: workshop_auth::EngineModel::big_pickle_seed(),
-    };
-    // Shell (Direct/Local) always stays on the byte-identical upstream ACP path.
-    assert!(!routes_off_acp_path(&shell, false, "hello"));
-    assert!(!routes_off_acp_path(&shell, false, "/model gpt"));
-    assert!(!routes_off_acp_path(&shell, true, "hello"));
-    // A live adapter/engine connection diverts, but only for real prompt text.
-    assert!(routes_off_acp_path(&engine, false, "hello"));
-    assert!(!routes_off_acp_path(&engine, false, "   "), "empty text stays on ACP");
-    assert!(!routes_off_acp_path(&engine, false, "/login"), "slash stays on ACP");
-    assert!(!routes_off_acp_path(&engine, true, "hello"), "literal send stays on ACP");
-}
-
-#[test]
-fn gate_shell_submit_leaves_workshop_turn_state_untouched() {
-    let mut app = test_app_with_agent();
-    assert!(app.workshop_connection.is_shell(), "default is Shell");
-    let _ = dispatch_send_prompt_inner(&mut app, "a real prompt".into(), true, false, false);
-    assert!(!app.workshop_turn_active, "Shell submit must not start a workshop turn");
-    assert!(app.workshop_turn_cancel.is_none());
-    assert!(app.workshop_turn_stream_entry.is_none());
 }

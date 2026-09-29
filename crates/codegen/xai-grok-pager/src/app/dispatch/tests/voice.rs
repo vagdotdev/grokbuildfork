@@ -41,64 +41,6 @@ fn voice_slash_submit_starts_recording_in_plan_mode() {
     );
 }
 
-/// Workshop: `// start · // stop`. Through the real input path, a second `/` on the empty composer
-/// starts recording (no `//` left behind); once a final has landed, `/` then `/` again stops it,
-/// the first slash is taken back out and the transcript stays in the composer.
-#[test]
-fn double_slash_starts_and_stops_dictation_through_the_input_path() {
-    use crate::app::app_view::InputOutcome;
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    if !xai_grok_voice::AUDIO_SUPPORTED {
-        return;
-    }
-    let mut app = test_app_with_agent();
-    let (tx, _rx) = tokio::sync::mpsc::channel(8);
-    app.voice_cmd_tx = Some(tx);
-    app.apply_voice_mode_enabled(true);
-    let id = AgentId(0);
-    app.agents
-        .get_mut(&id)
-        .unwrap()
-        .set_active_pane(crate::views::agent::ActivePane::Prompt, false);
-    let slash = || Event::Key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
-    let text = |app: &AppView| app.agents.get(&id).unwrap().prompt.text().to_owned();
-
-    let out = app.handle_input(&slash());
-    assert!(!matches!(out, InputOutcome::Action(_)), "first slash: {out:?}");
-    assert_eq!(text(&app), "/");
-    let out = app.handle_input(&slash());
-    let InputOutcome::Action(action) = out else {
-        panic!("the second slash must run /voice, got {out:?}");
-    };
-    assert!(matches!(action, Action::VoiceToggle), "got {action:?}");
-    dispatch(action, &mut app);
-    assert!(app.voice_listening(), "`//` starts recording");
-    assert_eq!(text(&app), "", "`//` never lands in the composer");
-
-    crate::voice::handle_voice_event(
-        &mut app,
-        xai_grok_voice::VoiceEvent::UtteranceFinal {
-            text: "hello there".into(),
-        },
-    );
-    assert_eq!(text(&app), "hello there");
-    let out = app.handle_input(&slash());
-    assert!(!matches!(out, InputOutcome::Action(_)), "first slash: {out:?}");
-    assert_eq!(text(&app), "hello there/", "the first slash is typed");
-    let out = app.handle_input(&slash());
-    let InputOutcome::Action(action) = out else {
-        panic!("`//` while recording must stop it, got {out:?}");
-    };
-    assert!(matches!(action, Action::VoiceToggle), "got {action:?}");
-    dispatch(action, &mut app);
-    assert!(!app.voice_listening(), "`//` again stops recording");
-    assert_eq!(
-        text(&app),
-        "hello there",
-        "the transcript stays, the slashes are gone"
-    );
-}
-
 #[test]
 fn voice_on_welcome_noop_when_startup_gated() {
     // Auth or folder trust unresolved: voice must not create a session (that would bypass the startup gate)
@@ -122,7 +64,8 @@ fn voice_final_appends_to_prompt_with_single_space() {
     let id = AgentId(0);
     app.voice_state = VoiceState::Stopping {
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let p = &mut app.agents.get_mut(&id).unwrap().prompt;
     p.set_text("hello");
@@ -146,7 +89,8 @@ fn voice_final_inserts_at_mid_text_cursor() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: Some("partial".into()),
+        partial: Partial::Shown("partial".into()),
+        route: Some(xai_grok_voice::VoiceRoute::Streaming),
     };
     let p = &mut app.agents.get_mut(&id).unwrap().prompt;
     p.set_text("hello world");
@@ -175,7 +119,8 @@ fn voice_final_inserts_at_start_of_text() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let p = &mut app.agents.get_mut(&id).unwrap().prompt;
     p.set_text("world");
@@ -190,7 +135,11 @@ fn voice_final_inserts_at_start_of_text() {
 
     let p = &app.agents.get(&id).unwrap().prompt;
     assert_eq!(p.text(), "hello world");
-    assert_eq!(p.cursor(), "hello ".len());
+    assert_eq!(
+        p.cursor(),
+        "hello".len(),
+        "caret after the words, before the added space"
+    );
 }
 
 #[test]
@@ -200,7 +149,8 @@ fn voice_final_inserts_between_words_with_spacing() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let p = &mut app.agents.get_mut(&id).unwrap().prompt;
     p.set_text("helloworld");
@@ -216,7 +166,7 @@ fn voice_final_inserts_between_words_with_spacing() {
     let p = &app.agents.get(&id).unwrap().prompt;
     // Should add spaces on both sides since neither side has whitespace
     assert_eq!(p.text(), "hello there world");
-    assert_eq!(p.cursor(), "hello there ".len());
+    assert_eq!(p.cursor(), "hello there".len());
 }
 
 #[test]
@@ -226,7 +176,8 @@ fn voice_final_inserts_after_existing_space() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let p = &mut app.agents.get_mut(&id).unwrap().prompt;
     p.set_text("hello world");
@@ -242,7 +193,7 @@ fn voice_final_inserts_after_existing_space() {
     let p = &app.agents.get(&id).unwrap().prompt;
     // Should not add leading space since cursor is after existing space
     assert_eq!(p.text(), "hello there world");
-    assert_eq!(p.cursor(), "hello there ".len());
+    assert_eq!(p.cursor(), "hello there".len());
 }
 
 #[test]
@@ -253,7 +204,8 @@ fn voice_final_replaces_select_all_without_leading_space() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let p = &mut app.agents.get_mut(&id).unwrap().prompt;
     p.set_text("old text");
@@ -284,7 +236,8 @@ fn voice_final_replaces_mid_word_selection_with_spacing() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let p = &mut app.agents.get_mut(&id).unwrap().prompt;
     p.set_text("hello world");
@@ -302,6 +255,7 @@ fn voice_final_replaces_mid_word_selection_with_spacing() {
     let p = &app.agents.get(&id).unwrap().prompt;
     // "hello " + "there" + "d" - leading space from 'o', trailing space from 'd'
     assert_eq!(p.text(), "hello there d");
+    assert_eq!(p.cursor(), "hello there".len());
 }
 
 #[test]
@@ -312,7 +266,8 @@ fn voice_final_no_selection_mid_cursor_insert_unchanged() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let p = &mut app.agents.get_mut(&id).unwrap().prompt;
     p.set_text("hello world");
@@ -335,7 +290,8 @@ fn voice_final_into_empty_prompt_has_no_leading_space() {
     let id = AgentId(0);
     app.voice_state = VoiceState::Stopping {
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     crate::voice::handle_voice_event(
         &mut app,
@@ -354,7 +310,8 @@ fn voice_final_replaces_whitespace_only_draft() {
     let id = AgentId(0);
     app.voice_state = VoiceState::Stopping {
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let p = &mut app.agents.get_mut(&id).unwrap().prompt;
     p.set_text("  \n");
@@ -374,7 +331,8 @@ fn voice_final_preserves_trailing_newline() {
     let id = AgentId(0);
     app.voice_state = VoiceState::Stopping {
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let p = &mut app.agents.get_mut(&id).unwrap().prompt;
     p.set_text("line one\n");
@@ -407,7 +365,7 @@ fn voice_ctrl_space_release_leaves_toggle_recording_running() {
     // Ctrl+Space starts a toggle recording (no hold-ownership).
     dispatch(Action::VoiceToggle, &mut app);
     assert!(app.voice_listening());
-    assert!(!app.voice_state.hold());
+    assert!(!app.voice_state.is_hold_owned());
     let _ = rx.try_recv(); // drain the PttPress
 
     // A stray Ctrl+Space release must not stop it.
@@ -422,8 +380,8 @@ fn voice_ctrl_space_release_leaves_toggle_recording_running() {
     );
 }
 
-/// A free-tier user of the opt-in xAI voice provider hitting the voice keybinding gets the SuperGrok upsell
-/// instead of a doomed voice session. The keybinding bypasses the slash registry, so this dispatcher is the enforcement point.
+/// A free-tier user hitting the voice keybinding gets the SuperGrok upsell instead of a doomed voice session.
+/// The keybinding bypasses the slash registry, so this dispatcher is the enforcement point.
 #[test]
 fn voice_keybinding_on_restricted_tier_opens_upsell() {
     if !xai_grok_voice::AUDIO_SUPPORTED {
@@ -431,8 +389,7 @@ fn voice_keybinding_on_restricted_tier_opens_upsell() {
     }
     let mut app = test_app_with_agent();
     app.voice_mode_enabled = true;
-    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
-    // A personal login without a subscription tier is free tier, so xAI voice is restricted
+    // A personal login without a subscription tier is free tier, so voice is restricted
     app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
     assert!(app.is_voice_tier_restricted());
 
@@ -448,28 +405,6 @@ fn voice_keybinding_on_restricted_tier_opens_upsell() {
     );
 }
 
-/// Workshop overlay: the default local engine has no tier; a free-tier login is not gated.
-#[test]
-fn voice_keybinding_local_provider_never_gated() {
-    if !xai_grok_voice::AUDIO_SUPPORTED {
-        return;
-    }
-    let mut app = test_app_with_agent();
-    let (tx, _rx) = tokio::sync::mpsc::channel(8);
-    app.voice_cmd_tx = Some(tx);
-    app.voice_mode_enabled = true;
-    app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
-    assert!(!app.is_voice_tier_restricted());
-
-    dispatch(Action::EnableVoiceMode, &mut app);
-
-    assert!(
-        app.agents.get(&AgentId(0)).unwrap().question_view.is_none(),
-        "no upsell for the local engine"
-    );
-    assert!(app.voice_listening(), "local voice starts on a free-tier login");
-}
-
 /// A paid-tier user's voice keybinding is not intercepted by the tier gate.
 #[test]
 fn voice_keybinding_on_paid_tier_not_gated() {
@@ -478,7 +413,6 @@ fn voice_keybinding_on_paid_tier_not_gated() {
     }
     let mut app = test_app_with_agent();
     app.voice_mode_enabled = true;
-    app.voice_config.provider = xai_grok_voice::VoiceProvider::Xai;
     let meta = xai_grok_login::AuthMeta {
         subscription_tier: Some("SuperGrok".into()),
         ..Default::default()
@@ -501,7 +435,8 @@ fn voice_interim_sets_then_error_clears_state() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(AgentId(0)),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     crate::voice::handle_voice_event(
         &mut app,
@@ -523,81 +458,6 @@ fn voice_interim_sets_then_error_clears_state() {
 }
 
 #[test]
-fn voice_interim_preview_at_mid_prompt_cursor() {
-    use crate::views::prompt_widget::{PromptStyle, VoicePromptOverlay};
-    use ratatui::style::{Color, Modifier};
-    use ratatui::{buffer::Buffer, layout::Rect};
-
-    let mut app = test_app_with_agent();
-    let id = AgentId(0);
-    app.voice_state = VoiceState::Recording {
-        hold: false,
-        target: VoiceTarget::Agent(id),
-        interim: None,
-    };
-    let p = &mut app.agents.get_mut(&id).unwrap().prompt;
-    p.set_text("hello world");
-    p.set_cursor(5); // Caret after "hello", on the space.
-
-    crate::voice::handle_voice_event(
-        &mut app,
-        xai_grok_voice::VoiceEvent::InterimTranscript {
-            text: "there".into(),
-        },
-    );
-
-    // The interim is overlay-only: it must not mutate the draft text or move the caret.
-    assert_eq!(app.voice_interim(), Some("there"));
-    {
-        let p = &app.agents.get(&id).unwrap().prompt;
-        assert_eq!(p.text(), "hello world", "interim must not mutate the draft");
-        assert_eq!(p.cursor(), 5, "interim must not move the caret");
-    }
-
-    // Render the bound prompt and assert the interim previews AT the caret (in the italic overlay
-    // style) while the text after the caret stays visible — shifted right, not overwritten.
-    let interim_text = app.voice_interim().unwrap().to_string();
-    let style = PromptStyle {
-        focused: true,
-        show_prefix: false,
-        vpad_top: 0,
-        chrome: false,
-        ..Default::default()
-    };
-    let area = Rect::new(0, 0, 40, 3);
-    let mut buf = Buffer::empty(area);
-    let overlay = VoicePromptOverlay {
-        interim: Some(interim_text.as_str()),
-        color: Color::Cyan,
-    };
-    app.agents
-        .get_mut(&id)
-        .unwrap()
-        .prompt
-        .draw(&mut buf, area, None, &style, None, Some(overlay));
-
-    let row: String = (0..area.width)
-        .filter_map(|x| buf.cell((x, 0)).map(|c| c.symbol().to_string()))
-        .collect();
-    assert_eq!(
-        row.trim_end(),
-        "hello there world",
-        "interim must insert at the caret and keep the trailing text visible"
-    );
-    // The ghost fragment carries the italic interim style; 't' of "there" sits at column 6.
-    let ghost = buf.cell((6, 0)).unwrap();
-    assert_eq!(ghost.symbol(), "t");
-    assert!(
-        ghost.style().add_modifier.contains(Modifier::ITALIC),
-        "interim preview must use the italic overlay style"
-    );
-    // The real draft after the caret keeps its normal (non-italic) style.
-    let tail = buf.cell((12, 0)).unwrap();
-    assert_eq!(tail.symbol(), "w");
-    assert!(!tail.style().add_modifier.contains(Modifier::ITALIC));
-}
-
-#[test]
 fn voice_interim_preview_replaces_active_selection() {
     // Dictating over a highlight must preview a replace of that span (same as the live insert),
     // not an insert at the caret into the selected text.
@@ -610,7 +470,8 @@ fn voice_interim_preview_replaces_active_selection() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let p = &mut app.agents.get_mut(&id).unwrap().prompt;
     p.set_text("hello world");
@@ -680,7 +541,8 @@ fn commit_interim_replaces_active_selection() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: Some("hi".into()),
+        partial: Partial::Shown("hi".into()),
+        route: Some(xai_grok_voice::VoiceRoute::Streaming),
     };
     let p = &mut app.agents.get_mut(&id).unwrap().prompt;
     p.set_text("hello world");
@@ -707,7 +569,8 @@ fn voice_error_hint_lands_in_bound_agent_scrollback() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     crate::voice::handle_voice_event(
         &mut app,
@@ -736,7 +599,8 @@ fn voice_error_hint_lands_in_bound_agent_scrollback() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let before = app.agents.get(&id).unwrap().scrollback.len();
     crate::voice::handle_voice_event(
@@ -758,7 +622,8 @@ fn voice_error_hint_dropped_for_dashboard_dispatch() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::DashboardDispatch,
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let before = app.agents.get(&AgentId(0)).unwrap().scrollback.len();
     crate::voice::handle_voice_event(
@@ -805,7 +670,8 @@ fn voice_interim_kept_on_stop_then_cleared_by_final() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: Some("partial".into()),
+        partial: Partial::Shown("partial".into()),
+        route: Some(xai_grok_voice::VoiceRoute::Streaming),
     };
 
     app.voice_stop_keeping_final();
@@ -842,7 +708,7 @@ fn voice_toggle_starts_and_stops() {
     assert!(app.voice_listening());
     assert!(matches!(
         rx.try_recv(),
-        Ok(xai_grok_voice::VoiceCommand::PttPress)
+        Ok(xai_grok_voice::VoiceCommand::PttPress { .. })
     ));
 
     dispatch(Action::VoiceToggle, &mut app);
@@ -892,7 +758,7 @@ fn voice_toggle_starts_without_voice_mode_prereq() {
     );
     assert!(matches!(
         rx.try_recv(),
-        Ok(xai_grok_voice::VoiceCommand::PttPress)
+        Ok(xai_grok_voice::VoiceCommand::PttPress { .. })
     ));
 }
 
@@ -912,12 +778,12 @@ fn voice_mode_enable_starts_recording_and_stays_on() {
     assert!(app.voice_ui_active);
     assert!(app.voice_listening(), "start begins recording");
     assert!(
-        !app.voice_state.pending_cold_start(),
+        !app.voice_state.is_pending_cold_start(),
         "pipeline already up — no re-request"
     );
     assert!(matches!(
         rx.try_recv(),
-        Ok(xai_grok_voice::VoiceCommand::PttPress)
+        Ok(xai_grok_voice::VoiceCommand::PttPress { .. })
     ));
 
     // `EnableVoiceMode` is start-only (not a toggle): running it again while already recording is idempotent, no stop, no second PttPress
@@ -942,7 +808,7 @@ fn voice_mode_on_requests_lazy_pipeline_when_missing() {
     dispatch(Action::EnableVoiceMode, &mut app);
     assert!(app.voice_ui_active);
     assert!(
-        app.voice_state.pending_cold_start(),
+        app.voice_state.is_pending_cold_start(),
         "event loop should spawn the pipeline and auto-start capture"
     );
 }
@@ -963,7 +829,7 @@ fn voice_toggle_while_spawn_pending_keeps_start_armed() {
 
     dispatch(Action::VoiceToggle, &mut app);
     assert!(
-        app.voice_state.pending_cold_start(),
+        app.voice_state.is_pending_cold_start(),
         "Ctrl+Space re-affirms the queued auto-start (does not cancel it)"
     );
     assert!(!app.voice_listening());
@@ -986,13 +852,13 @@ fn voice_toggle_preserves_pending_ctrl_space_hold_cancel() {
 
     dispatch(Action::VoiceToggle, &mut app);
     assert!(
-        app.voice_state.hold(),
+        app.voice_state.is_hold_owned(),
         "toggle must not clear the Ctrl+Space hold-ownership"
     );
 
     dispatch(Action::VoiceStop, &mut app);
     assert!(
-        !app.voice_state.pending_cold_start(),
+        !app.voice_state.is_pending_cold_start(),
         "the matching Ctrl+Space release still cancels the queued tap"
     );
 }
@@ -1006,7 +872,8 @@ fn voice_toggle_can_always_stop_even_with_flag_disabled() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(AgentId(0)),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     app.voice_mode_enabled = false;
     app.voice_ui_active = false;
@@ -1033,13 +900,14 @@ fn voice_stop_stops_and_drops_pending_cold_start() {
     app.voice_state = VoiceState::Recording {
         hold: true,
         target: VoiceTarget::Agent(AgentId(0)),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
 
     dispatch(Action::VoiceStop, &mut app);
     assert!(!app.voice_listening());
-    assert!(!app.voice_state.pending_cold_start());
-    assert!(!app.voice_state.hold());
+    assert!(!app.voice_state.is_pending_cold_start());
+    assert!(!app.voice_state.is_hold_owned());
     assert!(matches!(
         rx.try_recv(),
         Ok(xai_grok_voice::VoiceCommand::PttRelease)
@@ -1060,7 +928,7 @@ fn voice_stop_leaves_non_hold_cold_start_armed() {
 
     dispatch(Action::VoiceStop, &mut app);
     assert!(
-        app.voice_state.pending_cold_start(),
+        app.voice_state.is_pending_cold_start(),
         "a /voice cold-start must survive an unrelated Ctrl+Space release"
     );
 }
@@ -1076,7 +944,8 @@ fn voice_stt_language_change_recycles_pipeline() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(AgentId(0)),
-        interim: Some("hola".to_string()),
+        partial: Partial::Shown("hola".to_string()),
+        route: Some(xai_grok_voice::VoiceRoute::Streaming),
     };
 
     let effects = dispatch(Action::SetVoiceSttLanguage("es".to_string()), &mut app);
@@ -1200,7 +1069,8 @@ fn voice_submit_includes_interim() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: Some("world".into()),
+        partial: Partial::Shown("world".into()),
+        route: Some(xai_grok_voice::VoiceRoute::Streaming),
     };
 
     let effects = dispatch(Action::SendPrompt("hello".into()), &mut app);
@@ -1211,7 +1081,7 @@ fn voice_submit_includes_interim() {
     assert!(!app.voice_listening());
     assert!(matches!(
         rx.try_recv(),
-        Ok(xai_grok_voice::VoiceCommand::PttRelease)
+        Ok(xai_grok_voice::VoiceCommand::Abort)
     ));
 }
 
@@ -1247,7 +1117,8 @@ fn voice_submit_interim_only() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: Some("ghost only".into()),
+        partial: Partial::Shown("ghost only".into()),
+        route: Some(xai_grok_voice::VoiceRoute::Streaming),
     };
 
     let effects = dispatch(Action::SendPrompt(String::new()), &mut app);
@@ -1268,7 +1139,8 @@ fn voice_submit_follow_up_keeps_chip_literal() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: Some("dictated".into()),
+        partial: Partial::Shown("dictated".into()),
+        route: Some(xai_grok_voice::VoiceRoute::Streaming),
     };
 
     let effects = dispatch(Action::SubmitFollowUp("chip text".into()), &mut app);
@@ -1278,4 +1150,150 @@ fn voice_submit_follow_up_keeps_chip_literal() {
     assert_eq!(text, "chip text");
     assert_eq!(app.agents.get(&id).unwrap().prompt.text(), "draft dictated");
     assert!(!app.voice_listening());
+}
+
+/// Events stamped with a session other than the current one are dropped before they touch the state, with two
+/// exceptions: a `Notice` is a toast and shows regardless, and the one final of the session the press superseded
+/// while it was stopping still lands in the shared prompt (the last sentence of the previous dictation). A
+/// cancelled start is a session that never was.
+#[test]
+fn stale_events_are_dropped_except_a_notice_and_the_stopped_sessions_final() {
+    use xai_grok_voice::{TaggedVoiceEvent, VoiceEvent};
+    let mut app = test_app_with_agent();
+    app.apply_voice_mode_enabled(true);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    app.voice_cmd_tx = Some(tx);
+    let target = VoiceTarget::Agent(AgentId(0));
+    let tagged = |session, event| TaggedVoiceEvent { session, event };
+    let final_ = |text: &str| VoiceEvent::UtteranceFinal {
+        text: text.to_owned(),
+    };
+    let prompt = |app: &AppView| {
+        app.agents
+            .get(&AgentId(0))
+            .unwrap()
+            .prompt
+            .text()
+            .to_owned()
+    };
+
+    app.voice_begin_recording(target, false);
+    let first = app.voice_session;
+    app.voice_stop_keeping_final();
+    app.voice_begin_recording(target, false);
+    let current = app.voice_session;
+    while rx.try_recv().is_ok() {}
+
+    assert!(!crate::voice::handle_tagged_voice_event(
+        &mut app,
+        tagged(
+            first,
+            VoiceEvent::InterimTranscript {
+                text: "old partial".into()
+            }
+        ),
+    ));
+    assert_eq!(None, app.voice_interim());
+    assert!(crate::voice::handle_tagged_voice_event(
+        &mut app,
+        tagged(first, final_("last sentence")),
+    ));
+    assert_eq!(
+        "last sentence",
+        prompt(&app),
+        "the stopped session's final lands"
+    );
+    assert!(app.voice_listening(), "and the new session is untouched");
+    assert!(!crate::voice::handle_tagged_voice_event(
+        &mut app,
+        tagged(first, final_("again")),
+    ));
+    assert_eq!("last sentence", prompt(&app), "only one final is owed");
+    assert!(!crate::voice::handle_tagged_voice_event(
+        &mut app,
+        tagged(
+            first,
+            VoiceEvent::Error {
+                message: "old failure".into(),
+                hint: None,
+            }
+        ),
+    ));
+    assert!(app.voice_listening());
+    assert!(crate::voice::handle_tagged_voice_event(
+        &mut app,
+        tagged(
+            first,
+            VoiceEvent::Notice {
+                message: "limit".into()
+            }
+        ),
+    ));
+    assert!(app.agents.get(&AgentId(0)).unwrap().toast.is_some());
+
+    // A start released before the mic opened (the pipeline reports `CaptureCancelled`) is a session that never was
+    app.voice_stop_keeping_final();
+    assert!(crate::voice::handle_tagged_voice_event(
+        &mut app,
+        tagged(current, VoiceEvent::CaptureCancelled),
+    ));
+    assert_eq!(VoiceState::Idle, app.voice_state);
+
+    // A press cancelled before its mic opened (released during connect) leaves no session, and the previous stop's
+    // final still lands in the box it dictated into
+    app.voice_begin_recording(target, false);
+    let stopped = app.voice_session;
+    app.voice_stop_keeping_final();
+    app.voice_begin_recording(target, false);
+    let cancelled = app.voice_session;
+    app.voice_stop_keeping_final();
+    assert!(crate::voice::handle_tagged_voice_event(
+        &mut app,
+        tagged(cancelled, VoiceEvent::CaptureCancelled),
+    ));
+    assert_eq!(VoiceState::Idle, app.voice_state);
+    assert!(crate::voice::handle_tagged_voice_event(
+        &mut app,
+        tagged(stopped, final_("after the tap")),
+    ));
+    assert_eq!("last sentence after the tap", prompt(&app));
+
+    // A final of a session superseded while it was *recording* (abandoned, not stopped) is stale
+    app.voice_begin_recording(target, false);
+    let abandoned = app.voice_session;
+    app.voice_begin_recording(target, false);
+    assert!(!crate::voice::handle_tagged_voice_event(
+        &mut app,
+        tagged(abandoned, final_("dropped")),
+    ));
+    assert_eq!("last sentence after the tap", prompt(&app));
+
+    // A stopped session's final lands only in the prompt it dictated into
+    app.voice_reset();
+    app.voice_begin_recording(VoiceTarget::DashboardDispatch, false);
+    let other = app.voice_session;
+    app.voice_stop_keeping_final();
+    app.voice_begin_recording(target, false);
+    assert!(crate::voice::handle_tagged_voice_event(
+        &mut app,
+        tagged(other, final_("elsewhere")),
+    ));
+    assert_eq!("last sentence after the tap", prompt(&app));
+}
+
+/// The chord bypasses the slash registry, so a build without voice refuses it here, with its reason.
+#[test]
+fn without_voice_the_chord_is_refused() {
+    let mut app = test_app_with_agent();
+    app.distribution =
+        xai_grok_config::Distribution::withholding(&[xai_grok_config::Capability::Voice]);
+    app.apply_voice_mode_enabled(true);
+
+    assert!(dispatch(Action::VoiceToggle, &mut app).is_empty());
+
+    assert!(!app.voice_ui_active);
+    let refusal = xai_grok_config::Distribution::withholding(&[xai_grok_config::Capability::Voice])
+        .refusal(xai_grok_config::Capability::Voice)
+        .expect("a build without voice refuses it");
+    assert_eq!(refusal, last_system_text(&app, AgentId(0)));
 }

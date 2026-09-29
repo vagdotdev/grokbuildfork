@@ -48,12 +48,12 @@ pub static USER_GUIDE: &[Doc] = &[
     guide!(
         "01-getting-started.md",
         "Getting Started",
-        "One-line install, first launch on a free model, /model and /auth"
+        "Installation, first launch, and basic interaction"
     ),
     guide!(
         "02-authentication.md",
         "Authentication",
-        "Free models, subscription CLIs, API keys in the keyring, local servers"
+        "Browser login, API keys, OIDC, external auth providers"
     ),
     guide!(
         "03-keyboard-shortcuts.md",
@@ -161,6 +161,11 @@ pub static USER_GUIDE: &[Doc] = &[
         "Live multi-session roster: peek, dispatch, pin, stop, and search"
     ),
     guide!(
+        "24-monitoring-usage.md",
+        "Monitoring Usage (External OpenTelemetry)",
+        "Export usage metrics to a customer OpenTelemetry collector"
+    ),
+    guide!(
         "25-status-line.md",
         "Status Line",
         "A bottom row of live session context, or the output of your own script"
@@ -170,6 +175,14 @@ pub static USER_GUIDE: &[Doc] = &[
         "Configuration Reference",
         "Field list for config.toml, managed_config.toml, and requirements.toml"
     ),
+    // Direct include_str! so gazelle can put this file in compile_data.
+    // `guide!` hides the path inside concat!($file) and gazelle cannot see it.
+    Doc {
+        filename: "27-grok-clone.md",
+        title: "grok clone",
+        description: "Depth-1 Grove clone, --full-history, and safe deepen/switch commands",
+        content: include_str!("../docs/user-guide/27-grok-clone.md"),
+    },
 ];
 
 /// Non-user-guide reference docs. Bundled via `include_str!` so they are available at runtime without a docs path.

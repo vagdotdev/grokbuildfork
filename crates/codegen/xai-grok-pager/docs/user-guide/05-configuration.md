@@ -1,6 +1,6 @@
 # Configuration
 
-Workshop reads settings from config files, environment variables, and CLI flags. This page covers the common options. The field list for `config.toml`, `managed_config.toml`, and `requirements.toml` is [26-config-reference.md](26-config-reference.md) (extracted to `~/.workshop/docs/user-guide/` on launch).
+Grok reads settings from config files, environment variables, and CLI flags. This page covers the common options. The field list for `config.toml`, `managed_config.toml`, and `requirements.toml` is [26-config-reference.md](26-config-reference.md) (extracted to `~/.grok/docs/user-guide/` on launch).
 
 ---
 
@@ -9,35 +9,35 @@ Workshop reads settings from config files, environment variables, and CLI flags.
 Settings resolve highest-priority first:
 
 1. **CLI flags** (e.g. `--yolo`, `--model`, `--sandbox`)
-2. **Environment variables** (e.g. `WORKSHOP_OPENAI_API_KEY`, `WORKSHOP_MEMORY`)
+2. **Environment variables** (e.g. `XAI_API_KEY`, `GROK_MEMORY`)
 3. **`requirements.toml` / MDM** (org-enforced; clamps every config layer below, including the overlay)
-4. **`WORKSHOP_CONFIG` / `WORKSHOP_CONFIG_PATH` overlay** (above `config.toml` and managed, below `requirements.toml` / MDM)
-5. **config.toml** (`~/.workshop/config.toml`)
+4. **`GROK_CONFIG` / `GROK_CONFIG_PATH` overlay** (above `config.toml` and managed, below `requirements.toml` / MDM)
+5. **config.toml** (`~/.grok/config.toml`)
 6. **`managed_config.toml`** (org-deployed defaults; below `config.toml`)
 7. **Built-in defaults**
 
-Within the config-file tier, the layers merge lowest-to-highest: `managed_config.toml` → `config.toml` → `WORKSHOP_CONFIG` overlay → `requirements.toml` / MDM. So `requirements.toml` and MDM clamp **both** your `config.toml` and the overlay.
+Within the config-file tier, the layers merge lowest-to-highest: `managed_config.toml` → `config.toml` → `GROK_CONFIG` overlay → `requirements.toml` / MDM. So `requirements.toml` and MDM clamp **both** your `config.toml` and the overlay.
 
-`WORKSHOP_CONFIG` / `WORKSHOP_CONFIG_PATH` (tier 4) are config **overlays**: a merged config layer, not direct-setting environment variables like `WORKSHOP_OPENAI_API_KEY` (tier 2). They set config keys (subject to the allowlist below), so read them as part of the config-file tier rather than the env-var tier.
+`GROK_CONFIG` / `GROK_CONFIG_PATH` (tier 4) are config **overlays**: a merged config layer, not direct-setting environment variables like `XAI_API_KEY` (tier 2). They set config keys (subject to the allowlist below), so read them as part of the config-file tier rather than the env-var tier.
 
-### Injecting config with `WORKSHOP_CONFIG`
+### Injecting config with `GROK_CONFIG`
 
-A harness or ACP client that launches `workshop agent stdio` can inject settings without writing a `config.toml` or relocating `$WORKSHOP_HOME`:
+A harness or ACP client that launches `grok agent stdio` can inject settings without writing a `config.toml` or relocating `$GROK_HOME`:
 
-- **`WORKSHOP_CONFIG`**: an inline JSON object overlay.
-- **`WORKSHOP_CONFIG_PATH`**: an *additional* file overlay (not a replacement for `config.toml`), a JSON or TOML file read by its extension (`.json` → JSON, else TOML). `WORKSHOP_CONFIG` wins if both are set. An empty `WORKSHOP_CONFIG` is treated as unset, and a malformed one logs a warning and falls through to `WORKSHOP_CONFIG_PATH`.
+- **`GROK_CONFIG`**: an inline JSON object overlay.
+- **`GROK_CONFIG_PATH`**: an *additional* file overlay (not a replacement for `config.toml`), a JSON or TOML file read by its extension (`.json` → JSON, else TOML). `GROK_CONFIG` wins if both are set. An empty `GROK_CONFIG` is treated as unset, and a malformed one logs a warning and falls through to `GROK_CONFIG_PATH`.
 
-The overlay is **deep-merged** on top of your `config.toml` (it overrides only the keys it sets), placed above the user/managed layers but **below** `requirements.toml` / MDM so an enterprise pin still wins. A malformed blob is ignored with a warning. This mirrors `CODEX_CONFIG` from the `codex-acp` adapter (a JSON object merged into the session config); Workshop is ACP-native, so the overlay lives in the agent itself. It only affects settings read from the merged config, and it is **not** a permission-escalation path. The overlay is confined, fail-closed, to an **allowlist** of soft settings (`models`, `features`, a narrowed `toolset`, and a `shell_environment_policy` limited to its filter fields, which select among env names the launcher already controls and cannot inject an env value into tool subprocesses); every other table is dropped at the choke point, so the overlay cannot spawn commands, set auth policy, redirect network traffic, elevate trust, or add a discovery source. Even on the allowlisted settings, a specific set of security gates read the raw disk layers rather than the overlay. The `ConfigLayers::env_overlay` rustdoc is the canonical list of what the overlay can and cannot reach and which gates read it overlay-free; see also the [internal environment-variables reference](../internal/22-environment-variables.md). Use `WORKSHOP_DEFAULT_SELECTED_PERMISSION` for headless permission control. For example, to set the default reasoning effort:
+The overlay is **deep-merged** on top of your `config.toml` (it overrides only the keys it sets), placed above the user/managed layers but **below** `requirements.toml` / MDM so an enterprise pin still wins. A malformed blob is ignored with a warning. This mirrors `CODEX_CONFIG` from the `codex-acp` adapter (a JSON object merged into the session config); Grok is ACP-native, so the overlay lives in the agent itself. It only affects settings read from the merged config, and it is **not** a permission-escalation path. The overlay is confined, fail-closed, to an **allowlist** of soft settings (`models`, `features`, a narrowed `toolset`, and a `shell_environment_policy` limited to its filter fields, which select among env names the launcher already controls and cannot inject an env value into tool subprocesses); every other table is dropped at the choke point, so the overlay cannot spawn commands, set auth policy, redirect network traffic, elevate trust, or add a discovery source. Even on the allowlisted settings, a specific set of security gates read the raw disk layers rather than the overlay. The `ConfigLayers::env_overlay` rustdoc is the canonical list of what the overlay can and cannot reach and which gates read it overlay-free; see also the [internal environment-variables reference](../internal/22-environment-variables.md). Use `GROK_DEFAULT_SELECTED_PERMISSION` for headless permission control. For example, to set the default reasoning effort:
 
 ```bash
-WORKSHOP_CONFIG='{"models": {"default_reasoning_effort": "high"}}' workshop agent stdio
+GROK_CONFIG='{"models": {"default_reasoning_effort": "high"}}' grok agent stdio
 ```
 
 ---
 
 ## config.toml (main configuration)
 
-Location: `~/.workshop/config.toml`. If the file is missing, Workshop uses its built-in defaults, so you only need to set the values you want to override.
+Location: `~/.grok/config.toml`. If the file is missing, Grok uses its built-in defaults, so you only need to set the values you want to override.
 
 ### General settings
 
@@ -46,15 +46,15 @@ Location: `~/.workshop/config.toml`. If the file is missing, Workshop uses its b
 auto_update = true                     # check for updates on launch
 
 [agent]
-# name = "grok-build"                  # default agent on interactive `workshop` (no --plan / --agent-profile)
+# name = "grok-build"                  # default agent on interactive `grok` (no --plan / --agent-profile)
 # definition = "/path/to/agent.md"     # path wins over name if both are set
 
 [models]
-default = "my-model"                   # model used for new sessions
-web_search = "my-model"                # model used by the web_search tool
+default = "grok-4.5"                   # model used for new sessions
+web_search = "grok-4.5"                # model used by the web_search tool
 # Optional picker allowlist (globs on catalog key or model id). Empty = unrestricted.
 # A signed policy pin replaces this list (model id only) and cannot be widened from here.
-# allowed_models = ["my-model", "my-*"]
+# allowed_models = ["grok-4.5", "grok-4*"]
 
 # Defaults applied to every model; a per-model [model.<id>] value always wins.
 # See "Custom Models" for the per-model overrides and full details.
@@ -79,8 +79,7 @@ group_tool_verbs = true                # fold runs of read/search/list tool call
                                        # — and finished thoughts among them — into one row (default: true)
 collapsed_edit_blocks = false          # show edits as one-line +N/-M diffstat summaries and merge
                                        # back-to-back same-file edits into one row, expand for the
-                                       # diffs (default: false; pager.toml [scrollback.blocks.edit]
-                                       # expanded_by_default/line_summary override its fold shape)
+                                       # diffs (default: false)
 page_flip_on_send = true               # pin a just-sent prompt at the top of the viewport so the
                                        # response starts on a fresh page (default: true); set false
                                        # so sending never moves the scroll position
@@ -111,7 +110,7 @@ respect_gitignore = false              # default: false; set true to make every 
 # Per tool name. First 2×-or-more burst: discard that step and retry once.
 # Any other over-cap (including a second 2× burst) keeps the first K.
 # Defaults: image 8, video 4.
-# Env vars WORKSHOP_MAX_PARALLEL_IMAGE_GEN_CALLS / WORKSHOP_MAX_PARALLEL_VIDEO_GEN_CALLS
+# Env vars GROK_MAX_PARALLEL_IMAGE_GEN_CALLS / GROK_MAX_PARALLEL_VIDEO_GEN_CALLS
 # override these values (see environment-variables doc).
 # [tools.media_gen]
 # max_parallel_image_gen_calls = 8
@@ -120,7 +119,7 @@ respect_gitignore = false              # default: false; set true to make every 
 
 ### Default agent
 
-Interactive `workshop` uses `[agent]` in `config.toml` when you do not pass `--plan`, `--ask-user`, or `--agent-profile`:
+Interactive `grok` uses `[agent]` in `config.toml` when you do not pass `--plan`, `--ask-user`, or `--agent-profile`:
 
 ```toml
 [agent]
@@ -128,7 +127,7 @@ name = "my-custom-agent"
 # definition = "/path/to/agent.md"   # path wins over name
 ```
 
-`definition` is a markdown file with YAML frontmatter. `name` is a built-in or discovered agent (`~/.workshop/agents/`, `.grok/agents/`). If the named agent is missing, Workshop uses `WORKSHOP_AGENT`, then the built-in default. `--agent-profile`, `--plan`, and `--ask-user` still override that session. Field list: [26-config-reference.md](26-config-reference.md).
+`definition` is a markdown file with YAML frontmatter. `name` is a built-in or discovered agent (`~/.grok/agents/`, `.grok/agents/`). If the named agent is missing, Grok uses `GROK_AGENT`, then the built-in default. `--agent-profile`, `--plan`, and `--ask-user` still override that session. Field list: [26-config-reference.md](26-config-reference.md).
 
 #### Input mode
 
@@ -146,7 +145,7 @@ To switch the prompt to vim-style editing:
 simple_mode = false
 ```
 
-You can also flip it from the settings pane (`/settings` → **Disable vim input mode**); Workshop writes your choice to `[ui] simple_mode`. `simple_mode` and `vim_mode` are independent — one governs the prompt editor, the other governs scrollback navigation. See [Keyboard Shortcuts](03-keyboard-shortcuts.md) for the full binding reference.
+You can also flip it from the settings pane (`/settings` → **Disable vim input mode**); Grok writes your choice to `[ui] simple_mode`. `simple_mode` and `vim_mode` are independent — one governs the prompt editor, the other governs scrollback navigation. See [Keyboard Shortcuts](03-keyboard-shortcuts.md) for the full binding reference.
 
 #### Default selected permission
 
@@ -168,7 +167,7 @@ After you answer the first prompt the cursor turns **sticky**: each later prompt
 
 Values match case-insensitively; an unset or unrecognized value falls back to `always_allow_all_sessions`. The `allow_command_always` row is always scoped to the specific action being approved (command / tool / domain / edit-session), never a global allow-everything — that's what `always_allow_all_sessions` is for. Note the per-command "Always allow" rows appear while `[ui] remember_tool_approvals` is enabled (the default; set it to `false` to hide them). See [22-permissions-and-safety.md](22-permissions-and-safety.md).
 
-You can also override this with `WORKSHOP_DEFAULT_SELECTED_PERMISSION`, which is handy for headless or agent test runs that shouldn't mutate `config.toml`. Precedence: env var → `config.toml` → `always_allow_all_sessions`.
+You can also override this with `GROK_DEFAULT_SELECTED_PERMISSION`, which is handy for headless or agent test runs that shouldn't mutate `config.toml`. Precedence: env var → `config.toml` → `always_allow_all_sessions`.
 
 #### Vim mode
 
@@ -179,11 +178,11 @@ You can also override this with `WORKSHOP_DEFAULT_SELECTED_PERMISSION`, which is
 | `false` (default) | Bare-letter and `Shift+letter` keys (`j`/`k`, `h`/`l`, `g`/`G`, `y`/`Y`, `o`/`O`, `r`, `x`, `e`/`E`, `H`/`L`, plus `i`) are suppressed in the scrollback: pressing one focuses the prompt and types the character. Arrows, `Tab`, `Space`, `PageUp`/`PageDown`, and every `Ctrl+letter` shortcut still navigate. `Esc` is **not** a scrollback key — it never cancels a running turn (`Ctrl+C` does), and while idle follows the clear / rewind policy (see [Keyboard Shortcuts](03-keyboard-shortcuts.md#escape)). |
 | `true` | All vim-style scrollback bindings are active, exactly as listed in [Keyboard Shortcuts](03-keyboard-shortcuts.md). Esc behavior is the same in both settings. |
 
-Toggle it at runtime with `/vim-mode`, or from `/settings` → **Vim scrollback navigation**. Workshop writes the change to `[ui] vim_mode` immediately and applies it to every future pager session, including new agents and subagents in the same process. There's no per-session override — `config.toml` is the source of truth on next launch. `vim_mode` is independent of `simple_mode`.
+Toggle it at runtime with `/vim-mode`, or from `/settings` → **Vim scrollback navigation**. Grok writes the change to `[ui] vim_mode` immediately and applies it to every future pager session, including new agents and subagents in the same process. There's no per-session override — `config.toml` is the source of truth on next launch. `vim_mode` is independent of `simple_mode`.
 
 #### Screen mode
 
-`[ui] screen_mode` is the **default render mode** for plain `workshop` launches. Set it from `/settings` → **Default screen mode** (restart required) or edit `config.toml` by hand — both write the file. CLI flags (`--minimal` / `--fullscreen`) and slash commands (`/minimal` / `/fullscreen`) are session-scoped and do **not** write this key; after a slash switch, the reverse command returns you for that session only.
+`[ui] screen_mode` is the **default render mode** for plain `grok` launches. Set it from `/settings` → **Default screen mode** (restart required) or edit `config.toml` by hand — both write the file. CLI flags (`--minimal` / `--fullscreen`) and slash commands (`/minimal` / `/fullscreen`) are session-scoped and do **not** write this key; after a slash switch, the reverse command returns you for that session only.
 
 | Value | Behavior |
 |-------|----------|
@@ -217,7 +216,7 @@ invert_scroll = false
 # scroll_lines = 3
 ```
 
-Each setting also has an environment-variable override, applied on first load only (again, handy for headless / test runs): `WORKSHOP_SCROLL_SPEED`, `WORKSHOP_SCROLL_MODE`, `WORKSHOP_INVERT_SCROLL` (`1`/`true`/`0`/`false`), and `WORKSHOP_SCROLL_LINES`. Precedence: env var → `config.toml` → default. Unrecognized values fall back to the default, and out-of-range numbers clamp.
+Each setting also has an environment-variable override, applied on first load only (again, handy for headless / test runs): `GROK_SCROLL_SPEED`, `GROK_SCROLL_MODE`, `GROK_INVERT_SCROLL` (`1`/`true`/`0`/`false`), and `GROK_SCROLL_LINES`. Precedence: env var → `config.toml` → default. Unrecognized values fall back to the default, and out-of-range numbers clamp.
 
 ### Tool configuration
 
@@ -232,28 +231,38 @@ timeout_secs = 1800                    # seconds to wait when enabled (default: 
 
 [toolset.web_fetch]
 proxy_endpoint = "https://proxy.example.com"   # egress proxy URL
-allowed_domains = ["docs.rs", "crates.io"]     # override the built-in allowlist
+allowed_domains = ["docs.rs", "x.ai"]          # override the built-in allowlist
 allow_local = false                            # true = allow localhost / 127.0.0.0/8 / ::1 only
 
 [toolset.web_search]
 # Restrict web_search to these domains (max 5). Mutually exclusive with excluded_domains.
-allowed_domains = ["docs.rs", "arxiv.org"]
+allowed_domains = ["docs.x.ai", "arxiv.org"]
 # ...or block these domains instead (leave allowed_domains unset):
 # excluded_domains = ["reddit.com", "pinterest.com"]
 ```
 
-`allow_local` is off by default (SSRF fail-closed). Turn it on (or set `WORKSHOP_WEB_FETCH_ALLOW_LOCAL=1`) and `web_fetch` may reach **explicit** loopback hosts only — private, link-local, and cloud-metadata ranges stay blocked. Resolution: TOML > env > default off.
+`allow_local` is off by default (SSRF fail-closed). Turn it on (or set `GROK_WEB_FETCH_ALLOW_LOCAL=1`) and `web_fetch` may reach **explicit** loopback hosts only — private, link-local, and cloud-metadata ranges stay blocked. Resolution: TOML > env > default off.
 
 `[toolset.web_search]` constrains the `web_search` tool's domains — the allowlist/blocklist the search itself runs under (not a post-filter). `allowed_domains` and `excluded_domains` are **mutually exclusive**; if you set both, the allowlist wins and the blocklist is dropped with a warning. An empty or absent list is unbounded. This applies to both the backend-hosted search (models with server-side search) and the client-side fallback. A configured policy is **authoritative**: it cannot be bypassed by the model — the model's own per-call `allowed_domains` is ignored whenever you have set `allowed_domains` or `excluded_domains` here (so a blocklist is a real block). The model's per-call allowlist only applies when you have configured nothing. Resolution: requirements → user `config.toml` → managed → default (unset). Config is read at session start, so edit it before starting a session — changes don't apply mid-session.
 
-`[toolset.ask_user_question]` is honored across **requirements.toml**, **managed config**, and your user **`config.toml`**. Precedence: requirements → env (`WORKSHOP_ASK_USER_QUESTION_TIMEOUT_ENABLED` / `WORKSHOP_ASK_USER_QUESTION_TIMEOUT_SECS`) → user config → managed → defaults. Set `timeout_enabled = false` in your user config to disable the automatic questionnaire timeout for yourself; `timeout_secs` must be a positive integer. You can also toggle `timeout_enabled` from `/settings` → **Ask-Question timeout** (under Agent & Approval); changes apply to newly started sessions.
+`[toolset.ask_user_question]` is honored across **requirements.toml**, **managed config**, and your user **`config.toml`**. Precedence: requirements → env (`GROK_ASK_USER_QUESTION_TIMEOUT_ENABLED` / `GROK_ASK_USER_QUESTION_TIMEOUT_SECS`) → user config → managed → defaults. Set `timeout_enabled = false` in your user config to disable the automatic questionnaire timeout for yourself; `timeout_secs` must be a positive integer. You can also toggle `timeout_enabled` from `/settings` → **Ask-Question timeout** (under Agent & Approval); changes apply to newly started sessions.
 
 ### Authentication
 
-Connections are made in the app: `/model` and `/auth` (see [Authentication](02-authentication.md)).
-Keys never live in `config.toml`; a `[model.*]` entry names the environment variable that carries
-one (`env_key = "WORKSHOP_OPENAI_API_KEY"`), and the picker fills it from the OS keyring at
-runtime. The active connection is remembered in `~/.workshop/active-connection.json`.
+See [Authentication](02-authentication.md) for the full story.
+
+```toml
+[auth]
+auth_provider_command = "/usr/local/bin/my-auth-provider"
+auth_provider_label = "Acme Corp"
+auth_token_ttl = 3600
+
+[grok_com_config.oidc]
+issuer = "https://acme.okta.com"
+client_id = "0oa1b2c3d4e5f6g7h8i9"
+# scopes = ["openid", "profile", "email", "offline_access", "api:access"]
+# audience = "https://api.acme.com"
+```
 
 ### Custom models
 
@@ -266,7 +275,7 @@ base_url = "https://api.example.com/v1"  # OpenAI-compatible endpoint
 name = "Display Name"                 # shown in model picker
 description = "Model description"      # optional
 api_key = "sk-..."                    # API key for this provider
-env_key = "WORKSHOP_OPENAI_API_KEY"   # env var(s) holding the API key; string or array (first set, non-empty wins)
+env_key = "XAI_API_KEY"               # env var(s) holding the API key; string or array (first set, non-empty wins)
 temperature = 0.7                     # sampling temperature (0.0-2.0)
 top_p = 0.95                          # nucleus sampling parameter
 max_completion_tokens = 8192          # max tokens per response
@@ -275,12 +284,12 @@ query_params = { api-version = "2026-07-22" } # query params appended to every r
 env_http_headers = { "X-Tenant" = "TENANT_TOKEN" }    # request headers from env vars, resolved at client build
 ```
 
-Credential resolution: `api_key` > `env_key` > the connection's saved key. See [Custom Models](11-custom-models.md#request-query-parameters) for `query_params` and `env_http_headers`, and [Sandbox Mode](18-sandbox.md#shell-environment-policy) for `[shell_environment_policy]`, which restricts the environment variables tool subprocesses inherit.
+Credential resolution: `api_key` > `env_key` > signed-in session token > `XAI_API_KEY`. See [Custom Models](11-custom-models.md#request-query-parameters) for `query_params` and `env_http_headers`, and [Sandbox Mode](18-sandbox.md#shell-environment-policy) for `[shell_environment_policy]`, which restricts the environment variables tool subprocesses inherit.
 
 To override a built-in model, use its name as the section key and set only the fields you need:
 
 ```toml
-[model.my-model]
+[model.grok-4.6]
 api_key = "my-api-key"
 ```
 
@@ -311,14 +320,14 @@ Remote (HTTP/SSE) servers receive a default `User-Agent: grok-cli/<version>` hea
 valid `User-Agent` entry in `headers` overrides it (Figma servers receive bare
 `grok-cli`). See [MCP servers](07-mcp-servers.md) for details.
 
-MCP servers can also be set per-project in `.grok/config.toml`. Project-scoped config contributes `[mcp_servers]`, `[plugins]`, and `[permission]` rules; every other section loads only from `~/.workshop/config.toml`.
+MCP servers can also be set per-project in `.grok/config.toml`. Project-scoped config contributes `[mcp_servers]`, `[plugins]`, and `[permission]` rules; every other section loads only from `~/.grok/config.toml`.
 
-Priority for `[mcp_servers]` and `[plugins]`: `.grok/config.toml` (current dir) > `<repo-root>/.grok/config.toml` > `~/.workshop/config.toml`. `[permission]` rules aren't overridden by priority — they merge across all files with `deny` > `ask` > `allow` (see [22-permissions-and-safety.md](22-permissions-and-safety.md)).
+Priority for `[mcp_servers]` and `[plugins]`: `.grok/config.toml` (current dir) > `<repo-root>/.grok/config.toml` > `~/.grok/config.toml`. `[permission]` rules aren't overridden by priority — they merge across all files with `deny` > `ask` > `allow` (see [22-permissions-and-safety.md](22-permissions-and-safety.md)).
 
 ### Memory
 
 Persist knowledge across sessions. Enable it with `[memory] enabled = true` or
-`WORKSHOP_MEMORY=1`; an explicit `[memory] enabled = false` turns it off even when a
+`GROK_MEMORY=1`; an explicit `[memory] enabled = false` turns it off even when a
 managed remote setting enables it. Notes recorded by earlier versions are
 carried over automatically. See [13-memory.md](13-memory.md).
 
@@ -350,30 +359,30 @@ dimensions = 1024                     # vector dimensions
 ```toml
 [subagents]
 enabled = true
-sampling_limit = 12                   # concurrent in-flight subagent sampling calls per process; defaults to max_concurrent (32) when unset (WORKSHOP_SUBAGENT_SAMPLING_LIMIT)
+sampling_limit = 12                   # concurrent in-flight subagent sampling calls per process; defaults to max_concurrent (32) when unset (GROK_SUBAGENT_SAMPLING_LIMIT)
 
 [subagents.toggle]
 explore = true                        # enable/disable specific types
 plan = false
 
 [subagents.models]
-explore = "my-model"               # route to different models
+explore = "grok-4.6"               # route to different models
 ```
 
 To pin the model a subagent uses, set its entry under `[subagents.models]`.
 
 ### Goal mode and background workflows
 
-`/goal` has two drivers, chosen by the background-workflows setting. With workflows enabled, the host-owned workflow runner evaluates rounds and drives completion verification; with them disabled, `/goal` falls back to the legacy model-facing `update_goal` tool. Whether `/goal` is available at all is a separate switch (the goal feature setting).
+`/goal` has two drivers, chosen by the background-workflows setting. With workflows enabled, the host-owned workflow engine evaluates rounds and drives completion verification; with them disabled, `/goal` falls back to the legacy model-facing `update_goal` tool. Whether `/goal` is available at all is a separate switch (the goal feature setting).
 
 Background workflows — the `workflow` tool, named `.grok/workflows/*.rhai` scripts, `/deep-research`, and `/workflow` launches — are **on by default**. Disable with config, env, or remote settings.
 
 ```toml
 [workflows]
-enabled = false                       # disable background workflows (or WORKSHOP_WORKFLOWS=0)
+enabled = false                       # disable background workflows (or GROK_WORKFLOWS=0)
 ```
 
-Project workflows are discovered from `<repo-root>/.grok/workflows/`; user workflows from `~/.workshop/workflows/`. Discovery and invocation key off the script's `meta.name`, so keep each filename aligned with its `meta.name`. Built-ins win over project names, and project names win over user names, so keep names unique across scopes.
+Project workflows are discovered from `<repo-root>/.grok/workflows/`; user workflows from `~/.grok/workflows/`. Discovery and invocation key off the script's `meta.name`, so keep each filename aligned with its `meta.name`. Built-ins win over project names, and project names win over user names, so keep names unique across scopes.
 
 Each launch gets a session-unique display handle such as `deep-research-2`. That handle is what you see in the `/workflow runs` dashboard and pass to `/workflow pause`, `resume`, or `stop` — the internal run IDs never surface in commands. A numbered handle isn't a reusable definition name, so the dashboard disables **save** until you pick a new unique `meta.name` and save the edited script yourself. See [Slash Commands](04-slash-commands.md) for examples.
 
@@ -417,7 +426,7 @@ For Claude and Cursor, `rules` and `agents` are independent: turning off named i
 
 Each cell can be set via environment variable or `config.toml`; see the environment-variables reference for the names. Resolution: env var > config.toml > default (on).
 
-`workshop inspect` reports cells that still need session-start resolution as `?` until a value is available; cells with an explicit env or TOML value use that value. Affected discovery entries report `compatibilityStatus: "unresolved"` in JSON and `[compat unresolved]` in human output.
+`grok inspect` reports cells that still need session-start resolution as `?` until a value is available; cells with an explicit env or TOML value use that value. Affected discovery entries report `compatibilityStatus: "unresolved"` in JSON and `[compat unresolved]` in human output.
 
 ### Plugins
 
@@ -429,9 +438,9 @@ disabled = ["user/a1b2c3d4/noisy-plugin"]
 
 ### Hints
 
-`[hints]` holds small persisted UI preferences: remembered answers and modal layout. Workshop writes these for you as you use the TUI, but you can edit or delete them by hand; removing a key restores the default.
+`[hints]` holds small persisted UI preferences: remembered answers and modal layout. Grok writes these for you as you use the TUI, but you can edit or delete them by hand; removing a key restores the default.
 
-`[hints]` is read from the **effective config merge**, with the usual precedence: system managed → user `managed_config.toml` → user `config.toml` → user `requirements.toml` → system `requirements.toml`, higher layers winning. The TUI only ever **writes** these to your user `~/.workshop/config.toml`.
+`[hints]` is read from the **effective config merge**, with the usual precedence: system managed → user `managed_config.toml` → user `config.toml` → user `requirements.toml` → system `requirements.toml`, higher layers winning. The TUI only ever **writes** these to your user `~/.grok/config.toml`.
 
 ```toml
 [hints]
@@ -461,7 +470,7 @@ progress_bar = true       # show tab progress bar (OSC 9;4)
 
 [ui.notifications.title]
 enabled = true
-items = ["action-required", "spinner", "activity", "session-name", "workshop"]
+items = ["action-required", "spinner", "activity", "session-name", "grok"]
 ```
 
 | Option | Type | Default | Description |
@@ -473,7 +482,7 @@ items = ["action-required", "spinner", "activity", "session-name", "workshop"]
 | `sleep_prevention` | bool | `true` | Keep the display awake while the agent works (macOS/Linux). |
 | `progress_bar` | bool | `true` | Show a progress indicator in the terminal tab (OSC 9;4). |
 | `title.enabled` | bool | `true` | Set the terminal title to reflect agent state. |
-| `title.items` | array | (see above) | Items shown in the title bar. Options: `action-required`, `spinner`, `activity`, `session-name`, `cwd`, `model`, `turn-timer`, `workshop`. |
+| `title.items` | array | (see above) | Items shown in the title bar. Options: `action-required`, `spinner`, `activity`, `session-name`, `cwd`, `model`, `turn-timer`, `grok`. |
 
 #### Terminal support matrix
 
@@ -488,26 +497,26 @@ items = ["action-required", "spinner", "activity", "session-name", "workshop"]
 | VS Code | BEL | Yes | No |
 | Apple Terminal | BEL | No | No |
 | VTE (GNOME Terminal) | OSC 777 | Yes | No |
-| Workshop Desktop | None (native) | N/A | N/A |
+| Grok Desktop | None (native) | N/A | N/A |
 | Unknown | BEL | No | No |
 
-With `method = "auto"`, Workshop detects the terminal brand and picks the best protocol. Set `method` explicitly to override that.
+With `method = "auto"`, Grok detects the terminal brand and picks the best protocol. Set `method` explicitly to override that.
 
 #### Notification hooks
 
-Run your own commands when events fire. Hooks receive `$WORKSHOP_EVENT`, `$WORKSHOP_MESSAGE`, and `$WORKSHOP_SESSION_ID` in the environment.
+Run your own commands when events fire. Hooks receive `$GROK_EVENT`, `$GROK_MESSAGE`, and `$GROK_SESSION_ID` in the environment.
 
 ```toml
 # macOS native notification
 [[ui.notifications.hooks]]
-command = "terminal-notifier -title 'Workshop' -message '$WORKSHOP_MESSAGE'"
+command = "terminal-notifier -title 'Grok' -message '$GROK_MESSAGE'"
 events = ["turn_complete", "approval_required"]
 only_unfocused = true
 timeout_secs = 10
 
 # Push to ntfy server
 [[ui.notifications.hooks]]
-command = "curl -s -d '$WORKSHOP_MESSAGE' ntfy.sh/my-workshop-alerts"
+command = "curl -s -d '$GROK_MESSAGE' ntfy.sh/my-grok-alerts"
 events = ["turn_complete"]
 only_unfocused = true
 timeout_secs = 10
@@ -553,12 +562,12 @@ Keyboard shortcuts are **not** configurable — all bindings are built in. See [
 
 ### Telemetry
 
-These are independent knobs:
+These are independent knobs (see [Monitoring Usage](24-monitoring-usage.md#related-settings)):
 
-- **`[features] telemetry`** / `WORKSHOP_TELEMETRY_ENABLED` — the product-analytics master switch. `/privacy` doesn't change it.
+- **`[features] telemetry`** / `GROK_TELEMETRY_ENABLED` — the product-analytics master switch. `/privacy` doesn't change it.
 - **Coding data, retention, and training** — the Settings row `/privacy` opens; coding-data sharing, separate from telemetry.
-- **`[telemetry] trace_upload`** / `WORKSHOP_TELEMETRY_TRACE_UPLOAD` — session traces; follows telemetry when unset.
-- **`[telemetry] otel_*`** / `WORKSHOP_EXTERNAL_OTEL` — external OTEL to your own collector (below).
+- **`[telemetry] trace_upload`** / `GROK_TELEMETRY_TRACE_UPLOAD` — session traces; follows telemetry when unset.
+- **`[telemetry] otel_*`** / `GROK_EXTERNAL_OTEL` — external OTEL to your own collector (below).
 
 When telemetry is on, enterprises running their own collector can redirect it or turn parts off under `[telemetry]`:
 
@@ -570,13 +579,13 @@ mixpanel_enabled = false                                  # disable Mixpanel pro
 trace_upload = false                                      # disable session/trace uploads (inherits the telemetry toggle when unset)
 ```
 
-Set these only to point telemetry at your own infrastructure or to switch parts off. The built-in endpoint and credentials are managed by Workshop — leave them unset to use the defaults.
+Set these only to point telemetry at your own infrastructure or to switch parts off. The built-in endpoint and credentials are managed by Grok — leave them unset to use the defaults.
 
-The same `[telemetry]` table also configures the **external OpenTelemetry stream**, an independent opt-in (it doesn't require the telemetry toggle above) that ships a curated, content-free usage schema to your *own* OTLP collector. Collector auth comes from `OTEL_EXPORTER_OTLP_HEADERS` and is never stored on disk. See your collector for the full schema, env vars, and privacy model.
+The same `[telemetry]` table also configures the **external OpenTelemetry stream**, an independent opt-in (it doesn't require the telemetry toggle above) that ships a curated, content-free usage schema to your *own* OTLP collector. Collector auth comes from `OTEL_EXPORTER_OTLP_HEADERS` and is never stored on disk. See [Monitoring & Usage](24-monitoring-usage.md) for the full schema, env vars, and privacy model.
 
 ```toml
 [telemetry]
-otel_enabled = true                                       # external OTEL master switch (= WORKSHOP_EXTERNAL_OTEL)
+otel_enabled = true                                       # external OTEL master switch (= GROK_EXTERNAL_OTEL)
 otel_metrics_exporter = "otlp"                            # otlp | console | none
 otel_logs_exporter = "otlp"                               # otlp | console | none
 otel_endpoint = "https://collector.corp.example:4318"     # OTLP base endpoint
@@ -593,7 +602,7 @@ otel_log_tool_content = false                             # full-body gate; inde
 Listed `[telemetry] otel_*` keys in signed `requirements.toml` **pin** over
 process env (destination lock). `managed_config.toml` does not. There is no
 `headers` key — collector tokens stay in `OTEL_EXPORTER_OTLP_HEADERS`. See
-your collector.
+[Monitoring & Usage](24-monitoring-usage.md).
 
 ### Version pinning
 
@@ -613,21 +622,21 @@ required_minimum_version = "0.2.100" # refuse to start below this
 required_maximum_version = "0.2.200" # refuse to start above this
 ```
 
-- `minimum_version` (`WORKSHOP_MINIMUM_VERSION`) is a soft anti-downgrade floor. The
+- `minimum_version` (`GROK_MINIMUM_VERSION`) is a soft anti-downgrade floor. The
   updater skips a target below it and keeps the current version. It never blocks
   startup.
-- `maximum_version` (`WORKSHOP_MAXIMUM_VERSION`) is a soft ceiling. The updater caps
+- `maximum_version` (`GROK_MAXIMUM_VERSION`) is a soft ceiling. The updater caps
   its target at it and never installs above it.
-- `required_minimum_version` (`WORKSHOP_REQUIRED_MINIMUM_VERSION`) and
-  `required_maximum_version` (`WORKSHOP_REQUIRED_MAXIMUM_VERSION`) are hard bounds. If
+- `required_minimum_version` (`GROK_REQUIRED_MINIMUM_VERSION`) and
+  `required_maximum_version` (`GROK_REQUIRED_MAXIMUM_VERSION`) are hard bounds. If
   the running version is outside the range, the CLI exits at startup and instructs
-  the user to install an approved version. `workshop update` and `workshop --version` keep
+  the user to install an approved version. `grok update` and `grok --version` keep
   working so an out-of-range install can recover.
 - Bounds resolve across config layers by tightening only: a floor takes the
   highest value and a ceiling the lowest, so a managed bound can't be loosened,
   and a user or environment bound can't cancel a managed hard bound. An invalid
   value is ignored so a bad policy can't block startup.
-- An explicit `workshop update --version X` is allowed above the ceiling, to recover
+- An explicit `grok update --version X` is allowed above the ceiling, to recover
   from a too-new install, and rejected below the hard floor.
 
 ### Enterprise deployment
@@ -644,12 +653,12 @@ auth_provider_label = "Acme Corp"
 auth_token_ttl = 3600
 
 [models]
-default = "company-proxy"
+default = "company-grok"
 
-[model.company-proxy]
-model = "my-model"
-base_url = "https://llm-proxy.acme.com/"
-name = "Workshop 4.6 (Proxy)"
+[model.company-grok]
+model = "grok-4.6"
+base_url = "https://grok-proxy.acme.com/"
+name = "Grok 4.6 (Proxy)"
 context_window = 128000
 
 [features]
@@ -660,7 +669,7 @@ telemetry = false
 
 ## pager.toml (appearance configuration)
 
-Location: `~/.workshop/pager.toml`. This controls the TUI's look and feel. Changes apply on restart.
+Location: `~/.grok/pager.toml`. This controls the TUI's look and feel. Changes apply on restart.
 
 ### Terminal
 
@@ -737,8 +746,8 @@ dim_accent = 0.5                      # dimming factor for collapsed accents (0.
 [scrollback.blocks.edit]
 indent = true                         # indent diff content
 vpad = false                          # vertical padding
-# expanded_by_default = true          # unset: follows [ui] collapsed_edit_blocks in config.toml
-                                      # (flag on = collapsed one-liner); uncomment to pin either shape
+# expanded_by_default = true          # Unset follows Collapsed edit blocks. When that setting is on,
+                                      # edits start collapsed even if this line is true.
 dual_line_numbers = false             # two-column line numbers (old + new)
 # line_summary = false                # show +N/-M in the collapsed header; unset follows the same flag
 hunk_separator = "…"                  # separator between diff hunks (default: "…")
@@ -769,52 +778,57 @@ The key ones. See the README for the complete list.
 
 | Variable | Description |
 |----------|-------------|
-| `WORKSHOP_<PROVIDER>_API_KEY` | API key for a `[model.*]` entry whose `env_key` names it (the picker saves keys to the OS keyring and exports these at runtime) |
-| `WORKSHOP_HOME` | Where everything lives (default `~/.workshop`) |
+| `XAI_API_KEY` | API key from console.x.ai |
+| `GROK_AUTH_PROVIDER_COMMAND` | External auth binary path |
+| `GROK_AUTH_PROVIDER_LABEL` | Display name on TUI login screen |
+| `GROK_AUTH_TOKEN_TTL` | Token lifetime in seconds |
+| `GROK_AUTH_EARLY_INVALIDATION_SECS` | Seconds before expiry to refresh (default: 300) |
+| `GROK_OIDC_ISSUER` | OIDC issuer URL |
+| `GROK_OIDC_CLIENT_ID` | OIDC client ID |
 
 ### Endpoints
 
 | Variable | Description |
 |----------|-------------|
-| `WORKSHOP_CLI_CHAT_PROXY_BASE_URL` | Override API proxy base URL |
+| `GROK_CLI_CHAT_PROXY_BASE_URL` | Override API proxy base URL |
 
 ### Features
 
 | Variable | Description |
 |----------|-------------|
-| `WORKSHOP_MEMORY` | Enable (`1`) or disable (`0`) cross-session memory |
-| `WORKSHOP_SUBAGENTS` | Enable (`1`) or disable (`0`) subagents |
-| `WORKSHOP_WORKFLOWS` | Enable (`1`) or disable (`0`) background workflows and select the `/goal` driver (default on: host-owned workflow driver; off: legacy `update_goal`) |
-| `WORKSHOP_WEB_FETCH` | Enable (`1`) or disable (`0`) the web_fetch tool |
-| `WORKSHOP_WEB_FETCH_ALLOW_LOCAL` | Allow `web_fetch` to explicit loopback hosts only (`localhost` / `127.0.0.0/8` / `::1`). Same as `[toolset.web_fetch] allow_local`. Default off; private/metadata stay blocked. |
-| `WORKSHOP_AGENT` | Custom agent definition path or name |
-| `WORKSHOP_SANDBOX` | Sandbox profile (off, workspace, devbox, read-only, strict; or a custom profile name) |
-| `WORKSHOP_EXIT_TIMEOUT_SECS` | Seconds after a quit is requested before the process is force-exited if teardown hangs (default: 20, `0` disables; a hard exit follows 5s later) |
+| `GROK_MEMORY` | Enable (`1`) or disable (`0`) cross-session memory |
+| `GROK_SUBAGENTS` | Enable (`1`) or disable (`0`) subagents |
+| `GROK_WORKFLOWS` | Enable (`1`) or disable (`0`) background workflows and select the `/goal` driver (default on: host-owned workflow driver; off: legacy `update_goal`) |
+| `GROK_WEB_FETCH` | Enable (`1`) or disable (`0`) the web_fetch tool |
+| `GROK_WEB_FETCH_ALLOW_LOCAL` | Allow `web_fetch` to explicit loopback hosts only (`localhost` / `127.0.0.0/8` / `::1`). Same as `[toolset.web_fetch] allow_local`. Default off; private/metadata stay blocked. |
+| `GROK_AGENT` | Custom agent definition path or name |
+| `GROK_SANDBOX` | Sandbox profile (off, workspace, devbox, read-only, strict; or a custom profile name) |
+| `GROK_EXIT_TIMEOUT_SECS` | Seconds after a quit is requested before the process is force-exited if teardown hangs (default: 20, `0` disables; a hard exit follows 5s later) |
 
 ### Logging
 
 | Variable | Description |
 |----------|-------------|
-| `WORKSHOP_LOG_FILE` | Write logs to this file path (used verbatim as the path) |
-| `RUST_LOG` | Log level filter (e.g. `debug`); controls the `WORKSHOP_LOG_FILE` log and headless stderr output |
+| `GROK_LOG_FILE` | Write logs to this file path (used verbatim as the path) |
+| `RUST_LOG` | Log level filter (e.g. `debug`); controls the `GROK_LOG_FILE` log and headless stderr output |
 
 ### Paths
 
 | Variable | Description |
 |----------|-------------|
-| `WORKSHOP_HOME` | Override config directory (default: `~/.workshop`) |
-| `WORKSHOP_RESPECT_GITIGNORE` | Force gitignore filtering on (`1`) or off (`0`); overrides `[tools] respect_gitignore` |
+| `GROK_HOME` | Override config directory (default: `~/.grok`) |
+| `GROK_RESPECT_GITIGNORE` | Force gitignore filtering on (`1`) or off (`0`); overrides `[tools] respect_gitignore` |
 
 ### Telemetry
 
 | Variable | Description |
 |----------|-------------|
-| `WORKSHOP_TELEMETRY_ENABLED` | Enable/disable telemetry |
-| `WORKSHOP_TELEMETRY_TRACE_UPLOAD` | Enable/disable session trace upload |
-| `WORKSHOP_TELEMETRY_MIXPANEL_ENABLED` | Enable/disable Mixpanel specifically |
-| `WORKSHOP_EXTERNAL_OTEL` | External OTEL to your collector  |
-| `WORKSHOP_FEEDBACK_ENABLED` | Enable/disable feedback system |
-| `WORKSHOP_DEPLOYMENT_KEY` | Management API key for enterprise |
+| `GROK_TELEMETRY_ENABLED` | Enable/disable telemetry |
+| `GROK_TELEMETRY_TRACE_UPLOAD` | Enable/disable session trace upload |
+| `GROK_TELEMETRY_MIXPANEL_ENABLED` | Enable/disable Mixpanel specifically |
+| `GROK_EXTERNAL_OTEL` | External OTEL to your collector (see [24-monitoring-usage.md](24-monitoring-usage.md)) |
+| `GROK_FEEDBACK_ENABLED` | Enable/disable feedback system |
+| `GROK_DEPLOYMENT_KEY` | Management API key for enterprise |
 
 ---
 
@@ -822,16 +836,16 @@ The key ones. See the README for the complete list.
 
 | Path | Description |
 |------|-------------|
-| `~/.workshop/config.toml` | Main configuration file |
-| `~/.workshop/pager.toml` | TUI appearance configuration |
-| `~/.workshop/auth.json` | Authentication credentials (auto-managed) |
-| `~/.workshop/sessions/` | Persisted sessions (organized by working directory) |
-| `~/.workshop/memory/` | Cross-session memory files and index |
-| `~/.workshop/skills/` | User-scoped skill definitions |
-| `~/.workshop/plugins/` | User-scoped plugins |
-| `~/.workshop/agents/` | User-scoped agent definitions |
-| `~/.workshop/lsp.json` | LSP server configuration (user-scoped) |
-| `~/.workshop/logs/` | Internal log files (e.g. `unified.jsonl`, MCP server logs) |
+| `~/.grok/config.toml` | Main configuration file |
+| `~/.grok/pager.toml` | TUI appearance configuration |
+| `~/.grok/auth.json` | Authentication credentials (auto-managed) |
+| `~/.grok/sessions/` | Persisted sessions (organized by working directory) |
+| `~/.grok/memory/` | Cross-session memory files and index |
+| `~/.grok/skills/` | User-scoped skill definitions |
+| `~/.grok/plugins/` | User-scoped plugins |
+| `~/.grok/agents/` | User-scoped agent definitions |
+| `~/.grok/lsp.json` | LSP server configuration (user-scoped) |
+| `~/.grok/logs/` | Internal log files (e.g. `unified.jsonl`, MCP server logs) |
 | `.grok/config.toml` | Project-scoped MCP servers, plugins, and permission rules |
 | `.grok/skills/` | Project-scoped skill definitions |
 | `.grok/plugins/` | Project-scoped plugins |
@@ -839,9 +853,9 @@ The key ones. See the README for the complete list.
 | `.grok/hooks/` | Project-scoped hooks |
 | `.grok/lsp.json` | LSP server configuration |
 
-### How Workshop saves `config.toml`
+### How Grok saves `config.toml`
 
-Writes to **`~/.workshop/config.toml`** (`/settings`, `/vim-mode`, and other user-config saves) follow a leaf symlink. The atomic rename writes the referent (a file in your dotfiles repo). The link stays a link. If the link is dangling, the write creates the referent as a regular file.
+Writes to **`~/.grok/config.toml`** (`/settings`, `/vim-mode`, and other user-config saves) follow a leaf symlink. The atomic rename writes the referent (a file in your dotfiles repo). The link stays a link. If the link is dangling, the write creates the referent as a regular file.
 
 Writes to a **project** `.grok/config.toml` (MCP / plugin / permission edits) **replace** a leaf symlink with a regular file. That keeps a later save from following the link out of the repository.
 
@@ -855,7 +869,7 @@ Some settings can be set per-project by placing files in `.grok/` inside your re
 
 | File | What it configures |
 |------|--------------------|
-| `.grok/config.toml` | MCP servers, plugins, permission rules, and the `[mcp] max_output_bytes` tool-result cap (other sections load only from `~/.workshop/config.toml`) |
+| `.grok/config.toml` | MCP servers, plugins, permission rules, and the `[mcp] max_output_bytes` tool-result cap (other sections load only from `~/.grok/config.toml`) |
 | `.grok/skills/` | Project-specific skills |
 | `.grok/hooks/` | Project-specific lifecycle hooks |
 | `.grok/agents/` | Project-specific agent definitions |
@@ -873,14 +887,14 @@ Language servers power passive diagnostics and the optional `lsp` tool (see the 
 
 | Source | Location | Scope |
 |--------|----------|-------|
-| User | `~/.workshop/lsp.json` | All projects |
+| User | `~/.grok/lsp.json` | All projects |
 | Project | `.grok/lsp.json` | Current repository |
 | Plugin | A trusted plugin's `.lsp.json` file, or an inline `lspServers` block in its `plugin.json` | Wherever the plugin is enabled |
 
 When the same server name comes from more than one source, it resolves highest-priority first:
 
 1. **Project** — `.grok/lsp.json`
-2. **User** — `~/.workshop/lsp.json`
+2. **User** — `~/.grok/lsp.json`
 3. **Plugins** — file-based `.lsp.json`, then inline `lspServers`, in plugin load order
 
 Project and user entries replace lower-priority ones of the same name. Plugin entries only add servers whose names aren't already defined by a local file, so a local `lsp.json` always wins over a plugin. Plugin LSP servers load only after the plugin is trusted (see [Plugins](09-plugins.md)).

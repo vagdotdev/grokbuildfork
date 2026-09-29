@@ -2,7 +2,7 @@
 //!
 //! A compact top-right overlay paints a per-frame snapshot of the scroll state machine ([`MouseScrollState::debug_snapshot`]).
 //! It also shows the active scrollback's viewport facts, inside a REAL session with the REAL event loop.
-//! Recipe: `GROK_FPS=1 GROK_SCROLL_DEBUG=1 workshop --resume <session>`.
+//! Recipe: `GROK_FPS=1 GROK_SCROLL_DEBUG=1 grok --resume <session>`.
 //! Then flip `scroll_mode`, `scroll_lines`, `invert_scroll`, or `scroll_speed` in `/settings` to compare variants live.
 //! This HUD samples once per frame; `GROK_SCROLL_LOG=1` additionally records every event as JSONL (`input::scroll_log` in xai-grok-pager-render).
 //!
@@ -24,7 +24,7 @@ use crate::input::mouse::ScrollDebugSnapshot;
 const PANEL_WIDTH: u16 = 46;
 
 /// Runtime on/off switch for the HUD, mirroring how `FrameMetrics` reads its env var.
-/// `GROK_SCROLL_DEBUG` (nonempty and not `"0"`) enables it at startup, and the hidden `/scroll-debug` command toggles it live.
+/// `GROK_SCROLL_DEBUG` (nonempty and not `"0"`) enables it at startup, and `/debug scroll` toggles it live.
 /// Deliberately NOT a settings-registry entry: it is a diagnostic, not a preference to persist.
 pub struct ScrollDebugHud {
     enabled: bool,
@@ -46,7 +46,7 @@ impl ScrollDebugHud {
         self.enabled
     }
 
-    /// The hidden `/scroll-debug` command flips this live.
+    /// `/debug scroll` flips this live.
     pub fn toggle(&mut self) {
         self.enabled = !self.enabled;
     }
@@ -80,7 +80,7 @@ impl ScrollDebugPanel {
         let ctx = crate::terminal::terminal_context();
 
         let mut lines: Vec<String> = Vec::with_capacity(10);
-        lines.push("scroll debug  (/scroll-debug)".to_string());
+        lines.push("scroll debug (/debug scroll)".to_string());
         lines.push(format!("term:{} mux:{}", ctx.brand, ctx.multiplexer));
         lines.push(format!(
             "mode:{} inv:{} speed:x{:.2}",

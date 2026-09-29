@@ -47,10 +47,10 @@ fn resolve_standalone_memory_mode(
 /// Configuration for subagent (task tool) support.
 /// Parsed from the `[subagents]` section of `~/.grok/config.toml` or `.grok/config.toml`.
 /// Enabled by default; can be disabled via the `GROK_SUBAGENTS=0` env var or `[subagents] enabled = false` in config.toml.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct SubagentsConfig {
-    /// Whether subagent support is enabled.
+    /// Whether subagent support is enabled. Defaults to `true`, so a `[subagents]` table that only tunes limits, models, or toggles keeps subagents on.
     pub enabled: bool,
     /// Raw `[subagents] max_depth` (i64 so out-of-range parses; clamped to at least 1 at resolve).
     #[serde(default)]
@@ -83,6 +83,22 @@ pub struct SubagentsConfig {
     pub personas: std::collections::HashMap<String, SubagentPersona>,
 }
 use xai_grok_subagent_resolution::config::{SubagentPersona, SubagentRole};
+impl Default for SubagentsConfig {
+    fn default() -> Self {
+        SubagentsConfig {
+            enabled: true,
+            max_depth: None,
+            max_concurrent: None,
+            sampling_limit: None,
+            limit_behavior: None,
+            workflow_max_concurrent: None,
+            models: std::collections::HashMap::new(),
+            toggle: std::collections::HashMap::new(),
+            roles: std::collections::HashMap::new(),
+            personas: std::collections::HashMap::new(),
+        }
+    }
+}
 impl SubagentsConfig {
     fn discover_personas_in_dir(&mut self, dir: &std::path::Path) {
         if !dir.is_dir() {
@@ -352,10 +368,12 @@ impl SubagentsConfig {
         }
         LimitBehavior::Queue
     }
-    /// Resolve the final subagents config from all sources (in priority order): CLI flag `--subagents` (absolute highest, always enables) `GROK_SUBAGENTS` env var: `1`/`true` enables, `0`/`false` force-disables
-    /// Config file `[subagents]` section Default (enabled) `enabled` is deliberately not remotely gated. Only explicit local intent (CLI flag, `GROK_SUBAGENTS`, `[subagents] enabled`) changes the default.
+    /// Resolve the final subagents config from all sources (in priority order): CLI tri-state (`Some(false)` from `--no-subagents` force-disables, `Some(true)` force-enables, `None` defers)
+    /// `GROK_SUBAGENTS` env var: `1`/`true` enables, `0`/`false` force-disables; config file `[subagents] enabled`; Default (enabled).
+    /// `enabled` is deliberately not remotely gated. Only explicit local intent (CLI flag, `GROK_SUBAGENTS`, `[subagents] enabled`) changes the default.
+    /// A `[subagents]` table without an `enabled` key is not intent: it keeps the default so tuning `max_depth` or `[subagents.models]` cannot turn subagents off.
     /// Project files are excluded from this trust-independent base; Task boundaries overlay them using the parent cwd's authoritative trust verdict.
-    pub fn resolve(cli_flag: bool, config: &toml::Value) -> Self {
+    pub fn resolve(cli_flag: Option<bool>, config: &toml::Value) -> Self {
         let user_grok_root = xai_grok_config::user_grok_home();
         Self::resolve_base_with_sources(
             cli_flag,
@@ -365,7 +383,7 @@ impl SubagentsConfig {
         )
     }
     pub(crate) fn resolve_base_with_sources(
-        cli_flag: bool,
+        cli_flag: Option<bool>,
         config: &toml::Value,
         user_grok_root: Option<&std::path::Path>,
         bundled_root: &std::path::Path,
@@ -374,11 +392,15 @@ impl SubagentsConfig {
             .get("subagents")
             .and_then(|v| v.clone().try_into().ok())
             .unwrap_or_default();
+        let has_local_enabled = config
+            .get("subagents")
+            .and_then(|v| v.as_table())
+            .is_some_and(|t| t.contains_key("enabled"));
         let resolved = crate::agent::config::resolve_enabled(
-            if cli_flag { Some(true) } else { None },
+            cli_flag,
             "GROK_SUBAGENTS",
             result.enabled,
-            config.get("subagents").is_some(),
+            has_local_enabled,
             None,
             true,
         );
@@ -909,11 +931,13 @@ fn walk_toml(
 }
 /// The `[skills]` table from an effective config, shared by the reload dispatch and `grok inspect`.
 pub(crate) use crate::config::reloader::parse_skills_config;
-/// Effective config: the layers plus the campaign overlay (remote cache and `GROK_CAMPAIGNS_OVERRIDE`).
-pub use crate::util::config::load_effective_config;
 /// Effective config with disk campaigns only, for one-shot entrypoints that never fetch remote settings.
 /// This avoids resolving against a never-seeded cache.
 pub use crate::util::config::load_effective_config_disk_only;
+/// Effective config: the layers plus the campaign overlay (remote cache and `GROK_CAMPAIGNS_OVERRIDE`).
+pub use crate::util::config::{
+    EffectiveConfigLayers, load_effective_config, load_effective_config_with_layers,
+};
 /// Where a requirement or permission rule was loaded from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequirementSource {
@@ -1069,39 +1093,13 @@ fn apply_requirements_inner(
     fn req_str<'a>(req: &'a toml::Value, section: &str, key: &str) -> Option<&'a str> {
         req.get(section)?.get(key)?.as_str()
     }
-    enum ReqStrArray {
-        Absent,
-        Value(Vec<String>),
-        Malformed,
-    }
-    fn req_str_array(req: &toml::Value, section: &str, key: &str) -> ReqStrArray {
-        let Some(value) = req.get(section).and_then(|s| s.get(key)) else {
-            return ReqStrArray::Absent;
-        };
-        let Some(arr) = value.as_array() else {
-            tracing::error!(
-                section,
-                key,
-                kind = value.type_str(),
-                "requirements value is not an array; the constraint fail-closes"
-            );
-            return ReqStrArray::Malformed;
-        };
-        let mut out = Vec::with_capacity(arr.len());
-        for item in arr {
-            let Some(s) = item.as_str() else {
-                tracing::error!(
-                    section,
-                    key,
-                    kind = item.type_str(),
-                    "requirements array entry is not a string; the constraint fail-closes"
-                );
-                return ReqStrArray::Malformed;
-            };
-            out.push(s.to_owned());
-        }
-        ReqStrArray::Value(out)
-    }
+    let parsed = xai_grok_config::RequirementsToml::from_value(req);
+    let tool_pins: Vec<_> = parsed.tool_pins().collect();
+    let xai_grok_config::RequirementsToml {
+        allowed_models,
+        default_model,
+        ..
+    } = parsed;
     let mut enforced: Vec<EnforcedField> = Vec::new();
     let mut push = |path: &'static str, value: String| {
         enforced.push(EnforcedField {
@@ -1110,17 +1108,6 @@ fn apply_requirements_inner(
             source: source.clone(),
         });
     };
-    macro_rules! pin_feature {
-        ($name:ident) => {
-            if let Some(val) = req_bool(req, "features", stringify!($name)) {
-                config.requirements.$name.pin(val, source.clone());
-                config.features.$name = Some(val);
-                // Unconditional, like the registry loop
-                // A later layer repeating the pin must report, or the dedupe keeps the first layer that asked instead of the one that decided
-                push(concat!("features.", stringify!($name)), format!("{val}"));
-            }
-        };
-    }
     macro_rules! enforce_opt {
         ($section:expr, $key:expr, $field:expr) => {
             if let Some(val) = req_bool(req, $section, $key)
@@ -1152,18 +1139,43 @@ fn apply_requirements_inner(
             push("features.telemetry", format!("{mode}"));
         }
     }
-    macro_rules! pin_requirement_only {
-        ($name:ident) => {
-            if let Some(val) = req_bool(req, "features", stringify!($name)) {
-                config.requirements.$name.pin(val, source.clone());
-                push(concat!("features.", stringify!($name)), format!("{val}"));
+    use crate::agent::config::Feature;
+    use xai_grok_config::ToolFeature;
+    for (tool, val) in tool_pins {
+        let registry_row = match tool {
+            ToolFeature::ImageGen => {
+                config.requirements.image_gen.pin(val, source.clone());
+                config.features.image_gen = Some(val);
+                push("features.image_gen", format!("{val}"));
+                None
             }
+            ToolFeature::ImageEdit => {
+                config.requirements.image_edit.pin(val, source.clone());
+                push("features.image_edit", format!("{val}"));
+                None
+            }
+            ToolFeature::VideoGen => {
+                config.requirements.video_gen.pin(val, source.clone());
+                config.features.video_gen = Some(val);
+                push("features.video_gen", format!("{val}"));
+                None
+            }
+            ToolFeature::AskUserQuestion => Some(Feature::AskUserQuestion),
+            ToolFeature::LspTools => Some(Feature::LspTools),
+            ToolFeature::WebFetch => Some(Feature::WebFetch),
+            ToolFeature::WriteFile => Some(Feature::WriteFile),
         };
+        if let Some(feature) = registry_row {
+            config
+                .requirements
+                .pin_feature(feature, val, source.clone());
+            push(feature.path(), format!("{val}"));
+        }
     }
-    pin_feature!(image_gen);
-    pin_requirement_only!(image_edit);
-    pin_feature!(video_gen);
     for spec in crate::agent::config::FEATURES {
+        if <ToolFeature as std::str::FromStr>::from_str(spec.key).is_ok() {
+            continue;
+        }
         let Some(value) = req
             .get("features")
             .and_then(|features| features.get(spec.key))
@@ -1184,6 +1196,14 @@ fn apply_requirements_inner(
             .requirements
             .pin_feature(spec.id, val, source.clone());
         push(spec.path, format!("{val}"));
+    }
+    macro_rules! pin_requirement_only {
+        ($name:ident) => {
+            if let Some(val) = req_bool(req, "features", stringify!($name)) {
+                config.requirements.$name.pin(val, source.clone());
+                push(concat!("features.", stringify!($name)), format!("{val}"));
+            }
+        };
     }
     pin_requirement_only!(remote_fetch);
     pin_requirement_only!(title_refresh);
@@ -1235,37 +1255,23 @@ fn apply_requirements_inner(
             }
         };
     }
-    use crate::agent::config::AllowlistPin;
-    macro_rules! pin_str_array {
-        ($section:expr, $key:expr, $pin:expr) => {
-            match req_str_array(req, $section, $key) {
-                ReqStrArray::Absent => {}
-                ReqStrArray::Value(val) => {
-                    let reported = if val.is_empty() {
-                        "(unrestricted)".to_owned()
-                    } else {
-                        val.join(", ")
-                    };
-                    $pin.pin(AllowlistPin::List(val), source.clone());
-                    push(concat!($section, ".", $key), reported);
-                }
-                ReqStrArray::Malformed => {
-                    $pin.pin(AllowlistPin::FailClosed, source.clone());
-                    push(
-                        concat!($section, ".", $key),
-                        "(invalid; nothing selectable)".to_owned(),
-                    );
-                }
-            }
-        };
+    if let Some(val) = default_model
+        && config.models.default.as_deref() != Some(val.as_str())
+    {
+        push("models.default", val.clone());
+        config.models.default = Some(val);
     }
-    enforce_str!("models", "default", config.models.default);
     enforce_str!("models", "web_search", config.models.web_search);
-    pin_str_array!(
-        "models",
-        "allowed_models",
-        config.requirements.allowed_models
-    );
+    if let Some(pin) = allowed_models {
+        use crate::agent::config::AllowlistPin;
+        let reported = match &pin {
+            AllowlistPin::List(patterns) if patterns.is_empty() => "(unrestricted)".to_owned(),
+            AllowlistPin::List(patterns) => patterns.join(", "),
+            AllowlistPin::FailClosed => "(invalid; nothing selectable)".to_owned(),
+        };
+        config.requirements.allowed_models.pin(pin, source.clone());
+        push("models.allowed_models", reported);
+    }
     enforce_str!("cli", "channel", config.cli.channel);
     enforce_str!("cli", "minimum_version", config.cli.minimum_version);
     enforce_str!("cli", "maximum_version", config.cli.maximum_version);
@@ -1463,6 +1469,7 @@ pub fn apply_sandbox(
         .and_then(|p| dunce::canonicalize(p).ok())
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
+    xai_grok_sandbox::set_confinement_root(&workspace);
     #[cfg(target_os = "linux")]
     let requires_read_deny = xai_grok_sandbox::requires_read_deny(&sandbox_profile, &workspace);
     #[cfg(target_os = "linux")]
@@ -1586,37 +1593,8 @@ pub fn apply_sandbox(
         sandbox.install();
     }
 }
-pub use xai_grok_workspace::project_config::find_project_configs;
-/// Resolve the effective `[plugins]` config for a working directory the same way a session does at reload time: global/user config ([`load_effective_config`]), plus every ancestor project `.grok/config.toml` ([`find_project_configs`], extending `paths` and `disabled`), plus the imported `enabledPlugins` merge.
-/// All three must discover the same plugins for a given cwd.
-/// Centralizing it prevents the paths/disabled/discovered-command drift those callers would otherwise accumulate.
-pub(crate) fn resolve_effective_plugins_config(
-    cwd: &std::path::Path,
-) -> crate::agent::config::PluginsConfig {
-    let extract = |toml_val: &toml::Value| -> Option<crate::agent::config::PluginsConfig> {
-        toml_val
-            .get("plugins")
-            .and_then(|v| v.clone().try_into().ok())
-    };
-    let mut plugins_cfg = load_effective_config()
-        .ok()
-        .and_then(|t| extract(&t))
-        .unwrap_or_default();
-    let project_trusted = crate::agent::folder_trust::project_scope_allowed(cwd);
-    for config_path in find_project_configs(cwd) {
-        if let Ok(toml_val) = load_config_file(&config_path)
-            && let Some(proj) = extract(&toml_val)
-        {
-            if project_trusted {
-                plugins_cfg.paths.extend(proj.paths);
-            }
-            plugins_cfg.disabled.extend(proj.disabled);
-        }
-    }
-    plugins_cfg.merge_claude_enabled_plugins(Some(cwd));
-    plugins_cfg
-}
 pub use xai_grok_config::{deep_merge_toml, expand_env_vars_in_string, expand_env_vars_in_toml};
+pub use xai_grok_workspace::project_config::find_project_configs;
 /// Locked read-modify-write of `~/.grok/config.toml`: the whole window runs under the config-init
 /// flock and lands via atomic replace; unchanged configs skip the write.
 fn update_config_toml_locked(

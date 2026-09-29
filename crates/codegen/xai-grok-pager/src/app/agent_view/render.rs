@@ -53,10 +53,6 @@ pub struct AppRenderParams<'a> {
     /// The footer's `Ctrl+X` label when this view stands in for another agent (a subagent's fullscreen takeover): the
     /// parent's resolved stop/archive/close action, which the child cannot compute from its own state.
     pub overlay_stop_label: Option<&'static str>,
-    /// Workshop: the pending `sudo` password prompt (an AppView-owned overlay). When set it is laid
-    /// out in the composer slot, exactly like a permission card, so the turn-status row sits above
-    /// it instead of drawing over it (fresh-eyes review issue 9).
-    pub workshop_password: Option<&'a crate::app::workshop_askpass::PendingPassword>,
 }
 /// What the dashboard overlay contributes to the header row (see [`AppRenderParams::overlay_header`]).
 #[derive(Debug, Clone, Copy, Default)]
@@ -353,9 +349,7 @@ impl AgentView {
             .selected()
             .is_some_and(|idx| self.scrollback.entry_content_hidden_by_group(idx));
         let (selected_supports_copy, selected_meta_label, selected_supports_fullscreen) =
-            if self.active_pane == ActivePane::Catalog {
-                (false, None, self.catalog.selected_entry().is_some())
-            } else if self.active_pane == ActivePane::Tasks {
+            if self.active_pane == ActivePane::Tasks {
                 let has_selected = self.tasks.selected_task_id().is_some_and(|tid| {
                     self.session
                         .bg_tasks
@@ -418,9 +412,7 @@ impl AgentView {
                 .tracker
                 .running_execute_tool_call_id()
                 .is_some();
-        let selected_can_kill = if self.surface() == ViewSurface::ChildTakeover
-            || self.active_pane == ActivePane::Catalog
-        {
+        let selected_can_kill = if self.surface() == ViewSurface::ChildTakeover {
             false
         } else if self.active_pane == ActivePane::Dock {
             self.dock_items()
@@ -576,7 +568,6 @@ impl AgentView {
         pending_hint: Option<PendingHint>,
         overlay_focused: bool,
         banner: super::BannerSlotParams<'_>,
-        bundle_state: &crate::app::bundle::BundleState,
         in_dashboard_overlay: bool,
         link_spans_out: &mut Vec<xai_ratatui_inline::LinkSpan>,
         app_params: AppRenderParams<'_>,
@@ -592,7 +583,6 @@ impl AgentView {
             workspace_dashboard_enabled,
             overlay_header,
             overlay_stop_label,
-            workshop_password,
         } = app_params;
         self.scrollback.begin_frame();
         self.in_dashboard_overlay = in_dashboard_overlay;
@@ -674,7 +664,6 @@ impl AgentView {
                 scratch,
                 pending_hint,
                 &theme,
-                bundle_state,
                 in_dashboard_overlay.then(|| super::subagent_takeover::InheritedOverlay {
                     header: overlay_header,
                     stop_label: self.overlay_stop_label(),
@@ -689,13 +678,22 @@ impl AgentView {
         let appearance = self.scrollback.appearance().clone();
         let layout_cfg = &appearance.scrollback.layout;
         let scrollbar_cfg = &appearance.scrollback.scrollbar;
-        let model_id = self
-            .session
-            .models
-            .current_model_name()
-            .unwrap_or_else(|| "unknown".to_string());
+        let model_label = self.session.models.footer_label().unwrap_or_else(|| {
+            if self.session_starting_since.is_some() {
+                String::new()
+            } else {
+                "unknown".to_owned()
+            }
+        });
         let effective_plan = self.plan_mode_pending.unwrap_or(self.plan_mode_active);
         let casual_commenting = self.is_casual_commenting();
+        let mode_accent = if effective_plan || casual_commenting {
+            Some(theme.accent_plan)
+        } else if self.effective_session_mode() == xai_grok_tools::types::SessionMode::Ask {
+            Some(theme.accent_success)
+        } else {
+            None
+        };
         let prompt_focused = if self.plan_approval_view.is_some() {
             self.plan_approval_view
                 .as_ref()
@@ -716,17 +714,12 @@ impl AgentView {
             bg: PromptBg::Default,
             accent_color_override: if let Some(c) = self.prompt_input_mode.accent_color(&theme) {
                 Some(c)
-            } else if effective_plan || casual_commenting {
-                Some(theme.accent_plan)
             } else {
-                None
+                mode_accent
             },
-            border_color_override: if effective_plan || casual_commenting {
-                crate::render::color::blend_color(theme.bg_base, theme.accent_plan, 0.4)
-                    .or(Some(theme.accent_plan))
-            } else {
-                None
-            },
+            border_color_override: mode_accent.map(|accent| {
+                crate::render::color::blend_color(theme.bg_base, accent, 0.4).unwrap_or(accent)
+            }),
             prefix_override: if let Some(p) = self.prompt_input_mode.prefix_override(&theme) {
                 Some(p)
             } else if casual_commenting
@@ -746,9 +739,7 @@ impl AgentView {
             } else {
                 None
             },
-            // Workshop: the empty composer reads its invitation whenever nothing is running; a
-            // turn in flight leaves it blank until the turn ends.
-            placeholder_when_focused: !self.stoppable_activity_running(),
+            placeholder_when_focused: false,
             placeholder_override: if let Some(ph) = self
                 .prompt_input_mode
                 .placeholder_override(self.multiline_mode)
@@ -947,19 +938,7 @@ impl AgentView {
             0
         };
         let question_footer_h: u16 = if question_view_h > 0 { 3 } else { 0 };
-        // Workshop: the `sudo` password card takes the composer slot like a permission card, so the
-        // turn-status row is reserved above it (issue 9). It outranks the others: a password ask
-        // only arrives mid-command, when none of them is up.
-        let password_view_h: u16 = if workshop_password.is_some()
-            && area.height >= crate::views::workshop_password::HEIGHT
-        {
-            crate::views::workshop_password::HEIGHT
-        } else {
-            0
-        };
-        let prompt_height = if password_view_h > 0 {
-            password_view_h
-        } else if permission_view_h > 0 {
+        let prompt_height = if permission_view_h > 0 {
             if is_permission_followup && perm_inline_prompt_h > 1 {
                 permission_view_h + perm_inline_prompt_h.saturating_sub(1)
             } else {
@@ -1017,14 +996,6 @@ impl AgentView {
         if self.active_pane == ActivePane::Tasks && !self.tasks.is_visible() {
             self.active_pane = ActivePane::Scrollback;
         }
-        self.catalog.sync_from_bundle(bundle_state);
-        if self.active_pane == ActivePane::Catalog && !self.catalog.is_visible() {
-            self.active_pane = ActivePane::Scrollback;
-        }
-        self.catalog.sync_from_bundle(bundle_state);
-        if self.active_pane == ActivePane::Catalog && !self.catalog.is_visible() {
-            self.active_pane = ActivePane::Scrollback;
-        }
         let viewer_open = self.active_subagent.is_some();
         let dock_on = crate::views::dock::enabled()
             && !viewer_open
@@ -1034,11 +1005,6 @@ impl AgentView {
             0
         } else {
             self.tasks.desired_height(area.height)
-        };
-        let catalog_height = if viewer_open {
-            0
-        } else {
-            self.catalog.desired_height(area.height)
         };
         let todo_height = if viewer_open {
             0
@@ -1077,10 +1043,7 @@ impl AgentView {
         };
         let turn_status_parked = if dock_covers_cues { false } else { parked };
         let wake_display_state = self.wake_display_state();
-        // Workshop: an Engine/Adapter turn shows the same turn-status row a shell turn does.
-        let display_state = wake_display_state
-            .or_else(|| self.workshop_display_state())
-            .unwrap_or(&self.session.state);
+        let display_state = wake_display_state.unwrap_or(&self.session.state);
         let send_now_gap = self.send_now_awaiting_current() && display_state.is_idle();
         let status_state = if send_now_gap {
             crate::app::agent::AgentState::TurnRunning
@@ -1107,6 +1070,12 @@ impl AgentView {
             1
         };
         let voice_recording_height = if voice_listening { 1 } else { 0 };
+        let model_notice = self.session.models.current_notice();
+        let model_notice_height = model_notice.as_ref().map_or(0, |notice| {
+            let text_width =
+                inner_width.saturating_sub(layout_cfg.block_pad_left + layout_cfg.block_pad_right);
+            crate::views::model_notice_banner::height(notice, text_width)
+        });
         let _tool_usage_height = 0u16;
         let btw_height =
             crate::views::btw_overlay::btw_panel_height(self.btw_state.as_ref(), inner_width);
@@ -1139,7 +1108,6 @@ impl AgentView {
             timeline_width,
             prompt_height,
             tasks_height,
-            catalog_height,
             todo_height,
             queue_height,
             btw_height,
@@ -1149,6 +1117,7 @@ impl AgentView {
             follow_ups_height,
             dock_height,
             prompt_gap,
+            model_notice_height,
             voice_recording_height,
             shortcuts_height: 1,
             status_line_height: status_line.height(),
@@ -1177,7 +1146,6 @@ impl AgentView {
         if layout.timeline_width > 0 {
             self.sync_pending_user_input_marks();
             self.scrollback.set_cwd(Some(self.session.cwd.clone()));
-            let _ = self.sync_inline_edit_layout(layout.scrollback_content.width);
             self.scrollback.prepare_layout(
                 layout.scrollback_content.width,
                 layout.scrollback_content.height,
@@ -1336,21 +1304,13 @@ impl AgentView {
                 Line::from(Span::styled(label, mode_style)),
             );
         }
-        // Workshop: an Engine/Adapter connection meters the live model (its own usage and
-        // context window), never the shell placeholder model's numbers; unknown stays hidden.
-        let (ctx_used, ctx_total) = match self.workshop_context {
-            Some((used, limit)) => (used, limit),
-            None => {
-                let model_window = self.session.models.get_context_window();
-                (
-                    self.context_state.as_ref().map(|c| c.used),
-                    self.context_state
-                        .as_ref()
-                        .and_then(|c| (c.total > 0).then_some(c.total))
-                        .or(model_window),
-                )
-            }
-        };
+        let ctx_used = self.context_state.as_ref().map(|c| c.used);
+        let model_window = self.session.models.get_context_window();
+        let ctx_total = self
+            .context_state
+            .as_ref()
+            .and_then(|c| (c.total > 0).then_some(c.total))
+            .or(model_window);
         if let Some(ctx_line) = context_bar::context_bar_line_for_session(
             ctx_used,
             ctx_total,
@@ -1384,11 +1344,12 @@ impl AgentView {
             );
         }
         let dashboard_available = in_dashboard_overlay
-            || self
-                .prompt
-                .slash_controller
-                .registry()
-                .dashboard_dispatchable();
+            || (self.child_link().is_none()
+                && self
+                    .prompt
+                    .slash_controller
+                    .registry()
+                    .dashboard_dispatchable());
         if dashboard_available {
             status.push(
                 "dashboard",
@@ -1430,7 +1391,10 @@ impl AgentView {
             }),
             dropdown_open,
         );
-        let short = crate::util::display_location_path(&self.session.cwd);
+        let location_path = self.location_path().to_string_lossy();
+        let location_path = crate::views::session_title::sanitize_display_text(&location_path);
+        let short =
+            crate::util::display_location_path(std::path::Path::new(location_path.as_ref()));
         let left_budget = areas
             .values()
             .map(|r| r.x)
@@ -1445,7 +1409,10 @@ impl AgentView {
         let location_budget = left_budget.saturating_sub(upgrade_reserve);
         use unicode_width::UnicodeWidthStr;
         let mut location: Vec<Span> = Vec::new();
-        let lazy_git = crate::git_info::cwd_git_info_lazy(&self.session.cwd);
+        let probe_local_git = true;
+        let lazy_git = probe_local_git
+            .then(|| crate::git_info::cwd_git_info_lazy(&self.session.cwd))
+            .flatten();
         let branch = self
             .current_branch
             .clone()
@@ -1536,18 +1503,15 @@ impl AgentView {
         }
         self.hit_upgrade_cta
             .set_unless_dropdown(upgrade_cta_rect, dropdown_open);
-        let mut inline_edit_cursor: Option<(u16, u16)> = None;
         let sticky_gap_row: Option<u16>;
         {
             self.sync_pending_user_input_marks();
             self.scrollback.set_cwd(Some(self.session.cwd.clone()));
-            let inline_edit_dim_from =
-                self.sync_inline_edit_layout(layout.scrollback_content.width);
             self.scrollback.prepare_layout(
                 layout.scrollback_content.width,
                 layout.scrollback_content.height,
             );
-            let rewind_dim_from = self.rewind_dim_from_entry().or(inline_edit_dim_from);
+            let rewind_dim_from = self.rewind_dim_from_entry();
             let sb_focused = self.active_pane == ActivePane::Scrollback && !overlay_focused;
             let search_highlight = if search_active {
                 self.scrollback_search
@@ -1577,12 +1541,6 @@ impl AgentView {
                 sb_rendered.selection_boundaries,
             );
             self.reclamp_drag_head_post_render(false);
-            if self.inline_edit.is_some() {
-                let cursor = self.render_inline_edit(buf, layout.scrollback_content);
-                if self.rewind_state.is_none() {
-                    inline_edit_cursor = cursor;
-                }
-            }
             if search_reserved_rows > 0
                 && let Some(search) = self.scrollback_search.as_ref()
             {
@@ -1862,24 +1820,6 @@ impl AgentView {
             .and_then(|sel| sel.close_button_rect());
             self.hit_bg_close.set(close_rect);
         }
-        if catalog_height > 0 {
-            let cat_focused = self.active_pane == ActivePane::Catalog && !overlay_focused;
-            self.catalog
-                .render(layout.catalog, buf, cat_focused, layout_cfg);
-            let close_rect = agent::render_todo_chrome(
-                buf,
-                layout.catalog,
-                layout_cfg,
-                cat_focused,
-                false,
-                self.hit_catalog_close.hovered,
-                &theme,
-            )
-            .and_then(|sel| sel.close_button_rect());
-            self.hit_catalog_close.set(close_rect);
-        } else {
-            self.hit_catalog_close.clear();
-        }
         if todo_height > 0 {
             let todo_focused = self.active_pane == ActivePane::Todo && !overlay_focused;
             self.todo.render(layout.todo, buf, todo_focused, layout_cfg);
@@ -2109,14 +2049,7 @@ impl AgentView {
                         .tracker
                         .running_execute_tool_call_id()
                         .is_some();
-                let is_pending_user_input = matches!(
-                    self.blocking_card(),
-                    Some(
-                        BlockingCard::Permission
-                            | BlockingCard::Question
-                            | BlockingCard::McpElicitation
-                    )
-                );
+                let is_pending_user_input = self.is_awaiting_user_answer();
                 let goal_verifying = self
                     .goal_state
                     .as_ref()
@@ -2139,13 +2072,7 @@ impl AgentView {
                             watching_hovered: self.hit_watching_cue.hovered,
                         }),
                         has_running_execute,
-                        // Workshop: the `⇣Nk` counter reads the live Engine/Adapter model's usage
-                        // (the same source as the header's context meter), not the frozen shell
-                        // placeholder; unknown stays hidden.
-                        total_tokens: match self.workshop_context {
-                            Some((used, _)) => used,
-                            None => self.context_state.as_ref().map(|c| c.used),
-                        },
+                        total_tokens: self.context_state.as_ref().map(|c| c.used),
                         session_starting_since: self.session_starting_since,
                         is_bash_turn: self.bash_turn,
                         is_pending_user_input,
@@ -2266,6 +2193,17 @@ impl AgentView {
             }
         }
         self.draw_plugin_cta(buf, layout.plugin_cta, &theme);
+        if let Some(notice) = &model_notice {
+            let row = layout.model_notice;
+            let inset = Rect {
+                x: row.x.saturating_add(layout_cfg.block_pad_left),
+                width: row
+                    .width
+                    .saturating_sub(layout_cfg.block_pad_left + layout_cfg.block_pad_right),
+                ..row
+            };
+            crate::views::model_notice_banner::render(inset, buf, notice);
+        }
         if voice_listening && layout.voice_recording.height > 0 && layout.voice_recording.width > 0
         {
             let rec_area = layout.voice_recording;
@@ -2288,26 +2226,18 @@ impl AgentView {
                 dot,
                 Style::default().fg(dot_color).bg(bg),
             );
+            buf.set_string(
+                content_x + 2,
+                rec_area.y,
+                "Recording",
+                Style::default().fg(theme.accent_error).bg(bg),
+            );
             let stop_str = "[stop]";
             let stop_w = unicode_width::UnicodeWidthStr::width(stop_str) as u16;
             let stop_x = rec_area.x
                 + rec_area
                     .width
                     .saturating_sub(layout_cfg.block_pad_right + stop_w);
-            // Workshop overlay: while the local engine downloads or loads its model the row carries
-            // that one progress line (voice-spec §5 rule 6); otherwise the plain "Recording".
-            let label_avail = stop_x.saturating_sub(content_x + 3) as usize;
-            let (label, label_style) = match crate::voice::banner_status() {
-                Some(status) if label_avail > 0 => (
-                    crate::render::line_utils::truncate_str(&status, label_avail),
-                    Style::default().fg(theme.accent_running).bg(bg),
-                ),
-                _ => (
-                    "Recording".to_owned(),
-                    Style::default().fg(theme.accent_error).bg(bg),
-                ),
-            };
-            buf.set_string(content_x + 2, rec_area.y, &label, label_style);
             let stop_fg = if self.hit_voice_stop_button.hovered {
                 theme.accent_error
             } else {
@@ -2343,7 +2273,7 @@ impl AgentView {
             .plan_approval_view
             .as_ref()
             .is_some_and(|pav| pav.focus == PlanApprovalFocus::Commenting);
-        let plan_label: Option<&str> = if effective_plan || casual_commenting {
+        let mode_label: Option<&str> = if effective_plan || casual_commenting {
             let commenting_range: Option<&std::ops::Range<usize>> = if approval_is_commenting {
                 self.plan_approval_view
                     .as_ref()
@@ -2369,7 +2299,7 @@ impl AgentView {
             self.published_mode_label()
         };
         let flags: Vec<PromptFlag> =
-            mode_flags(plan_label, self.session.permission_label(), &theme);
+            mode_flags(mode_label, self.session.permission_label(), &theme);
         let multiline = self.multiline_mode;
         let warning = self.credit_balance.as_ref().and_then(|bal| {
             crate::views::credit_bar::usage_warning_for_session(
@@ -2382,14 +2312,6 @@ impl AgentView {
         let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
         let usage_warning = usage_warning_text.as_deref();
         let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
-        let model_label = match &self.workshop_model_label {
-            // Workshop Engine/Adapter connection: name the runtime, not a shell model.
-            Some(label) => label.clone(),
-            None => match self.session.models.reasoning_effort {
-                Some(eff) => format!("{model_id} ({eff})"),
-                None => model_id,
-            },
-        };
         let info = match &self.prompt_mode {
             PromptMode::Normal => PromptInfo {
                 model_name: &model_label,
@@ -2423,12 +2345,7 @@ impl AgentView {
         };
         let mut prompt_cursor_pos: Option<(u16, u16)> = None;
         let mut prompt_post_flush: Option<crate::terminal::overlay::PostFlush> = None;
-        if password_view_h > 0 {
-            // Draw the masked password card in the composer slot; the status row stays above it.
-            if let Some(ask) = workshop_password {
-                crate::views::workshop_password::render(layout.prompt, buf, &theme, ask);
-            }
-        } else if permission_view_h > 0 {
+        if permission_view_h > 0 {
             let perm_area = layout.prompt;
             if let Some(perm) = self.permission_queue.front() {
                 let followup_text = self.prompt.text();
@@ -3303,6 +3220,8 @@ impl AgentView {
                 .is_some_and(|p| p.focus != PlanApprovalFocus::Preview);
             let overlay_bottom = if layout.turn_status.height > 0 {
                 layout.turn_status.y
+            } else if layout.model_notice.height > 0 {
+                layout.model_notice.y
             } else if layout.voice_recording.height > 0 {
                 layout.voice_recording.y
             } else {
@@ -4403,12 +4322,7 @@ impl AgentView {
                 }
             }
         }
-        let cursor = if self.inline_edit.is_some() {
-            inline_edit_cursor
-        } else {
-            prompt_cursor_pos
-        };
-        (cursor, prompt_post_flush)
+        (prompt_cursor_pos, prompt_post_flush)
     }
 }
 /// Draw one ▼/▲ scroll-indicator arrow centered on row `y`, or clear its hit area when hidden (`y: None`).
@@ -4553,7 +4467,6 @@ mod voice_recording_overlay_tests {
     use super::super::test_fixtures::make_plan_approval_view_state;
     use super::AgentView;
     use crate::actions::ActionRegistry;
-    use crate::app::bundle::BundleState;
     use crate::scrollback::render::ScratchBuffer;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -4579,7 +4492,6 @@ mod voice_recording_overlay_tests {
             None,
             false,
             crate::app::agent_view::BannerSlotParams::none(),
-            &BundleState::default(),
             false,
             &mut Vec::new(),
             super::AppRenderParams {
@@ -4624,7 +4536,6 @@ mod voice_recording_overlay_tests {
 mod overlay_cycle_hint_tests {
     use super::super::test_fixtures::make_agent;
     use crate::actions::ActionRegistry;
-    use crate::app::bundle::BundleState;
     use crate::scrollback::render::ScratchBuffer;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -4664,7 +4575,6 @@ mod overlay_cycle_hint_tests {
             None,
             false,
             crate::app::agent_view::BannerSlotParams::none(),
-            &BundleState::default(),
             true,
             &mut Vec::new(),
             super::AppRenderParams {
@@ -4759,7 +4669,6 @@ mod overlay_cycle_hint_tests {
                 pending,
                 false,
                 crate::app::agent_view::BannerSlotParams::none(),
-                &BundleState::default(),
                 true,
                 &mut Vec::new(),
                 super::AppRenderParams {
@@ -4800,7 +4709,6 @@ mod overlay_cycle_hint_tests {
 mod overlay_post_flush_tests {
     use super::super::test_fixtures::make_agent;
     use crate::actions::ActionRegistry;
-    use crate::app::bundle::BundleState;
     use crate::scrollback::render::ScratchBuffer;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -4817,7 +4725,6 @@ mod overlay_post_flush_tests {
                 None,
                 false,
                 crate::app::agent_view::BannerSlotParams::none(),
-                &BundleState::default(),
                 false,
                 &mut Vec::new(),
                 super::AppRenderParams::default(),
@@ -4950,7 +4857,6 @@ mod status_line_draw_tests {
     use super::super::test_fixtures::make_agent;
     use super::AgentView;
     use crate::actions::ActionRegistry;
-    use crate::app::bundle::BundleState;
     use crate::scrollback::render::ScratchBuffer;
     use crate::views::question_view::QuestionViewState;
     use crate::views::status_line::{SanitizedText, StatusLineDisplay, StatusLineFrame};
@@ -4975,7 +4881,6 @@ mod status_line_draw_tests {
             None,
             false,
             crate::app::agent_view::BannerSlotParams::none(),
-            &BundleState::default(),
             false,
             &mut Vec::new(),
             super::AppRenderParams {

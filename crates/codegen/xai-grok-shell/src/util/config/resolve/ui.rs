@@ -37,7 +37,7 @@ pub fn resolve_show_thinking_blocks(
     resolve_ui_bool(
         ENV_SHOW_THINKING_BLOCKS,
         "show_thinking_blocks",
-        false,
+        true,
         requirements,
         user,
         managed,
@@ -170,20 +170,11 @@ mod show_thinking_blocks_tests {
     }
 
     #[test]
-    fn defaults_off_when_nothing_set() {
+    fn defaults_on_when_nothing_set() {
         let _g = guard();
         let r = resolve_show_thinking_blocks(None, None, None, None);
-        assert!(!r.value, "thinking blocks must default OFF");
+        assert!(r.value, "thinking blocks must default ON");
         assert_eq!(r.source, ConfigSource::Default);
-    }
-
-    #[test]
-    fn user_config_turns_it_on() {
-        let _g = guard();
-        let on = toml_ui(true);
-        let r = resolve_show_thinking_blocks(None, Some(&on), None, None);
-        assert!(r.value);
-        assert_eq!(r.source, ConfigSource::Config);
     }
 
     #[test]
