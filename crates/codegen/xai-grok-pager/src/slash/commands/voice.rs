@@ -26,14 +26,9 @@ impl SlashCommand for VoiceCommand {
     }
 
     fn description(&self) -> &str {
-        // Chord is Ctrl+Space or F8
-        // Without key releases hold-to-talk is impossible, so the label says "Toggle"
-        // With them the mode is configurable (toggle or hold via `voice_capture_mode`), so the label leaves the behavior unspecified
-        if crate::app::kitty_releases_reported() {
-            "Dictation (Ctrl+Space/F8; Esc/Enter to stop)"
-        } else {
-            "Toggle dictation (Ctrl+Space/F8; Esc/Enter to stop)"
-        }
+        // Workshop: `//` on an empty composer starts, `//` again stops (a toggle on every terminal);
+        // the Ctrl+Space / F8 chord and Esc / Enter keep their upstream behavior.
+        "Dictation: // start \u{b7} // stop (or Ctrl+Space/F8; Esc/Enter to stop)"
     }
 
     fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
