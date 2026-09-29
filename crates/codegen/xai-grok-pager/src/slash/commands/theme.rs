@@ -116,7 +116,7 @@ impl SlashCommand for ThemeCommand {
         }
 
         // Named theme (including "auto"): parse and dispatch.
-        // Truecolor-only themes are accepted on any terminal; `Theme::apply_kind` clamps the live colors as needed
+        // Truecolor-only themes are accepted on any terminal; below truecolor `Theme::current` quantizes them
         match ThemeKind::from_name(trimmed) {
             Some(kind) => {
                 // An alias normalises to the canonical `display_name`
@@ -270,8 +270,8 @@ mod tests {
             let items = cmd.suggest_args(&ctx, "").expect("should return items");
             let groknight = items
                 .iter()
-                .find(|i| i.insert_text == "groknight")
-                .expect("groknight should be in list");
+                .find(|i| i.insert_text == "night")
+                .expect("night should be in list");
             assert!(
                 groknight.description.contains("(active)"),
                 "explicit theme should show (active), got: {}",
@@ -333,7 +333,7 @@ mod tests {
             let mut matcher = crate::slash::matcher::FuzzyMatcher::new();
             for (alias, canonical) in [
                 ("transparent", "terminal"),
-                ("dark", "groknight"),
+                ("dark", "night"),
                 ("system", "auto"),
             ] {
                 let hits = matcher.rank(&items, alias, items.len(), |item| &item.match_text);
@@ -370,10 +370,10 @@ mod tests {
                     ..crate::settings::PagerLocalSnapshot::default()
                 },
             };
-            let result = cmd.run(&mut ctx, "groknight");
+            let result = cmd.run(&mut ctx, "night");
             match result {
                 CommandResult::Action(Action::SetTheme(name)) => {
-                    assert_eq!(name, "groknight");
+                    assert_eq!(name, "night");
                 }
                 other => panic!("expected Action::SetTheme(\"groknight\"), got {other:?}"),
             }
@@ -534,7 +534,7 @@ mod tests {
             let result = cmd.run(&mut ctx, "dark");
             match result {
                 CommandResult::Action(Action::SetTheme(name)) => {
-                    assert_eq!(name, "groknight", "alias must normalise to canonical");
+                    assert_eq!(name, "night", "alias must normalise to canonical");
                 }
                 other => panic!("expected Action::SetTheme(\"groknight\"), got {other:?}"),
             }
@@ -559,7 +559,7 @@ mod tests {
         with_test_env(|| {
             theme_cache::set(ThemeKind::GrokNight);
             let cmd = ThemeCommand;
-            cmd.preview_arg("grokday");
+            cmd.preview_arg("day");
             assert_eq!(Theme::current_kind(), ThemeKind::GrokDay);
         });
     }
@@ -586,11 +586,11 @@ mod tests {
             theme_cache::set(ThemeKind::GrokNight);
             let cmd = ThemeCommand;
             // Simulate user navigating into a different theme during preview.
-            cmd.preview_arg("grokday");
+            cmd.preview_arg("day");
             assert_eq!(Theme::current_kind(), ThemeKind::GrokDay);
 
             // Then Escape (or arg picker dismissal): restore.
-            cmd.cancel_preview("groknight");
+            cmd.cancel_preview("night");
             assert_eq!(
                 Theme::current_kind(),
                 ThemeKind::GrokNight,
@@ -667,8 +667,8 @@ mod tests {
                 CommandResult::Action(Action::SetTheme(name)) => {
                     assert_eq!(
                         name, "tokyonight",
-                        "truecolor themes must be accepted; clamping happens \
-                         downstream in `Theme::apply_kind`",
+                        "truecolor themes must be accepted; below truecolor \
+                         `Theme::current` quantizes them",
                     );
                 }
                 other => panic!("expected Action::SetTheme(\"tokyonight\"), got {other:?}"),
