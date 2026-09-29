@@ -1,8 +1,8 @@
 diff --git a/crates/codegen/xai-grok-login/src/config.rs b/crates/codegen/xai-grok-login/src/config.rs
-index adc40cd4..bcebf0cc 100644
+index 70a83ad1ac5cfaae68e3191867fe2f7f7942a4fc..b8eed692a1a5d71a97d9a1915d2e3f65d5621007 100644
 --- a/crates/codegen/xai-grok-login/src/config.rs
 +++ b/crates/codegen/xai-grok-login/src/config.rs
-@@ -191,10 +191,28 @@ impl GrokComConfig {
+@@ -321,10 +321,28 @@ impl GrokComConfig {
          } else if let Some(ref oauth2) = self.oauth2 {
              oauth2.auth_scope()
          } else {
@@ -32,7 +32,7 @@ index adc40cd4..bcebf0cc 100644
  impl OAuth2ProviderConfig {
      pub fn is_team_principal(&self) -> bool {
          self.principal_type.as_deref() == Some(TEAM_PRINCIPAL_TYPE)
-@@ -237,23 +255,31 @@ impl OAuth2ProviderConfig {
+@@ -367,23 +385,31 @@ impl OAuth2ProviderConfig {
      pub fn auth_scope(&self) -> String {
          self.base_auth_scope()
      }
@@ -72,13 +72,13 @@ index adc40cd4..bcebf0cc 100644
 -            )
 +            OAuth2ProviderConfig::from_env()
          };
-         Self {
+         let mut config = Self {
              grok_ws_origin: std::env::var("GROK_WS_ORIGIN")
 diff --git a/crates/codegen/xai-grok-login/src/flow.rs b/crates/codegen/xai-grok-login/src/flow.rs
-index 4607a00d..fa2bb8a2 100644
+index c4267b68fdd083f068276b1e942e8daafafdc929..b429f4657c8154a471caab2c48aad48ce5fb7187 100644
 --- a/crates/codegen/xai-grok-login/src/flow.rs
 +++ b/crates/codegen/xai-grok-login/src/flow.rs
-@@ -1391,7 +1391,8 @@ mod tests {
+@@ -1408,7 +1408,8 @@ mod tests {
              !cli_should_use_device(&cfg, None, LoginTransportOverride::ForceDevice, "").await,
              "enterprise OIDC must stay on loopback"
          );
@@ -88,7 +88,7 @@ index 4607a00d..fa2bb8a2 100644
          assert!(xai.oauth2.is_some() && xai.oidc.is_none());
          assert!(cli_should_use_device(&xai, None, LoginTransportOverride::ForceDevice, "").await);
      }
-@@ -1554,12 +1555,13 @@ mod tests {
+@@ -1552,12 +1553,13 @@ mod tests {
      }
      #[test]
      fn weblogin_cred_is_never_compatible() {
@@ -104,7 +104,7 @@ index 4607a00d..fa2bb8a2 100644
          assert!(is_cached_credential_compatible(
              &oidc_auth(XAI_OAUTH2_ISSUER),
              &cfg,
-@@ -1567,7 +1569,7 @@ mod tests {
+@@ -1565,7 +1567,7 @@ mod tests {
      }
      #[test]
      fn external_cred_compatibility_follows_issuer() {
@@ -113,7 +113,7 @@ index 4607a00d..fa2bb8a2 100644
          assert!(is_cached_credential_compatible(
              &GrokAuth {
                  auth_mode: AuthMode::External,
-@@ -1747,7 +1749,7 @@ mod tests {
+@@ -1745,7 +1747,7 @@ mod tests {
      #[tokio::test]
      async fn run_auth_flow_falls_through_when_no_refresh_token() {
          let dir = tempfile::tempdir().unwrap();
@@ -123,7 +123,7 @@ index 4607a00d..fa2bb8a2 100644
          let writer = Arc::new(
              AuthManager::new(dir.path(), cfg.clone()).with_proxy_base_url("http://127.0.0.1:1"),
 diff --git a/crates/codegen/xai-grok-login/src/manager_tests.rs b/crates/codegen/xai-grok-login/src/manager_tests.rs
-index 2b9423b0..d4aca8a5 100644
+index 96b43a651414e28aa9c0c17210b9654aacade6a8..7700f4a6f64d05e3ad20ce1c985b320d800d6c30 100644
 --- a/crates/codegen/xai-grok-login/src/manager_tests.rs
 +++ b/crates/codegen/xai-grok-login/src/manager_tests.rs
 @@ -155,7 +155,13 @@ fn has_usable_token_covers_memory_and_disk() {
