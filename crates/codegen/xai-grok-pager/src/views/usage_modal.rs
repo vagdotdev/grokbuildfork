@@ -87,9 +87,6 @@ pub struct UsageInfoModalState {
     pub ctx: UsageInfoContext,
     pub context: Option<ContextInfoBlock>,
     pub context_error: Option<String>,
-    /// Workshop: the "Context usage" tab for an Engine/Adapter connection — the live model's
-    /// numbers (or that they are not known yet), replacing the shell placeholder's snapshot.
-    pub context_override: Option<Vec<String>>,
     /// Structured `/session-info` rows, built upstream from typed session data (never by re-parsing a formatted string).
     pub session_fields: Option<Vec<SessionInfoField>>,
     pub session_error: Option<String>,
@@ -147,7 +144,6 @@ impl UsageInfoModalState {
             ctx,
             context: None,
             context_error: None,
-            context_override: None,
             session_error: None,
             session_usage_text: None,
             billing_loading: false,
@@ -739,21 +735,6 @@ fn muted_line(theme: &Theme, s: impl Into<String>) -> Line<'static> {
 }
 
 fn context_tab_lines(state: &UsageInfoModalState, theme: &Theme, width: u16) -> Vec<Line<'static>> {
-    if let Some(lines) = &state.context_override {
-        return lines
-            .iter()
-            .enumerate()
-            .map(|(i, l)| {
-                if i == 0 {
-                    Line::styled(l.clone(), header_style(theme))
-                } else if l.starts_with('·') {
-                    muted_line(theme, l.clone())
-                } else {
-                    plain(theme, l.clone())
-                }
-            })
-            .collect();
-    }
     if let Some(error) = &state.context_error {
         return vec![muted_line(
             theme,

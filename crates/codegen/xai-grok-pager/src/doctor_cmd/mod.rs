@@ -87,7 +87,6 @@ fn collect_report_with(
 ) -> DiagnosticReport {
     let mut report = crate::diagnostics::view(snapshot.into());
     crate::diagnostics::apply_voice_probe(&mut report, true);
-    crate::diagnostics::apply_engine_probe(&mut report);
     report
 }
 

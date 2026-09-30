@@ -6,6 +6,7 @@ use super::ScreenMode;
 use crate::acp::model_state::ModelState;
 use crate::actions::{ActionId, ActionRegistry, When};
 use crate::app::consent::ConsentState;
+pub use crate::app::voice_state::{Partial, VoiceState, VoiceTarget};
 use crate::appearance::AppearanceConfig;
 use crate::input::KeyboardNormalizer;
 use crate::input::key::KeyShortcut;
@@ -261,74 +262,6 @@ fn reconnect_success_hides_mismatch(current: Option<&str>, incoming: &str) -> bo
     current.is_some_and(crate::acp::is_version_mismatch_banner)
         && (incoming.starts_with("Reconnected.") || incoming.starts_with("Session restored."))
 }
-/// Which prompt box in-flight voice dictation appends its finalized text to.
-/// Captured when recording **starts** so a trailing STT final still lands where the user was dictating.
-/// That holds even if they navigate away, or toggle a dashboard row's peek panel, mid-utterance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VoiceTarget {
-    /// A live agent session's prompt box.
-    Agent(AgentId),
-    /// The dashboard's new-agent dispatch input (no row peek was open at start).
-    DashboardDispatch,
-    /// The dashboard's peek reply input, bound to the agent whose peek was open at start.
-    /// The id pins the row: selecting a different row mid-utterance stops capture (the reply widget is shared and clears on row change).
-    /// A final therefore can't land on the wrong agent's reply.
-    DashboardPeekReply(AgentId),
-}
-/// The mic-live, start-queued, Ctrl+Space-hold, and finals-target facts can thus never disagree; as separate booleans they repeatedly drifted apart.
-/// `hold` marks a session begun by a Ctrl+Space hold-press: its matching Ctrl+Space release ends it (and only it).
-/// `/voice` and toggle sessions leave `hold` false so a Ctrl+Space release can't touch them.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum VoiceState {
-    /// No dictation in flight.
-    #[default]
-    Idle,
-    /// A start was requested before the lazy pipeline existed; the event loop spawns it once and then opens the mic.
-    ColdStart { hold: bool, target: VoiceTarget },
-    /// Mic is open and streaming audio to STT.
-    Recording {
-        hold: bool,
-        target: VoiceTarget,
-        interim: Option<String>,
-    },
-    /// Capture was explicitly stopped (Esc / Ctrl+Space / [stop] / Ctrl+Space release).
-    /// The target (and the last interim) are kept so a trailing STT final still lands without the overlay flickering in the meantime.
-    Stopping {
-        target: VoiceTarget,
-        interim: Option<String>,
-    },
-}
-impl VoiceState {
-    /// Mic is live (the `Recording` state).
-    pub fn listening(&self) -> bool {
-        matches!(self, Self::Recording { .. })
-    }
-    /// A start is queued for the lazy pipeline (the `ColdStart` state).
-    pub fn pending_cold_start(&self) -> bool {
-        matches!(self, Self::ColdStart { .. })
-    }
-    /// The prompt box that owns this session's dictation, if any.
-    pub fn target(&self) -> Option<VoiceTarget> {
-        match self {
-            Self::ColdStart { target, .. }
-            | Self::Recording { target, .. }
-            | Self::Stopping { target, .. } => Some(*target),
-            Self::Idle => None,
-        }
-    }
-    /// The live partial transcript shown in the prompt overlay, if any.
-    pub fn interim(&self) -> Option<&str> {
-        match self {
-            Self::Recording { interim, .. } | Self::Stopping { interim, .. } => interim.as_deref(),
-            _ => None,
-        }
-    }
-    /// Whether a hold-press owns the current session (so its key release ends it).
-    /// `/voice` and toggle-style starts leave this false.
-    pub(crate) fn hold(&self) -> bool {
-        matches!(self, Self::ColdStart { hold, .. } | Self::Recording { hold, .. } if *hold)
-    }
-}
 /// Entry from the session list wire: welcome/resume pickers and non-leader dashboard roster fallback (`session_picker_entry_to_roster`).
 #[derive(Debug, Clone)]
 pub struct SessionPickerEntry {
@@ -516,9 +449,8 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
 /// Slash commands unavailable on the free and X Basic subscription tiers.
 /// To restrict another command for these tiers, add its canonical name (no leading `/`) here.
 /// Matching covers aliases automatically via [`crate::slash::registry::CommandRegistry::set_restricted_commands`].
-/// Workshop overlay: `voice` is not listed. Dictation runs on the local engine with no account or
-/// tier; only the opt-in xAI voice provider is tier-gated (see [`AppView::is_voice_tier_restricted`]).
-pub(crate) const TIER_RESTRICTED_COMMANDS: &[&str] = &["usage", "imagine", "imagine-video"];
+pub(crate) const TIER_RESTRICTED_COMMANDS: &[&str] =
+    &["usage", "imagine", "imagine-video", "voice"];
 /// Whether a subscription-tier display name is a tier with restricted commands: the free tier and X Basic.
 /// Free covers no subscription (`None`) or an explicit "Free"; X Basic covers CCP display name "X Basic" with JWT claim fallback "x_basic".
 /// The pager's *cosmetic* slash-command gate treats an absent tier (`None`) as restricted (it recovers live on the next settings update).
@@ -550,6 +482,18 @@ pub struct PendingCodingDataWrite {
     /// What a failure reverts to: the click-time mirror (possibly the unconfirmed fail-safe default), overwritten by an auth-meta refresh or a superseded write's success.
     /// Replies are not ordered by server commit, so a late older success can still overwrite a newer value here.
     pub rollback_to_opted_in: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthIdentity {
+    pub email: Option<String>,
+    pub team_id: Option<String>,
+    pub team_principal: bool,
+}
+impl AuthIdentity {
+    /// An absent email never matches: two users without one would otherwise compare equal.
+    pub fn matches(&self, other: &AuthIdentity) -> bool {
+        self.email.is_some() && self == other
+    }
 }
 /// Root view component: owns all application state.
 pub struct AppView {
@@ -615,7 +559,7 @@ pub struct AppView {
     /// Tracing log channel receiver. Set by the event loop after `init_tracing()`.
     /// Drained into `tracing_pane` each tick in debug/dev builds; otherwise drained-and-discarded.
     pub tracing_rx: Option<crate::tracing::LogRx>,
-    /// Scroll-diagnostics HUD (`GROK_SCROLL_DEBUG` env / `/scroll-debug`).
+    /// Scroll-diagnostics HUD (`GROK_SCROLL_DEBUG` env / `/debug scroll`).
     /// Release-compiled behind its runtime gate; see the module doc.
     pub scroll_debug_hud: crate::views::scroll_debug_hud::ScrollDebugHud,
     /// Release-safe FPS HUD (`/debug fps`; `GROK_FPS` env on release builds, where the dev overlay is compiled out); see the module doc.
@@ -747,15 +691,6 @@ pub struct AppView {
     /// When true the event loop ensures the pager renders raw control codes (`less -R`) so the colors show instead of literal escapes.
     /// Plain-text transcripts (`/export` markdown) leave this false.
     pub pending_pager_ansi: bool,
-    /// Workshop: a vendor CLI login (`claude auth login`, …) to run attached to the user's terminal
-    /// through the same suspend/resume path as the external editor; consumed by the event loop.
-    pub pending_workshop_login: Option<(workshop_detect::Rail, Vec<String>)>,
-    /// Workshop: the vendor CLI installer the user pressed Enter on, while it runs (one at a time);
-    /// the picker's status line follows its output every tick.
-    pub workshop_rail_install: Option<crate::app::workshop::RailInstall>,
-    /// Workshop: the background voice setup (helper, then speech model) once started this
-    /// process; `/voice` reads its status while voice is not ready yet.
-    pub workshop_voice_prefetch: Option<workshop_voice::prefetch::Shared>,
     /// Minimal mode only: the Ctrl+T **force-show** pin for the todo panel.
     /// Minimal-mode-only per-session state, consolidated into a single field so the central `AppView` isn't peppered with loose minimal flags.
     /// Default-empty and inert outside `--minimal`; the `xai-grok-pager-minimal` crate reads/mutates it through the `crate::minimal_api` accessors.
@@ -764,15 +699,9 @@ pub struct AppView {
     pub welcome_menu_index: Option<usize>,
     /// Hit-test rects for welcome menu items (populated during render).
     pub welcome_menu_rects: Vec<ratatui::layout::Rect>,
-    /// Whether the welcome menu currently includes a "Release notes" row (above Quit).
+    /// Whether the welcome menu currently includes a "Changelog" row (above Quit).
     /// Set during render; the input handler uses it to size the menu and map the extra row to the release-notes action.
     pub welcome_show_changelog_action: bool,
-    /// Whether the welcome menu currently includes the "Resume session" row (Workshop hides it
-    /// while this directory has nothing to resume). Set during render.
-    pub welcome_show_resume_action: bool,
-    /// Workshop: whether this directory has a session worth resuming, probed once per launch by
-    /// the first welcome frame that asks (the answer cannot change while the home screen is up).
-    pub welcome_has_resumable_sessions: std::cell::OnceCell<bool>,
     /// Hit-test rect for the import-claude banner on the welcome screen.
     pub welcome_import_banner_rect: Option<ratatui::layout::Rect>,
     /// Last known mouse position (column, row), updated on every Mouse event.
@@ -888,13 +817,9 @@ pub struct AppView {
     pub session_picker_pending_delete: Option<crate::views::session_picker::PendingDelete>,
     /// Tick counter for welcome screen spinner animation.
     pub welcome_tick: u64,
-    /// Workshop: the frame of the hero donut's loop the welcome screen shows. Advances one frame
-    /// per slow tick (~12 fps) while [`Self::welcome_hero_spins`]; holds its frame otherwise, so
-    /// the mark resumes where it paused instead of jumping.
-    pub welcome_hero_frame: u32,
-    /// Workshop: the last welcome paint spun the hero (wide layout, logo shown, animation on), as
-    /// reported by the renderer. Off until the first paint and whenever the resting frame is drawn.
-    pub welcome_hero_animating: bool,
+    /// Last shimmer frame drawn on the welcome screen.
+    /// Lets `tick` throttle the wall-clock logo animation to a few fps instead of the full tick rate.
+    pub welcome_shimmer_frame: u64,
     /// CLI model override (`-m` / `--model`).
     /// Seeded into every new `AgentSession.deferred_model_switch` so the model is applied once the session is created.
     pub cli_model_override: Option<acp::ModelId>,
@@ -974,7 +899,7 @@ pub struct AppView {
     /// One-shot gate for the small-screen `/compact-mode` tip: set after the first evaluation at a stable agent-view draw (regardless of outcome).
     /// Later resizes thus can never re-trigger the tip within this run.
     pub small_screen_tip_evaluated: bool,
-    /// One-shot gate for the SSH `workshop wrap` tip: set after the first evaluation at a stable agent-view draw.
+    /// One-shot gate for the SSH `grok wrap` tip: set after the first evaluation at a stable agent-view draw.
     /// The environment gates are process-constant, so one evaluation decides the run.
     pub ssh_wrap_tip_evaluated: bool,
     /// State for the clipboard-image tip, polled opportunistically and only while the terminal is focused.
@@ -1004,6 +929,8 @@ pub struct AppView {
     pub auth_methods: Vec<acp::AuthMethod>,
     /// Authentication state for the welcome screen login flow.
     pub auth_state: AuthState,
+    /// Set by `/logout` until the shell answers, while `auth_state` still reads `Done`
+    pub logout_pending: bool,
     /// Folder-trust state for the welcome screen.
     /// Mirrors [`AppView::auth_state`]: when `Pending`, the welcome screen shows the trust question.
     /// Session creation is deferred (gated after auth) until it is answered.
@@ -1029,106 +956,22 @@ pub struct AppView {
     pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
     /// Whether deferred welcome-screen login should force OAuth.
     pub auth_use_oauth: bool,
-    /// Workshop connection picker, open when `Some`. It is the only default auth surface: Login,
-    /// welcome `l`, `/login`, `/auth`, `/models` and first run all open it. Rendered on the welcome
-    /// view; keys are routed to it while open.
-    pub connection_picker: Option<workshop_auth::PickerState>,
-    /// Workshop: a `sudo` password one of the engine's commands is waiting for — the masked
-    /// prompt above the composer owns every key while it is up.
-    pub workshop_password_ask: Option<crate::app::workshop_askpass::PendingPassword>,
-    /// Workshop: which runtime prompts are routed through (shell loop, OpenCode engine, or a
-    /// vendor CLI adapter). Set by the picker; `Shell` is the default.
-    pub workshop_connection: crate::app::workshop::WorkshopConnection,
-    /// Workshop: the running OpenCode engine (`opencode serve`), started lazily on the first
-    /// Engine-connection turn and reused across turns. `None` until then. Adapter (CLI) turns keep
-    /// no long-lived handle — each turn spawns the vendor CLI fresh with a persisted resume id.
-    pub workshop_engine: Option<std::sync::Arc<workshop_adapters::opencode_engine::OpenCodeEngine>>,
-    /// Workshop: the process-wide engine slot the startup warm-up and every turn share, so the
-    /// first message reuses the server the warm-up started (or waits for it) instead of starting
-    /// a second one.
-    pub workshop_engine_slot: crate::app::workshop::EngineSlot,
-    /// Set once the engine warm-up has started for this process (at launch with an engine model
-    /// active, else on the first typed character after one is picked).
-    pub workshop_engine_warm_started: bool,
-    pub workshop_engine_session: Option<String>,
-    /// Tool calls of the current Workshop turn still running, oldest first, as `(call id,
-    /// activity)`: the turn-status row shows the newest one until it finishes, then the wait for
-    /// the model again.
-    pub workshop_turn_running: Vec<(String, crate::acp::tracker::TurnActivity)>,
-    /// The current Workshop turn has shown a failure line: its end gets no `Worked for …` marker.
-    pub workshop_turn_errored: bool,
-    /// Workshop: the prompt of the last Engine/Adapter turn, kept so Enter on an empty composer
-    /// can retry it after a failure.
-    pub workshop_last_prompt: Option<String>,
-    /// True while an Engine/Adapter turn streams; a second submit is rejected and Esc/Ctrl-C cancels.
-    pub workshop_turn_active: bool,
-    /// Sender the event loop installs once so submit handlers can stream a turn's events back into
-    /// the loop's Workshop `select!` arm. `None` outside the interactive loop (headless, tests).
-    pub workshop_turn_tx:
-        Option<tokio::sync::mpsc::UnboundedSender<crate::app::workshop::WorkshopTurnMsg>>,
-    /// Cancel signal for the in-flight turn (Esc / Ctrl-C → abort/kill).
-    pub workshop_turn_cancel: Option<tokio::sync::watch::Sender<bool>>,
-    /// The streaming assistant block for the current turn, appended to as deltas arrive.
-    pub workshop_turn_stream_entry: Option<crate::scrollback::EntryId>,
-    /// The streaming thinking block of the current turn (the model's reasoning), finished when
-    /// the answer or a tool call starts so reasoning never runs into the answer.
-    pub workshop_turn_thinking_entry: Option<crate::scrollback::EntryId>,
-    /// Agent whose scrollback the current turn renders into.
-    pub workshop_turn_agent: Option<crate::app::agent::AgentId>,
-    /// The user bubble of the current Engine/Adapter turn (dropped when the turn is resent on the
-    /// Kilo fallback).
-    pub workshop_turn_prompt_entry: Option<crate::scrollback::EntryId>,
-    /// Workshop: the prompt whose OpenCode turn could not start, held until the silent fallback
-    /// model has been activated (`AuthComplete`), then resent through the shell — no notice.
-    pub workshop_resend: Option<(crate::app::agent::AgentId, String)>,
-    /// Workshop: the silent fallback is carrying this session's turns (the OpenCode model could not
-    /// start or answer); holds the answering model's plain name for the composer. Cleared when the
-    /// user picks a connection or the fallback fails too.
-    pub workshop_fallback: Option<String>,
-    /// Workshop: when the original engine turn started, captured as it hands over to the silent
-    /// fallback so the resent turn's `Worked for …` counts from the user's prompt, not from the
-    /// fallback. Consumed by the resent turn's `PromptResponse`.
-    pub workshop_fallback_prompt_at: Option<std::time::Instant>,
-    /// Workshop: this launch created the home (nothing was ever connected before), so the composer
-    /// carries the `/model to switch · /auth to connect subscriptions` hint.
-    pub workshop_first_launch: bool,
-    /// Tool rows of the current Engine/Adapter turn by the backend's call id, so the result
-    /// (diff, output, exit code) lands on the row that announced the call.
-    pub workshop_turn_tools: std::collections::HashMap<String, crate::scrollback::EntryId>,
-    /// The tool name and input behind each row in `workshop_turn_tools`, kept until the result
-    /// arrives (the finished row is built from input + result together).
-    pub workshop_turn_tool_inputs:
-        std::collections::HashMap<crate::scrollback::EntryId, (String, serde_json::Value)>,
-    /// Prompts submitted while an Engine/Adapter turn was running, oldest first; each becomes
-    /// its own turn when the running one ends.
-    pub workshop_turn_queue: std::collections::VecDeque<String>,
-    /// Permission answers of the current engine turn by tool call id: a call that asks twice
-    /// (`external_directory`, then `bash`) is answered once by the user and once from here.
-    pub workshop_turn_decided_calls:
-        std::collections::HashMap<String, workshop_adapters::opencode_engine::PermissionReply>,
-    /// Workshop: the engine's last reported token usage for the active session (`Some` once the
-    /// first turn finished a step), what the context meter shows against the model's limit.
-    pub workshop_context_used: Option<u64>,
-    /// Workshop: the engine conversation a launch (`--resume`, `-c`) or the picker asked to
-    /// resume; replayed into the next agent created and then continued on the same session.
-    pub workshop_engine_resume: Option<crate::app::workshop_sessions::EngineSession>,
-    /// Workshop: what the current engine turn produced so far (answer text, reasoning, tool calls
-    /// with results), written to the engine session record when the turn ends.
-    pub workshop_turn_record: Vec<crate::app::workshop_sessions::Item>,
-    /// Workshop: the prompt of the current engine turn, for its record.
-    pub workshop_turn_prompt_text: Option<String>,
     /// Delivery state from the last clipboard copy during auth.
     pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     /// Generation of the current auth copy feedback and its clear timer.
     pub auth_clipboard_feedback_generation: u64,
-    /// Team principal UUID from auth (`None` for personal sessions).
+    /// Team id from the token: the team principal's id, or a personal account's billing team.
     pub team_id: Option<String>,
+    /// The credential is a team principal, so `/user` can resolve `can_administer_team`. A personal account never resolves it.
+    pub is_team_principal: bool,
     /// Team name from auth (displayed in the shortcuts bar).
     pub team_name: Option<String>,
     /// Whether the user's team has enterprise Zero Data Retention enabled.
     pub is_zdr: bool,
-    /// Team role (e.g. "Admin", "Member", "Read Only") for access-control checks.
+    /// Team role from auth (e.g. "Admin", "Member").
     pub team_role: Option<String>,
+    /// Advisory `canAdministerTeam` from auth meta. `None` is unknown, never false.
+    pub can_administer_team: Option<bool>,
     /// Whether the user has opted out of coding data retention.
     pub coding_data_retention_opt_out: bool,
     /// Remote settings `privacy_notice_rollout` (cohort on for this user).
@@ -1148,6 +991,8 @@ pub struct AppView {
     /// Persisted `[toolset.ask_user_question].timeout_enabled` mirror, seeded from the effective TOML merge like `show_tips`.
     /// `None` means unset in TOML (default `true`); toggles write the user layer.
     pub ask_user_question_timeout_enabled: Option<bool>,
+    /// `[features].subagent_model_inheritance` as the settings modal shows it: the saved user key plus the tiers seeded at startup.
+    pub subagent_model_inheritance: crate::settings::FeatureOverrideState,
     /// Whether ZDR users are allowed to use the product.
     /// Server-controlled via RemoteSettings (remote settings). Default `false` (blocked) during beta.
     pub zdr_access_enabled: bool,
@@ -1184,9 +1029,6 @@ pub struct AppView {
     /// Latest version string from a background update check.
     /// Set when a newer version is detected; rendered as a notification on the welcome screen.
     pub pending_update_version: Option<String>,
-    /// Workshop: set on the first launch after the silent updater installed this version; the
-    /// welcome screen says "Updated to <version>" once.
-    pub workshop_updated_to: Option<String>,
     /// When true, the event loop should exit so the user can relaunch to pick up the downloaded update.
     pub quit_for_update: bool,
     /// Printed to stderr after terminal restore when Welcome yes could not save trust.
@@ -1231,6 +1073,8 @@ pub struct AppView {
     /// When false (remote kill switch or `GROK_VOICE_MODE=0`) the STT pipeline is not started and session voice mode cannot turn on.
     /// Unit tests leave this false until they call [`Self::apply_voice_mode_enabled`].
     pub voice_mode_enabled: bool,
+    /// What this build may do. Tests set it; everything else takes [`Distribution::current`].
+    pub distribution: xai_grok_config::Distribution,
     /// Session UI mode from `/voice` (this CLI process only, not in config.toml).
     /// When true and the pipeline is up, the in-prompt dictation overlay can show and capture may start.
     /// Cleared on exit or when the remote flag turns off.
@@ -1246,6 +1090,15 @@ pub struct AppView {
     /// One state at a time, so inconsistent combinations are unrepresentable.
     /// Production mutates it only through the `AppView::voice_*` transition methods.
     pub voice_state: VoiceState,
+    /// Minted per press; the pipeline stamps events with it and [`crate::voice::handle_tagged_voice_event`] drops
+    /// older ones.
+    pub voice_session: xai_grok_voice::VoiceSessionId,
+    /// The session the last press superseded while it was stopping, and its target: its one trailing final is
+    /// still let through (the last sentence of the previous dictation), where every other stale event is dropped.
+    pub voice_trailing_final: Option<(xai_grok_voice::VoiceSessionId, VoiceTarget)>,
+    /// When an outstanding clip (stopped or uploading) is given up on if its final never arrives; see
+    /// [`AppView::voice_expire_outstanding_clip`].
+    pub voice_clip_deadline: Option<Instant>,
 }
 /// Reshow window elapsed? None or 0 means never. Unparseable ack fails open (show).
 fn privacy_banner_reshow_elapsed(acked_at: &str, reshow_days: Option<u64>) -> bool {
@@ -1298,25 +1151,30 @@ impl AppView {
     pub fn is_access_blocked(&self) -> bool {
         !self.has_access() || self.is_zdr_blocked()
     }
-    /// Coding-data preference is team-admin-owned for non-admin members.
-    pub fn is_team_non_admin(&self) -> bool {
-        self.team_name.is_some()
-            && !self
-                .team_role
-                .as_deref()
-                .is_some_and(|r| r.eq_ignore_ascii_case("admin"))
-    }
     /// Whether `/feedback` may offer the trace-consent question: the shell advertised the offer and no card answer latched it off this session.
     /// Derived so no code path can fabricate an offer the shell never made.
     pub fn feedback_trace_offer(&self) -> bool {
         self.shell_feedback_trace_offer && !self.feedback_trace_choice_latched
     }
+    /// A cached team credential from before `canAdministerTeam` reads unknown and nothing refetches `/user` at startup; a personal account (which also carries a `team_id`) reads unknown on every call and is not asked.
+    pub fn needs_team_capability_hydration(&self) -> bool {
+        self.is_team_principal
+            && self.can_administer_team.is_none()
+            && !self.is_api_key_auth
+            && self.account_email.is_some()
+    }
+    pub fn auth_identity(&self) -> AuthIdentity {
+        AuthIdentity {
+            email: self.account_email.clone(),
+            team_id: self.team_id.clone(),
+            team_principal: self.is_team_principal,
+        }
+    }
     /// Why `coding_data_sharing` is locked for this user (`None` means editable).
-    /// Mirrors the dispatch guards in `set_coding_data_sharing`.
     pub fn coding_data_sharing_lock(&self) -> Option<crate::settings::CodingDataSharingLock> {
         if self.is_zdr {
             Some(crate::settings::CodingDataSharingLock::Zdr)
-        } else if self.is_team_non_admin() {
+        } else if self.can_administer_team == Some(false) {
             Some(crate::settings::CodingDataSharingLock::TeamManaged)
         } else {
             None
@@ -1334,7 +1192,9 @@ impl AppView {
         if !self.privacy_notice_rollout {
             return false;
         }
-        if self.is_zdr || self.is_team_non_admin() {
+        if self.coding_data_sharing_lock().is_some()
+            || (self.is_team_principal && self.can_administer_team.is_none())
+        {
             return false;
         }
         if self.coding_data_pending_write.is_some() {
@@ -1395,12 +1255,14 @@ impl AppView {
         let was_gated = self.gate.is_some();
         self.account_email = meta.email.clone();
         self.team_id = meta.team_id.clone();
+        self.is_team_principal = meta.is_team_principal;
         self.team_name = meta.team_name.clone();
         self.is_zdr = meta.is_zdr;
         self.team_role = meta.team_role.clone();
         if let Some(pending) = self.coding_data_pending_write.as_mut() {
             pending.rollback_to_opted_in = !meta.coding_data_retention_opt_out;
         }
+        self.can_administer_team = meta.can_administer_team;
         self.coding_data_retention_opt_out = meta.coding_data_retention_opt_out;
         self.shell_feedback_trace_offer = meta.feedback_trace_offer;
         self.gate = meta.gate.clone();
@@ -1434,6 +1296,7 @@ impl AppView {
         if let Some(show) = meta.show_resolved_model {
             self.show_resolved_model = show;
         }
+        super::dispatch::refresh_open_settings_modals(self);
     }
     /// Mirror the billing and `/usage` gates onto every slash surface (agents, welcome, dashboard dispatch / peek-reply).
     pub(crate) fn sync_billing_surface_to_agents(&mut self) {
@@ -1540,16 +1403,11 @@ impl AppView {
             pending_effects: Vec::new(),
             pending_editor: None,
             pending_pager_path: None,
-            pending_workshop_login: None,
-            workshop_rail_install: None,
-            workshop_voice_prefetch: None,
             pending_pager_ansi: false,
             minimal_state: crate::minimal_api::MinimalState::default(),
             welcome_menu_index: None,
             welcome_menu_rects: Vec::new(),
             welcome_show_changelog_action: false,
-            welcome_show_resume_action: true,
-            welcome_has_resumable_sessions: std::cell::OnceCell::new(),
             welcome_import_banner_rect: None,
             last_mouse_pos: None,
             last_scroll_pos: None,
@@ -1604,8 +1462,7 @@ impl AppView {
             session_picker_entries_query: None,
             session_picker_pending_delete: None,
             welcome_tick: 0,
-            welcome_hero_frame: 0,
-            welcome_hero_animating: false,
+            welcome_shimmer_frame: 0,
             cli_model_override: None,
             cli_effort_token: None,
             default_yolo: false,
@@ -1649,6 +1506,7 @@ impl AppView {
             bootstrap_acp_commands,
             auth_methods: Vec::new(),
             auth_state: AuthState::Done,
+            logout_pending: false,
             trust_state: TrustState::Done,
             consent_state: crate::app::consent::ConsentState::Done,
             account_email: None,
@@ -1660,41 +1518,14 @@ impl AppView {
             auth_url_poll_handle: None,
             deferred_startup: Default::default(),
             auth_use_oauth: false,
-            connection_picker: None,
-            workshop_password_ask: None,
-            workshop_connection: crate::app::workshop::WorkshopConnection::Shell,
-            workshop_engine: None,
-            workshop_engine_slot: crate::app::workshop::new_engine_slot(),
-            workshop_engine_warm_started: false,
-            workshop_engine_session: None,
-            workshop_turn_running: Vec::new(),
-            workshop_turn_errored: false,
-            workshop_last_prompt: None,
-            workshop_turn_active: false,
-            workshop_turn_tx: None,
-            workshop_turn_cancel: None,
-            workshop_turn_stream_entry: None,
-            workshop_turn_thinking_entry: None,
-            workshop_turn_agent: None,
-            workshop_turn_prompt_entry: None,
-            workshop_turn_tools: std::collections::HashMap::new(),
-            workshop_turn_tool_inputs: std::collections::HashMap::new(),
-            workshop_turn_queue: std::collections::VecDeque::new(),
-            workshop_turn_decided_calls: std::collections::HashMap::new(),
-            workshop_context_used: None,
-            workshop_engine_resume: None,
-            workshop_turn_record: Vec::new(),
-            workshop_turn_prompt_text: None,
-            workshop_resend: None,
-            workshop_fallback: None,
-            workshop_fallback_prompt_at: None,
-            workshop_first_launch: false,
             auth_clipboard_delivery: None,
             auth_clipboard_feedback_generation: 0,
             team_id: None,
+            is_team_principal: false,
             team_name: None,
             is_zdr: false,
             team_role: None,
+            can_administer_team: None,
             coding_data_retention_opt_out: true,
             privacy_notice_rollout: false,
             privacy_banner_reshow_days: None,
@@ -1704,6 +1535,9 @@ impl AppView {
             show_tips: None,
             auto_update: None,
             ask_user_question_timeout_enabled: None,
+            subagent_model_inheritance: crate::settings::FeatureOverrideState::new(
+                xai_grok_shell::agent::config::Feature::SubagentModelInheritance,
+            ),
             zdr_access_enabled: false,
             usage_billing_redirect_url: None,
             access_gate_shown_logged: false,
@@ -1719,7 +1553,6 @@ impl AppView {
             startup_warnings: Vec::new(),
             is_api_key_auth: false,
             pending_update_version: None,
-            workshop_updated_to: None,
             foreign_resume_launch_generation: 0,
             foreign_resume_launch: None,
             quit_for_update: false,
@@ -1761,11 +1594,15 @@ impl AppView {
             dashboard_persisted: None,
             keyboard_normalizer: KeyboardNormalizer::from_terminal_context(),
             voice_mode_enabled: false,
+            distribution: xai_grok_config::Distribution::current(),
             voice_ui_active: false,
             voice_config: xai_grok_voice::VoiceConfig::default(),
             voice_auth: None,
             voice_cmd_tx: None,
             voice_state: VoiceState::Idle,
+            voice_session: xai_grok_voice::VoiceSessionId::default(),
+            voice_trailing_final: None,
+            voice_clip_deadline: None,
         }
     }
     /// Seed `deferred_model_switch` from CLI `-m`.
@@ -1856,15 +1693,11 @@ impl AppView {
     pub(super) fn consumer_account(&self) -> bool {
         !self.backend_billed && !self.is_api_key_auth && !self.has_external_auth_provider
     }
-    /// Whether voice is withheld for the current subscription tier (free / X Basic personal accounts).
-    /// Workshop overlay: only for the opt-in xAI voice provider, whose server zero-limits those tiers;
-    /// the default local engine has no tier and is never gated.
+    /// Whether voice mode is withheld for the current subscription tier (free / X Basic personal accounts).
+    /// Derived from the computed [`Self::tier_restricted_commands`] deny list so it stays in lockstep with the slash-command gate.
     /// Used to gate the Ctrl+Space / F8 voice keybinding, which bypasses the slash registry entirely (see [`crate::app::dispatch::voice`]).
     pub fn is_voice_tier_restricted(&self) -> bool {
-        self.voice_config.provider == xai_grok_voice::VoiceProvider::Xai
-            && self.team_name.is_none()
-            && self.consumer_account()
-            && is_restricted_tier(self.subscription_tier.as_deref())
+        self.tier_restricted_commands.iter().any(|c| c == "voice")
     }
     /// Draw-time expiry can flip the live-announcement predicate between pushes.
     /// Resync the slash gate only when it diverges from the stored flags (checked per frame, fan-out runs only on change).
@@ -1892,92 +1725,6 @@ impl AppView {
             for child in agent.subagent_views.values_mut() {
                 child.set_has_session_announcements(has);
             }
-        }
-    }
-    /// Mic is live (the [`VoiceState::Recording`] state).
-    pub fn voice_listening(&self) -> bool {
-        self.voice_state.listening()
-    }
-    /// Whether the in-flight session is owned by a hold-press (so its key release ends it).
-    /// `/voice` and toggle-style starts leave this false.
-    pub fn voice_hold_owned(&self) -> bool {
-        self.voice_state.hold()
-    }
-    /// The prompt box that owns in-flight dictation, if any.
-    pub fn voice_recording_target(&self) -> Option<VoiceTarget> {
-        self.voice_state.target()
-    }
-    /// The live partial transcript shown in the prompt overlay, if any.
-    pub fn voice_interim(&self) -> Option<&str> {
-        self.voice_state.interim()
-    }
-    /// Best-effort one-shot command into the voice pipeline (no-op if it isn't up).
-    fn voice_send(&self, cmd: xai_grok_voice::VoiceCommand) {
-        if let Some(tx) = &self.voice_cmd_tx
-            && tx.try_send(cmd).is_err()
-        {
-            tracing::trace!("voice command dropped: pipeline channel full or closed");
-        }
-    }
-    /// Open the mic now (pipeline already up) and enter [`VoiceState::Recording`] bound to `target`.
-    /// `hold` marks a Ctrl+Space hold-press start.
-    pub(crate) fn voice_begin_recording(&mut self, target: VoiceTarget, hold: bool) {
-        self.voice_send(xai_grok_voice::VoiceCommand::PttPress);
-        self.voice_state = VoiceState::Recording {
-            hold,
-            target,
-            interim: None,
-        };
-    }
-    /// Set the live interim transcript.
-    /// No-op unless recording, so a late event after a stop can't repopulate the overlay.
-    pub(crate) fn voice_set_interim(&mut self, text: String) -> bool {
-        if let VoiceState::Recording { interim, .. } = &mut self.voice_state {
-            *interim = Some(text);
-            true
-        } else {
-            false
-        }
-    }
-    /// Clear the interim in place, keeping the current state.
-    /// Called when a final commits (or yields empty) so the overlay drops the partial without a teardown.
-    pub(crate) fn voice_clear_interim(&mut self) {
-        match &mut self.voice_state {
-            VoiceState::Recording { interim, .. } | VoiceState::Stopping { interim, .. } => {
-                *interim = None;
-            }
-            VoiceState::Idle | VoiceState::ColdStart { .. } => {}
-        }
-    }
-    /// Explicit stop (Esc / Ctrl+Space / `[stop]`): release the mic but keep the target and last interim so a trailing STT final still lands.
-    /// Always allowed (never leaves a hot mic). No-op unless recording.
-    pub(crate) fn voice_stop_keeping_final(&mut self) {
-        let VoiceState::Recording {
-            target, interim, ..
-        } = &mut self.voice_state
-        else {
-            return;
-        };
-        let target = *target;
-        let interim = interim.take();
-        self.voice_send(xai_grok_voice::VoiceCommand::PttRelease);
-        self.voice_state = VoiceState::Stopping { target, interim };
-    }
-    /// Hard teardown (submit / error / kill-switch / navigate-away): release the mic and forget the session (no trailing final, no queued start).
-    pub(crate) fn voice_reset(&mut self) {
-        if self.voice_state.listening() {
-            self.voice_send(xai_grok_voice::VoiceCommand::PttRelease);
-        }
-        self.voice_state = VoiceState::Idle;
-    }
-    /// Ctrl+Space hold release: end only a session a Ctrl+Space hold started.
-    /// Cancel a queued hold cold-start, or stop a live hold recording (keeping its trailing final).
-    /// A `/voice` / toggle session (`hold` false) is left untouched, so a Ctrl+Space release can neither cancel nor stop it.
-    pub(crate) fn voice_hold_release(&mut self) {
-        match self.voice_state {
-            VoiceState::ColdStart { hold: true, .. } => self.voice_reset(),
-            VoiceState::Recording { hold: true, .. } => self.voice_stop_keeping_final(),
-            _ => {}
         }
     }
     /// Whether the active view still owns the bound dictation `target`: the box dictation started in is the one currently on screen and selected.
@@ -2017,7 +1764,8 @@ impl AppView {
     /// Keeps stop controls and the recording session aligned.
     /// Run by the event loop each tick; no-op unless recording.
     pub fn enforce_voice_session_bound(&mut self) {
-        if !self.voice_state.listening() || self.voice_target_on_active_surface() {
+        let in_flight = self.voice_state.is_listening() || self.voice_state.blocks_new_capture();
+        if !in_flight || self.voice_target_on_active_surface() {
             return;
         }
         self.voice_reset();
@@ -2035,43 +1783,16 @@ impl AppView {
         }
         if self.voice_listening() {
             Some(InputOutcome::Action(Action::VoiceToggle))
-        } else if self.voice_state.pending_cold_start() {
+        } else if self.voice_state.is_pending_cold_start() {
             self.voice_reset();
+            Some(InputOutcome::Changed)
+        } else if self.voice_state.blocks_new_capture() {
+            self.voice_reset();
+            self.show_toast(crate::voice::RECORDING_DISCARDED_TOAST);
             Some(InputOutcome::Changed)
         } else {
             None
         }
-    }
-    /// Workshop: `// start · // stop`. While dictation is live in this agent's composer, a `/` typed
-    /// right after a `/` stops it — the same [`Action::VoiceToggle`] as Esc and `[stop]`, so the
-    /// transcript lands in the composer — and the first slash is taken back out of the draft so `//`
-    /// never ends up in the text. The start half (a second `/` on a composer holding exactly `/`) is
-    /// `AgentView::handle_prompt_key`.
-    fn voice_double_slash_stop_outcome(
-        &mut self,
-        key_event: Option<&crossterm::event::KeyEvent>,
-        id: AgentId,
-    ) -> Option<InputOutcome> {
-        let key = key_event?;
-        if key.code != KeyCode::Char('/')
-            || key.kind == KeyEventKind::Release
-            || !matches!(
-                key.modifiers,
-                crossterm::event::KeyModifiers::NONE | crossterm::event::KeyModifiers::SHIFT
-            )
-            || !self.voice_listening()
-            || self.voice_recording_target() != Some(VoiceTarget::Agent(id))
-        {
-            return None;
-        }
-        let agent = self.agents.get_mut(&id)?;
-        let before_caret = agent.prompt.text().get(..agent.prompt.cursor())?;
-        if agent.prompt.selection_range().is_some() || !before_caret.ends_with('/') {
-            return None;
-        }
-        agent.prompt.textarea.delete_backward(1);
-        agent.prompt.refresh_slash(&agent.session.models);
-        Some(InputOutcome::Action(Action::VoiceToggle))
     }
     /// Commit interim on real send keys only (not multiline bare Enter).
     fn maybe_commit_voice_interim_before_submit_key(&mut self, key: &crossterm::event::KeyEvent) {
@@ -2586,20 +2307,6 @@ impl AppView {
             }
             return InputOutcome::Changed;
         }
-        // Workshop: `/model` and `/auth` are overlays on whichever view is up; while one is open
-        // it owns every key (typing filters the list; nothing reaches the composer behind it).
-        if let Some(picker) = self.connection_picker.as_ref() {
-            return handle_connection_picker_input(
-                ev,
-                self.auth_return_view.is_some(),
-                picker.key_entry.is_some(),
-            );
-        }
-        // Workshop: a `sudo` password prompt owns every key while it is up; the characters go
-        // to the helper's buffer, never to the composer (or its history and drafts).
-        if self.workshop_password_ask.is_some() {
-            return self.handle_workshop_password_input(ev);
-        }
         let zdr_blocked = self.is_zdr_blocked();
         let has_access = self.has_access();
         let welcome_pinned_upgrade_cta = crate::views::announcements::promo_cta(
@@ -2638,12 +2345,7 @@ impl AppView {
                     menu_count: if zdr_blocked {
                         2
                     } else {
-                        2 + if self.has_claude_import { 1 } else { 0 }
-                            + if self.welcome_show_resume_action {
-                                1
-                            } else {
-                                0
-                            }
+                        3 + if self.has_claude_import { 1 } else { 0 }
                             + if self.welcome_show_changelog_action {
                                 1
                             } else {
@@ -2684,7 +2386,6 @@ impl AppView {
                     welcome_doc_viewer: &mut self.welcome_doc_viewer,
                     changelog_markdown: &self.changelog_markdown,
                     show_changelog_action: self.welcome_show_changelog_action,
-                    show_resume_action: self.welcome_show_resume_action,
                     has_pending_update: self.pending_update_version.is_some(),
                     has_foreign_resume,
                     cwd_has_git_ancestor: self.cwd_has_git_ancestor,
@@ -2872,9 +2573,6 @@ impl AppView {
                     return InputOutcome::Unchanged;
                 }
                 if let Some(outcome) = self.voice_esc_outcome(key_event) {
-                    return outcome;
-                }
-                if let Some(outcome) = self.voice_double_slash_stop_outcome(key_event, id) {
                     return outcome;
                 }
                 if let Event::Key(key) = ev
@@ -3348,10 +3046,8 @@ struct WelcomeInputCtx<'a> {
     import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
     welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
     changelog_markdown: &'a Option<String>,
-    /// Whether the welcome menu currently includes a "Release notes" row (above Quit), so index-to-action mapping accounts for it.
+    /// Whether the welcome menu currently includes a "Changelog" row (above Quit), so index-to-action mapping accounts for it.
     show_changelog_action: bool,
-    /// Whether the welcome menu currently includes the "Resume session" row.
-    show_resume_action: bool,
     has_pending_update: bool,
     /// A recent foreign session is available to resume when no update is pending.
     has_foreign_resume: bool,
@@ -3377,120 +3073,6 @@ struct WelcomeInputCtx<'a> {
     deferred_startup: &'a mut crate::app::session_startup::DeferredStartupActions,
     #[cfg(feature = "local-workspace")]
     session_picker_open: bool,
-}
-impl AppView {
-    /// Workshop: keys while a `sudo` password prompt is up. Printable characters and pastes go to
-    /// the prompt's buffer (masked on screen), Backspace edits it, Enter sends it to the helper
-    /// (`sudo` reads it), Esc / Ctrl+C skip. Nothing reaches the composer.
-    fn handle_workshop_password_input(&mut self, ev: &Event) -> InputOutcome {
-        let Some(ask) = self.workshop_password_ask.as_mut() else {
-            return InputOutcome::Unchanged;
-        };
-        match ev {
-            Event::Paste(text) => {
-                ask.push_str(text.trim_end_matches(['\r', '\n']));
-                InputOutcome::Changed
-            }
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                if key!('c', CONTROL).matches(key)
-                    || key!('d', CONTROL).matches(key)
-                    || key.code == KeyCode::Esc
-                {
-                    if let Some(ask) = self.workshop_password_ask.take() {
-                        ask.answer(false);
-                    }
-                    return InputOutcome::Changed;
-                }
-                match key.code {
-                    KeyCode::Enter => {
-                        if let Some(ask) = self.workshop_password_ask.take() {
-                            ask.answer(true);
-                        }
-                    }
-                    KeyCode::Backspace => ask.pop_char(),
-                    KeyCode::Char(c)
-                        if !key
-                            .modifiers
-                            .intersects(crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT | crossterm::event::KeyModifiers::SUPER) =>
-                    {
-                        ask.push_char(c)
-                    }
-                    _ => {}
-                }
-                InputOutcome::Changed
-            }
-            _ => InputOutcome::Unchanged,
-        }
-    }
-}
-
-/// Workshop: the connection picker (`/model`, `/auth`) owns the keyboard while it is open, on
-/// every view. Every key is consumed here — printable ones filter the Models view — so nothing
-/// leaks into the composer behind the overlay. It never starts a login on its own; `Enter`
-/// outcomes are decided by `workshop_auth::PickerState` in the dispatcher.
-fn handle_connection_picker_input(
-    ev: &Event,
-    mid_session: bool,
-    key_entry_open: bool,
-) -> InputOutcome {
-    use workshop_auth::PickerInput;
-    match ev {
-        Event::Paste(text) => {
-            InputOutcome::Action(Action::ConnectionPicker(PickerInput::Paste(text.clone())))
-        }
-        Event::Key(key) if key.kind != KeyEventKind::Release => {
-            if key!('c', CONTROL).matches(key) || key!('d', CONTROL).matches(key) {
-                return if mid_session {
-                    InputOutcome::Action(Action::ConnectionPicker(PickerInput::Back))
-                } else {
-                    InputOutcome::Action(Action::Quit)
-                };
-            }
-            if crate::input::key::is_paste_key(key) {
-                return match crate::clipboard::system_clipboard_get() {
-                    Some(text) => {
-                        InputOutcome::Action(Action::ConnectionPicker(PickerInput::Paste(text)))
-                    }
-                    None => InputOutcome::Changed,
-                };
-            }
-            let ctrl = key
-                .modifiers
-                .intersects(crossterm::event::KeyModifiers::CONTROL);
-            let alt = key
-                .modifiers
-                .intersects(crossterm::event::KeyModifiers::ALT);
-            // While a key-entry prompt is open every printable key is text.
-            if key_entry_open {
-                let input = match key.code {
-                    KeyCode::Enter => PickerInput::Enter,
-                    KeyCode::Esc => PickerInput::Back,
-                    KeyCode::Backspace => PickerInput::Backspace,
-                    KeyCode::Char(c) if !ctrl => PickerInput::Char(c),
-                    _ => return InputOutcome::Changed,
-                };
-                return InputOutcome::Action(Action::ConnectionPicker(input));
-            }
-            let input = match key.code {
-                KeyCode::Up => PickerInput::Up,
-                KeyCode::Down => PickerInput::Down,
-                KeyCode::Right => PickerInput::Open,
-                KeyCode::Left => PickerInput::Left,
-                // One list, no tabs: Tab is swallowed so it never reaches the composer.
-                KeyCode::Tab | KeyCode::BackTab => return InputOutcome::Changed,
-                KeyCode::Enter => PickerInput::Enter,
-                KeyCode::Esc => PickerInput::Back,
-                KeyCode::Backspace => PickerInput::Backspace,
-                KeyCode::Char('r') if ctrl => PickerInput::Refresh,
-                KeyCode::Char('a') if ctrl => PickerInput::ToggleShowAll,
-                KeyCode::Char(c) if !ctrl && !alt => PickerInput::Char(c),
-                _ => return InputOutcome::Changed,
-            };
-            InputOutcome::Action(Action::ConnectionPicker(input))
-        }
-        // Mouse and everything else stays with the overlay: nothing behind it reacts.
-        _ => InputOutcome::Unchanged,
-    }
 }
 /// Welcome view input: overlays first, then composer, then the menu.
 fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
@@ -4020,6 +3602,11 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
             if ctx.registry.matches_id(ActionId::OpenSessions, key) {
                 return InputOutcome::Action(Action::FetchSessionList);
             }
+            if ctx.registry.matches_id(ActionId::CommandPalette, key)
+                && !crate::input::key::is_text_input_key(key)
+            {
+                return InputOutcome::ActionThenForward(Action::LeaveHome);
+            }
             if ctx.has_pending_update && key!('u', CONTROL).matches(key) {
                 return InputOutcome::Action(Action::QuitForUpdate);
             }
@@ -4071,7 +3658,6 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                 return dispatch_menu_action(
                     idx,
                     ctx.has_claude_import,
-                    ctx.show_resume_action,
                     ctx.show_changelog_action,
                     ctx.changelog_markdown.as_deref(),
                 );
@@ -4210,7 +3796,6 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                         return dispatch_menu_action(
                             i,
                             ctx.has_claude_import,
-                            ctx.show_resume_action,
                             ctx.show_changelog_action,
                             ctx.changelog_markdown.as_deref(),
                         );
@@ -4461,42 +4046,39 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
     }
 }
 /// Dispatch an action for a welcome menu item by index.
-/// Menu order: `[Import]`, New worktree, `[Resume session]`, `[Release notes]`, Quit.
-/// `show_resume_action` / `show_changelog_action` say which optional rows are rendered. Release
-/// notes always open: the fetched markdown when there is one, else the bundled Workshop notes.
+/// Menu order: `[Import]`, New worktree, Resume session, `[Changelog]`, Quit.
+/// `show_changelog_action` is true when the Changelog row is rendered; release notes open only once `changelog_md` is available.
 fn dispatch_menu_action(
     index: usize,
     has_claude_import: bool,
-    show_resume_action: bool,
     show_changelog_action: bool,
     changelog_md: Option<&str>,
 ) -> InputOutcome {
     let base = if has_claude_import { 1 } else { 0 };
     let worktree_idx = base;
-    let mut next = base + 1;
-    let resume_idx = show_resume_action.then(|| {
-        next += 1;
-        next - 1
-    });
-    let changelog_idx = show_changelog_action.then(|| {
-        next += 1;
-        next - 1
-    });
-    let quit_idx = next;
+    let resume_idx = base + 1;
+    let (changelog_idx, quit_idx) = if show_changelog_action {
+        (Some(base + 2), base + 3)
+    } else {
+        (None, base + 2)
+    };
     if has_claude_import && index == 0 {
         return InputOutcome::Action(Action::ImportClaudeSettings);
     }
     if index == worktree_idx {
         return InputOutcome::Action(Action::OpenNewWorktreeDialog);
     }
-    if Some(index) == resume_idx {
+    if index == resume_idx {
         return InputOutcome::Action(Action::FetchSessionList);
     }
     if Some(index) == changelog_idx {
-        let (title, content) = crate::slash::commands::release_notes::release_notes_document(
-            changelog_md.map(str::to_owned),
-        );
-        return InputOutcome::Action(Action::ShowReleaseNotes { title, content });
+        if let Some(md) = changelog_md {
+            return InputOutcome::Action(Action::ShowReleaseNotes {
+                title: "Release Notes".to_string(),
+                content: md.trim().to_string(),
+            });
+        }
+        return InputOutcome::Unchanged;
     }
     if index == quit_idx {
         return InputOutcome::Action(Action::Quit);
@@ -4707,9 +4289,6 @@ impl AppView {
         });
         let welcome_default_yolo = self.default_yolo;
         let welcome_auto_gate = self.auto_mode_gate;
-        let welcome_hero_frame = self
-            .hero_animation_enabled()
-            .then_some(self.welcome_hero_frame);
         let Self {
             active_view,
             agents,
@@ -4784,7 +4363,8 @@ impl AppView {
                                 }
                                 Some((false, false, true)) if welcome_auto_gate => {
                                     flags_vec.push(crate::views::prompt_widget::PromptFlag {
-                                        text: "auto",
+                                        text: crate::app::actions::PermissionLabel::Auto
+                                            .display_name(),
                                         color: Some(theme.accent_system),
                                         bold: false,
                                     });
@@ -4806,40 +4386,13 @@ impl AppView {
                             } else {
                                 self.tip.as_deref()
                             };
-                            // Workshop: an Engine/Adapter connection names its model
-                            // (`Big Pickle`), never the placeholder shell model; on the very first
-                            // launch the home composer carries the two doors as its only hint.
-                            // (field-level borrows: the render closure already holds parts of `self`)
-                            let workshop_label = self
-                                .workshop_fallback
-                                .clone()
-                                .or_else(|| self.workshop_connection.composer_label());
-                            let model_name = match workshop_label {
-                                Some(label) => {
-                                    if self.workshop_first_launch {
-                                        for text in
-                                            ["/model to switch", "/auth to connect subscriptions"]
-                                        {
-                                            flags_vec.push(
-                                                crate::views::prompt_widget::PromptFlag {
-                                                    text,
-                                                    color: Some(theme.gray_bright),
-                                                    bold: false,
-                                                },
-                                            );
-                                        }
-                                    }
-                                    label
-                                }
-                                None => {
-                                    let model_name_base =
-                                        self.models.current_model_name().unwrap_or_default();
-                                    match self.models.reasoning_effort {
-                                        Some(eff) => format!("{model_name_base} ({eff})"),
-                                        None => model_name_base,
-                                    }
-                                }
+                            let model_name_base =
+                                self.models.current_model_name().unwrap_or_default();
+                            let model_name = match self.models.reasoning_effort {
+                                Some(eff) => format!("{model_name_base} ({eff})"),
+                                None => model_name_base,
                             };
+                            let model_notice = self.models.current_notice();
                             let hero_cta = crate::views::announcements::promo_cta(
                                 &self.active_announcements,
                                 &self.hidden_announcement_ids,
@@ -4852,14 +4405,7 @@ impl AppView {
                                         &self.hidden_announcement_ids,
                                     )
                                 })
-                                .or(self.announcement.as_ref())
-                                .filter(|a| {
-                                    workshop_brand::hero_shows_announcement(a.severity.as_deref())
-                                });
-                            let has_resumable_sessions =
-                                *self.welcome_has_resumable_sessions.get_or_init(|| {
-                                    crate::app::workshop::has_resumable_sessions(&self.cwd)
-                                });
+                                .or(self.announcement.as_ref());
                             let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                 prompt_focus: if self.welcome_prompt_focused {
                                     WelcomePromptFocus::Focused
@@ -4872,7 +4418,6 @@ impl AppView {
                                 consent_state: &self.consent_state,
                                 consent_hover_link: self.welcome_consent_hover_link,
                                 login_label: self.login_label.as_deref(),
-                                connection_picker: self.connection_picker.as_ref(),
                                 auth_code_input: self.auth_code_input.text(),
                                 auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                 clipboard_delivery: self.auth_clipboard_delivery,
@@ -4880,12 +4425,12 @@ impl AppView {
                                 announcement: hero_announcement,
                                 tip,
                                 model_name: &model_name,
+                                model_notice: model_notice.as_ref(),
                                 flags: &flags_vec,
                                 selected: self.welcome_menu_index,
                                 team_name: self.team_name.as_deref(),
                                 has_access,
                                 has_claude_import: self.has_claude_import,
-                                has_resumable_sessions,
                                 mouse_pos: self.last_mouse_pos,
                                 is_zdr_blocked: zdr_blocked_for_draw,
                                 session_picker: self.session_picker_entries.as_deref(),
@@ -4900,7 +4445,6 @@ impl AppView {
                                 pending_hint,
                                 startup_warnings: &self.startup_warnings,
                                 pending_update_version: self.pending_update_version.as_deref(),
-                                workshop_updated_to: self.workshop_updated_to.as_deref(),
                                 foreign_resume_hint: foreign_resume_hint.as_ref(),
                                 session_picker_content_results: self
                                     .session_picker_content_results
@@ -4927,7 +4471,6 @@ impl AppView {
                                 welcome_announcement_expanded: self.welcome_announcement.expanded,
                                 upgrade_cta: hero_cta.map(|(_owner, label, _)| label),
                                 privacy_banner,
-                                hero_frame: welcome_hero_frame,
                                 #[cfg(feature = "local-workspace")]
                                 workspace_mode: self.welcome_workspace_mode,
                                 #[cfg(feature = "local-workspace")]
@@ -4944,9 +4487,7 @@ impl AppView {
                                 &mut self.session_picker_state,
                             );
                             self.welcome_menu_rects = result.menu_rects;
-                            self.welcome_hero_animating = result.hero_animating;
                             self.welcome_show_changelog_action = result.changelog_action_present;
-                            self.welcome_show_resume_action = result.resume_action_present;
                             self.welcome_prompt_rect = result.prompt_rect;
                             self.welcome_import_banner_rect = result.import_banner_rect;
                             self.welcome_auth_url_rect = result.auth_url_rect;
@@ -5050,11 +4591,13 @@ impl AppView {
                                 panel.render(full_area, f.buffer_mut());
                             }
                             let has_cloud_modal = false;
-                            let cursor = if has_cloud_modal || self.tutorial.is_some() {
-                                None
-                            } else {
-                                result.cursor_pos
-                            };
+                            let has_remote_modal = false;
+                            let cursor =
+                                if has_cloud_modal || has_remote_modal || self.tutorial.is_some() {
+                                    None
+                                } else {
+                                    result.cursor_pos
+                                };
                             let on_url = self.welcome_auth_url_rect.as_ref().is_some_and(|r| {
                                 matches!(self.auth_state, AuthState::Authenticating { .. })
                                     && self.last_mouse_pos.is_some_and(|(mx, my)| {
@@ -5162,7 +4705,6 @@ impl AppView {
                                             None
                                         },
                                     },
-                                    &self.bundle_state,
                                     overlay_active,
                                     link_spans,
                                     AppRenderParams {
@@ -5174,7 +4716,6 @@ impl AppView {
                                             .workspace_dashboard_enabled,
                                         overlay_header,
                                         overlay_stop_label: None,
-                                        workshop_password: self.workshop_password_ask.as_ref(),
                                     },
                                 );
                                 if let Some(modal) = self.import_claude_modal.as_mut() {
@@ -5195,28 +4736,6 @@ impl AppView {
                                         compact,
                                     );
                                 }
-                                // Workshop: `/model` / `/auth` paint over the transcript, which
-                                // stays visible around the box.
-                                if let Some(picker) = self.connection_picker.as_ref() {
-                                    let theme = crate::theme::Theme::current();
-                                    // Leave the top bar above and the composer with its footer
-                                    // below the box visible (the list scrolls inside).
-                                    let above_composer = ratatui::layout::Rect {
-                                        y: view_area.y + 2,
-                                        height: view_area.height.saturating_sub(7),
-                                        ..view_area
-                                    };
-                                    crate::views::connection_picker::render(
-                                        above_composer,
-                                        f.buffer_mut(),
-                                        &theme,
-                                        picker,
-                                        if compact { 1 } else { 4 },
-                                    );
-                                }
-                                // Workshop: the `sudo` password card is laid out inside the agent
-                                // view (in the composer slot, status row above it), like the
-                                // Normal-mode approval card — see `AppRenderParams::workshop_password`.
                                 if let Some(fps) = &fps_overlay {
                                     fps.render(full_area, f.buffer_mut());
                                 }
@@ -5225,21 +4744,20 @@ impl AppView {
                                 }
                                 let (cursor_pos, post_flush) = result;
                                 let has_cloud = false;
-                                let picker_open = self.connection_picker.is_some()
-                                    || self.workshop_password_ask.is_some();
+                                let has_remote_modal = false;
                                 if has_cloud
+                                    || has_remote_modal
                                     || self.import_claude_modal.is_some()
                                     || self.tutorial.is_some()
-                                    || picker_open
                                 {
                                     link_spans.clear();
                                 }
-                                let cursor = if has_cloud || self.tutorial.is_some() || picker_open
-                                {
-                                    None
-                                } else {
-                                    cursor_pos
-                                };
+                                let cursor =
+                                    if has_cloud || has_remote_modal || self.tutorial.is_some() {
+                                        None
+                                    } else {
+                                        cursor_pos
+                                    };
                                 return (cursor, Self::merge_escapes(notif_escapes, post_flush));
                             }
                         }
@@ -5308,7 +4826,6 @@ impl AppView {
                                             .get(&agent_id)
                                             .map(crate::views::session_title::entry_title)
                                             .unwrap_or_else(|| "(session)".to_string());
-                                        let bundle_state = &self.bundle_state;
                                         let (cursor, post_flush, drawn) =
                                             crate::views::dashboard::render_popup_overlay(
                                                 f.buffer_mut(),
@@ -5327,7 +4844,6 @@ impl AppView {
                                                         None,
                                                         false,
                                                         crate::app::agent_view::BannerSlotParams::none(),
-                                                        bundle_state,
                                                         false,
                                                         link_spans,
                                                         AppRenderParams {
@@ -5517,12 +5033,16 @@ impl AppView {
             || self.new_worktree_dialog.is_some()
             || self.welcome_doc_viewer.is_some()
             || self.tutorial.is_some()
-            || self.connection_picker.is_some()
             || matches!(self.active_view, ActiveView::AgentDashboard
                 if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
             || matches!(self.active_view, ActiveView::AgentDashboard
                 if self.dashboard_session_picker.is_some())
             || cloud_modal_open
+            || self.remote_modal_open()
+    }
+    /// The `/remote` modal, behind its backend feature like the field itself.
+    fn remote_modal_open(&self) -> bool {
+        false
     }
     /// Store the resolved per-tip gates and propagate the prompt-relevant tips (undo and plan nudge) to every agent's prompt.
     /// Reused by startup and the settings live-apply path so a runtime toggle reaches existing agents.
@@ -5565,7 +5085,7 @@ impl AppView {
         self.small_screen_tip_evaluated = true;
         super::dispatch::show_small_screen_tip(self);
     }
-    /// One-shot SSH `workshop wrap` tip trigger, run at the top of every `draw` right after [`Self::maybe_trigger_small_screen_tip`].
+    /// One-shot SSH `grok wrap` tip trigger, run at the top of every `draw` right after [`Self::maybe_trigger_small_screen_tip`].
     /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
     /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
     pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
@@ -5677,10 +5197,10 @@ impl AppView {
     /// Called at a fixed rate (~30fps) from the event loop.
     /// Produces redraws when there are running entries with animated accents.
     pub fn tick(&mut self) -> bool {
+        self.fps_hud.note_tick();
         let mut needs_redraw = false;
-        needs_redraw |= self.minimal_state.transcript.is_some();
+        needs_redraw |= self.minimal_state.needs_frames();
         needs_redraw |= self.poll_clipboard_focus_tip();
-        needs_redraw |= self.tick_rail_install();
         if matches!(self.active_view, ActiveView::Welcome) {
             self.welcome_tick = self.welcome_tick.wrapping_add(1);
             if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
@@ -5699,7 +5219,11 @@ impl AppView {
             {
                 needs_redraw = true;
             } else {
-                needs_redraw |= self.tick_welcome_hero();
+                let frame = crate::views::welcome::shimmer_frame();
+                if frame != self.welcome_shimmer_frame {
+                    self.welcome_shimmer_frame = frame;
+                    needs_redraw = true;
+                }
             }
         }
         if matches!(self.active_view, ActiveView::AgentDashboard)
@@ -5750,10 +5274,7 @@ impl AppView {
             }
             let spinner_frame_tick =
                 agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
-            // Workshop: an Engine/Adapter turn drives the same turn-status row while the ACP
-            // session stays idle.
-            needs_redraw |= (!agent.session.state.is_idle() || agent.workshop_turn_active)
-                && spinner_frame_tick;
+            needs_redraw |= !agent.session.state.is_idle() && spinner_frame_tick;
             needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
                 && spinner_frame_tick;
             needs_redraw |= matches!(
@@ -6021,20 +5542,6 @@ impl AppView {
         }
         needs_redraw
     }
-    /// Workshop: the welcome hero's own animation clock, the one place that decides whether the
-    /// hero art has a new frame to paint. The welcome view redraws on a tick only when this frame
-    /// advances; nothing outside the hero changes on such a frame, so the terminal diff writes the
-    /// hero cells only. The donut advances one frame of its loop per slow tick
-    /// ([`SLOW_TICK_INTERVAL`], ~12 fps) while [`Self::welcome_hero_spins`]; the clock runs only
-    /// while the welcome view is up, so it stops with the first message.
-    fn tick_welcome_hero(&mut self) -> bool {
-        if !self.welcome_hero_spins() {
-            return false;
-        }
-        self.welcome_hero_frame =
-            (self.welcome_hero_frame + 1) % workshop_brand::donut::FRAMES as u32;
-        true
-    }
     /// Check if animation ticks should be scheduled.
     pub fn needs_animation(&self) -> bool {
         self.tick_demand() != TickDemand::None
@@ -6049,16 +5556,7 @@ impl AppView {
         if self.pending_action.is_some() {
             return TickDemand::Fast;
         }
-        // Workshop: the turn-status row (spinner, timers) and the running tool row's accent
-        // animate for the whole Engine/Adapter turn, as they do for a shell turn.
-        if self.workshop_turn_active {
-            return TickDemand::Fast;
-        }
-        // Workshop: an installer's one status line follows its output while it runs.
-        if self.workshop_rail_install.is_some() {
-            return TickDemand::Slow;
-        }
-        if self.minimal_state.transcript.is_some() {
+        if self.minimal_state.needs_frames() {
             return TickDemand::Fast;
         }
         if self
@@ -6202,93 +5700,8 @@ impl AppView {
                     TickDemand::None
                 }
             }
-            // Workshop: the hero donut turns at the slow cadence; without it (resting frame,
-            // unfocused terminal, animation off) a resting welcome screen parks unless a toast
-            // or the session picker's spinner still needs the clock.
-            ActiveView::Welcome => {
-                if self.welcome_hero_spins()
-                    || self.welcome_toast.is_some()
-                    || crate::views::session_picker::loading_spinner_active(
-                        self.session_picker_entries.as_deref(),
-                        self.session_picker_source_filter,
-                        self.session_picker_loading,
-                        &self.session_picker_lanes,
-                    )
-                {
-                    TickDemand::Slow
-                } else {
-                    TickDemand::None
-                }
-            }
+            ActiveView::Welcome => TickDemand::Slow,
         }
-    }
-    /// Workshop: whether the welcome hero should advance a frame on the next tick — the user has
-    /// not turned it off (`[ui] hero_animation = false`), the terminal can show it (colour on, no
-    /// legacy console), the last paint spun it (wide layout, logo shown) and the terminal is
-    /// focused. Leaving the welcome screen ends it by construction: the tick only runs here for
-    /// [`ActiveView::Welcome`].
-    pub fn welcome_hero_spins(&self) -> bool {
-        self.hero_animation_enabled()
-            && self.welcome_hero_animating
-            && self.notification_service.focus_tracker.is_focused()
-    }
-    /// Workshop: `[ui] hero_animation` (default on) and the terminal's ability to show the spin.
-    pub fn hero_animation_enabled(&self) -> bool {
-        self.current_ui.hero_animation.unwrap_or(true)
-            && crate::views::welcome::hero_animation_supported()
-    }
-    /// Workshop: what the composer calls the active model — the silent fallback's model while it
-    /// carries the session, else the connection's model name. Never a provider or runtime name.
-    pub fn workshop_label(&self) -> Option<String> {
-        self.workshop_fallback
-            .clone()
-            .or_else(|| self.workshop_connection.composer_label())
-    }
-    /// Workshop: the name the failure line uses for the model the user actually chose.
-    pub fn workshop_model_name(&self) -> String {
-        self.workshop_connection
-            .model_name()
-            .or_else(|| self.models.current_model_name())
-            .unwrap_or_else(|| "the model".to_owned())
-    }
-    /// Workshop: keep the picker's status line on the running installer — `Installing Claude
-    /// Code… 12s · <its latest output line>` — until it finishes.
-    fn tick_rail_install(&mut self) -> bool {
-        let Some(install) = &self.workshop_rail_install else {
-            return false;
-        };
-        let line = install.status_line();
-        match self.connection_picker.as_mut() {
-            Some(picker) if picker.status.as_deref() != Some(line.as_str()) => {
-                picker.set_status(line);
-                true
-            }
-            _ => false,
-        }
-    }
-    /// Workshop: the turn-status row's activity for the running Engine/Adapter turn — the newest
-    /// tool call still running, else the wait for the model (as the ACP tracker reports the gap
-    /// before the first token and after each tool result).
-    pub(crate) fn set_workshop_turn_activity(
-        &mut self,
-        activity: crate::acp::tracker::TurnActivity,
-    ) {
-        if let Some(agent) = self
-            .workshop_turn_agent
-            .and_then(|id| self.agents.get_mut(&id))
-        {
-            agent.workshop_turn_activity = Some(activity);
-        }
-    }
-    /// Workshop: the activity after a tool call started or finished.
-    pub(crate) fn sync_workshop_tool_activity(&mut self) {
-        let activity = match self.workshop_turn_running.last() {
-            Some((_, activity)) => activity.clone(),
-            None => crate::acp::tracker::TurnActivity::Waiting(
-                crate::acp::tracker::WaitingReason::Model,
-            ),
-        };
-        self.set_workshop_turn_activity(activity);
     }
     /// Update the terminal tab title and OSC 9;4 progress bar.
     /// Stores any resulting escape sequences in `pending_notification_escapes`.
@@ -6311,9 +5724,7 @@ impl AppView {
                 };
                 let has_perms = !agent.permission_queue.is_empty();
                 let elapsed = if parked { None } else { agent.turn_elapsed() };
-                // Workshop: an Engine/Adapter turn is busy too (the title spinner shows it).
-                let is_busy =
-                    (agent.session.state.is_busy() || agent.workshop_turn_active) && !parked;
+                let is_busy = agent.session.state.is_busy() && !parked;
                 (name, model, activity, has_perms, elapsed, is_busy)
             } else {
                 (None, None, None, false, None, false)

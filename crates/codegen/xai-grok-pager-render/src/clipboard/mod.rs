@@ -32,7 +32,7 @@ fn is_container_no_display() -> bool {
     *CONTAINER.get_or_init(xai_grok_shared::clipboard::is_containerized_without_display)
 }
 
-/// `workshop wrap` intercepts OSC 52 onto the local clipboard and advertises it. Over SSH only `TERM` propagates, so brands look incapable.
+/// `grok wrap` intercepts OSC 52 onto the local clipboard and advertises it. Over SSH only `TERM` propagates, so brands look incapable.
 /// `LC_GROK_OSC52_SINK` survives default OpenSSH `SendEnv`/`AcceptEnv` of `LC_*`.
 pub fn osc52_sink_active() -> bool {
     static SINK: OnceLock<bool> = OnceLock::new();
@@ -330,7 +330,7 @@ impl ClipboardFeedback {
             Self::CopiedOscContainer => "Copied via OSC 52 from the container.",
             Self::CopiedOscRemote => "Copied via OSC 52.",
             Self::UnverifiedOscRemote | Self::UnverifiedOscContainer => {
-                "Copy sent. If paste fails, use workshop wrap or /minimal."
+                "Copy sent. If paste fails, use grok wrap or /minimal."
             }
             Self::VsCodeSshNonAscii => {
                 "Copied. VS Code over SSH may garble non-ASCII; use /minimal if needed."
@@ -796,7 +796,7 @@ pub fn paste_payload_needs_clipboard_attachment_probe(payload: &str) -> bool {
 }
 
 /// Terminals rewrite `\n` to `\r` on paste. A mismatch is an IME commit or a diverged tmux buffer, not a clipboard paste.
-/// Reads `pbpaste`; call only off the event loop.
+/// Reads clipboard text; call only off the event loop.
 pub fn bracketed_payload_came_from_clipboard(payload: &str) -> bool {
     bracketed_payload_came_from_clipboard_result(payload).unwrap_or(false)
 }
@@ -2017,7 +2017,7 @@ mod tests {
         );
         assert!(
             on.osc52,
-            "workshop wrap sink must emit OSC 52 so the local PTY can intercept it"
+            "grok wrap sink must emit OSC 52 so the local PTY can intercept it"
         );
         let killed = resolve_clipboard_route_with(
             &plain_terminal_ctx(),
@@ -2266,14 +2266,14 @@ mod tests {
             (
                 ClipboardFeedback::UnverifiedOscRemote,
                 ClipboardDelivery::Unverified,
-                "Copy sent. If paste fails, use workshop wrap or /minimal.",
+                "Copy sent. If paste fails, use grok wrap or /minimal.",
                 "unverified_osc_remote",
                 120,
             ),
             (
                 ClipboardFeedback::UnverifiedOscContainer,
                 ClipboardDelivery::Unverified,
-                "Copy sent. If paste fails, use workshop wrap or /minimal.",
+                "Copy sent. If paste fails, use grok wrap or /minimal.",
                 "unverified_osc_container",
                 120,
             ),
@@ -2414,11 +2414,11 @@ mod tests {
     /// The `GROK_HOME`-override integration test in `xai-grok-pager` covers that further.
     #[test]
     fn display_copy_path_abbreviates_home() {
-        if std::env::var_os("WORKSHOP_HOME").is_none() {
+        if std::env::var_os("GROK_HOME").is_none() {
             let home = xai_dirs::home_dir().expect("home resolves in tests");
             assert_eq!(
-                display_copy_path(&home.join(".workshop").join("last-copy.txt")),
-                "~/.workshop/last-copy.txt"
+                display_copy_path(&home.join(".grok").join("last-copy.txt")),
+                "~/.grok/last-copy.txt"
             );
         }
         // Non-home paths pass through untouched, including multi-byte UTF-8 components (must never slice at a non-char boundary)

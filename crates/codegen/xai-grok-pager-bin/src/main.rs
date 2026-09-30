@@ -41,7 +41,7 @@ use xai_grok_shell::agent::app::{run_headless, run_leader};
 use xai_grok_shell::agent::config::Config as AgentConfig;
 use xai_grok_shell::leader::{
     ClientCapabilities, ClientMode, ControlCommand, LeaderCapabilities, LeaderDescriptor,
-    LeaderRegistration, LeaderTarget, leader_is_older_than,
+    LeaderRegistration, LeaderTarget,
 };
 use xai_grok_shell::leader::{
     ControlPayload, LeaderClient, LeaderEnvUrls, connect_or_spawn, socket_path_for_ws_url,
@@ -121,7 +121,8 @@ fn command_needs_pre_sandbox_policy_heal(command: Option<&Command>) -> bool {
     }
 }
 use std::env;
-use xai_grok_update::{UpdateConfig, auto_update, enforce_version_policy_or_exit};
+use xai_grok_update::enforce_version_policy_or_exit;
+use xai_grok_update::{UpdateConfig, auto_update};
 #[cfg(all(feature = "test-seams", debug_assertions))]
 mod test_seam {
     const TEST_TRUSTED_PUBKEY_FILE_ENV: &str = "GROK_TEST_TRUSTED_PUBKEY_FILE";
@@ -261,15 +262,14 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
         ),
     );
 }
-/// `workshop setup`: rendering and exit codes only; fetch logic lives in `xai_grok_shell::managed_config`.
-/// `json` prints the served configuration instead of installing it.
+/// `json` prints the managed configuration without installing it.
 #[tracing::instrument(level = "debug", skip_all)]
 async fn run_setup_command(json: bool) {
-    use xai_grok_shell::managed_config::{self, SetupOutcome};
+    use xai_grok_cloud_config::managed_config::{self, SetupOutcome};
     if !managed_config::has_principal() {
         eprintln!("No deployment key or team sign-in found.");
         eprintln!();
-        eprintln!("To install managed configuration, sign in with a team using `workshop login`,");
+        eprintln!("To install managed configuration, sign in with a team using `grok login`,");
         eprintln!("or set a deployment key:");
         eprintln!();
         if cfg!(unix) {
@@ -277,7 +277,7 @@ async fn run_setup_command(json: bool) {
         } else {
             eprintln!("  $env:GROK_DEPLOYMENT_KEY=\"<your-key>\"");
         }
-        eprintln!("  workshop setup");
+        eprintln!("  grok setup");
         eprintln!();
         eprintln!("Or add the key to ~/.grok/config.toml:");
         eprintln!();
@@ -317,7 +317,7 @@ async fn run_setup_command(json: bool) {
         }
         SetupOutcome::Skipped => {
             eprintln!(
-                "Managed configuration was not applied this run (another process held the apply lock, or the credential changed during the fetch). Run `workshop setup` again."
+                "Managed configuration was not applied this run (another process held the apply lock, or the credential changed during the fetch). Run `grok setup` again."
             );
         }
         SetupOutcome::Staged => {
@@ -609,7 +609,7 @@ async fn run_workspace_mgmt(args: WorkspaceMgmtArgs) -> Result<()> {
         WorkspaceGate::Unknown => {
             anyhow::bail!(
                 "Could not load your settings for `grok workspace`. Check your \
-             network connection (run `workshop login` if you are signed out), then \
+             network connection (run `grok login` if you are signed out), then \
              try again."
             )
         }
@@ -718,7 +718,7 @@ async fn spawn_and_connect_leader(
         agent_config.login_device_flow,
         agent_config.endpoints.proxy_url(),
         false,
-        Some("No cached credentials found. Run `workshop login` first."),
+        Some("No cached credentials found. Run `grok login` first."),
     )
     .await?;
     let env_urls = LeaderEnvUrls::from(&agent_config.grok_com_config);
@@ -1185,7 +1185,7 @@ fn shutdown_and_flush_telemetry(exit_code: i32) -> ! {
 }
 fn finalize_span_profile() {
     if let Some(path) = xai_grok_telemetry::span_profile::finalize() {
-        eprintln!("workshop: span profile written to {}", path.display());
+        eprintln!("grok: span profile written to {}", path.display());
     }
 }
 #[tracing::instrument(level = "debug", skip_all)]
@@ -1220,7 +1220,7 @@ async fn forward_stdio_line_to_leader(
     }
 }
 /// Emitted by both leader guards (server mode and leader-connect) so the two sites can't drift.
-const PLUGIN_DIR_LEADER_WARNING: &str = "workshop: --plugin-dir is ignored in leader mode; run with --no-leader to \
+const PLUGIN_DIR_LEADER_WARNING: &str = "grok: --plugin-dir is ignored in leader mode; run with --no-leader to \
      load per-process plugins";
 /// Run the `agent` subcommand, dispatching to the appropriate mode.
 #[tracing::instrument(level = "debug", skip_all)]
@@ -1271,7 +1271,7 @@ async fn run_agent_command(
     let is_leader = matches!(agent_args.mode, Some(AgentCmd::Leader(_)));
     if !is_stdio && !is_leader {
         eprintln!(
-            "Workshop - v{}",
+            "Grok Build (pager) - v{}",
             xai_grok_version::display_version_with_commit(
                 env!("VERSION_WITH_COMMIT"),
                 xai_grok_update::channel_label(),
@@ -1319,7 +1319,7 @@ async fn run_agent_command(
         None,
     );
     if let Some(warning) = launch_yolo.blocked_warning {
-        eprintln!("workshop: {warning}");
+        eprintln!("grok: {warning}");
     }
     agent_config.default_yolo_mode = launch_yolo.yolo;
     agent_config.default_auto_mode = xai_grok_shell::util::config::effective_auto_for_launch(
@@ -1640,7 +1640,8 @@ async fn run_agent_command(
                             match auto_update::ensure_latest_on_disk(&uc).await {
                                 Ok(outcome) => {
                                     if let Some(v) = &outcome.installed {
-                                        if let Err(e) = xai_grok_shell::managed_config::sync().await
+                                        if let Err(e) =
+                                            xai_grok_cloud_config::managed_config::sync().await
                                         {
                                             tracing::warn!(
                                                 "Leader auto-update: managed config refresh failed: {e}"
@@ -1813,10 +1814,10 @@ impl WorkerCount {
                 used,
                 cores,
             } => Some(format!(
-                "workshop: clamped {GROK_WORKER_THREADS_ENV}={requested} to {used} (valid range is 1..={cores})"
+                "grok: clamped {GROK_WORKER_THREADS_ENV}={requested} to {used} (valid range is 1..={cores})"
             )),
             Self::Ignored { value, .. } => Some(format!(
-                "workshop: ignoring {GROK_WORKER_THREADS_ENV}={value:?} (not a valid integer)"
+                "grok: ignoring {GROK_WORKER_THREADS_ENV}={value:?} (not a valid integer)"
             )),
         }
     }
@@ -1988,9 +1989,8 @@ fn install_heap_profile_hooks() {
     });
 }
 fn version_text(channel_label: &str) -> String {
-    // Workshop (gate:no-xai): `workshop --version` names the Workshop binary, not `grok`.
     format!(
-        "workshop {}\n",
+        "grok {}\n",
         xai_grok_version::display_version_with_commit(
             xai_grok_version::full_version(),
             channel_label,
@@ -1999,6 +1999,16 @@ fn version_text(channel_label: &str) -> String {
 }
 fn write_version(writer: &mut impl std::io::Write, channel_label: &str) -> std::io::Result<()> {
     writer.write_all(version_text(channel_label).as_bytes())
+}
+/// The leader gets its own crash directory: `install()` opens `last-crash.bin` with `O_TRUNC`, so a pager and a
+/// leader sharing one directory would each wipe the other's pending crash blob on start.
+fn crash_dir_for(args: &PagerArgs) -> std::path::PathBuf {
+    let base = xai_grok_shell::util::grok_home::grok_home().join("crash");
+    let is_leader = matches!(
+        &args.command,
+        Some(Command::Agent(agent)) if matches!(agent.mode, Some(AgentCmd::Leader(_)))
+    );
+    if is_leader { base.join("leader") } else { base }
 }
 fn dispatch_version_if_requested(args: &PagerArgs) -> bool {
     if !args.version {
@@ -2023,94 +2033,13 @@ fn dispatch_doctor_if_requested(args: &PagerArgs) -> bool {
     }
     true
 }
-/// Workshop (gate:config-isolation): the product never reads a Grok Build home. Upstream's
-/// `GROK_HOME` is dropped from this process before any path resolves, so a machine that also runs
-/// Grok Build — with `GROK_HOME` exported, or `~/.grok` full of hooks and settings — keeps that to
-/// itself; Workshop uses `$WORKSHOP_HOME` (default `~/.workshop`) and nothing else. The
-/// `GROK_*` compat env cells that would pull another tool's hooks/MCPs in are dropped too; those
-/// are opted into through `[compat.<vendor>]` in Workshop's own config.
-fn isolate_from_grok_build_env() {
-    // SAFETY: first thing in `main`, before any other thread exists.
-    unsafe {
-        std::env::remove_var(xai_dirs::LEGACY_HOME_ENV);
-        for cell in xai_grok_tools::types::compat::COMPAT_CELLS {
-            std::env::remove_var(cell.env_var());
-        }
-    }
-    workshop_env_aliases();
-}
-
-/// Environment variables Workshop owns outright; they are never mirrored onto a `GROK_*` name.
-const WORKSHOP_NATIVE_ENV: &[&str] = &[
-    "WORKSHOP_HOME",
-    "WORKSHOP_VERSION",
-    "WORKSHOP_CHANNEL",
-    "WORKSHOP_RELEASE_REPO",
-    "WORKSHOP_MANIFEST_URL",
-    "WORKSHOP_DOWNLOAD_BASE",
-    "WORKSHOP_HERO_ART",
-    "WORKSHOP_BIN",
-    "WORKSHOP_PTY_EVIDENCE_DIR",
-    "WORKSHOP_UPDATE_CHECK_INTERVAL_SECS",
-];
-
-/// `WORKSHOP_<X>` is the documented spelling of every `GROK_<X>` switch the inherited code reads
-/// (`WORKSHOP_AGENT_DASHBOARD=0`, `WORKSHOP_SANDBOX=strict`, `WORKSHOP_DISABLE_AUTOUPDATER=1`, …).
-/// Each set `WORKSHOP_<X>` is mirrored onto the unset `GROK_<X>` so the readers stay untouched,
-/// and the clap-bound switches (`--sandbox`, `agent serve --secret`) are mirrored the other way
-/// so their old names keep working as hidden aliases. Workshop-native names (`WORKSHOP_HOME`, credentials) are skipped.
-fn workshop_env_aliases() {
-    let mirrored: Vec<(String, std::ffi::OsString)> = std::env::vars_os()
-        .filter_map(|(key, value)| {
-            let key = key.to_str()?;
-            let rest = key.strip_prefix("WORKSHOP_")?;
-            if rest.is_empty()
-                || WORKSHOP_NATIVE_ENV.contains(&key)
-                || key.starts_with("WORKSHOP_VOICE")
-                || key.ends_with("_API_KEY")
-            {
-                return None;
-            }
-            Some((format!("GROK_{rest}"), value))
-        })
-        .collect();
-    // SAFETY: still single-threaded (called from `isolate_from_grok_build_env` at the top of `main`).
-    unsafe {
-        for (grok_name, value) in mirrored {
-            if std::env::var_os(&grok_name).is_none() {
-                std::env::set_var(&grok_name, value);
-            }
-        }
-        for (old, new) in [
-            ("GROK_SANDBOX", "WORKSHOP_SANDBOX"),
-            ("GROK_AGENT_SECRET", "WORKSHOP_AGENT_SECRET"),
-        ] {
-            if let Some(value) = std::env::var_os(old)
-                && std::env::var_os(new).is_none()
-            {
-                std::env::set_var(new, value);
-            }
-        }
-    }
-}
-
 fn main() {
-    isolate_from_grok_build_env();
     xai_grok_version::set_full_version(env!("VERSION_WITH_COMMIT"));
     xai_grok_telemetry::startup::mark_process_start();
     if let Some(code) = xai_grok_pager::app::mermaid_worker::maybe_run_render_subprocess() {
         std::process::exit(code);
     }
     if let Some(code) = xai_grok_pager::voice::maybe_run_capture_subprocess() {
-        std::process::exit(code);
-    }
-    // Workshop: `workshop askpass <prompt>` is the SUDO_ASKPASS helper the engine's commands run.
-    if let Some(code) = xai_grok_pager::app::workshop_askpass::maybe_run_helper() {
-        std::process::exit(code);
-    }
-    // Workshop: `workshop __engine-shell -c <command>` is the shell the engine runs commands
-    // through (background budget + detach; see app::workshop_engine_shell).
-    if let Some(code) = xai_grok_pager::app::workshop_engine_shell::maybe_run_helper() {
         std::process::exit(code);
     }
     set_release_channel(ReleaseChannel::from_label(
@@ -2136,16 +2065,16 @@ fn main() {
         xai_grok_shell::agent::external_otel_pin::strip_conflicting_process_env();
     }
     let args = configure_process_env(args).unwrap_or_else(|err| {
-        eprintln!("workshop: {err:#}");
+        eprintln!("grok: {err:#}");
         std::process::exit(1);
     });
     xai_grok_pager::memory_trace::start(xai_grok_pager::memory_trace::default_dir());
     raise_fd_limit();
     if let Err(e) = xai_grok_config::validate_requirements() {
-        eprintln!("Couldn't start Workshop: {e}");
+        eprintln!("Couldn't start Grok: {e}");
         eprintln!();
         eprintln!(
-            "Update Workshop to a version the policy allows, or ask your administrator \
+            "Update Grok to a version the policy allows, or ask your administrator \
              to fix the managed requirements."
         );
         std::process::exit(2);
@@ -2159,7 +2088,7 @@ fn main() {
     xai_grok_pager::docs::extract_user_guide_docs(&xai_grok_shell::util::grok_home::grok_home());
     xai_crash_handler::install_terminal_restore_only();
     if xai_grok_shell::util::config::load_crash_handler_enabled_sync() {
-        let crash_dir = xai_grok_shell::util::grok_home::grok_home().join("crash");
+        let crash_dir = crash_dir_for(&args);
         if let Some(report) = xai_crash_handler::check_previous_crash(&crash_dir) {
             eprintln!("Grok crashed during your last session.");
             eprintln!("  Signal:  {}", report.signal_name);
@@ -2177,19 +2106,12 @@ fn main() {
             );
         }
     }
-    let crashed = xai_grok_active_sessions::collect_crashed().unwrap_or_default();
-    if !crashed.is_empty() {
-        tracing::info!(
-            count = crashed.len(),
-            "Found crashed sessions from a previous run"
-        );
-    }
     let workers = cli_worker_threads();
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     builder.worker_threads(workers.get()).enable_all();
     let runtime =
         xai_tty_utils::runtime::build_with_blocking_pool(&mut builder).unwrap_or_else(|e| {
-            eprintln!("workshop: failed to start tokio runtime: {e}");
+            eprintln!("grok: failed to start tokio runtime: {e}");
             shutdown_and_flush_telemetry(1);
         });
     let result = run_and_shutdown(runtime, async_main(args), RUNTIME_SHUTDOWN_GRACE);
@@ -2266,7 +2188,8 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                     agent_cfg.grok_com_config.auth_provider_command.clone(),
                     None,
                 );
-                xai_grok_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+                xai_grok_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager)
+                    .await;
             }
             Err(e) => {
                 tracing::warn!(
@@ -2350,12 +2273,6 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
             }
             Command::Models => {
                 init_tracing_simple("cli");
-                // Workshop: an Engine/Adapter connection lists the models it actually offers;
-                // the shell's placeholder entry is not a model anyone can pick.
-                if let Some(text) = xai_grok_pager::app::workshop::connection_models_text() {
-                    print!("{text}");
-                    return Ok(());
-                }
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 let agent_config = xai_grok_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
@@ -2371,7 +2288,8 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 let agent_config = xai_grok_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                return xai_grok_pager::worktree_cmd::run(worktree_args, &agent_config).await;
+                let result = xai_grok_pager::worktree_cmd::run(worktree_args, &agent_config).await;
+                return result;
             }
             Command::DiskUsage(disk_usage_args) => {
                 init_tracing_simple("cli");
@@ -2445,23 +2363,24 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 auto,
             } => {
                 init_tracing_simple("cli");
-                let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 let channel_switch = get_channel_switch(alpha, stable, enterprise);
-                let trigger = resolve_update_trigger(trigger.as_deref(), auto);
-                return run_update_command(
-                    check,
-                    json,
-                    force_reinstall,
-                    version,
-                    channel_switch,
-                    trigger,
-                    &update_config,
-                )
-                .await;
+                {
+                    let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
+                    let trigger = resolve_update_trigger(trigger.as_deref(), auto);
+                    return run_update_command(
+                        check,
+                        json,
+                        force_reinstall,
+                        version,
+                        channel_switch,
+                        trigger,
+                        &update_config,
+                    )
+                    .await;
+                }
             }
             Command::Login {
                 legacy: _,
-                xai,
                 oauth,
                 device_auth,
                 devbox,
@@ -2470,29 +2389,8 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 let config = xai_grok_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                // Workshop (gate:no-xai): `workshop login` is the connection picker. The inherited
-                // session login runs only for an explicitly configured provider (enterprise OIDC,
-                // `GROK_OAUTH2_*`, auth-provider command) or the labeled `--xai` opt-in.
-                let grok_com_config = if xai {
-                    config.grok_com_config.clone().with_xai_first_party_oauth2()
-                } else {
-                    config.grok_com_config.clone()
-                };
-                if !grok_com_config.has_session_login_provider()
-                    && grok_com_config.auth_provider_command.is_none()
-                {
-                    let mut picker = workshop_auth::PickerState::new();
-                    picker.apply_snapshot(
-                        xai_grok_pager::app::workshop::refresh_rail_models_snapshot().await,
-                    );
-                    print!("{}", workshop_auth::text::cli_login_text(&picker));
-                    xai_grok_shell::instrumentation::finalize_and_exit(0);
-                }
-                if xai {
-                    eprintln!("Workshop: optional xAI account login selected; this opens auth.x.ai.");
-                }
                 let authenticated = xai_grok_login::run_cli_login(
-                    grok_com_config,
+                    config.grok_com_config.clone(),
                     config.login_device_flow,
                     config.endpoints.proxy_url(),
                     oauth,
@@ -2550,7 +2448,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
             None,
         );
         if let Some(warning) = launch_yolo.blocked_warning {
-            eprintln!("workshop: {warning}");
+            eprintln!("grok: {warning}");
         }
         let json_schema = args
             .json_schema
@@ -2610,8 +2508,9 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
     type UpdateWaitHandle = tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>;
     let bg_update_wait: std::sync::Arc<tokio::sync::Mutex<Option<UpdateWaitHandle>>> =
         std::sync::Arc::new(tokio::sync::Mutex::new(None));
+    let check_updates = should_check_for_updates(args.no_auto_update);
     let bg_update_rx: Option<tokio::sync::oneshot::Receiver<Option<auto_update::UpdateAvailable>>> =
-        if should_check_for_updates(args.no_auto_update) {
+        if check_updates {
             let update_config = update_config.clone();
             let wait_slot = bg_update_wait.clone();
             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -2621,25 +2520,6 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                     *wait_slot.lock().await = Some(tokio::spawn(async move { child.wait().await }));
                 }
                 let _ = tx.send(check.update);
-                // Workshop: a session left open keeps asking the channel, so a release lands on disk
-                // while it runs and the next launch starts on it. Silent and newer-only; the running
-                // session is never replaced or interrupted.
-                let every = workshop_update_check_interval();
-                loop {
-                    tokio::time::sleep(every).await;
-                    if wait_slot
-                        .lock()
-                        .await
-                        .as_ref()
-                        .is_some_and(|launch_download| !launch_download.is_finished())
-                    {
-                        continue;
-                    }
-                    let check = auto_update::check_update_periodic(&update_config).await;
-                    if let Some(mut child) = check.download {
-                        let _ = child.wait().await;
-                    }
-                }
             });
             Some(rx)
         } else {
@@ -2650,10 +2530,11 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
     match result {
         Ok(true) => {
             let adopted = bg_update_wait.lock().await.take();
+            let grok = "grok";
             if finish_update_on_exit(adopted, &update_config).await {
-                eprintln!("Update installed. Run `workshop` to start.");
+                eprintln!("Update installed. Run `{grok}` to start.");
             } else {
-                eprintln!("Update did not complete. Run `workshop update` to retry.");
+                eprintln!("Update did not complete. Run `{grok} update` to retry.");
             }
             Ok(())
         }
@@ -2673,14 +2554,7 @@ async fn finish_update_on_exit(
         if let Some(reason) = reason {
             eprintln!("{reason}");
         }
-        auto_update::run_update_if_available(
-            auto_update::UpdateRunMode::Blocking,
-            false,
-            auto_update::CliUpdateTrigger::UserCommand,
-            update_config,
-        )
-        .await
-        .is_ok()
+        run_update_blocking(update_config).await
     };
     match adopted {
         Some(handle) => {
@@ -2730,33 +2604,29 @@ fn build_update_config() -> UpdateConfig {
     }
     config
 }
-/// Central gate for auto-update checks; add new suppression rules here, not at call sites.
-/// How often a running session asks the release channel again: an hour, or
-/// `WORKSHOP_UPDATE_CHECK_INTERVAL_SECS` (the PTY gates use seconds).
-fn workshop_update_check_interval() -> std::time::Duration {
-    let secs = std::env::var("WORKSHOP_UPDATE_CHECK_INTERVAL_SECS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|secs| *secs > 0)
-        .unwrap_or(60 * 60);
-    std::time::Duration::from_secs(secs)
+/// Ctrl+U quit-for-update: the user asked for this install. `run_update_if_available` reports its
+/// own failures to stderr; only a hard Err counts as "did not complete".
+async fn run_update_blocking(update_config: &UpdateConfig) -> bool {
+    auto_update::run_update_if_available(
+        auto_update::UpdateRunMode::Blocking,
+        false,
+        auto_update::CliUpdateTrigger::UserCommand,
+        update_config,
+    )
+    .await
+    .is_ok()
 }
-
+/// Central gate for auto-update checks; add new suppression rules here, not at call sites.
 fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
-    // Workshop: a debug build updates only from a loopback channel a PTY gate stands up
-    // (`WORKSHOP_CLI_BASE_URL`, loopback-only), never from the published one.
-    if cfg!(debug_assertions) && !xai_grok_update::version::loopback_channel_override() {
+    if cfg!(debug_assertions) {
         return false;
     }
-    if no_auto_update_flag {
-        return false;
-    }
-    // Workshop (gate:no-xai, Gate 4): updates install silently from Workshop's own release channel
-    // (`release-channel` branch of the release repo, SHA-256 checked per artifact; never an xAI
-    // host). `--no-auto-update`, `WORKSHOP_DISABLE_AUTOUPDATER=1` and `[cli] auto_update = false`
-    // turn it off.
-    !std::env::var_os("GROK_DISABLE_AUTOUPDATER")
-        .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
+    !is_opted_out_of_updates(no_auto_update_flag)
+}
+fn is_opted_out_of_updates(no_auto_update_flag: bool) -> bool {
+    no_auto_update_flag
+        || std::env::var_os("GROK_DISABLE_AUTOUPDATER")
+            .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
 }
 /// Gate for the stdio agent's background auto-update: only the direct stdio agent, from the managed install.
 /// Other modes update in `run_agent_command`.
@@ -2845,7 +2715,7 @@ async fn run_update_command(
         );
     }
     let telemetry_cfg = xai_grok_shell::config::load_agent_config_disk_only()
-        .map_err(|e| tracing::warn!("workshop update: telemetry init skipped (agent config: {e})"))
+        .map_err(|e| tracing::warn!("grok update: telemetry init skipped (agent config: {e})"))
         .ok();
     if let Some(agent_cfg) = telemetry_cfg {
         let auth_manager =
@@ -2872,7 +2742,7 @@ async fn run_update_command(
     result?;
     Ok(())
 }
-/// After a successful `workshop update`, ask any running leader on this machine that is older than `installed_version`
+/// After a successful `grok update`, ask any running leader on this machine that is older than `installed_version`
 /// to relaunch onto the new binary. Best-effort and non-fatal: discovery/connect/control failures are logged and
 /// skipped.
 #[tracing::instrument(level = "debug", skip_all)]
@@ -2885,7 +2755,10 @@ async fn signal_leaders_to_relaunch(installed_version: &str) {
             continue;
         };
         if let Some(ref live) = d.live_info
-            && !leader_is_older_than(&live.leader_binary_version, installed_version)
+            && !xai_grok_shell::leader::leader_is_older_than(
+                &live.leader_binary_version,
+                installed_version,
+            )
         {
             continue;
         }
@@ -3032,7 +2905,7 @@ mod tests {
         );
         assert_eq!(
             resolve_worker_override("100000", cores).notice().unwrap(),
-            "workshop: clamped GROK_WORKER_THREADS=100000 to 360 (valid range is 1..=360)"
+            "grok: clamped GROK_WORKER_THREADS=100000 to 360 (valid range is 1..=360)"
         );
     }
     #[test]
@@ -3045,7 +2918,7 @@ mod tests {
         }
         assert_eq!(
             resolve_worker_override("abc", cores).notice().unwrap(),
-            "workshop: ignoring GROK_WORKER_THREADS=\"abc\" (not a valid integer)"
+            "grok: ignoring GROK_WORKER_THREADS=\"abc\" (not a valid integer)"
         );
     }
     #[test]
@@ -3059,7 +2932,7 @@ mod tests {
             let mut output = Vec::new();
             write_version(&mut output, label).unwrap();
             let output = String::from_utf8(output).unwrap();
-            assert!(output.starts_with("workshop "));
+            assert!(output.starts_with("grok "));
             assert!(output.contains(env!("VERSION_WITH_COMMIT")));
             assert!(output.ends_with(expected_suffix), "{output:?}");
         }
@@ -3226,37 +3099,30 @@ mod tests {
     }
     #[cfg(unix)]
     #[test]
-    fn is_managed_install_matches_only_the_bin_workshop_target() {
-        let home = std::env::temp_dir().join(format!(
-            "workshop-managed-install-{}",
-            std::process::id()
-        ));
+    fn is_managed_install_matches_only_the_bin_grok_target() {
+        let home =
+            std::env::temp_dir().join(format!("grok-pager-managed-install-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(home.join("bin")).unwrap();
         std::fs::create_dir_all(home.join("downloads")).unwrap();
         assert!(!is_managed_install(
-            Some(home.join("bin").join("workshop")),
+            Some(home.join("bin").join("grok")),
             &home
         ));
         assert!(!is_managed_install(None, &home));
         assert!(!is_managed_install(
-            Some(home.join("bin").join("workshop")),
+            Some(home.join("bin").join("grok")),
             std::path::Path::new("")
         ));
-        // The layout scripts/install.sh writes: bin/workshop -> ../downloads/workshop-<v>-<platform>.
-        let target = home.join("downloads").join("workshop-1.2.3-linux-x86_64");
+        let target = home.join("downloads").join("grok-1.2.3");
         std::fs::write(&target, b"binary").unwrap();
-        std::os::unix::fs::symlink(
-            std::path::Path::new("../downloads/workshop-1.2.3-linux-x86_64"),
-            home.join("bin").join("workshop"),
-        )
-        .unwrap();
+        std::os::unix::fs::symlink(&target, home.join("bin").join("grok")).unwrap();
         assert!(is_managed_install(
-            Some(home.join("bin").join("workshop")),
+            Some(home.join("bin").join("grok")),
             &home
         ));
         assert!(is_managed_install(Some(target.clone()), &home));
-        let pinned = home.join("bin").join("workshop-9.9.9");
+        let pinned = home.join("bin").join("grok-9.9.9");
         std::fs::write(&pinned, b"binary").unwrap();
         assert!(!is_managed_install(Some(pinned), &home));
         let _ = std::fs::remove_dir_all(&home);

@@ -300,6 +300,48 @@ fn login_from_welcome_does_not_stash_return_view() {
     assert_eq!(app.auth_return_view, None);
 }
 
+/// A build without account logins refuses a login, a logout or an account switch, in the session.
+#[test]
+fn without_account_logins_login_and_logout_are_refused_in_the_session() {
+    let refusal =
+        xai_grok_config::Distribution::withholding(&[xai_grok_config::Capability::AccountLogin])
+            .refusal(xai_grok_config::Capability::AccountLogin)
+            .expect("a build without account logins refuses one");
+    for action in [Action::Login, Action::Logout, Action::SwitchAccount] {
+        let mut app = test_app_with_agent();
+        app.distribution = xai_grok_config::Distribution::withholding(&[
+            xai_grok_config::Capability::AccountLogin,
+        ]);
+        let view = app.active_view;
+
+        let effects = dispatch(action, &mut app);
+
+        assert!(effects.is_empty(), "{effects:?}");
+        assert_eq!(view, app.active_view, "no login screen");
+        assert_eq!(refusal, last_system_text(&app, AgentId(0)));
+    }
+}
+
+#[test]
+fn without_account_logins_the_welcome_login_is_refused() {
+    let mut app = test_app();
+    app.distribution =
+        xai_grok_config::Distribution::withholding(&[xai_grok_config::Capability::AccountLogin]);
+    app.auth_state = AuthState::Pending { error: None };
+
+    assert!(dispatch(Action::Login, &mut app).is_empty());
+    assert!(matches!(app.auth_state, AuthState::Pending { .. }));
+    let refusal =
+        xai_grok_config::Distribution::withholding(&[xai_grok_config::Capability::AccountLogin])
+            .refusal(xai_grok_config::Capability::AccountLogin);
+    assert_eq!(
+        refusal,
+        app.welcome_toast
+            .as_ref()
+            .map(|(message, _)| message.as_str())
+    );
+}
+
 /// Compact-auth recovery: the prompt is held across an auto-compact 401, stashed on PromptResponse, and resubmitted on a mid-session AuthComplete.
 #[test]
 fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
@@ -394,7 +436,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
         "PromptResponse must stash the compact-held prompt for AuthComplete"
     );
 
-    start_login_flow(&mut app);
+    dispatch(Action::Login, &mut app);
     let seq = authenticating_seq(&app);
     let effects = dispatch(
         Action::TaskComplete(TaskResult::AuthComplete {
@@ -554,656 +596,34 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
     );
 }
 
-/// Empty `auth_methods` (Workshop cold start, or a `preferred_method` pin that is unavailable) must not invent
-/// `grok.com` or start an OIDC flow the agent did not advertise: Login opens the connection picker instead.
+/// Empty `auth_methods` (the preferred_method pin is unavailable) must not invent `grok.com` or start an OIDC flow the agent did not advertise.
 #[test]
-fn login_with_empty_auth_methods_opens_picker_and_fails_closed() {
+fn login_with_empty_auth_methods_fails_closed() {
     let mut app = test_app_with_agent();
     app.auth_methods.clear();
     app.login_method_id = None;
 
     let effects = dispatch(Action::Login, &mut app);
 
-    // Opening the picker loads its rows/rails asynchronously (`WorkshopLoadPicker`); that is a data
-    // probe, never an auth flow. The invariant is that Login alone starts no `Authenticate`.
     assert!(
-        !effects
-            .iter()
-            .any(|e| matches!(e, Effect::Authenticate { .. })),
-        "must not start Authenticate without an advertised method, got {effects:?}"
-    );
-    assert!(
-        effects
-            .iter()
-            .all(|e| matches!(e, Effect::WorkshopLoadPicker)),
-        "Login only loads the picker, got {effects:?}"
-    );
-    assert!(
-        app.connection_picker.is_some(),
-        "Login must open the connection picker"
+        effects.is_empty(),
+        "must not start Authenticate without an advertised method"
     );
     assert_eq!(
         app.active_view,
         ActiveView::Agent(AgentId(0)),
-        "the picker is an overlay: the session stays up behind it"
-    );
-    assert_eq!(
-        app.auth_return_view,
-        Some(ActiveView::Agent(AgentId(0))),
-        "closing the picker returns to the session"
+        "must stay on the session view"
     );
     assert!(
-        !matches!(app.auth_state, AuthState::Authenticating { .. }),
-        "no login flow may start from Login alone, got {:?}",
+        matches!(
+            &app.auth_state,
+            AuthState::Pending { error: Some(msg) }
+                if msg.contains("preferred_method=api_key")
+        ),
+        "must surface pin-unavailable error, got {:?}",
         app.auth_state
     );
     assert!(app.login_method_id.is_none());
-
-    // Esc closes the picker and returns to the session; still nothing was sent.
-    let effects = dispatch(
-        Action::ConnectionPicker(workshop_auth::PickerInput::Back),
-        &mut app,
-    );
-    assert!(effects.is_empty());
-    assert!(app.connection_picker.is_none());
-    assert_eq!(app.active_view, ActiveView::Agent(AgentId(0)));
-}
-
-/// First run (cold start, nothing connected): no picker, the OpenCode engine's default model is
-/// the active connection, and the only effect is the in-process activation (model reload +
-/// anonymous auth) — never `Authenticate`, never a data probe. `AuthComplete` then hands the user
-/// the focused home composer.
-#[test]
-fn first_run_lands_in_the_composer_with_the_engine_default_and_no_picker() {
-    let mut app = test_app();
-    app.auth_methods.clear();
-    app.login_method_id = None;
-    app.auth_state = AuthState::Pending { error: None };
-    app.welcome_prompt_focused = false;
-
-    let effects = dispatch(Action::WorkshopFirstRun, &mut app);
-
-    assert!(app.connection_picker.is_none(), "first run shows no picker");
-    let crate::app::workshop::WorkshopConnection::Engine { model } = &app.workshop_connection
-    else {
-        panic!(
-            "expected the engine connection, got {:?}",
-            app.workshop_connection
-        );
-    };
-    assert!(model.is_default, "the engine's own default model is active");
-    assert_eq!(
-        app.workshop_connection.composer_label().as_deref(),
-        Some("Big Pickle"),
-        "the composer names the model only"
-    );
-    assert!(
-        app.workshop_first_launch,
-        "the first launch carries the doors hint"
-    );
-    assert_eq!(effects.len(), 1, "exactly the activation, got {effects:?}");
-    assert!(
-        matches!(
-            effects.first(),
-            Some(Effect::WorkshopActivateModel { session: None, .. })
-        ),
-        "first run activates the placeholder session in-process, got {effects:?}"
-    );
-    let AuthState::Authenticating { request_seq, .. } = app.auth_state else {
-        panic!("activation in flight, got {:?}", app.auth_state);
-    };
-
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::AuthComplete {
-            request_seq,
-            meta: None,
-        }),
-        &mut app,
-    );
-    assert!(matches!(app.auth_state, AuthState::Done));
-    assert!(
-        app.welcome_prompt_focused,
-        "the composer is ready to type into"
-    );
-    assert!(app.connection_picker.is_none());
-    assert!(
-        !effects
-            .iter()
-            .any(|e| matches!(e, Effect::Authenticate { .. })),
-        "no login flow ever starts on a first run, got {effects:?}"
-    );
-}
-
-/// `/model` opens the picker on the active model, `/auth` (and `/login`) the same picker on the
-/// Subscriptions section; while open the other command just moves the selection. The active
-/// engine row is preselected.
-#[test]
-fn model_and_auth_open_one_picker_and_move_while_open() {
-    use workshop_auth::{PickerFocus, RowKind};
-    let models = || PickerFocus::Models {
-        filter: String::new(),
-    };
-    let mut app = test_app();
-    app.workshop_connection = crate::app::workshop::first_run_connection();
-    let effects = dispatch(Action::OpenConnectionPicker(models()), &mut app);
-    // `/model` loads the cached rows at once and, because the user asked for the model lists,
-    // queues a refresh from their live sources behind that load (cache age respected; `r` forces).
-    assert!(
-        matches!(effects.as_slice(), [Effect::WorkshopLoadPicker]),
-        "got {effects:?}"
-    );
-    let picker = app.connection_picker.as_ref().expect("picker open");
-    assert_eq!(picker.title(), "Models");
-    assert!(
-        picker.refresh_pending && !picker.refresh_in_flight,
-        "the overlay says the lists are refreshing; the fetch waits for the cached load"
-    );
-    assert!(
-        picker.selected_row().is_some_and(
-            |r| matches!(&r.kind, RowKind::Engine(m) if m.is_default) && picker.is_active(&r)
-        ),
-        "the active engine model is the highlighted row"
-    );
-    let cached = || workshop_auth::PickerSnapshot {
-        rows: workshop_auth::models_rows(
-            &workshop_providers::Catalog::builtin(),
-            |_| false,
-            &[],
-            &[],
-        ),
-        ..workshop_auth::PickerSnapshot::default()
-    };
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::WorkshopPickerLoaded(cached())),
-        &mut app,
-    );
-    assert!(
-        matches!(
-            effects.as_slice(),
-            [Effect::WorkshopRefreshCatalogs {
-                force: false,
-                engine: None
-            }]
-        ),
-        "the cached load starts the live refresh, got {effects:?}"
-    );
-    let picker = app.connection_picker.as_ref().expect("picker open");
-    assert!(picker.refresh_pending && picker.refresh_in_flight);
-    assert!(
-        picker.selected_row().is_some_and(|r| picker.is_active(&r)),
-        "the cached load keeps the active row highlighted"
-    );
-    // A second cached snapshot does not start a second refresh.
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::WorkshopPickerLoaded(cached())),
-        &mut app,
-    );
-    assert!(effects.is_empty(), "got {effects:?}");
-    assert!(dispatch(Action::Login, &mut app).is_empty());
-    let picker = app.connection_picker.as_ref().unwrap();
-    assert_eq!(picker.title(), "Models", "one picker, one title");
-    assert!(
-        picker.selected_row().is_some_and(|r| r.is_vendor()),
-        "/auth lands on the first subscription row"
-    );
-    // `/model` on an already open picker: back to the active model and refresh right away.
-    let effects = dispatch(Action::OpenConnectionPicker(models()), &mut app);
-    let picker = app.connection_picker.as_ref().unwrap();
-    assert!(picker.selected_row().is_some_and(|r| picker.is_active(&r)));
-    assert!(
-        matches!(
-            effects.as_slice(),
-            [Effect::WorkshopRefreshCatalogs { force: false, .. }]
-        ),
-        "got {effects:?}"
-    );
-    // `/model <text>` opens with the text already in the filter.
-    app.connection_picker = None;
-    dispatch(
-        Action::OpenConnectionPicker(PickerFocus::Models {
-            filter: "pickle".into(),
-        }),
-        &mut app,
-    );
-    assert_eq!(app.connection_picker.as_ref().unwrap().filter, "pickle");
-}
-
-/// Zero egress before the user acts: `Login` (first run's picker path, `l`, `/login`) and `/auth`
-/// only load the cached rows — no live-catalog refresh, no `Authenticate`. The refresh belongs to
-/// `/model` and to the picker's `r`, which fetches regardless of the cache age and re-reads the
-/// engine list only from an engine that is already up.
-#[test]
-fn login_and_auth_never_refresh_catalogs_but_model_and_r_do() {
-    use workshop_auth::{PickerFocus, PickerInput};
-    let no_refresh = |effects: &[Effect]| {
-        !effects
-            .iter()
-            .any(|e| matches!(e, Effect::WorkshopRefreshCatalogs { .. }))
-    };
-    let mut app = test_app_with_agent();
-    app.auth_methods.clear();
-    app.login_method_id = None;
-    let effects = dispatch(Action::Login, &mut app);
-    assert!(
-        no_refresh(&effects),
-        "Login fetches nothing, got {effects:?}"
-    );
-    assert!(!app.connection_picker.as_ref().unwrap().refresh_pending);
-    // `/auth` while the picker is open: still nothing.
-    let effects = dispatch(
-        Action::OpenConnectionPicker(PickerFocus::Subscriptions),
-        &mut app,
-    );
-    assert!(
-        no_refresh(&effects),
-        "/auth fetches nothing, got {effects:?}"
-    );
-    app.connection_picker = None;
-    let effects = dispatch(
-        Action::OpenConnectionPicker(PickerFocus::Subscriptions),
-        &mut app,
-    );
-    assert!(
-        matches!(effects.as_slice(), [Effect::WorkshopLoadPicker]),
-        "a fresh /auth only loads the cached rows, got {effects:?}"
-    );
-    // `r` in the picker: a forced refresh (plus the reload it ends with).
-    let effects = dispatch(Action::ConnectionPicker(PickerInput::Refresh), &mut app);
-    assert!(
-        matches!(
-            effects.as_slice(),
-            [Effect::WorkshopRefreshCatalogs {
-                force: true,
-                engine: None
-            }]
-        ),
-        "got {effects:?}"
-    );
-    let picker = app.connection_picker.as_ref().unwrap();
-    assert!(picker.refresh_pending && picker.loading);
-    // A live snapshot clears the pending flag; a cached one does not.
-    dispatch(
-        Action::TaskComplete(TaskResult::WorkshopPickerLoaded(
-            workshop_auth::PickerSnapshot::default(),
-        )),
-        &mut app,
-    );
-    assert!(app.connection_picker.as_ref().unwrap().refresh_pending);
-    dispatch(
-        Action::TaskComplete(TaskResult::WorkshopPickerLoaded(
-            workshop_auth::PickerSnapshot {
-                live: true,
-                ..workshop_auth::PickerSnapshot::default()
-            },
-        )),
-        &mut app,
-    );
-    assert!(!app.connection_picker.as_ref().unwrap().refresh_pending);
-}
-
-/// A load that leaves a signed-in rail `Loading models…` (nothing cached yet: `/auth`, after a
-/// sign-in) asks the CLIs for their models, once; a `/model` refresh already queued covers it, and
-/// a rail that lists its models needs nothing.
-#[test]
-fn a_loading_rail_after_a_load_queues_one_rail_models_refresh() {
-    use workshop_auth::{PickerFocus, PickerSnapshot};
-    use workshop_detect::{Pill, Rail, RailModels, RailState, SubscriptionModels};
-    let rails = |state: RailModels| -> Vec<RailState> {
-        Rail::ALL
-            .iter()
-            .map(|r| RailState {
-                pill: Pill::Ready,
-                installed: true,
-                subscription: state.clone(),
-                ..RailState::detecting(*r)
-            })
-            .collect()
-    };
-    let loaded = |state: RailModels| {
-        Action::TaskComplete(TaskResult::WorkshopPickerLoaded(PickerSnapshot {
-            rails: rails(state),
-            ..PickerSnapshot::default()
-        }))
-    };
-    let mut app = test_app();
-    dispatch(
-        Action::OpenConnectionPicker(PickerFocus::Subscriptions),
-        &mut app,
-    );
-    let effects = dispatch(loaded(RailModels::Loading), &mut app);
-    assert!(
-        matches!(effects.as_slice(), [Effect::WorkshopRefreshRailModels]),
-        "got {effects:?}"
-    );
-    let listed = RailModels::Listed {
-        list: SubscriptionModels {
-            rail: Rail::Claude,
-            models: Vec::new(),
-            account: None,
-            documented_aliases: false,
-            fetched_at_secs: 0,
-        },
-        cached: false,
-        error: None,
-    };
-    assert!(dispatch(loaded(listed), &mut app).is_empty());
-    let failed = RailModels::Failed {
-        reason: "timed out".into(),
-    };
-    assert!(
-        dispatch(loaded(failed), &mut app).is_empty(),
-        "a failed rail waits for the user"
-    );
-    // Enter on it ("Couldn't load models — press Enter to retry") asks the CLIs again, and only
-    // them: no hosted-list refresh. (`/auth` left the selection on the Claude row.)
-    let effects = dispatch(
-        Action::ConnectionPicker(workshop_auth::PickerInput::Enter),
-        &mut app,
-    );
-    assert!(
-        matches!(effects.as_slice(), [Effect::WorkshopRefreshRailModels]),
-        "got {effects:?}"
-    );
-
-    // `/model`: the queued live refresh asks the CLIs itself; no second probe.
-    app.connection_picker = None;
-    dispatch(
-        Action::OpenConnectionPicker(PickerFocus::Models {
-            filter: String::new(),
-        }),
-        &mut app,
-    );
-    let effects = dispatch(loaded(RailModels::Loading), &mut app);
-    assert!(
-        matches!(effects.as_slice(), [Effect::WorkshopRefreshCatalogs { .. }]),
-        "got {effects:?}"
-    );
-}
-
-/// The OpenCode model could not start: Workshop falls back *silently*. The keyless pool's model is
-/// activated as the shell's, the connection the user has stays what it is (the next launch tries
-/// it again), the composer names the model that will answer, and the prompt goes out again once
-/// the activation completes — with no notice, no "Kilo", no "fallback".
-#[test]
-fn engine_unavailable_falls_back_silently_and_resends_the_prompt() {
-    use crate::scrollback::block::RenderBlock;
-    let mut app = test_app_with_agent();
-    let id = AgentId(0);
-    app.active_view = ActiveView::Agent(id);
-    app.workshop_connection = crate::app::workshop::first_run_connection();
-    let entry = app
-        .agents
-        .get_mut(&id)
-        .unwrap()
-        .scrollback
-        .push_block(RenderBlock::user_prompt("hello"));
-    app.workshop_turn_prompt_entry = Some(entry);
-    app.workshop_turn_agent = Some(id);
-    let system_blocks = |app: &AppView| -> Vec<String> {
-        let agent = test_agent(app, id);
-        (0..agent.scrollback.len())
-            .filter_map(|i| agent.scrollback.entry(i))
-            .filter_map(|e| match &e.block {
-                RenderBlock::System(b) => Some(b.text.clone()),
-                _ => None,
-            })
-            .collect()
-    };
-
-    let effects = dispatch(
-        Action::WorkshopEngineUnavailable {
-            agent_id: id,
-            reason: "installer failed: offline".into(),
-            text: "hello".into(),
-        },
-        &mut app,
-    );
-
-    assert!(
-        app.workshop_connection.is_engine(),
-        "the user's connection is untouched; only this process routes through the fallback"
-    );
-    assert_eq!(
-        app.workshop_fallback.as_deref(),
-        Some("Nemotron 3 Super"),
-        "the composer names the answering model, plainly"
-    );
-    assert_eq!(app.workshop_label().as_deref(), Some("Nemotron 3 Super"));
-    assert!(
-        test_agent(&app, id).scrollback.index_of_id(entry).is_none(),
-        "the first attempt's bubble is dropped; the resend paints it once"
-    );
-    assert!(
-        matches!(
-            effects.as_slice(),
-            [Effect::WorkshopActivateModel { session: Some((sid, _)), model_id, .. }]
-                if *sid == id && model_id.starts_with("kilo")
-        ),
-        "switches the open session to the fallback model, got {effects:?}"
-    );
-    assert_eq!(
-        app.workshop_resend.as_ref().map(|(_, t)| t.as_str()),
-        Some("hello")
-    );
-    assert!(
-        system_blocks(&app).is_empty(),
-        "nothing is said about the switch: {:?}",
-        system_blocks(&app)
-    );
-    let AuthState::Authenticating { request_seq, .. } = app.auth_state else {
-        panic!("activation in flight, got {:?}", app.auth_state);
-    };
-
-    dispatch(
-        Action::TaskComplete(TaskResult::AuthComplete {
-            request_seq,
-            meta: None,
-        }),
-        &mut app,
-    );
-    assert!(app.workshop_resend.is_none(), "the resend was consumed");
-    let said = system_blocks(&app).join("\n").to_ascii_lowercase();
-    for word in ["kilo", "fallback", "engine", "unavailable", "opencode"] {
-        assert!(
-            !said.contains(word),
-            "no plumbing on screen ({word:?}): {said}"
-        );
-    }
-    assert_eq!(app.active_view, ActiveView::Agent(id));
-    assert!(
-        test_agent(&app, id).workshop_model_label.as_deref() == Some("Nemotron 3 Super"),
-        "the composer label is the answering model: {:?}",
-        test_agent(&app, id).workshop_model_label
-    );
-}
-
-/// Enter on a non-xAI row (a model, a vendor, `API keys`, a connect row) opens a sub-menu or
-/// setup details and never emits `Authenticate`.
-#[test]
-fn picker_non_xai_cards_never_authenticate() {
-    use workshop_auth::{PickerInput, XAI_ROW_ID};
-    let mut app = test_app();
-    dispatch(Action::Login, &mut app);
-    let n = app.connection_picker.as_ref().unwrap().visible_rows().len();
-    for i in 0..n {
-        let picker = app.connection_picker.as_mut().unwrap();
-        picker.submenu = None;
-        picker.selected = i;
-        let id = picker.selected_row().map(|r| r.id()).unwrap_or_default();
-        if id == XAI_ROW_ID {
-            continue;
-        }
-        let effects = dispatch(Action::ConnectionPicker(PickerInput::Enter), &mut app);
-        assert!(
-            !effects
-                .iter()
-                .any(|e| matches!(e, Effect::Authenticate { .. })),
-            "{id}: Enter must not authenticate"
-        );
-        // Picking a model activates it in-process (`WorkshopActivateModel`, the anonymous
-        // session); that is the only thing allowed to leave `Authenticating` behind.
-        if matches!(app.auth_state, AuthState::Authenticating { .. }) {
-            assert!(
-                effects
-                    .iter()
-                    .any(|e| matches!(e, Effect::WorkshopActivateModel { .. })),
-                "{id}: only a model activation may be in flight, got {effects:?}"
-            );
-            app.auth_state = AuthState::Done;
-        }
-        if app.connection_picker.is_none() {
-            dispatch(Action::Login, &mut app);
-        }
-    }
-}
-
-/// The optional xAI card is the only path to the inherited flow, and it needs two explicit Enters.
-#[test]
-fn picker_xai_card_requires_two_enters_and_sets_opt_in() {
-    let mut app = test_app();
-    let effects = start_login_flow(&mut app);
-    assert!(
-        matches!(app.auth_state, AuthState::Authenticating { .. }),
-        "second Enter on the xAI card starts the flow"
-    );
-    let auth = effects
-        .iter()
-        .find(|e| matches!(e, Effect::Authenticate { .. }))
-        .expect("Authenticate effect");
-    if let Effect::Authenticate {
-        xai_opt_in,
-        method_id,
-        force_interactive,
-        ..
-    } = auth
-    {
-        assert!(*xai_opt_in, "xAI card must carry the explicit opt-in");
-        assert!(*force_interactive);
-        assert_eq!(method_id.0.as_ref(), "grok.com");
-    }
-    assert!(
-        app.connection_picker.is_none(),
-        "picker closes when the flow starts"
-    );
-}
-
-/// Picker opened by `/auth` with every vendor installed and signed out (Connect shown), Claude
-/// selected.
-fn picker_with_signed_out_rails(app: &mut AppView) {
-    use workshop_auth::PickerSnapshot;
-    use workshop_detect::{Pill, Rail, RailState};
-    dispatch(Action::Login, app);
-    let picker = app.connection_picker.as_mut().unwrap();
-    let mut rows = picker.rows.clone();
-    rows.extend(picker.connect_rows.clone());
-    picker.apply_snapshot(PickerSnapshot {
-        rows,
-        rails: Rail::ALL
-            .iter()
-            .map(|r| RailState {
-                pill: Pill::SignIn,
-                installed: true,
-                show_connect: true,
-                ..RailState::detecting(*r)
-            })
-            .collect(),
-        ..PickerSnapshot::default()
-    });
-    let picker = app.connection_picker.as_ref().unwrap();
-    assert_eq!(picker.title(), "Models");
-    assert_eq!(
-        picker.selected_row().map(|r| r.title()),
-        Some("Claude".into()),
-        "/auth lands on the Claude row"
-    );
-}
-
-/// The state Connect's Enter leaves behind (`PickerOutcome::RailConnect`): the vendor login is
-/// queued for the event loop. Set directly so the test never probes this machine's PATH for a
-/// real CLI (`rail_login_argv` does).
-fn queue_rail_connect(app: &mut AppView) -> workshop_detect::Rail {
-    let picker = app.connection_picker.as_ref().unwrap();
-    let Some(workshop_auth::RowKind::Vendor(rail)) = picker.selected_row().map(|r| r.kind) else {
-        panic!("a vendor row is selected");
-    };
-    app.pending_workshop_login = Some((rail, vec!["claude".into(), "auth".into(), "login".into()]));
-    rail
-}
-
-fn selected_title(app: &AppView) -> Option<String> {
-    app.connection_picker
-        .as_ref()
-        .and_then(|p| p.selected_row())
-        .map(|r| r.title())
-}
-
-/// After the vendor login returns, ↑/↓ move between the vendor rows again and the picker
-/// re-probes them.
-#[test]
-fn picker_rail_login_done_restores_rail_navigation() {
-    use workshop_auth::PickerInput;
-    use workshop_detect::process::InteractiveExit;
-    let mut app = test_app();
-    picker_with_signed_out_rails(&mut app);
-    let rail = queue_rail_connect(&mut app);
-    app.pending_workshop_login.take();
-
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone {
-            rail,
-            exit: InteractiveExit::Success,
-        }),
-        &mut app,
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::WorkshopLoadPicker)),
-        "a finished login re-probes the rails, got {effects:?}"
-    );
-    assert_eq!(selected_title(&app).as_deref(), Some("Claude"));
-    dispatch(Action::ConnectionPicker(PickerInput::Down), &mut app);
-    assert_eq!(
-        selected_title(&app).as_deref(),
-        Some("Codex"),
-        "Down moves to the next vendor right after the login returns"
-    );
-}
-
-/// Ctrl+C in the terminal ends the vendor login only: the picker reports the cancellation, keeps
-/// the vendor rows as they were (no re-probe) and is navigable again.
-#[test]
-fn picker_rail_login_interrupted_reports_cancel_without_reprobe() {
-    use workshop_auth::PickerInput;
-    use workshop_detect::process::InteractiveExit;
-    let mut app = test_app();
-    picker_with_signed_out_rails(&mut app);
-    let rail = queue_rail_connect(&mut app);
-    app.pending_workshop_login.take();
-
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::WorkshopLoginTerminalDone {
-            rail,
-            exit: InteractiveExit::Interrupted,
-        }),
-        &mut app,
-    );
-    assert!(
-        effects.is_empty(),
-        "a cancelled login is not re-probed, got {effects:?}"
-    );
-    let picker = app.connection_picker.as_ref().unwrap();
-    assert!(
-        picker
-            .status
-            .as_deref()
-            .is_some_and(|s| s.contains("sign-in cancelled")),
-        "status: {:?}",
-        picker.status
-    );
-    assert!(!picker.loading);
-    dispatch(Action::ConnectionPicker(PickerInput::Down), &mut app);
-    assert_eq!(selected_title(&app).as_deref(), Some("Codex"));
 }
 
 /// Puts the app in `Authenticating` with a live task's abort handle installed, as the event loop would.
@@ -1213,7 +633,7 @@ fn install_live_auth_task(
     app: &mut AppView,
     rt: &tokio::runtime::Runtime,
 ) -> (tokio::task::JoinHandle<()>, u64) {
-    start_login_flow(app);
+    dispatch(Action::Login, app);
     let task = rt.spawn(std::future::pending::<()>());
     match &mut app.auth_state {
         AuthState::Authenticating {
@@ -1243,7 +663,7 @@ fn login_while_authenticating_aborts_prior_task() {
     let mut app = test_app_with_agent();
     let (prior_task, first_seq) = install_live_auth_task(&mut app, &rt);
 
-    let effects = start_login_flow(&mut app);
+    let effects = dispatch(Action::Login, &mut app);
 
     rt.block_on(async {
         assert!(
@@ -1273,12 +693,12 @@ fn login_while_authenticating_aborts_prior_task() {
 #[test]
 fn stale_auth_complete_after_relogin_is_ignored() {
     let mut app = test_app_with_agent();
-    start_login_flow(&mut app);
+    dispatch(Action::Login, &mut app);
     let first_seq = match &app.auth_state {
         AuthState::Authenticating { request_seq, .. } => *request_seq,
         other => panic!("expected Authenticating after Login, got {other:?}"),
     };
-    start_login_flow(&mut app); // re-login bumps to seq2
+    dispatch(Action::Login, &mut app); // re-login bumps to seq2
 
     dispatch(
         Action::TaskComplete(TaskResult::AuthComplete {
@@ -1344,7 +764,7 @@ fn cancel_login_aborts_prior_task() {
 #[test]
 fn cancel_login_restores_view() {
     let mut app = test_app_with_agent();
-    start_login_flow(&mut app);
+    dispatch(Action::Login, &mut app);
     assert_eq!(app.active_view, ActiveView::Welcome);
     let prior_seq = match &app.auth_state {
         AuthState::Authenticating { request_seq, .. } => *request_seq,

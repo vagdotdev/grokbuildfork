@@ -8,7 +8,6 @@
 //! - This makes dispatch fully testable without tokio or a terminal.
 //!
 //! Imports in this tree use at most one `super::` hop (absolute `crate::` paths otherwise); tests/ shares a fixture prelude via `use super::*;`.
-
 mod auth;
 mod billing;
 mod cta;
@@ -35,22 +34,19 @@ mod task_result;
 mod transcript;
 mod turn;
 mod voice;
-
 pub(crate) use auth::scrollback_has_recent_disk_full;
 pub(in crate::app) use auth::scrollback_has_recent_error_banner;
 pub(crate) use billing::{
     CREDIT_LIMIT_RETRY_OPTION_ID, UPSELL_URL_PAYG, UPSELL_URL_UPGRADE, is_credit_limit_error,
 };
+#[cfg(test)]
+pub(crate) use ctx::{SwitchCause, switch_to_agent};
 pub(crate) use dashboard::{DashboardStopReadiness, dashboard_stop_readiness};
 pub(crate) use modes::{downgrade_displayed_auto_if_gated, effective_auto};
 pub(crate) use notes::FEEDBACK_TRACE_UPLOAD_TIMEOUT_MS;
 pub(crate) use notes::{recap_unavailable_toast, scrollback_has_user_messages};
 pub(crate) use permissions::resolve_permission_queue_transition;
 pub(crate) use prompt::dispatch_initial_prompt;
-// Workshop: the engine's permission asks are answered from the agent's live mode, and the
-// approval prompt is withdrawn when the engine turn ends.
-pub(crate) use permissions::drain_permission_queue as drain_workshop_permission_queue;
-pub(crate) use prompt::workshop_permission_mode;
 pub(in crate::app) use prompt::{
     present_export_copy_tip, show_small_screen_tip, show_ssh_wrap_tip,
 };
@@ -59,20 +55,15 @@ pub(super) use queue::{
     apply_turn_start_shim, arm_send_now_and_paint, flush_held_local_queue_into_wait,
     maybe_drain_queue_and_note_peek, note_peek_page_flip, shim_renders_own_user_block,
 };
-pub(in crate::app) use rewind::{find_user_prompt_entry_for_shell_index, shell_prompt_index_at};
+pub(in crate::app) use rewind::find_user_prompt_entry_for_shell_index;
 pub(crate) use router::{dispatch, flush_image_notices};
 pub(crate) use session::lifecycle::{abandon_unused_home_session, maybe_create_home_session};
 pub(crate) use settings::ui::refresh_open_settings_modals;
-pub(crate) use status::commit_minimal_update_notice;
-pub(crate) use turn::{reconcile_overdue_cancels, reconcile_overdue_turn_ends};
-
-// Test-only consumers (cfg(test) mods elsewhere in the crate); a plain re-export trips -D unused-imports in the lib build
-#[cfg(test)]
-pub(crate) use ctx::{SwitchCause, switch_to_agent};
 #[cfg(test)]
 pub(crate) use settings::ui::{ROLLBACK_NO_ARM_TOAST, build_pager_snapshot};
+pub(crate) use status::commit_minimal_update_notice;
 #[cfg(test)]
 pub(crate) use turn::{CANCEL_RESEND_GRACE, TURN_END_RECONCILE_GRACE};
-
+pub(crate) use turn::{reconcile_overdue_cancels, reconcile_overdue_turn_ends};
 #[cfg(test)]
 mod tests;

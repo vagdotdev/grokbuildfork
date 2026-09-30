@@ -512,11 +512,10 @@ async fn test_atomic_symlink_swap_broken_symlink_target() {
 
 #[test]
 fn test_needs_update_prerelease_to_stable_forces_install() {
-    // Workshop: a pre-release suffix on the running build (`0.2.1-dev`) is not a channel to leave;
-    // the candidate still has to be newer. Upstream forced an install here even for a lower one.
+    // An inadmissible current version (a pre-release on the stable channel) forces an install even if the candidate is semver-lower
     assert_eq!(
         needs_update("0.1.149-alpha.1", "0.1.148", "stable", false),
-        Some(false)
+        Some(true)
     );
     assert_eq!(
         needs_update("0.1.148-alpha.3", "0.1.148", "stable", false),
@@ -918,16 +917,13 @@ async fn test_cleanup_old_downloads_mixed_stable_and_alpha() {
 // ──────────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_reinstall_hint_npm_is_unsupported() {
-    // Workshop is not on npm: the hint says so and points at the installer instead.
+fn test_reinstall_hint_npm_mentions_npm_command() {
     let hint = reinstall_hint("npm", "stable");
+    assert!(hint.contains("npm i -g"), "should suggest npm i -g: {hint}");
     assert!(
-        hint.contains("not supported"),
-        "npm must be reported as unsupported: {hint}"
+        hint.contains("@xai-official/grok"),
+        "should name the package: {hint}"
     );
-    assert!(hint.contains("install.sh"), "should point at the installer: {hint}");
-    assert!(!hint.contains("npm i -g"), "must not suggest an npm install: {hint}");
-    assert!(!hint.contains("@xai-official"), "must not name the xAI package: {hint}");
 }
 
 #[test]
@@ -938,47 +934,78 @@ fn test_reinstall_hint_gh_release_mentions_gh_command() {
         "should suggest gh release download: {hint}"
     );
     assert!(
-        hint.contains(crate::version::GH_RELEASE_REPO),
-        "should name the Workshop repo: {hint}"
+        hint.contains("xai-org-shared/grok-build"),
+        "should name the repo: {hint}"
     );
-    assert!(!hint.contains("xai-org"), "must not name the xAI repo: {hint}");
 }
 
-/// Workshop (gate:no-xai, Gate 4): no hint, for any installer or channel, may point at the xAI
-/// install scripts. Installers are not published yet, so every internal hint is the from-source line.
 #[test]
-fn test_reinstall_hint_never_points_at_xai_installers() {
-    for (installer, channel) in [
-        ("internal", "stable"),
-        ("internal", "alpha"),
-        ("internal", "enterprise"),
-        ("internal", "al pha"),
-        ("internal", "x'; rm -rf ~;'"),
-        ("internal", ""),
-        ("homebrew", "stable"),
-        ("", "stable"),
-        ("npm", "alpha"),
-        ("gh-release", "alpha"),
-    ] {
-        let hint = reinstall_hint(installer, channel);
-        for forbidden in ["x.ai/cli", "install.ps1", "@xai-official", "xai-org", "GROK_CHANNEL"] {
-            assert!(
-                !hint.contains(forbidden),
-                "{installer}/{channel:?}: hint must not contain {forbidden}: {hint}"
-            );
-        }
-        if installer == "internal" && channel == "alpha" {
-            assert!(
-                hint.contains("WORKSHOP_CHANNEL='alpha'"),
-                "alpha installs set WORKSHOP_CHANNEL: {hint}"
-            );
-        }
+fn test_reinstall_hint_internal_mentions_platform_installer() {
+    let hint = reinstall_hint("internal", "stable");
+    if cfg!(windows) {
+        assert!(hint.contains("irm"), "should suggest irm install: {hint}");
+        assert!(
+            hint.contains("install.ps1"),
+            "should reference install.ps1: {hint}"
+        );
+        assert!(
+            !hint.contains("GROK_CHANNEL"),
+            "stable must not set channel: {hint}"
+        );
+    } else {
+        assert!(hint.contains("curl"), "should suggest curl install: {hint}");
+        assert!(
+            hint.contains("install.sh"),
+            "should reference install.sh: {hint}"
+        );
+        assert!(
+            !hint.contains("GROK_CHANNEL"),
+            "stable must not set channel: {hint}"
+        );
     }
-    let stable = reinstall_hint("internal", "stable");
+}
+
+#[test]
+fn test_reinstall_hint_internal_alpha_sets_channel() {
+    let hint = reinstall_hint("internal", "alpha");
+    if cfg!(windows) {
+        assert!(
+            hint.contains("$env:GROK_CHANNEL='alpha'"),
+            "alpha should set GROK_CHANNEL: {hint}"
+        );
+    } else {
+        assert!(
+            hint.contains("| GROK_CHANNEL='alpha' bash"),
+            "alpha must set GROK_CHANNEL on bash (the process running \
+             install.sh), not curl: {hint}"
+        );
+    }
+}
+
+#[test]
+fn test_reinstall_hint_enterprise_uses_enterprise_script() {
+    // Enterprise ships via its own bootstrap script (channel hardcoded there), never install.sh with GROK_CHANNEL
+    let hint = reinstall_hint("internal", "enterprise");
     assert!(
-        stable.contains(&format!("{}/install.sh", crate::version::CHANNEL_BASE_URL)),
-        "stable hint runs the Workshop installer from the channel base: {stable}"
+        hint.contains("/enterprise-install."),
+        "enterprise must use the published enterprise-install script: {hint}"
     );
+    assert!(
+        !hint.contains("GROK_CHANNEL"),
+        "enterprise script needs no channel env: {hint}"
+    );
+}
+
+#[test]
+fn test_reinstall_hint_malformed_channel_falls_back_to_stable() {
+    // Free-text config channels never reach the shell one-liner unless they are plain [A-Za-z0-9._-] tokens
+    for bad in ["al pha", "x'; rm -rf ~;'", "a\"b", ""] {
+        let hint = reinstall_hint("internal", bad);
+        assert!(
+            !hint.contains("GROK_CHANNEL"),
+            "malformed channel {bad:?} must fall back to stable: {hint}"
+        );
+    }
 }
 
 #[test]
@@ -994,7 +1021,6 @@ fn test_reinstall_hint_empty_falls_back_to_internal() {
     let hint = reinstall_hint("", "stable");
     assert_eq!(hint, reinstall_hint("internal", "stable"));
 }
-
 
 #[test]
 fn test_smoke_test_failure_messages_distinguish_causes() {
@@ -1347,15 +1373,14 @@ fn test_needs_update_downgrade_prerelease_still_rejected_on_stable() {
 
 #[test]
 fn test_needs_update_prerelease_current_forces_install_regardless_of_allow_downgrade() {
-    // Workshop: a pre-release current is compared like any other version — with allow_downgrade
-    // any different version counts, without it only a newer one (upstream forced the install).
+    // A pre-release current on the stable channel forces an install, independent of allow_downgrade
     assert_eq!(
         needs_update("0.1.149-alpha.1", "0.1.148", "stable", true),
         Some(true)
     );
     assert_eq!(
         needs_update("0.1.149-alpha.1", "0.1.148", "stable", false),
-        Some(false)
+        Some(true)
     );
 }
 
@@ -1365,14 +1390,12 @@ fn test_needs_update_prerelease_current_forces_install_regardless_of_allow_downg
 
 #[test]
 fn test_installer_allows_downgrade_internal() {
-    // Workshop: the channel file can lag behind a release, so no installer follows it backwards
-    // (upstream's managed installers did, as its rollback mechanism).
-    assert!(!installer_allows_downgrade("internal"));
+    assert!(installer_allows_downgrade("internal"));
 }
 
 #[test]
 fn test_installer_allows_downgrade_gh_release() {
-    assert!(!installer_allows_downgrade("gh-release"));
+    assert!(installer_allows_downgrade("gh-release"));
 }
 
 #[test]
@@ -1607,7 +1630,7 @@ fn test_user_facing_constants_are_stable() {
     );
     assert_eq!(
         MSG_RUN_UPDATE_MANUAL,
-        "Run `workshop update` to get the latest version."
+        "Run `grok update` to get the latest version."
     );
 }
 
@@ -1624,7 +1647,6 @@ struct InstallerEnvGuard {
 impl InstallerEnvGuard {
     fn isolate() -> Self {
         const VARS: &[&str] = &[
-            "WORKSHOP_INSTALLER",
             "GROK_INSTALLER",
             "GROK_MANAGED_BY_NPM",
             "GROK_MANAGED_BY_INTERNAL",
@@ -1663,18 +1685,17 @@ fn test_env_installer_no_vars_returns_none() {
 
 #[test]
 #[serial_test::serial]
-fn test_env_installer_explicit_npm_is_unsupported() {
-    // Workshop has no npm channel: an explicit npm request is ignored (falls to config/default).
+fn test_env_installer_explicit_npm() {
     let _g = InstallerEnvGuard::isolate();
-    unsafe { std::env::set_var("WORKSHOP_INSTALLER", "npm") };
-    assert_eq!(env_installer(), None);
+    unsafe { std::env::set_var("GROK_INSTALLER", "npm") };
+    assert_eq!(env_installer(), Some("npm"));
 }
 
 #[test]
 #[serial_test::serial]
 fn test_env_installer_explicit_internal() {
     let _g = InstallerEnvGuard::isolate();
-    unsafe { std::env::set_var("WORKSHOP_INSTALLER", "internal") };
+    unsafe { std::env::set_var("GROK_INSTALLER", "internal") };
     assert_eq!(env_installer(), Some("internal"));
 }
 
@@ -1682,7 +1703,7 @@ fn test_env_installer_explicit_internal() {
 #[serial_test::serial]
 fn test_env_installer_explicit_gh_release() {
     let _g = InstallerEnvGuard::isolate();
-    unsafe { std::env::set_var("WORKSHOP_INSTALLER", "gh-release") };
+    unsafe { std::env::set_var("GROK_INSTALLER", "gh-release") };
     assert_eq!(env_installer(), Some("gh-release"));
 }
 
@@ -1691,7 +1712,7 @@ fn test_env_installer_explicit_gh_release() {
 fn test_env_installer_explicit_gh_alias() {
     // `gh` is shorthand for `gh-release`.
     let _g = InstallerEnvGuard::isolate();
-    unsafe { std::env::set_var("WORKSHOP_INSTALLER", "gh") };
+    unsafe { std::env::set_var("GROK_INSTALLER", "gh") };
     assert_eq!(env_installer(), Some("gh-release"));
 }
 
@@ -1699,10 +1720,10 @@ fn test_env_installer_explicit_gh_alias() {
 #[serial_test::serial]
 fn test_env_installer_explicit_uppercase_normalized() {
     let _g = InstallerEnvGuard::isolate();
-    unsafe { std::env::set_var("WORKSHOP_INSTALLER", "INTERNAL") };
-    assert_eq!(env_installer(), Some("internal"));
+    unsafe { std::env::set_var("GROK_INSTALLER", "NPM") };
+    assert_eq!(env_installer(), Some("npm"));
 
-    unsafe { std::env::set_var("WORKSHOP_INSTALLER", "Gh-Release") };
+    unsafe { std::env::set_var("GROK_INSTALLER", "Gh-Release") };
     assert_eq!(env_installer(), Some("gh-release"));
 }
 
@@ -1733,20 +1754,19 @@ fn test_env_installer_explicit_empty_returns_none() {
 
 #[test]
 #[serial_test::serial]
-fn test_env_installer_managed_by_npm_is_ignored() {
-    // Workshop: the npm trampoline markers no longer classify an install.
+fn test_env_installer_managed_by_npm() {
     let _g = InstallerEnvGuard::isolate();
     unsafe { std::env::set_var("GROK_MANAGED_BY_NPM", "1") };
-    assert_eq!(env_installer(), None);
+    assert_eq!(env_installer(), Some("npm"));
 }
 
 #[test]
 #[serial_test::serial]
-fn test_env_installer_legacy_grok_installer_is_ignored() {
-    // Only WORKSHOP_INSTALLER is honoured; the upstream variable name is not.
+fn test_env_installer_managed_by_npm_any_value() {
+    // The check is `is_some`, so any value (including empty) wins
     let _g = InstallerEnvGuard::isolate();
-    unsafe { std::env::set_var("GROK_INSTALLER", "gh-release") };
-    assert_eq!(env_installer(), None);
+    unsafe { std::env::set_var("GROK_MANAGED_BY_NPM", "") };
+    assert_eq!(env_installer(), Some("npm"));
 }
 
 #[test]
@@ -1759,8 +1779,9 @@ fn test_env_installer_managed_by_internal() {
 
 #[test]
 #[serial_test::serial]
-fn test_env_installer_npm_config_user_agent_is_ignored() {
-    // A workshop launched from an npm script must not be reclassified as an npm install.
+fn test_env_installer_npm_config_user_agent_implies_npm() {
+    // npm sets npm_config_user_agent in the env of any process it spawns.
+    // The trampoline relies on this fallback when MANAGED_BY_NPM was lost.
     let _g = InstallerEnvGuard::isolate();
     unsafe {
         std::env::set_var(
@@ -1768,15 +1789,15 @@ fn test_env_installer_npm_config_user_agent_is_ignored() {
             "npm/10.2.0 node/v20.11.0 darwin arm64 workspaces/false",
         )
     };
-    assert_eq!(env_installer(), None);
+    assert_eq!(env_installer(), Some("npm"));
 }
 #[test]
 #[serial_test::serial]
 fn test_env_installer_explicit_internal_wins_over_npm_managed() {
-    // WORKSHOP_INSTALLER=internal wins regardless of inherited npm markers.
+    // GROK_INSTALLER=internal must override an inherited MANAGED_BY_NPM.
     let _g = InstallerEnvGuard::isolate();
     unsafe {
-        std::env::set_var("WORKSHOP_INSTALLER", "internal");
+        std::env::set_var("GROK_INSTALLER", "internal");
         std::env::set_var("GROK_MANAGED_BY_NPM", "1");
     }
     assert_eq!(env_installer(), Some("internal"));
@@ -2421,79 +2442,7 @@ fn npm_entry_is_recognized_by_the_binary_location() {
     std::fs::create_dir_all(path_entry.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&native, &path_entry).unwrap();
 
-    let resolved = std::fs::canonicalize(&path_entry).unwrap();
+    let resolved = dunce::canonicalize(&path_entry).unwrap();
     assert!(super::is_under_node_modules(&resolved));
     assert!(!super::is_under_node_modules(&root.join("home/bin/grok")));
-}
-
-/// Workshop: a release tarball unpacked into `bin/` by hand leaves a plain `workshop` file. The first
-/// update links the managed binary in its place and parks the old file under `downloads/` for the
-/// stale-temp sweep, never unlinking it under a session that may be running it.
-#[cfg(unix)]
-#[tokio::test]
-async fn workshop_plain_file_bin_becomes_the_managed_symlink() {
-    let home = tempfile::tempdir().unwrap();
-    let bin = home.path().join("bin");
-    let downloads = home.path().join("downloads");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::create_dir_all(&downloads).unwrap();
-    std::fs::write(bin.join("workshop"), "old").unwrap();
-    let new = downloads.join("workshop-9.9.9-linux-x86_64");
-    std::fs::write(&new, "new").unwrap();
-
-    let link = swap_managed_bin_links(&new, &bin).await.unwrap();
-
-    assert!(link.is_symlink(), "bin/workshop is now the managed symlink");
-    assert_eq!(
-        std::fs::read_link(&link).unwrap(),
-        std::path::Path::new("../downloads/workshop-9.9.9-linux-x86_64")
-    );
-    assert_eq!(std::fs::read_to_string(&link).unwrap(), "new");
-    let names = |dir: &std::path::Path| -> Vec<String> {
-        std::fs::read_dir(dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect()
-    };
-    assert_eq!(names(&bin), ["workshop"], "no backup left on PATH");
-    let parked: Vec<String> = names(&downloads)
-        .into_iter()
-        .filter(|n| n.starts_with("workshop-replaced.") && n.ends_with(".tmp"))
-        .collect();
-    assert_eq!(
-        parked.len(),
-        1,
-        "the old file is parked: {:?}",
-        names(&downloads)
-    );
-    assert_eq!(
-        std::fs::read_to_string(downloads.join(&parked[0])).unwrap(),
-        "old"
-    );
-}
-
-/// Workshop: a swap that fails after the plain file was captured puts the old file back.
-#[cfg(unix)]
-#[tokio::test]
-async fn workshop_plain_file_rollback_restores_the_old_file() {
-    let home = tempfile::tempdir().unwrap();
-    let bin = home.path().join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    let link = bin.join("workshop");
-    std::fs::write(&link, "old").unwrap();
-    let new = home.path().join("workshop-9.9.9");
-    std::fs::write(&new, "new").unwrap();
-
-    let rollback = LinkRollback::capture(&link).await.unwrap();
-    assert!(matches!(rollback, LinkRollback::PlainFile { .. }));
-    atomic_symlink_swap(&new, &link).await.unwrap();
-    assert!(link.is_symlink());
-
-    rollback.restore().await.unwrap();
-    assert!(!link.is_symlink(), "the plain file is back");
-    assert_eq!(std::fs::read_to_string(&link).unwrap(), "old");
-    assert!(
-        rollback.backup_path().is_some_and(|b| !b.exists()),
-        "the backup was renamed back into place"
-    );
 }

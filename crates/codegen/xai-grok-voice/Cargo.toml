@@ -10,8 +10,10 @@ anyhow = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "rt-multi-thread"] }
+tokio-util = { workspace = true }
 # Either feature gates Connector::Rustls; both kept so the default connector stays OS-trusted.
 tokio-tungstenite = { workspace = true, features = [
     "rustls-tls-native-roots",
@@ -21,18 +23,12 @@ toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 url = { workspace = true }
-# Workshop overlay: the local speech-to-text provider (`voice-engine` helper, pinned model store).
-workshop-voice = { path = "../../workshop-voice" }
 xai-dirs = { workspace = true }
 xai-grok-extra-ca = { workspace = true }
 # Sanctioned TTY detach for the capture subprocesses (Linux system recorders,
 # macOS `__mic-capture` self-exec helper) — workspace rule: never spawn a raw
 # `std::process::Command`.
 xai-tty-utils = { workspace = true }
-
-[dev-dependencies]
-# Workshop overlay: `tests/local_dictation.rs` (ignored; needs the helper and a model).
-hound = "3.5"
 
 [features]
 # `audio` = "microphone capture is compiled in". It's enabled on every OS for
@@ -55,6 +51,9 @@ audio = ["dep:cpal"]
 [target.'cfg(not(target_os = "linux"))'.dependencies.cpal]
 version = "0.15"
 optional = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 
 [[bin]]
 name = "voice-probe"

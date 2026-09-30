@@ -1,8 +1,6 @@
 //! Each command lives in its own submodule. This module re-exports command structs and provides `builtin_commands()` for registry construction.
 pub mod always_approve;
 pub mod announcements;
-/// Workshop overlay: `/auth` (`/models` is an alias of `/model`).
-pub mod auth;
 pub mod auto;
 pub mod btw;
 pub mod cd;
@@ -10,6 +8,7 @@ pub mod compact;
 pub mod compact_mode;
 pub mod config_agents;
 pub mod context;
+pub mod context_window;
 pub mod copy;
 pub mod dashboard;
 pub mod debug;
@@ -54,7 +53,6 @@ pub mod rename;
 pub mod resume;
 pub mod rewind;
 pub mod screen_mode_switch;
-pub mod scroll_debug;
 pub mod session_info;
 pub mod settings_cmd;
 pub mod share;
@@ -89,6 +87,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(new::NewCommand),
         // Per turn.
         Arc::new(effort::EffortCommand),
+        Arc::new(context_window::ContextWindowCommand),
         Arc::new(model::ModelCommand),
         Arc::new(context::ContextCommand),
         Arc::new(compact::CompactCommand),
@@ -152,7 +151,6 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(privacy::PrivacyCommand),
         Arc::new(doctor::DoctorCommand),
         Arc::new(import_claude::ImportClaudeCommand),
-        Arc::new(auth::AuthCommand),
         Arc::new(login::LoginCommand),
         Arc::new(logout::LogoutCommand),
         Arc::new(home::HomeCommand),
@@ -161,8 +159,6 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(exit::ExitCommand),
         // Hidden easter egg: never listed, runs on bare `/gboom`.
         Arc::new(gboom::GboomCommand),
-        // Hidden diagnostic: never listed, toggles the scroll-debug HUD.
-        Arc::new(scroll_debug::ScrollDebugCommand),
         // Debug toggles: always registered, listed only on debug binaries.
         Arc::new(debug::DebugCommand),
     ]
@@ -340,16 +336,16 @@ mod tests {
         }
     }
     #[test]
-    fn compact_with_context_returns_queue_command_with_args() {
+    fn compact_with_args_is_refused() {
         let models = ModelState::default();
         let mut ctx = make_ctx(&models);
         let cmd = compact::CompactCommand;
         let result = cmd.run(&mut ctx, "focus on auth");
         match result {
-            CommandResult::QueueCommand(text) => {
-                assert_eq!(text, "/compact focus on auth")
+            CommandResult::Error(text) => {
+                assert_eq!(text, "/compact takes no arguments.")
             }
-            other => panic!("expected QueueCommand, got {other:?}"),
+            other => panic!("expected Error, got {other:?}"),
         }
     }
     #[test]
@@ -404,39 +400,37 @@ mod tests {
             other => panic!("expected Action(SetDefaultModel), got {other:?}"),
         }
     }
-    /// Workshop: a name no shell model carries opens the picker with the text in its filter, so
-    /// the OpenCode models and subscriptions that match are one keypress away.
     #[test]
-    fn model_invalid_arg_opens_the_picker_filtered() {
+    fn model_invalid_arg_returns_error() {
         let models = sample_models();
         let mut ctx = make_ctx(&models);
         let cmd = model::ModelCommand;
         let result = cmd.run(&mut ctx, "nonexistent-model");
         match result {
-            CommandResult::Action(Action::OpenConnectionPicker(
-                workshop_auth::PickerFocus::Models { filter },
-            )) => assert_eq!(filter, "nonexistent-model"),
-            other => panic!("expected the filtered picker, got {other:?}"),
+            CommandResult::Error(msg) => {
+                assert!(
+                    msg.contains("nonexistent-model"),
+                    "error should contain the arg"
+                );
+            }
+            other => panic!("expected Error, got {other:?}"),
         }
     }
-    /// Workshop: bare `/model` (no args, or whitespace) opens the Models overlay instead of erroring.
     #[test]
-    fn model_empty_arg_opens_the_models_overlay() {
+    fn model_empty_arg_returns_error() {
         let models = sample_models();
         let mut ctx = make_ctx(&models);
         let cmd = model::ModelCommand;
-        for args in ["", "   "] {
-            let result = cmd.run(&mut ctx, args);
-            assert!(
-                matches!(
-                    result,
-                    CommandResult::Action(Action::OpenConnectionPicker(
-                        workshop_auth::PickerFocus::Models { ref filter }
-                    )) if filter.is_empty()
-                ),
-                "{args:?}: {result:?}"
-            );
-        }
+        let result = cmd.run(&mut ctx, "");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+    #[test]
+    fn model_whitespace_only_arg_returns_error() {
+        let models = sample_models();
+        let mut ctx = make_ctx(&models);
+        let cmd = model::ModelCommand;
+        let result = cmd.run(&mut ctx, "   ");
+        assert!(matches!(result, CommandResult::Error(_)));
     }
     #[test]
     fn model_suggest_args_returns_available_models() {

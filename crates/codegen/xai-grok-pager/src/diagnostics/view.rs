@@ -169,9 +169,12 @@ fn facts(
     suppress_newline: bool,
 ) -> (DiagnosticFacts, ClipboardRecovery) {
     let ctx = snapshot.common.terminal;
-    // Workshop: every selectable theme is available on every terminal (quantized below truecolor).
     let available_themes = match snapshot.color_level {
-        RuntimeEvidence::Available(_) => crate::theme::ThemeKind::selectable().to_vec(),
+        RuntimeEvidence::Available(color_level) => crate::theme::ThemeKind::selectable()
+            .iter()
+            .copied()
+            .filter(|kind| color_level.has_truecolor() || !kind.requires_truecolor())
+            .collect(),
         RuntimeEvidence::Unavailable => Vec::new(),
     };
     let keyboard_capabilities =
@@ -245,8 +248,6 @@ fn facts(
             newline,
             clipboard,
             voice: None,
-            voice_engine: None,
-            engine: None,
         },
         clipboard_recovery,
     )
@@ -281,12 +282,12 @@ impl ClipboardRecovery {
         match self {
             Self::Confirmed => None,
             Self::UnverifiedSsh | Self::UnavailableSsh => {
-                Some("workshop wrap <ssh command> or /minimal")
+                Some("grok wrap <ssh command> or /minimal")
             }
             Self::UnverifiedContainer | Self::UnavailableContainer => {
-                Some("workshop wrap <command> or /minimal")
+                Some("grok wrap <command> or /minimal")
             }
-            Self::UnverifiedOther => Some("workshop wrap or /minimal"),
+            Self::UnverifiedOther => Some("grok wrap or /minimal"),
             Self::UnavailableLocal => Some("/minimal"),
         }
     }
@@ -387,51 +388,51 @@ fn clipboard_findings(
         ClipboardRecovery::UnverifiedSsh => findings.push(manual_finding(
             crate::diagnostics::CLIPBOARD_DELIVERY_UNVERIFIED_ID,
             FindingDisposition::Issue,
-            "Workshop can't verify this clipboard route across the remote boundary",
-            "When you copy, Workshop sends OSC 52 but can't confirm that the outer terminal accepted \
+            "Grok can't verify this clipboard route across the remote boundary",
+            "When you copy, Grok sends OSC 52 but can't confirm that the outer terminal accepted \
              it. Each copy is also saved to a backup file; the copy message shows the path. If \
-             paste fails, run `workshop wrap ssh <host>` on your local computer or use `/minimal`. \
-             For repeated SSH sessions, run `workshop doctor fix ssh-wrap` on your local computer.",
+             paste fails, run `grok wrap ssh <host>` on your local computer or use `/minimal`. \
+             For repeated SSH sessions, run `grok doctor fix ssh-wrap` on your local computer.",
         )),
         ClipboardRecovery::UnverifiedContainer => findings.push(manual_finding(
             crate::diagnostics::CLIPBOARD_DELIVERY_UNVERIFIED_ID,
             FindingDisposition::Issue,
-            "Workshop can't verify this clipboard route across the container boundary",
-            "When you copy, Workshop sends OSC 52 but can't confirm that the outer terminal accepted \
+            "Grok can't verify this clipboard route across the container boundary",
+            "When you copy, Grok sends OSC 52 but can't confirm that the outer terminal accepted \
              it. Each copy is also saved to a backup file; the copy message shows the path. If \
-             paste fails, start the container command with local `workshop wrap <command>`, or use \
+             paste fails, start the container command with local `grok wrap <command>`, or use \
              `/minimal`.",
         )),
         ClipboardRecovery::UnverifiedOther => findings.push(manual_finding(
             crate::diagnostics::CLIPBOARD_DELIVERY_UNVERIFIED_ID,
             FindingDisposition::Issue,
-            "Workshop can't verify this clipboard route",
+            "Grok can't verify this clipboard route",
             "Each copy is also saved to a backup file; the copy message shows the path. For a \
-             remote or container command, use local `workshop wrap <command>`. You can also use \
+             remote or container command, use local `grok wrap <command>`. You can also use \
              `/minimal` to select text in the terminal.",
         )),
         ClipboardRecovery::UnavailableSsh => findings.push(manual_finding(
             crate::diagnostics::CLIPBOARD_DELIVERY_UNAVAILABLE_ID,
             FindingDisposition::Issue,
             "This clipboard route can't reach the target clipboard",
-            "When you copy, Workshop saves the text to the backup file shown in the copy message. To \
-             copy directly, run `workshop wrap ssh <host>` on your local computer. For repeated SSH \
-             sessions, run `workshop doctor fix ssh-wrap` there. You can also use `/copy <file>` or \
+            "When you copy, Grok saves the text to the backup file shown in the copy message. To \
+             copy directly, run `grok wrap ssh <host>` on your local computer. For repeated SSH \
+             sessions, run `grok doctor fix ssh-wrap` there. You can also use `/copy <file>` or \
              `/minimal`.",
         )),
         ClipboardRecovery::UnavailableContainer => findings.push(manual_finding(
             crate::diagnostics::CLIPBOARD_DELIVERY_UNAVAILABLE_ID,
             FindingDisposition::Issue,
             "This clipboard route can't reach the target clipboard",
-            "When you copy, Workshop saves the text to the backup file shown in the copy message. \
-             Start the container command with local `workshop wrap <command>`, use `/copy <file>`, or \
+            "When you copy, Grok saves the text to the backup file shown in the copy message. \
+             Start the container command with local `grok wrap <command>`, use `/copy <file>`, or \
              use `/minimal`.",
         )),
         ClipboardRecovery::UnavailableLocal => findings.push(manual_finding(
             crate::diagnostics::CLIPBOARD_DELIVERY_UNAVAILABLE_ID,
             FindingDisposition::Issue,
             "This clipboard route can't reach the target clipboard",
-            "When you copy, Workshop saves the text to the backup file shown in the copy message. Use \
+            "When you copy, Grok saves the text to the backup file shown in the copy message. Use \
              `/copy <file>` or `/minimal`, then check the native clipboard tool listed above.",
         )),
     }
@@ -462,7 +463,7 @@ fn clipboard_findings(
             FindingDisposition::Recommendation,
             "iTerm2 may block OSC 52 clipboard access",
             "In iTerm2, open Settings → General → Selection and turn on “Applications in \
-             terminal may access clipboard.” Workshop can't read this setting, so check it there if \
+             terminal may access clipboard.” Grok can't read this setting, so check it there if \
              copies don't paste.",
         ));
     }
@@ -494,7 +495,7 @@ fn newline_finding(facts: &DiagnosticFacts) -> Option<DiagnosticFinding> {
         NewlineFact::NoKittyKeyboardProtocol => (
             "Shift+Enter can't insert a newline because the keyboard protocol is unavailable",
             "Use Alt+Enter to insert a newline. If your terminal supports the Kitty keyboard \
-             protocol, enable it and restart Workshop."
+             protocol, enable it and restart Grok."
                 .to_owned(),
         ),
     };

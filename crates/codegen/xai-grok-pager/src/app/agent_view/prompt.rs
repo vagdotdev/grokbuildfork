@@ -85,18 +85,6 @@ impl AgentView {
         self.handle_prompt_key(key, registry, false)
     }
 
-    /// Workshop: the keypress that completes `//` — a bare `/` typed while the composer holds
-    /// exactly `/` (no other text, no image chips, plain prompt mode) and `/voice` is offered.
-    fn is_double_slash_voice_trigger(&self, key: &KeyEvent) -> bool {
-        key.code == KeyCode::Char('/')
-            && key.kind != KeyEventKind::Release
-            && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
-            && self.prompt.text() == "/"
-            && self.prompt_mode == PromptMode::Normal
-            && self.prompt_input_mode == PromptInputMode::Normal
-            && self.prompt.slash_controller.registry().get("voice").is_some()
-    }
-
     // `pub(super)`: also called by `AppView::minimal_key_intercept` to route Apple Terminal's Ctrl+O interject chord straight to the prompt path
     // Minimal's prompt is conceptually always focused, but `active_pane` can be Scrollback
     // Scrollback's `When::AgentScreen` promotion would misroute the chord to `ToggleYolo`
@@ -106,6 +94,12 @@ impl AgentView {
         registry: &ActionRegistry,
         prompt_paging: bool,
     ) -> InputOutcome {
+        // Taken first so only a stash made after this key leaves the next Ctrl+Z armed
+        let stash_undo_armed = self
+            .prompt_stash
+            .as_mut()
+            .is_some_and(|entry| std::mem::take(&mut entry.undo_armed));
+
         // Dismiss transient toasts on any keypress so error messages don't linger while the user is already typing
         // Sticky status banners (`sticky_toast`) are unaffected; ephemeral tips intentionally survive typing (cleared by TTL, submit, or clear)
         self.toast = None;
@@ -151,15 +145,6 @@ impl AgentView {
                 }
                 PromptEvent::Ignored => {} // fall through to normal routing
             }
-        }
-
-        // Workshop: `//` on an otherwise empty composer runs `/voice` (the second slash, so the
-        // whole input would read `//`). `https://` and any other text are untouched: the composer
-        // must hold exactly `/` before the keypress. Upstream binds nothing to `//` (it only quiets
-        // the menu), and when `/voice` is not offered the slash is typed as usual.
-        if self.is_double_slash_voice_trigger(key) {
-            self.prompt.set_text("");
-            return InputOutcome::Action(Action::VoiceToggle);
         }
 
         // Slash dropdown intercept
@@ -561,15 +546,6 @@ impl AgentView {
                         self.prompt_input_mode = PromptInputMode::Normal;
                         return InputOutcome::Action(action);
                     }
-                    // Workshop: after an Engine/Adapter failure, Enter on the empty composer
-                    // resends the prompt that failed (the error line says so).
-                    if matches!(self.prompt_mode, PromptMode::Normal)
-                        && self.prompt.text().trim().is_empty()
-                        && !self.workshop_turn_active
-                        && let Some(text) = self.workshop_retry_prompt.take()
-                    {
-                        return InputOutcome::Action(Action::SendPrompt(text));
-                    }
                     // Mid-turn with a queued follow-up: bare Enter force-sends the top queue row so users discover send-now without a chord
                     // Skip while editing a queued row (edit-mode Enter is handled earlier for non-empty; empty must stay a no-op)
                     // That Enter must only insert the newline, not fire a queued follow-up
@@ -683,6 +659,9 @@ impl AgentView {
         // 3. Let the widget handle text editing (chars, paste, cursor, undo, newline).
         // (Skip if already handled by file search intercept above.)
         if !self.prompt.file_search_visible() {
+            if stash_undo_armed && let Some(outcome) = self.pop_stash_on_undo_key(key) {
+                return outcome;
+            }
             // The undo tip advertises ctrl+z; an undo keypress while it is on screen is the user acting on it
             // Captured before the widget runs so a bare ctrl+z (no tip up, or the tip disabled) emits nothing
             let undo_tip_accepted = crate::input::key::is_undo_key(key)
@@ -1203,79 +1182,6 @@ mod slash_menu_enter_tests {
             "got {outcome:?}; prompt={:?}",
             agent.prompt.text()
         );
-    }
-}
-
-/// Workshop: `//` on an otherwise empty composer runs `/voice`.
-#[cfg(test)]
-mod double_slash_voice_tests {
-    use super::*;
-    use crate::app::app_view::InputOutcome;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-    fn slash() -> KeyEvent {
-        KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)
-    }
-
-    fn agent_with_text(text: &str, voice_offered: bool) -> AgentView {
-        let mut agent = super::test_fixtures::make_agent();
-        agent.prompt.set_voice_visible(voice_offered);
-        agent.prompt.set_text(text);
-        agent.prompt.set_cursor(text.len());
-        agent.prompt.refresh_slash(&agent.session.models);
-        agent
-    }
-
-    #[test]
-    fn second_slash_on_a_bare_slash_runs_voice_and_clears_the_composer() {
-        let mut agent = agent_with_text("/", true);
-        assert!(agent.prompt.slash_open(), "the first slash opens the menu");
-        let outcome = agent.handle_prompt_key_for_test(&slash());
-        assert!(
-            matches!(outcome, InputOutcome::Action(Action::VoiceToggle)),
-            "got {outcome:?}"
-        );
-        assert_eq!(agent.prompt.text(), "", "`//` is never left in the composer");
-        assert!(!agent.prompt.slash_open());
-    }
-
-    #[test]
-    fn shifted_slash_counts_too() {
-        let mut agent = agent_with_text("/", true);
-        let key = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::SHIFT);
-        let outcome = agent.handle_prompt_key_for_test(&key);
-        assert!(matches!(outcome, InputOutcome::Action(Action::VoiceToggle)));
-    }
-
-    #[test]
-    fn a_slash_inside_other_text_is_typed_as_usual() {
-        for text in ["https:/", "a/", " /", "/ "] {
-            let mut agent = agent_with_text(text, true);
-            let outcome = agent.handle_prompt_key_for_test(&slash());
-            assert!(
-                !matches!(outcome, InputOutcome::Action(Action::VoiceToggle)),
-                "{text:?} + `/` must not open voice"
-            );
-            assert_eq!(agent.prompt.text(), format!("{text}/"));
-        }
-    }
-
-    #[test]
-    fn the_first_slash_on_an_empty_composer_only_opens_the_menu() {
-        let mut agent = agent_with_text("", true);
-        let outcome = agent.handle_prompt_key_for_test(&slash());
-        assert!(!matches!(outcome, InputOutcome::Action(_)), "got {outcome:?}");
-        assert_eq!(agent.prompt.text(), "/");
-        assert!(agent.prompt.slash_open());
-    }
-
-    #[test]
-    fn without_voice_offered_the_second_slash_is_typed() {
-        let mut agent = agent_with_text("/", false);
-        let outcome = agent.handle_prompt_key_for_test(&slash());
-        assert!(!matches!(outcome, InputOutcome::Action(_)), "got {outcome:?}");
-        assert_eq!(agent.prompt.text(), "//");
-        assert!(!agent.prompt.slash_open(), "upstream quiets the menu on `//`");
     }
 }
 

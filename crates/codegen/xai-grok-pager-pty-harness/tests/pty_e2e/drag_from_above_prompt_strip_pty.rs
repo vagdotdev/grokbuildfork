@@ -57,7 +57,7 @@ async fn drag_from_above_prompt_strip_pty() {
         .unwrap_or_else(|| panic!("could not locate {ENTRY_WORD:?}; screen:\n{screen}"));
     // The strip row sits two rows above the prompt placeholder
     // Counting up: the placeholder, then the box's top border, then the gap row between the scrollback pane and the prompt box
-    let (placeholder_row, _) = locate_screen_text(&screen, "Ask anything")
+    let (placeholder_row, _) = locate_screen_text(&screen, "Build anything")
         .unwrap_or_else(|| panic!("could not locate the prompt placeholder; screen:\n{screen}"));
     let border_row = placeholder_row - 1;
     let border_line = screen.lines().nth(border_row as usize).unwrap_or("");

@@ -49,9 +49,8 @@ pub enum LogSource {
     #[strum(serialize = "shell")]
     #[serde(rename = "shell")]
     Shell,
-    /// Workshop: the TUI writes `workshop`; `grok-pager` lines from older builds still parse.
-    #[strum(serialize = "workshop")]
-    #[serde(rename = "workshop", alias = "grok-pager")]
+    #[strum(serialize = "grok-pager")]
+    #[serde(rename = "grok-pager")]
     GrokPager,
     #[strum(serialize = "grok-desktop")]
     #[serde(rename = "grok-desktop")]

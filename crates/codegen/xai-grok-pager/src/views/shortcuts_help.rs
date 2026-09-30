@@ -2,7 +2,7 @@
 //!
 //! Registry-driven: `build_entries(registry)` pulls every `ActionDef` from `ActionRegistry` and groups them by `Category`.
 //! The order is onboarding-friendly (Essentials, Panes, Scrollback Navigation, View, Prompt, Agent), with alt-key bindings inline.
-//! Search filters against key display, description, and label.
+//! Search matches every query word against key display, description, label, and long help.
 //!
 //! Two ways to read a binding's help: pattern A expands an inline help line under the selected hint (e/Space/l/h/arrows).
 //! Pattern B opens an in-modal man-style detail page on Enter; Esc (or h/Left/Backspace) returns to the browse list.
@@ -100,7 +100,8 @@ You can also drag an image file into the prompt.";
 // Super/Cmd also works where the terminal delivers it; list Ctrl only (hosts often swallow Super)
 const UNDO_LONG_HELP: &str = "\
 Undoes the last change in the prompt editor.\n\
-Covers typing, deletes, line/word kills, and clearing a draft.";
+Covers typing, deletes, line/word kills, and clearing a draft.\n\
+Pressed right after a stash or a double-Esc clear, brings the draft back.";
 
 const REDO_LONG_HELP: &str = "\
 Redoes the last undone change in the prompt editor.\n\
@@ -117,15 +118,6 @@ Run /history to open a searchable history panel and filter by text.";
 
 // Scrollback search has no ActionRegistry entry: it's the vim `/` inline handler, or the /find slash command in simple mode
 // List both triggers here
-/// Workshop: the `//` composer shortcut for `/voice`.
-const DOUBLE_SLASH_VOICE_LONG_HELP: &str = "\
-Dictation from the keyboard, without the slash menu: // start \u{b7} // stop.\n\
-Type / on an empty composer, then / again: the second slash starts recording (the \
-same as /voice). It only counts when the composer holds exactly one slash, so a / \
-inside text such as https:// is typed as usual.\n\
-While recording, type // again to stop; the transcript stays in the composer. Esc \
-also stops (Enter stops and sends), and Ctrl+Space / F8 toggle it too.";
-
 const SCROLLBACK_SEARCH_LONG_HELP: &str = "\
 Searches the conversation scrollback for text and jumps between matches.\n\
 In the prompt input, run /find to search. In vim mode, you can also press / \
@@ -327,20 +319,6 @@ pub fn build_entries(
                 action_id: None,
                 long_help: Some(HISTORY_LONG_HELP),
             });
-
-            // Workshop: `//` on an empty composer is `/voice`. Typed at the prompt (not a chord), so a
-            // null key with a custom display, like `/find`; it is prompt-only and follows the voice gate.
-            if crate::app::voice_mode_enabled() {
-                let mut voice = HintItem::new(crate::key!(Null), "voice");
-                voice.custom_display = Some(crate::slash::VOICE_DOUBLE_SLASH_HINT);
-                voice.description = Some("Dictation, no menu needed (same as /voice)".into());
-                entries.push(ShortcutsHelpEntry::Hint {
-                    item: voice,
-                    dimmed: !active_contexts.contains(&When::PromptFocused),
-                    action_id: None,
-                    long_help: Some(DOUBLE_SLASH_VOICE_LONG_HELP),
-                });
-            }
         }
         let count = entries.len() - header_idx - 1;
         if count == 0 {
@@ -384,6 +362,7 @@ pub fn filter_entries(
         return (0..entries.len()).collect();
     }
     let q = query.to_lowercase();
+    let tokens: Vec<&str> = q.split_whitespace().collect();
     let mut result: Vec<usize> = Vec::new();
     let mut pending_header: Option<usize> = None;
     let mut section_has_match = false;
@@ -401,7 +380,10 @@ pub fn filter_entries(
                 current_section_collapsed = !searching && collapsed.contains(category_idx);
             }
             ShortcutsHelpEntry::Hint {
-                item: h, dimmed, ..
+                item: h,
+                dimmed,
+                long_help,
+                ..
             } => {
                 if current_section_collapsed {
                     continue;
@@ -409,15 +391,7 @@ pub fn filter_entries(
                 if hide_dimmed && *dimmed {
                     continue;
                 }
-                let key_text = hint_key_display(h);
-                let key_pretty = hint_key_pretty(h);
-                let desc = hint_description(h);
-                let q_matches = q.is_empty()
-                    || h.label.to_lowercase().contains(&q)
-                    || key_text.to_lowercase().contains(&q)
-                    || key_pretty.to_lowercase().contains(&q)
-                    || desc.to_lowercase().contains(&q);
-                if q_matches {
+                if hint_matches_query(h, *long_help, &tokens) {
                     if let Some(idx) = pending_header.take() {
                         result.push(idx);
                     }
@@ -433,6 +407,22 @@ pub fn filter_entries(
         result.push(h);
     }
     result
+}
+
+/// Every query token must appear in the hint's label, key display, description, or long help.
+fn hint_matches_query(h: &HintItem, long_help: Option<&str>, tokens: &[&str]) -> bool {
+    tokens.is_empty() || {
+        let haystack = format!(
+            "{} {} {} {} {}",
+            h.label,
+            hint_key_display(h),
+            hint_key_pretty(h),
+            hint_description(h),
+            long_help.unwrap_or_default(),
+        )
+        .to_lowercase();
+        tokens.iter().all(|t| haystack.contains(t))
+    }
 }
 
 fn hint_key_display(h: &HintItem) -> String {

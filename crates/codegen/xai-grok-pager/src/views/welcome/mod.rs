@@ -35,7 +35,7 @@ pub(crate) mod workspace_mode;
 /// Compact welcome/session/waiting/dock share this one-col left gutter.
 pub(crate) const PROMPT_GUTTER: u16 = 1;
 
-pub(crate) use logo::hero_animation_supported;
+pub(crate) use logo::shimmer_frame;
 use logo::{LogoTier, logo_line_count, render_logo, render_logo_tier};
 use menu::render_menu;
 pub(crate) use toast::paint_welcome_toast;
@@ -151,12 +151,9 @@ pub struct WelcomeRenderResult {
     pub consent_link_rects: Vec<(usize, Rect)>,
     /// `None` when this frame did not paint the notice.
     pub consent_legibility: Option<crate::app::consent::ConsentLegibility>,
-    /// Whether a "Release notes" menu action was rendered (above Quit).
-    /// The input handler uses it to map the extra menu row to the release-notes action.
+    /// Whether a "Changelog" menu action was rendered (above Quit).
+    /// The input handler uses it to map the extra menu row to the release-notes action once markdown is available.
     pub changelog_action_present: bool,
-    /// Whether the "Resume session" menu row was rendered (Workshop hides it when nothing can be
-    /// resumed), so the input handler's index-to-action mapping matches the rows on screen.
-    pub resume_action_present: bool,
     /// Hit-test rect for the clickable changelog info block (opens release notes).
     pub changelog_cta_rect: Option<Rect>,
     /// Whether the announcement overflowed (the "expandable" signal).
@@ -169,10 +166,6 @@ pub struct WelcomeRenderResult {
     pub privacy_banner_opt_out_rect: Option<Rect>,
     pub privacy_banner_terms_rect: Option<Rect>,
     pub privacy_banner_policy_rect: Option<Rect>,
-    /// Workshop: this frame painted the hero box's spinning logo (a frame from
-    /// [`WelcomeRenderParams::hero_frame`]), so the app keeps advancing it. False for the resting
-    /// frame: narrow (stacked) layouts, the session picker, hidden logo, animation off.
-    pub hero_animating: bool,
     /// Hit-test rects for the chat workspace-mode segmented control.
     #[cfg(feature = "local-workspace")]
     pub workspace_mode_rects: WorkspaceModeHitRects,
@@ -290,7 +283,7 @@ pub(super) struct WelcomeLayout {
     /// In-box info slot: it shows either the announcement or the changelog (the announcement takes priority).
     pub(super) hero_info: Rect,
     pub(super) hero_menu: Rect,
-    /// The art the stacked `logo` rows (or the hero box's `hero_logo` rows) were reserved for; paint it with [`render_logo_tier`].
+    /// The art the stacked `logo` rows were reserved for; paint it with [`render_logo_tier`].
     pub(super) logo_tier: LogoTier,
 }
 
@@ -551,16 +544,19 @@ pub(super) fn render_version_badge(
         ));
         spans.push(sep.clone());
     }
-    // Workshop: the non-interactive method also carries the anonymous sentinel of every keyless
-    // connection (OpenCode engine, Kilo pool), so "Logged in with API key" would be wrong on a
-    // first-run home; the composer names the active connection instead.
-    let _ = (show_api_key, is_api_key_auth, sep);
+    if show_api_key && is_api_key_auth {
+        spans.push(Span::styled(
+            "Logged in with API key",
+            Style::default().fg(theme.gray),
+        ));
+        spans.push(sep);
+    }
 
     let channel = xai_grok_update::channel_label();
     match &mode {
         VersionBadgeMode::Full { .. } => {
             spans.push(Span::styled(
-                format!("{}  ", workshop_brand::title()),
+                "Grok Build  ",
                 Style::default()
                     .fg(theme.text_primary)
                     .add_modifier(Modifier::BOLD),
@@ -580,7 +576,7 @@ pub(super) fn render_version_badge(
         }
         VersionBadgeMode::HeroInline => {
             spans.push(Span::styled(
-                format!("{}  ", workshop_brand::title()),
+                "Grok Build  ",
                 Style::default()
                     .fg(theme.text_primary)
                     .add_modifier(Modifier::BOLD),
@@ -691,8 +687,6 @@ pub struct WelcomeRenderParams<'a> {
     pub consent_state: &'a crate::app::consent::ConsentState,
     pub consent_hover_link: Option<usize>,
     pub login_label: Option<&'a str>,
-    /// Workshop connection picker; when `Some` it replaces the welcome content (any auth state).
-    pub connection_picker: Option<&'a workshop_auth::PickerState>,
     pub auth_code_input: &'a str,
     pub auth_code_cursor_byte: usize,
     pub clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
@@ -700,14 +694,13 @@ pub struct WelcomeRenderParams<'a> {
     pub announcement: Option<&'a xai_grok_announcements::RemoteAnnouncement>,
     pub tip: Option<&'a str>,
     pub model_name: &'a str,
+    /// The current model's notice, painted directly above the prompt.
+    pub model_notice: Option<&'a xai_grok_shell::sampling::types::ModelNotice>,
     pub flags: &'a [PromptFlag<'a>],
     pub selected: Option<usize>,
     pub team_name: Option<&'a str>,
     pub has_access: bool,
     pub has_claude_import: bool,
-    /// Workshop: this directory has a session with messages (or an engine conversation) to come
-    /// back to; the "Resume session" row is hidden otherwise.
-    pub has_resumable_sessions: bool,
     pub mouse_pos: Option<(u16, u16)>,
     pub is_zdr_blocked: bool,
     pub session_picker: Option<&'a [SessionPickerEntry]>,
@@ -716,8 +709,6 @@ pub struct WelcomeRenderParams<'a> {
     pub pending_hint: Option<crate::views::shortcuts_bar::PendingHint>,
     pub startup_warnings: &'a [StartupWarning],
     pub pending_update_version: Option<&'a str>,
-    /// Workshop: this launch is the first of a version the silent updater installed.
-    pub workshop_updated_to: Option<&'a str>,
     /// Recent foreign session offered on ctrl+u, suppressed by a pending update.
     pub foreign_resume_hint: Option<&'a xai_grok_foreign_sessions::RecentForeignSession>,
     pub is_api_key_auth: bool,
@@ -754,10 +745,6 @@ pub struct WelcomeRenderParams<'a> {
     pub upgrade_cta: Option<&'a str>,
     /// Non-blocking welcome privacy banner above the prompt.
     pub privacy_banner: bool,
-    /// Workshop: `Some(frame)` spins the hero logo (paints that frame of the donut's loop in the
-    /// hero box and reports [`WelcomeRenderResult::hero_animating`]); `None` paints the resting
-    /// frame everywhere (animation off, unfocused terminal).
-    pub hero_frame: Option<u32>,
     /// Chat-mode workspace picker selection (`local-workspace` feature).
     #[cfg(feature = "local-workspace")]
     pub workspace_mode: WelcomeWorkspaceMode,
@@ -804,24 +791,10 @@ pub fn render_welcome(
     };
     render_top_bar(top_bar_inner, buf, &theme, None);
 
-    // Workshop: the connection picker is the login surface. It paints over the whole content
-    // area regardless of auth state (first run, `l`, `/login`, `/auth`, `/models`).
-    if let Some(picker) = params.connection_picker {
-        crate::views::connection_picker::render(content_area, buf, &theme, picker, h_margin);
-        return WelcomeRenderResult {
-            post_flush_escapes: crate::terminal::overlay::clear().map(Into::into),
-            ..Default::default()
-        };
-    }
-
     let mut result = match params.auth_state {
         AuthState::Pending { error } => {
-            // Workshop: no session-login provider is advertised by default, so the row opens the
-            // connection picker rather than "Login with grok.com".
-            let login_text = match params.login_label {
-                Some(label) => format!("Login with {label}"),
-                None => "Connect a model".to_owned(),
-            };
+            let label = params.login_label.unwrap_or("grok.com");
+            let login_text = format!("Login with {}", label);
             let menu = [("l", login_text.as_str()), ("q", "Quit")];
             let msg = error.as_deref().map(|e| (e, theme.accent_error));
             let info = PromptInfo {
@@ -874,7 +847,7 @@ pub fn render_welcome(
                 content_area,
                 buf,
                 Some((
-                    "Workshop is not yet available for this account.",
+                    "Grok Build is not yet available for this account.",
                     theme.gray_bright,
                 )),
                 &menu,
@@ -1054,7 +1027,7 @@ fn render_welcome_trust(
         Line::default(),
         // Two lines so the warning never clips at narrow / compact widths (a single ~78-char line would truncate "...posing security risks")
         Line::from(Span::styled(
-            "Workshop may run or modify contents in this directory,",
+            "Grok Build may run or modify contents in this directory,",
             Style::default().fg(theme.gray),
         ))
         .alignment(Alignment::Center),
@@ -1499,10 +1472,9 @@ fn render_welcome_authenticating(
                 );
                 push_auth_copy_block(&mut lines, theme, clipboard_delivery);
             } else {
-                // Workshop: also the frame or two while a picked connection activates in-process.
                 lines.push(
                     Line::from(Span::styled(
-                        "Connecting…",
+                        "Waiting for auth URL...",
                         Style::default().fg(theme.gray),
                     ))
                     .alignment(Alignment::Center),
@@ -1766,7 +1738,7 @@ fn render_welcome_done(
         let action_line = if w.action.is_some() { 1 } else { 0 };
         msg_lines + action_line + 1 // +1 for buffer spacing
     });
-    let has_update_tip = p.pending_update_version.is_some() || p.workshop_updated_to.is_some();
+    let has_update_tip = p.pending_update_version.is_some();
     let has_resume_tip = !has_update_tip && p.foreign_resume_hint.is_some();
     // Tip slot precedence: pending update, then privacy banner (wraps, so its height depends on width), then resume hint, then random tip
     // The update outranks the upsell so a ready update is never invisible; the banner takes the slot back once it's applied
@@ -1818,14 +1790,10 @@ fn render_welcome_done(
             items.push((key_i_with_x, "Import Claude settings"));
         }
         items.push((key_w, "New worktree"));
-        // Workshop: nothing to resume on a fresh directory, so the row does not offer it.
-        if p.has_resumable_sessions {
-            items.push((key_resume, "Resume session"));
-        }
-        // Workshop: "Release notes" above Quit opens the bundled notes (the same as
-        // `/release-notes`), by click or by menu navigation; nothing depends on a CDN fetch.
+        items.push((key_resume, "Resume session"));
+        // "Changelog" above Quit; no shortcut, opened by click (row or block)
         if show_changelog_action {
-            items.push(("/release-notes", "Release notes"));
+            items.push(("", "Changelog"));
         }
         items.push((key_q, "Quit"));
         owned_menu = items;
@@ -1888,16 +1856,33 @@ fn render_welcome_done(
         has_upgrade_cta: p.upgrade_cta.is_some(),
         prompt_height: None,
     };
+    let notice_inset = prompt::prompt_inset(p.compact);
+    let notice_rows = p
+        .model_notice
+        .filter(|_| !show_picker && p.has_access)
+        .map_or(0, |notice| {
+            let width = content_area.width.saturating_sub(notice_inset * 2);
+            crate::views::model_notice_banner::height(notice, width)
+        });
     // The picker and the access gate paint no composer
+    // The model notice paints in the top rows of the prompt slot
     if !show_picker && p.has_access {
-        layout_input.prompt_height = Some(prompt::desired_prompt_height(
-            prompt,
-            content_area.width,
-            p.compact,
-            prompt_max_height(&layout_input),
-        ));
+        layout_input.prompt_height = Some(
+            prompt::desired_prompt_height(
+                prompt,
+                content_area.width,
+                p.compact,
+                prompt_max_height(&layout_input),
+            ) + notice_rows,
+        );
     }
-    let layout = WelcomeLayout::compute(layout_input);
+    let mut layout = WelcomeLayout::compute(layout_input);
+    let notice_area = Rect {
+        height: notice_rows.min(layout.prompt.height),
+        ..layout.prompt
+    };
+    layout.prompt.y += notice_area.height;
+    layout.prompt.height -= notice_area.height;
 
     // Render startup warning in the error area (same slot as auth errors).
     let import_banner_rect = render_startup_warnings(layout.error, buf, theme, p.startup_warnings);
@@ -1947,7 +1932,6 @@ fn render_welcome_done(
             &layout,
             buf,
             theme,
-            p.hero_frame.unwrap_or(0),
             menu_items,
             p.selected,
             p.mouse_pos,
@@ -2163,11 +2147,7 @@ fn render_welcome_done(
         (None, None)
     } else {
         // Privacy banner owns the tip slot when visible (above the prompt), except a pending-update notification, which outranks it
-        if p.privacy_banner
-            && p.pending_update_version.is_none()
-            && p.workshop_updated_to.is_none()
-            && layout.tip.height > 0
-        {
+        if p.privacy_banner && p.pending_update_version.is_none() && layout.tip.height > 0 {
             let [_, tip_centered, _] = Layout::horizontal([
                 Constraint::Min(0),
                 Constraint::Length(content_area.width),
@@ -2221,36 +2201,11 @@ fn render_welcome_done(
             Paragraph::new(line)
                 .style(Style::default().bg(theme.bg_base))
                 .render(tip_inset, buf);
-        } else if let Some(ver) = p.workshop_updated_to
-            && layout.tip.height > 0
-        {
-            // Workshop: the first launch after a silent update, in the same slot as upstream's line.
-            let [_, tip_centered, _] = Layout::horizontal([
-                Constraint::Min(0),
-                Constraint::Length(content_area.width),
-                Constraint::Min(0),
-            ])
-            .flex(Flex::Center)
-            .areas(layout.tip);
-            let inset = prompt::prompt_inset(p.compact);
-            let tip_inset = Rect {
-                x: tip_centered.x + inset,
-                y: tip_centered.y,
-                width: tip_centered.width.saturating_sub(inset * 2),
-                height: tip_centered.height,
-            };
-            Paragraph::new(Line::from(Span::styled(
-                crate::app::workshop_update::updated_line(ver),
-                Style::default().fg(theme.accent_user),
-            )))
-            .style(Style::default().bg(theme.bg_base))
-            .render(tip_inset, buf);
         }
 
         // Recent foreign session: offer a one-click resume in the tip area (only when no update is pending; the update shares ctrl+u and wins)
         if !p.privacy_banner
             && p.pending_update_version.is_none()
-            && p.workshop_updated_to.is_none()
             && let Some(hint) = p.foreign_resume_hint
             && layout.tip.height > 0
         {
@@ -2303,6 +2258,13 @@ fn render_welcome_done(
             usage_warning_critical,
         };
 
+        if let Some(notice) = p.model_notice {
+            crate::views::model_notice_banner::render(
+                inset_horizontal(notice_area, notice_inset),
+                buf,
+                notice,
+            );
+        }
         render_prompt_and_version(
             &layout,
             content_area.width,
@@ -2313,7 +2275,6 @@ fn render_welcome_done(
             &usage_info,
             if p.privacy_banner
                 || p.pending_update_version.is_some()
-                || p.workshop_updated_to.is_some()
                 || p.foreign_resume_hint.is_some()
             {
                 // Banner/update/resume tip already rendered above with custom styling.
@@ -2348,7 +2309,6 @@ fn render_welcome_done(
         consent_link_rects: Vec::new(),
         consent_legibility: None,
         changelog_action_present: show_changelog_action,
-        resume_action_present: p.has_access && !show_picker && p.has_resumable_sessions,
         changelog_cta_rect,
         announcement_truncated,
         announcement_rect,
@@ -2357,11 +2317,6 @@ fn render_welcome_done(
         privacy_banner_opt_out_rect,
         privacy_banner_terms_rect,
         privacy_banner_policy_rect,
-        // Only the hero box spins the logo; the stacked (narrow) layout paints the resting frame.
-        hero_animating: p.hero_frame.is_some()
-            && !show_picker
-            && layout.has_hero_box()
-            && layout.logo_tier.rows() > 0,
         #[cfg(feature = "local-workspace")]
         workspace_mode_rects,
     }
@@ -2789,9 +2744,8 @@ mod tests {
                 "badge must not label the product: {rendered:?}"
             );
         }
-        let title = workshop_brand::title();
-        assert!(full.contains(title), "full badge: {full:?}");
-        assert!(inline.contains(title), "inline badge: {inline:?}");
+        assert!(full.contains("Grok Build"), "full badge: {full:?}");
+        assert!(inline.contains("Grok Build"), "inline badge: {inline:?}");
         assert!(footer.contains("acme"), "footer keeps the team: {footer:?}");
         assert!(
             !footer.ends_with('\u{2502}'),
@@ -2934,7 +2888,6 @@ mod tests {
             consent_state: &ConsentState::Done,
             consent_hover_link: None,
             login_label: None,
-            connection_picker: None,
             auth_code_input: "",
             auth_code_cursor_byte: 0,
             clipboard_delivery: None,
@@ -2942,12 +2895,12 @@ mod tests {
             announcement: None,
             tip: None,
             model_name: "test",
+            model_notice: None,
             flags: &[],
             selected: None,
             team_name: None,
             has_access: true,
             has_claude_import: false,
-            has_resumable_sessions: true,
             mouse_pos: None,
             is_zdr_blocked: false,
             session_picker,
@@ -2956,7 +2909,6 @@ mod tests {
             pending_hint: None,
             startup_warnings: &[],
             pending_update_version: None,
-            workshop_updated_to: None,
             foreign_resume_hint: None,
             is_api_key_auth: false,
             session_picker_content_results: None,
@@ -2978,7 +2930,6 @@ mod tests {
             welcome_announcement_expanded: false,
             upgrade_cta: None,
             privacy_banner: false,
-            hero_frame: None,
             #[cfg(feature = "local-workspace")]
             workspace_mode: WelcomeWorkspaceMode::Sandbox,
             #[cfg(feature = "local-workspace")]
@@ -3772,7 +3723,7 @@ mod tests {
         };
         let one_line = WelcomeLayout::compute(input(None));
         assert_eq!(one_line.logo_tier, LogoTier::Full);
-        assert_eq!(one_line.logo.height, LogoTier::Full.rows());
+        assert_eq!(one_line.logo.height, logo::full_logo_line_count());
 
         let tall = WelcomeLayout::compute(input(Some(13)));
         assert_eq!(tall.logo_tier, LogoTier::Compact);
@@ -3862,30 +3813,20 @@ mod tests {
         }
     }
 
-    /// Rows of the logo art painted in the buffer: the donut tier whose resting frame's lit cells
-    /// all match at some position (the full tier first, then the compact one); 0 when neither is there.
+    /// Rows of the painted buffer that hold braille logo art.
     fn painted_logo_rows(buf: &Buffer) -> u16 {
-        use workshop_brand::donut::{self, Size};
         let area = buf.area;
-        let painted = |size: Size| {
-            let frame = donut::frame(size, 0);
-            let matches_at = |x0: u16, y0: u16| {
-                (0..size.rows()).all(|r| {
-                    (0..size.cols()).all(|c| match frame.level(r, c) {
-                        None => true,
-                        Some(_) => buf
-                            .cell((x0 + c as u16, y0 + r as u16))
-                            .is_some_and(|cell| cell.symbol() == frame.glyph(r, c).to_string()),
-                    })
+        (area.top()..area.bottom())
+            .filter(|&y| {
+                (area.left()..area.right()).any(|x| {
+                    buf.cell((x, y))
+                        .map(|c| c.symbol())
+                        .unwrap_or("")
+                        .chars()
+                        .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c))
                 })
-            };
-            (area.top()..area.bottom())
-                .any(|y0| (area.left()..area.right()).any(|x0| matches_at(x0, y0)))
-        };
-        [Size::Full, Size::Compact]
-            .into_iter()
-            .find(|&size| painted(size))
-            .map_or(0, |size| size.rows() as u16)
+            })
+            .count() as u16
     }
 
     /// End to end: a draft that steps the logo tier down paints the compact art, not the full art clipped into fewer rows.
@@ -3902,7 +3843,7 @@ mod tests {
 
         let mut buf = Buffer::empty(area);
         let _ = render_welcome(area, &mut buf, &params, &mut prompt, &mut picker);
-        assert_eq!(painted_logo_rows(&buf), LogoTier::Full.rows());
+        assert_eq!(painted_logo_rows(&buf), logo::full_logo_line_count());
 
         prompt.set_text(&["line"; 30].join("\n"));
         let mut buf = Buffer::empty(area);
@@ -4182,12 +4123,8 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            hero_box::min_content_height(
-                &input,
-                with_ann.hero_info.height,
-                PROMPT_HEIGHT,
-                with_ann.logo_tier
-            ) <= area.height,
+            hero_box::min_content_height(&input, with_ann.hero_info.height, PROMPT_HEIGHT)
+                <= area.height,
             "clamped slot must keep the box within the area"
         );
     }
@@ -4674,8 +4611,7 @@ the usual channels. "
             hero_box::min_content_height(
                 &short_input,
                 short_expanded.hero_info.height,
-                PROMPT_HEIGHT,
-                short_expanded.logo_tier
+                PROMPT_HEIGHT
             ) <= short.height
         );
     }

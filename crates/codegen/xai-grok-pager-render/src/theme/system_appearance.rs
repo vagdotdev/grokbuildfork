@@ -78,7 +78,7 @@ fn resolve_appearance_chain(
     desktop.or(explicit).or(osc11).or(colorfgbg)
 }
 
-/// Desktop APIs only. `workshop wrap` stamps the local OS theme before SSH; env hints may be a previous hop's snapshot.
+/// Desktop APIs only. `grok wrap` stamps the local OS theme before SSH; env hints may be a previous hop's snapshot.
 #[must_use]
 pub fn detect_desktop() -> Option<SystemAppearance> {
     match dark_light::detect() {

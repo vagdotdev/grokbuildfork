@@ -369,6 +369,20 @@ pub(super) fn handle_gate_refreshed(
     }
 }
 
+/// A re-check snapshot built before hydration can land after it, so for the same account a resolved capability is kept. A genuine loss (removed from the team mid-session) then waits for the next launch, the right way to be wrong: the value is advisory and the row is editable when unknown.
+fn apply_recheck_meta(app: &mut AppView, mut meta: xai_grok_login::AuthMeta) {
+    let same_account = crate::app::app_view::AuthIdentity {
+        email: meta.email.clone(),
+        team_id: meta.team_id.clone(),
+        team_principal: meta.is_team_principal,
+    }
+    .matches(&app.auth_identity());
+    if same_account && meta.can_administer_team.is_none() {
+        meta.can_administer_team = app.can_administer_team;
+    }
+    app.apply_auth_meta(&meta);
+}
+
 /// `x.ai/auth/check_subscription` completed.
 /// A failed check only promotes the deferred gate it was verifying (the `verify` generation).
 /// Generic watch, focus, and paywall-chain failures never touch it.
@@ -379,14 +393,10 @@ pub(super) fn handle_check_subscription_complete(
 ) -> Vec<Effect> {
     let was_blocked = !app.has_access();
     let applied = match meta {
-        // A JSON `null` meta is the shell reporting "no subscription / not authenticated" — the
-        // normal, expected case for Workshop (no xAI account), which the watch fires every
-        // interval. Treat it like `None`; only a genuinely malformed (non-null) meta is a
-        // protocol bug worth an error line, so the log stays quiet when nothing is wrong.
-        Some(meta_val) if !meta_val.is_null() => {
+        Some(meta_val) => {
             match serde_json::from_value::<xai_grok_login::AuthMeta>(meta_val) {
                 Ok(auth_meta) => {
-                    app.apply_auth_meta(&auth_meta);
+                    apply_recheck_meta(app, auth_meta);
                     true
                 }
                 Err(e) => {
@@ -404,8 +414,8 @@ pub(super) fn handle_check_subscription_complete(
                 }
             }
         }
-        // A `None` (or `null`) meta means the shell reports "not authenticated" or the check RPC failed (already logged as subscription.check.rpc_failed)
-        _ => false,
+        // A `None` meta means the shell reports "not authenticated" or the check RPC failed (already logged as subscription.check.rpc_failed)
+        None => false,
     };
     if !applied && let Some(generation) = verify {
         app.promote_deferred_gate(generation, "check_failed");
@@ -451,7 +461,7 @@ pub(super) fn handle_credit_limit_recheck_complete(
     if let Some(meta_val) = meta
         && let Ok(auth_meta) = serde_json::from_value::<xai_grok_login::AuthMeta>(meta_val)
     {
-        app.apply_auth_meta(&auth_meta);
+        apply_recheck_meta(app, auth_meta);
     }
     let tier_changed = app.subscription_tier != old_tier && app.subscription_tier.is_some();
 

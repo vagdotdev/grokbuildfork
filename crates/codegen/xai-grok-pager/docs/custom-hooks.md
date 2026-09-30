@@ -1,6 +1,6 @@
 # Custom Hooks Guide
 
-Hooks let you run custom scripts or HTTP requests at key moments during a Workshop session, for example before or after a tool runs, when a session starts or ends, or when the agent sends a notification.
+Hooks let you run custom scripts or HTTP requests at key moments during a Grok session, for example before or after a tool runs, when a session starts or ends, or when the agent sends a notification.
 
 Use them for automation, safety checks, logging, notifications, and integrating with your own tools.
 
@@ -19,17 +19,17 @@ Common use cases:
 
 1. Create the hooks directory:
    ```sh
-   mkdir -p ~/.workshop/hooks
+   mkdir -p ~/.grok/hooks
    ```
 
-2. Create a simple hook file, e.g. `~/.workshop/hooks/session-start.json`:
+2. Create a simple hook file, e.g. `~/.grok/hooks/session-start.json`:
    ```json
    {
      "hooks": {
        "SessionStart": [
          {
            "hooks": [
-            { "type": "command", "command": "echo \"🚀 Workshop session started in $(pwd)\"" }
+            { "type": "command", "command": "echo \"🚀 Grok session started in $(pwd)\"" }
            ]
          }
        ]
@@ -37,7 +37,7 @@ Common use cases:
    }
    ```
 
-3. Start (or restart) a Workshop session. The hook runs automatically on `SessionStart`.
+3. Start (or restart) a Grok session. The hook runs automatically on `SessionStart`.
 
    To confirm it loaded, open the Hooks tab: press `Ctrl+L` outside the VS Code family, or run `/hooks` anywhere (preferred on VS Code, Cursor, Windsurf, and Zed).
 
@@ -47,7 +47,7 @@ Hooks are discovered from several places (all are merged):
 
 | Scope     | Path                              | Trusted?     | Notes |
 |-----------|-----------------------------------|--------------|-------|
-| Global    | `~/.workshop/hooks/*.json`            | Always       | Best for personal hooks |
+| Global    | `~/.grok/hooks/*.json`            | Always       | Best for personal hooks |
 | Global    | `~/.claude/settings.json`         | Always       | Claude Code compatibility |
 | Project   | `<project>/.grok/hooks/*.json`    | Requires trust | Per-repo automation |
 | Project   | `<project>/.claude/settings.json` | Requires trust | Claude compatibility |
@@ -56,7 +56,7 @@ Hooks are discovered from several places (all are merged):
 
 Config-file hooks use the same schema in TOML form; see the [Hooks user guide](user-guide/10-hooks.md#hooks-in-config-files) for details.
 
-**Trusting a project**: The first time you open a project with hooks, open the hooks modal (`Ctrl+L` outside the VS Code family, or `/hooks` on any terminal) or run `/hooks-trust`. This is the same folder-trust gate as `--trust`, recorded in `~/.workshop/trusted_folders.toml`. Trust prevents untrusted repos from running arbitrary code.
+**Trusting a project**: The first time you open a project with hooks, open the hooks modal (`Ctrl+L` outside the VS Code family, or `/hooks` on any terminal) or run `/hooks-trust`. This is the same folder-trust gate as `--trust`, recorded in `~/.grok/trusted_folders.toml`. Trust prevents untrusted repos from running arbitrary code.
 
 ## The Hook JSON Format
 
@@ -92,7 +92,7 @@ Key fields:
 - **command**: Path to executable (relative to the JSON file) or inline shell command.
 - **timeout**: Seconds before killing the hook (default: 5, or 600 for `Stop`/`SubagentStop`/`PostToolUse` gates). Hooks fail open on timeout.
 
-**Tool name aliases**: Claude-style names like `Bash`, `Edit`, `Read` automatically match Workshop's internal names (`run_terminal_cmd`, `search_replace`, `read_file`).
+**Tool name aliases**: Claude-style names like `Bash`, `Edit`, `Read` automatically match Grok's internal names (`run_terminal_cmd`, `search_replace`, `read_file`).
 
 ## Writing Hook Scripts
 
@@ -112,7 +112,7 @@ The full event is sent as JSON on **stdin**. Example for a `PreToolUse` hook:
 }
 ```
 
-The `hook_event_name` (snake_case key) carries Claude's PascalCase value; `hookEventName` (camelCase key) carries workshop's snake_case value.
+The `hook_event_name` (snake_case key) carries Claude's PascalCase value; `hookEventName` (camelCase key) carries grok's snake_case value.
 
 ### Output (for blocking hooks like PreToolUse)
 Write JSON to **stdout**:
@@ -133,19 +133,19 @@ For events like `SessionStart` or `Notification`, stdout is ignored. Just exit 0
 
 ### Useful Environment Variables
 
-Workshop injects the following variables into every hook process:
+Grok injects the following variables into every hook process:
 
-- `WORKSHOP_HOOK_EVENT`: the event name (e.g. `pre_tool_use`, `session_start`, `post_tool_use`).
-- `WORKSHOP_HOOK_NAME`: the full configured name of this hook.
-- `WORKSHOP_SESSION_ID`: the current session identifier.
-- `WORKSHOP_WORKSPACE_ROOT`: absolute path to the workspace root.
+- `GROK_HOOK_EVENT`: the event name (e.g. `pre_tool_use`, `session_start`, `post_tool_use`).
+- `GROK_HOOK_NAME`: the full configured name of this hook.
+- `GROK_SESSION_ID`: the current session identifier.
+- `GROK_WORKSPACE_ROOT`: absolute path to the workspace root.
 
 For hooks provided by plugins, the following are also set:
 
-- `WORKSHOP_PLUGIN_ROOT`: absolute path to the plugin's installation directory.
-- `WORKSHOP_PLUGIN_DATA`: absolute path to the plugin's writable data directory.
+- `GROK_PLUGIN_ROOT`: absolute path to the plugin's installation directory.
+- `GROK_PLUGIN_DATA`: absolute path to the plugin's writable data directory.
 
-These runner- and plugin-injected variables always take precedence. Attempts to override the reserved runner keys via the `env` field are stripped at load time (with a warning logged). For plugin hooks, `WORKSHOP_PLUGIN_ROOT` and `WORKSHOP_PLUGIN_DATA` similarly override any user-supplied values for those keys.
+These runner- and plugin-injected variables always take precedence. Attempts to override the reserved runner keys via the `env` field are stripped at load time (with a warning logged). For plugin hooks, `GROK_PLUGIN_ROOT` and `GROK_PLUGIN_DATA` similarly override any user-supplied values for those keys.
 
 ### Custom Environment Variables (`env` field)
 
@@ -166,7 +166,7 @@ Values must be **strings**. JSON numbers and bools currently fail to parse; wrap
 them in quotes if you need them.
 
 For plugin hooks, the plugin adapter additionally injects
-`WORKSHOP_PLUGIN_ROOT` and `WORKSHOP_PLUGIN_DATA`. These keys override any user-declared
+`GROK_PLUGIN_ROOT` and `GROK_PLUGIN_DATA`. These keys override any user-declared
 values for the same names (the plugin contract is non-negotiable).
 
 ### Variable Substitution
@@ -177,18 +177,18 @@ config-load time:
 ```json
 {
   "type": "command",
-  "command": "${HOME}/.config/workshop-hooks/check.sh"
+  "command": "${HOME}/.config/grok-hooks/check.sh"
 }
 ```
 
 Lookup order for each reference:
 1. The handler's own `env` map.
-2. The current process environment (the env Workshop itself sees).
+2. The current process environment (the env Grok itself sees).
 
 If a reference is unset in both, it's **preserved verbatim** (e.g. `${UNSET}`
 stays as the literal string). Runner-injected names (`CLAUDE_PROJECT_DIR`,
-`WORKSHOP_WORKSPACE_ROOT`, `WORKSHOP_HOOK_EVENT`, `WORKSHOP_HOOK_NAME`,
-`WORKSHOP_SESSION_ID`) are not taken from the Workshop process environment at
+`GROK_WORKSPACE_ROOT`, `GROK_HOOK_EVENT`, `GROK_HOOK_NAME`,
+`GROK_SESSION_ID`) are not taken from the Grok process environment at
 load. Unix `sh -c` expands them from the child env; Windows PowerShell
 rewrites `$VAR` to `$env:VAR`. HTTP `url` substitutes them at request
 time. Remaining unresolved command refs are refused with "required env
@@ -196,7 +196,7 @@ var(s) not set".
 
 For HTTP hooks specifically, `url` is also re-expanded **at request time**
 (immediately before SSRF validation), so plugin-injected vars like
-`${WORKSHOP_PLUGIN_ROOT}/check` resolve against the plugin's actual path.
+`${GROK_PLUGIN_ROOT}/check` resolve against the plugin's actual path.
 
 #### Parameter-expansion modifiers
 
@@ -236,14 +236,14 @@ In the **Hooks** tab you can:
 - `r`: Remove.
 - `Space`: Expand groups.
 
-Hooks from `~/.workshop/hooks/` appear under **Global**, project ones under **Project**, etc.
+Hooks from `~/.grok/hooks/` appear under **Global**, project ones under **Project**, etc.
 
 ## HTTP Hooks
 
 Instead of a local script, call a remote endpoint:
 
 ```json
-{ "type": "http", "url": "https://hooks.example.com/workshop-event", "timeout": 15 }
+{ "type": "http", "url": "https://hooks.example.com/grok-event", "timeout": 15 }
 ```
 
 The full event envelope is POSTed as JSON. Useful for webhooks, analytics, or serverless functions.
@@ -258,7 +258,7 @@ The full event envelope is POSTed as JSON. Useful for webhooks, analytics, or se
 
 ## Security Notes
 
-- Global hooks (`~/.workshop/...`) run with your user permissions. Treat them like shell scripts.
+- Global hooks (`~/.grok/...`) run with your user permissions. Treat them like shell scripts.
 - Project hooks require explicit trust (run `/hooks-trust` or use the modal) to prevent supply-chain attacks from malicious repos.
 - HTTP hooks send session data. Only use trusted endpoints.
 
@@ -267,8 +267,8 @@ The full event envelope is POSTed as JSON. Useful for webhooks, analytics, or se
 - **Hook not running?** Press `Ctrl+L` outside the VS Code family (or run `/hooks` anywhere) to see if it's loaded and matched.
 - **Project hooks ignored?** Trust the project first.
 - **Script not found?** Check the path is relative to the `.json` file and executable (`chmod +x`).
-- **`The argument '/.claude/hooks/….ps1' to the -File parameter does not exist`?** PowerShell treated `$CLAUDE_PROJECT_DIR` as empty. Workshop rewrites it to `$env:CLAUDE_PROJECT_DIR` unless `WORKSHOP_SHELL=cmd`.
-- **See errors?** Check the pager logs (usually in the tracing pane or `~/.workshop/logs`).
+- **`The argument '/.claude/hooks/….ps1' to the -File parameter does not exist`?** PowerShell treated `$CLAUDE_PROJECT_DIR` as empty. Grok rewrites it to `$env:CLAUDE_PROJECT_DIR` unless `GROK_SHELL=cmd`.
+- **See errors?** Check the pager logs (usually in the tracing pane or `~/.grok/logs`).
 
 ## More Examples
 
@@ -279,7 +279,7 @@ See the built-in examples in the `xai-grok-hooks` crate:
 - [Session Audit Log](../../../xai-grok-hooks/examples/hooks/session-log.json)
 - [Tool Activity Logger](../../../xai-grok-hooks/examples/hooks/tool-logger.json)
 
-Copy them to `~/.workshop/hooks/` and customize.
+Copy them to `~/.grok/hooks/` and customize.
 
 ## Full Reference
 

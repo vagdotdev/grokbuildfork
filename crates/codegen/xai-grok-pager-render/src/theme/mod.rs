@@ -1,5 +1,5 @@
 //! All colors come from the `Theme` struct. No hardcoded colors elsewhere.
-//! Workshop's default theme ([`ThemeKind::DEFAULT`]) is Oscura Midnight; upstream's is GrokNight (neutral gray base with TokyoNight accents).
+//! The default theme is GrokNight (neutral gray base with TokyoNight accents).
 //!
 //! ## Color support
 //!
@@ -40,10 +40,6 @@ pub enum ThemeKind {
 }
 
 impl ThemeKind {
-    /// Workshop: the theme of a fresh install (`[ui].theme` unset). Upstream starts on GrokNight.
-    /// Auto mode keeps upstream's Night / Day pair (`auto_dark_theme` / `auto_light_theme`).
-    pub const DEFAULT: ThemeKind = ThemeKind::OscuraMidnight;
-
     /// All theme kinds (including those that may not work on the current terminal).
     pub const ALL: &[ThemeKind] = &[
         ThemeKind::GrokNight,
@@ -72,18 +68,37 @@ impl ThemeKind {
 
     /// Theme kinds available on the current terminal.
     ///
-    /// Workshop: every [`selectable()`] theme, on every terminal. Below truecolor (macOS Terminal.app is
-    /// 256-color) a truecolor theme renders through [`Theme::quantized`] like it already does at startup,
-    /// instead of being hidden here and swapped for Night by [`Theme::apply_kind`].
+    /// [`selectable()`] minus themes that require truecolor when the terminal does not support it (e.g., macOS Terminal.app is 256-color).
     pub fn available() -> &'static [ThemeKind] {
-        Self::selectable()
+        if color_support::detect().has_truecolor() {
+            return Self::selectable();
+        }
+        if cache::terminal_theme_enabled() {
+            static NO_TRUECOLOR: LazyLock<Vec<ThemeKind>> = LazyLock::new(|| {
+                ThemeKind::ALL
+                    .iter()
+                    .copied()
+                    .filter(|kind| !kind.requires_truecolor())
+                    .collect()
+            });
+            &NO_TRUECOLOR
+        } else {
+            static NO_TRUECOLOR_GATED: LazyLock<Vec<ThemeKind>> = LazyLock::new(|| {
+                ThemeKind::ALL
+                    .iter()
+                    .copied()
+                    .filter(|kind| !kind.requires_truecolor() && !kind.is_terminal_native())
+                    .collect()
+            });
+            &NO_TRUECOLOR_GATED
+        }
     }
 
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::GrokNight => "night",
+            Self::GrokNight => "groknight",
             Self::TokyoNight => "tokyonight",
-            Self::GrokDay => "day",
+            Self::GrokDay => "grokday",
             Self::RosePineMoon => "rosepine-moon",
             Self::OscuraMidnight => "oscura-midnight",
             Self::Terminal => "terminal",
@@ -115,11 +130,9 @@ impl ThemeKind {
     /// Alternate lowercase spellings accepted by [`from_name`](Self::from_name), excluding [`display_name`](Self::display_name).
     pub fn aliases(self) -> &'static [&'static str] {
         match self {
-            // Workshop: the themes are "Night" and "Day"; the upstream spellings stay as hidden
-            // aliases so an existing `theme = "groknight"` config keeps resolving.
-            Self::GrokNight => &["groknight", "grok-night", "dark"],
+            Self::GrokNight => &["grok-night", "dark"],
             Self::TokyoNight => &["tokyo-night", "tokyo"],
-            Self::GrokDay => &["grokday", "grok-day", "light"],
+            Self::GrokDay => &["grok-day", "light", "day"],
             Self::RosePineMoon => &["rosepine", "rose-pine", "rose-pine-moon"],
             Self::OscuraMidnight => &["oscura"],
             Self::Terminal => &["terminal-default", "transparent", "native"],
@@ -167,17 +180,15 @@ pub fn canonical_name(value: &str) -> Option<&'static str> {
     ThemeKind::from_name(value).map(|k| k.display_name())
 }
 
-/// Human-friendly display name for a canonical theme value (e.g. `"night"` becomes `"Night"`).
+/// Human-friendly display name for a canonical theme value (e.g. `"groknight"` becomes `"Grok Night"`).
 /// Falls back to `value` verbatim.
 pub fn display_name_for_canonical(value: &str) -> &str {
     match value {
         "auto" => "Auto",
-        "night" | "groknight" => "Night",
-        "day" | "grokday" => "Day",
+        "groknight" => "Grok Night",
+        "grokday" => "Grok Day",
         "tokyonight" => "Tokyo Night",
         "rosepine-moon" => "Rose Pine Moon",
-        // Workshop: the default theme gets its settings label in toasts too (upstream fell back to the canonical).
-        "oscura-midnight" => "Oscura Midnight",
         "terminal" => "Terminal",
         other => other,
     }
@@ -334,13 +345,21 @@ impl Theme {
     }
 
     /// In-memory only; the event loop emits OSC 12. No-op while the terminal-native lock is engaged.
-    /// Workshop: the picked kind is applied as-is; below truecolor [`Self::current`] quantizes it (no swap to Night).
     pub fn apply_kind(kind: ThemeKind) -> ThemeKind {
         if cache::terminal_native_locked() {
             return cache::current_kind();
         }
-        cache::set(kind);
-        kind
+        let effective = Self::clamp_to_terminal(kind);
+        cache::set(effective);
+        effective
+    }
+
+    fn clamp_to_terminal(kind: ThemeKind) -> ThemeKind {
+        if kind.requires_truecolor() && !color_support::detect().has_truecolor() {
+            ThemeKind::GrokNight
+        } else {
+            kind
+        }
     }
 
     /// Native ~12-unit RGB steps collapse under Windows display gamma; ConHost needs ~24-32 levels per channel.
@@ -1156,7 +1175,6 @@ mod tests {
         let cases = [
             ("auto", ThemeKind::Auto),
             ("system", ThemeKind::Auto),
-            ("night", ThemeKind::GrokNight),
             ("groknight", ThemeKind::GrokNight),
             ("grok-night", ThemeKind::GrokNight),
             ("dark", ThemeKind::GrokNight),

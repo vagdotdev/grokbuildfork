@@ -2,15 +2,6 @@
     use super::*;
     use crate::input::key::key;
 
-    /// Workshop (#65): `/model` has an argument phase only with a shell model to suggest; the
-    /// completion tests that use it as their arg-taking command give it one.
-    fn models_with_a_shell_model() -> crate::acp::model_state::ModelState {
-        let mut models = crate::acp::model_state::ModelState::default();
-        let id = agent_client_protocol::ModelId::new(std::sync::Arc::from("grok-4.5"));
-        models.available.insert(id.clone(), agent_client_protocol::ModelInfo::new(id, "Grok 4.5".to_string()));
-        models
-    }
-
     fn at<'a, T>(xs: &'a [T], i: usize) -> &'a T {
         match xs.get(i) {
             Some(v) => v,
@@ -1586,7 +1577,7 @@
     #[test]
     fn accept_completion_drops_active_highlight() {
         let mut pw = PromptWidget::new();
-        let models = models_with_a_shell_model();
+        let models = crate::acp::model_state::ModelState::default();
         pw.textarea.insert_str("/mod");
         pw.refresh_slash(&models);
         pw.textarea.set_selection(1, 3);
@@ -1599,7 +1590,7 @@
     #[test]
     fn accept_completion_adds_trailing_space_for_arg_command() {
         let mut pw = PromptWidget::new();
-        let models = models_with_a_shell_model();
+        let models = crate::acp::model_state::ModelState::default();
 
         // Typing "/mod" should match "/model" which takes_args
         pw.textarea.insert_str("/mod");
@@ -1616,7 +1607,7 @@
     #[test]
     fn accept_inside_command_with_args_absorbs_existing_separator() {
         let mut pw = PromptWidget::new();
-        let models = models_with_a_shell_model();
+        let models = crate::acp::model_state::ModelState::default();
 
         // Cursor inside the command token with args already present.
         pw.textarea.insert_str("/mod grok-4");
@@ -1649,7 +1640,7 @@
     #[test]
     fn accept_never_absorbs_into_adjacent_paste_chip() {
         let mut pw = PromptWidget::new();
-        let models = models_with_a_shell_model();
+        let models = crate::acp::model_state::ModelState::default();
 
         // Snapshot taken while the composer is just the token…
         pw.textarea.insert_str("/mod");
@@ -1754,17 +1745,13 @@
         pw.textarea.insert_str("/comp");
         pw.refresh_slash(&models);
 
-        // Accepting makes the text "/compact " (trailing space since takes_args)
+        // Accepting makes the text "/compact" (no trailing space: the command takes no arguments)
         pw.accept_slash_completion(&models);
         let text = pw.textarea.text().to_string();
-        assert_eq!(text, "/compact ");
+        assert_eq!(text, "/compact");
 
-        // Even without filling args, try_send should succeed (args are optional).
         let sent = pw.try_send();
-        assert!(
-            sent.is_some(),
-            "/compact with no args should be sendable (optional args)"
-        );
+        assert!(sent.is_some(), "/compact should be sendable");
     }
 
     #[test]
@@ -4117,23 +4104,32 @@
     #[test]
     fn mode_flags_show_plan_and_permission_together() {
         use crate::app::actions::PermissionLabel;
+        use xai_grok_tools::types::SessionMode;
+        let _guard = crate::theme::cache::pin_theme();
         let theme = Theme::current();
+        let ask = SessionMode::Ask.as_id();
         let cases = [
             (Some("plan"), PermissionLabel::AlwaysApprove, vec!["plan", "always-approve"]),
-            (Some("plan"), PermissionLabel::Auto, vec!["plan", "auto"]),
+            (Some("plan"), PermissionLabel::Auto, vec!["plan", "auto-review"]),
             (Some("plan approval"), PermissionLabel::Ask, vec!["plan approval"]),
+            (Some(ask), PermissionLabel::Ask, vec![ask]),
             (None, PermissionLabel::AlwaysApprove, vec!["always-approve"]),
-            (None, PermissionLabel::Auto, vec!["auto"]),
+            (None, PermissionLabel::Auto, vec!["auto-review"]),
             (None, PermissionLabel::Ask, vec![]),
         ];
-        for (plan_label, permission, expected) in cases {
-            let flags = mode_flags(plan_label, permission, &theme);
+        for (mode_label, permission, expected) in cases {
+            let flags = mode_flags(mode_label, permission, &theme);
             let texts: Vec<&str> = flags.iter().map(|f| f.text).collect();
-            assert_eq!(texts, expected, "{plan_label:?} + {permission:?}");
+            assert_eq!(texts, expected, "{mode_label:?} + {permission:?}");
         }
         let flags = mode_flags(Some("plan"), PermissionLabel::Auto, &theme);
         assert_eq!(at(&flags, 0).color, Some(theme.accent_plan));
         assert_eq!(at(&flags, 1).color, Some(theme.accent_system));
+
+        // Ask keeps its own accent, distinct from plan's.
+        let flags = mode_flags(Some(ask), PermissionLabel::Ask, &theme);
+        assert_eq!(at(&flags, 0).color, Some(theme.accent_success));
+        assert_ne!(at(&flags, 0).color, Some(theme.accent_plan));
     }
 
     /// The "plan" mode flag on the bottom divider keeps its accent color on the terminal theme: the
@@ -4245,6 +4241,43 @@
         );
         assert!(caption.add_modifier.contains(Modifier::DIM));
         assert_eq!(find("plan").fg, Some(theme.accent_plan), "flag stays yellow");
+    }
+
+    #[test]
+    fn info_line_without_a_model_starts_at_the_first_flag() {
+        let flag = |text| PromptFlag {
+            text,
+            color: None,
+            bold: false,
+        };
+        let info_row = |info: &PromptInfo| {
+            let area = Rect::new(0, 0, 80, 4);
+            let mut buf = Buffer::empty(area);
+            PromptWidget::new().draw(&mut buf, area, None, &PromptStyle::default(), Some(info), None);
+            (0..area.height)
+                .map(|y| buf_text_at(&buf, 0, area.width, y))
+                .find(|row| row.contains("plan"))
+                .expect("the flag is rendered")
+        };
+
+        let flags = [flag("plan"), flag("always-approve")];
+        let row = info_row(&PromptInfo {
+            model_name: "",
+            flags: &flags,
+            ..Default::default()
+        });
+        assert!(row.contains(" plan · always-approve "), "{row:?}");
+        assert_eq!(1, row.matches('·').count(), "{row:?}");
+
+        let flags = [flag("plan")];
+        let row = info_row(&PromptInfo {
+            model_name: "",
+            flags: &flags,
+            usage_warning: Some("5% usage left"),
+            ..Default::default()
+        });
+        assert!(row.contains(" 5% usage left · plan "), "{row:?}");
+        assert_eq!(1, row.matches('·').count(), "{row:?}");
     }
 
     /// Colorless info-line chrome (uncolored flags, the "multiline" label)
@@ -4476,7 +4509,7 @@
             let mut buf = Buffer::empty(area);
             pw.draw(&mut buf, area, None, &style, None, None);
             assert!(
-                buf_text_at(&buf, 0, 14, 0).contains("Ask anything"),
+                buf_text_at(&buf, 0, 14, 0).contains("Build anything"),
                 "placeholder text missing"
             );
             buf.cell((0, 0)).unwrap().style()
@@ -4980,15 +5013,13 @@
     #[test]
     #[serial_test::serial]
     fn teal_highlighting_on_second_line() {
-        // Asserts the full-TUI accent color.
-        // The slash highlight reads the global `embedded` flag (monochrome when set).
-        // Pin it off and serialize against the modal_window embedded test that toggles it.
-        // Theme::current() is process-global too. A parallel screen-mode reseed can turn the
-        // terminal-native lock on (accent_skill is named Blue) for the paint and off again
-        // before this assertion reads GrokNight's teal. Hold the theme lock across both, and
-        // clear the lock so the check is the full-TUI teal, not the terminal palette's Blue.
+        // Theme::current() and the terminal-native lock are process-global.
+        // A sibling can paint Color::Blue (terminal default accent_skill) and
+        // then swap in GrokNight's Rgb accent before this assert.
         let _theme = crate::theme::cache::pin_theme();
         crate::theme::cache::set_terminal_native_lock(false);
+        // The slash highlight reads the global `embedded` flag (monochrome when set).
+        // Pin it off and serialize against the modal_window embedded test that toggles it.
         crate::views::modal_window::set_embedded(false);
         let mut pw = PromptWidget::new();
         pw.textarea.insert_str("hello\n/model");
@@ -5000,6 +5031,7 @@
 
         let area = Rect::new(0, 0, 40, 3);
         let mut buf = Buffer::empty(area);
+        let theme = crate::theme::Theme::current();
         pw.draw(&mut buf, area, None, &ghost_test_style(), None, None);
 
         // Verify the token text rendered on row 1 (line 2) at the correct position, regardless of color support in the test environment
@@ -5007,7 +5039,6 @@
         assert_eq!(token_text, "/model", "token should render on row 1");
 
         // When the theme has color support, also verify teal foreground.
-        let theme = crate::theme::Theme::current();
         if theme.accent_skill != ratatui::style::Color::Reset {
             for x in 0..6u16 {
                 let cell = buf.cell((x, 1)).expect("cell exists");

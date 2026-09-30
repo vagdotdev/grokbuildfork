@@ -19,7 +19,7 @@ pub use config::{
     NotificationCondition, NotificationConfig, NotificationEventKind, NotificationHook,
     NotificationMethod, TitleConfig, TitleItem,
 };
-pub use title::{TITLE_RESTORE, TITLE_SAVE, TitleState};
+pub use title::TitleState;
 
 pub struct NotificationEvent {
     pub kind: NotificationEventKind,
@@ -430,7 +430,7 @@ mod tests {
         svc.escape_writer = EscapeWriter::new(tx, WriterSync::new());
         svc.notify(NotificationEvent {
             kind: NotificationEventKind::TurnComplete,
-            title: "Workshop".into(),
+            title: "Grok".into(),
             body: "Turn complete".into(),
             session_id: Some("test-session".into()),
         });
@@ -451,7 +451,7 @@ mod tests {
         svc.escape_writer = EscapeWriter::new(tx, WriterSync::new());
         svc.notify(NotificationEvent {
             kind: NotificationEventKind::SessionReady,
-            title: "Workshop".into(),
+            title: "Grok".into(),
             body: "Session ready".into(),
             session_id: None,
         });
@@ -630,10 +630,9 @@ mod tests {
         let payload = rx
             .try_recv()
             .expect("shutdown escapes must ride the writer queue");
-        let escapes = String::from_utf8_lossy(payload.data()).to_string();
         assert!(
-            escapes.contains(title::TITLE_RESTORE),
-            "expected the title restore in the queued escape: {escapes:?}"
+            String::from_utf8_lossy(payload.data()).contains("grok"),
+            "expected the title reset in the queued escape"
         );
         assert!(rx.try_recv().is_err(), "one combined payload expected");
     }
