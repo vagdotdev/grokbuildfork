@@ -970,6 +970,23 @@ pub(super) fn default_actions(
             ),
         },
         ActionDef {
+            id: ActionId::DashboardDelete,
+            label: "delete",
+            description: "Delete agent",
+            default_key: key!(Delete),
+            // Backspace only counts while the list has focus (the input is inactive), so it never
+            // competes with erasing a typed draft; `handle_key` applies that gate.
+            alt_keys: vec![key!(Backspace)],
+            category: Category::Dashboard,
+            context: When::DashboardFocused,
+            hint_priority: None,
+            hint_key_display: None,
+            requires_confirmation: false,
+            long_help: Some(
+                "Deletes the highlighted idle session right away, with no confirmation.\nBackspace does the same while the list has focus.\nA busy row is left alone: stop it first with Ctrl+X.",
+            ),
+        },
+        ActionDef {
             id: ActionId::DashboardCycleMode,
             label: "mode",
             description: "Cycle dispatch mode",

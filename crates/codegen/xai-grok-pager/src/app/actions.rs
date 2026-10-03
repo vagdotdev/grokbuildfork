@@ -841,6 +841,9 @@ pub enum Action {
     DashboardStop,
     /// Confirm permanent delete of the armed dashboard row.
     DashboardDelete,
+    /// Workshop: `Delete` / `Backspace` on the highlighted row deletes it now, no arm, no confirm.
+    /// A busy row is left alone with a toast; the stop stays on `Ctrl+X`.
+    DashboardDeleteSelected,
     /// Cycle the dispatch input's mode for the next spawned agent: Normal, Plan, Auto, Always-Approve, then back around.
     /// Auto is skipped when gated off. Bound to Shift+Tab.
     DashboardCycleMode,

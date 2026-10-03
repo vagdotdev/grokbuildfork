@@ -2075,6 +2075,43 @@ pub(super) fn dispatch_dashboard_delete(app: &mut AppView) -> Vec<Effect> {
     }
     delete_dashboard_row(app, sel)
 }
+/// Workshop: `Delete` / `Backspace` on the highlighted row deletes it at once — no arm, no
+/// `y`/`n`. Only a settled row goes; a row with work running is left alone with one toast (the
+/// stop stays on `Ctrl+X`, a different gesture from throwing a session away).
+pub(super) fn dispatch_dashboard_delete_selected(app: &mut AppView) -> Vec<Effect> {
+    use crate::views::dashboard::DashboardRowId;
+    let Some(sel) = app.dashboard.as_ref().and_then(|d| d.selected.clone()) else {
+        return vec![];
+    };
+    if let Some(d) = app.dashboard.as_mut() {
+        d.delete_confirm = None;
+    }
+    match &sel {
+        DashboardRowId::TopLevel(id) => {
+            let id = *id;
+            if app.workshop_turn_active && app.workshop_turn_agent == Some(id) {
+                app.show_toast("Stop the session before deleting");
+                return vec![];
+            }
+            if app.workspace_dashboard_enabled {
+                let Some(readiness) = app.agents.get(&id).map(dashboard_stop_readiness) else {
+                    return vec![];
+                };
+                if !readiness.can_close() {
+                    app.show_toast("Stop the session before deleting");
+                    return vec![];
+                }
+            }
+            delete_dashboard_row(app, sel)
+        }
+        DashboardRowId::Workspace { .. } if !app.workspace_dashboard_enabled => vec![],
+        // `delete_dashboard_row` already refuses busy roster rows, chat conversations and
+        // subagent rows with their own toasts.
+        DashboardRowId::Subagent { .. }
+        | DashboardRowId::Roster { .. }
+        | DashboardRowId::Workspace { .. } => delete_dashboard_row(app, sel),
+    }
+}
 /// Delete `row`, which the caller has confirmed is idle and armed.
 /// Takes `row` as a parameter (not read back off `delete_confirm`) and never cancels a turn or kills a task; delete is a settled-row operation.
 fn delete_dashboard_row(

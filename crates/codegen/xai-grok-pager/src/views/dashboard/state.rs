@@ -2626,7 +2626,18 @@ impl DashboardState {
         // open.
         let is_typing_char = matches!(key.code, KeyCode::Char(_))
             && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT);
+        // Workshop: Delete / Backspace are registry keys (delete the row) only while the reply is
+        // a navigation surface; a focused reply keeps them as its editing keys.
+        let reply_focused = self.peek.as_ref().is_some_and(|p| p.focused);
+        let is_reply_edit = key.modifiers.is_empty()
+            && reply_focused
+            && match key.code {
+                KeyCode::Backspace => true,
+                KeyCode::Delete => !self.peek_reply.text().is_empty(),
+                _ => false,
+            };
         let peek_owned = is_typing_char
+            || is_reply_edit
             || matches!(key.code, KeyCode::Esc | KeyCode::Enter)
             || (matches!(key.code, KeyCode::Up | KeyCode::Down | KeyCode::Tab)
                 && key.modifiers.is_empty());
@@ -3324,6 +3335,19 @@ impl DashboardState {
         if let Some(id) = from_registry {
             let honor = match key.code {
                 KeyCode::Up | KeyCode::Down if key.modifiers.is_empty() => list_keys_active,
+                // Workshop: Delete deletes the highlighted row whenever the arrows move it (list
+                // focused, or an empty input; with the peek open, an unfocused or empty reply);
+                // Backspace only once no input is active, so it never doubles as "erase the
+                // draft" and then eats a row on the keystroke after.
+                KeyCode::Delete | KeyCode::Backspace if key.modifiers.is_empty() => {
+                    let is_delete = key.code == KeyCode::Delete;
+                    let nav_surface = match self.peek.as_ref() {
+                        Some(p) => !p.focused || (is_delete && self.peek_reply.text().is_empty()),
+                        None if is_delete => list_keys_active,
+                        None => self.list_focused,
+                    };
+                    nav_surface && self.selected.is_some()
+                }
                 KeyCode::Char(_)
                     if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
                 {
@@ -3338,7 +3362,12 @@ impl DashboardState {
             // Never let an auto-repeat (held key) drive the destructive. CtrlCtrl+X arm-then-confirm: holding the
             // key would arm and immediately confirm a delete. Require discrete presses, like the picker's `y`
             // confirm. Non-destructive actions may still repeat.
-            if id == crate::actions::ActionId::DashboardStop && key.kind == KeyEventKind::Repeat {
+            // The same for a held Delete: one press, one row.
+            if matches!(
+                id,
+                crate::actions::ActionId::DashboardStop | crate::actions::ActionId::DashboardDelete
+            ) && key.kind == KeyEventKind::Repeat
+            {
                 return InputOutcome::Unchanged;
             }
             if honor && let Some(outcome) = dashboard_action_for_id(id, &mut self.error_toast) {
@@ -4182,6 +4211,7 @@ fn dashboard_action_for_id(
         ActionId::DashboardTogglePin => Some(InputOutcome::Action(Action::DashboardTogglePin)),
         ActionId::DashboardBeginRename => Some(InputOutcome::Action(Action::DashboardBeginRename)),
         ActionId::DashboardStop => Some(InputOutcome::Action(Action::DashboardStop)),
+        ActionId::DashboardDelete => Some(InputOutcome::Action(Action::DashboardDeleteSelected)),
         ActionId::DashboardCycleMode => Some(InputOutcome::Action(Action::DashboardCycleMode)),
         ActionId::DashboardToggleAutoApprove => {
             Some(InputOutcome::Action(Action::DashboardToggleAutoApprove))

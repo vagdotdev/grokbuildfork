@@ -6554,6 +6554,101 @@ fn dashboard_stop_moves_selection_down_one() {
     assert!(!app.agents.contains_key(first_id));
     assert_eq!(app.dashboard.as_ref().unwrap().selected, Some(second));
 }
+/// Workshop: one Delete press on an idle row deletes it — no arm, no second press — and the
+/// toast that follows names the session (the row's label), then the cursor moves on as a Ctrl+X
+/// delete's would.
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_delete_selected_deletes_an_idle_row_in_one_press_and_names_it() {
+    let mut app = test_app();
+    let _ = dispatch_new_session_inner(&mut app, None);
+    let _ = dispatch_new_session_inner(&mut app, None);
+    for (i, agent) in app.agents.values_mut().enumerate() {
+        agent.display_name = Some(format!("Ghostty install {i}"));
+        agent.session.session_id = Some(acp::SessionId::new(format!("s{i}")));
+    }
+    open_dashboard(&mut app);
+    let order = dashboard_row_order(&app);
+    let [first, second, ..] = order.as_slice() else {
+        panic!("need >=2 rows, got {order:?}");
+    };
+    let first = first.clone();
+    let second = second.clone();
+    if let Some(d) = app.dashboard.as_mut() {
+        d.focus_row(first.clone());
+    }
+    let effects = dispatch_dashboard_delete_selected(&mut app);
+    let crate::views::dashboard::DashboardRowId::TopLevel(first_id) = &first else {
+        panic!("first row should be top-level");
+    };
+    let label = test_agent(&app, *first_id)
+        .display_name
+        .clone()
+        .expect("label");
+    let session_id = test_agent(&app, *first_id)
+        .session
+        .session_id
+        .as_ref()
+        .expect("session id")
+        .to_string();
+    assert!(
+        matches!(
+            effects.last(),
+            Some(crate::app::actions::Effect::DeleteSession { .. })
+        ),
+        "one Delete press must delete, got {effects:?}"
+    );
+    assert!(
+        app.dashboard.as_ref().unwrap().delete_confirm.is_none(),
+        "nothing is left armed"
+    );
+    let _ = dispatch_task_result(
+        crate::app::actions::TaskResult::DeleteSessionComplete {
+            source: "current".into(),
+            session_id,
+            after: crate::app::actions::AfterSessionDelete::Dashboard,
+        },
+        &mut app,
+    );
+    assert!(!app.agents.contains_key(first_id));
+    let d = app.dashboard.as_ref().unwrap();
+    assert_eq!(d.selected, Some(second));
+    assert_eq!(
+        d.error_toast.as_deref(),
+        Some(format!("Deleted \u{201c}{label}\u{201d}").as_str()),
+        "the toast names what went"
+    );
+}
+/// Workshop: Delete leaves a busy row alone — no cancel, no delete, one toast. The stop stays on
+/// Ctrl+X.
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_delete_selected_leaves_a_working_row_alone() {
+    let mut app = test_app();
+    let _ = dispatch_new_session_inner(&mut app, None);
+    let id = *app.agents.keys().next().unwrap();
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.session.session_id = Some(acp::SessionId::new("busy"));
+        agent.session.state = crate::app::agent::AgentState::TurnRunning;
+    }
+    open_dashboard(&mut app);
+    if let Some(d) = app.dashboard.as_mut() {
+        d.focus_row(crate::views::dashboard::DashboardRowId::TopLevel(id));
+    }
+    let effects = dispatch_dashboard_delete_selected(&mut app);
+    assert!(
+        effects.is_empty(),
+        "a working row is neither cancelled nor deleted: {effects:?}"
+    );
+    assert!(app.agents.contains_key(&id));
+    let d = app.dashboard.as_ref().unwrap();
+    assert!(d.delete_confirm.is_none());
+    assert_eq!(
+        d.error_toast.as_deref(),
+        Some("Stop the session before deleting")
+    );
+}
 /// Closing the LAST row has no row below it, so the cursor falls back
 /// to the previous row rather than disappearing.
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]

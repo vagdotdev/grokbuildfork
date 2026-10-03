@@ -534,7 +534,7 @@ pub(crate) fn is_empty_idle_top_level(agent: &AgentView) -> bool {
             RowState::Working | RowState::NeedsInput
         )
 }
-fn top_level_label(agent: &AgentView) -> String {
+pub(crate) fn top_level_label(agent: &AgentView) -> String {
     if let Some(name) = agent.display_name.as_deref() {
         let trimmed = name.trim();
         if !trimmed.is_empty() {

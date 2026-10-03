@@ -14,8 +14,9 @@ use super::dashboard::{
     dispatch_dashboard_attach, dispatch_dashboard_begin_rename, dispatch_dashboard_change_location,
     dispatch_dashboard_close_session_picker, dispatch_dashboard_commit_rename,
     dispatch_dashboard_confirm_worktree, dispatch_dashboard_create_new_agent_with_detail,
-    dispatch_dashboard_delete, dispatch_dashboard_dispatch, dispatch_dashboard_dispatch_slash,
-    dispatch_dashboard_open_location_picker, dispatch_dashboard_open_session_picker,
+    dispatch_dashboard_delete, dispatch_dashboard_delete_selected, dispatch_dashboard_dispatch,
+    dispatch_dashboard_dispatch_slash, dispatch_dashboard_open_location_picker,
+    dispatch_dashboard_open_session_picker,
     dispatch_dashboard_open_shortcuts_help, dispatch_dashboard_overlay_cycle,
     dispatch_dashboard_overlay_exit, dispatch_dashboard_overlay_stop,
     dispatch_dashboard_peek_cycle_mode, dispatch_dashboard_peek_reply,
@@ -1492,6 +1493,7 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
         }
         Action::DashboardStop => dispatch_dashboard_stop(app),
         Action::DashboardDelete => dispatch_dashboard_delete(app),
+        Action::DashboardDeleteSelected => dispatch_dashboard_delete_selected(app),
         Action::DashboardCycleMode => {
             let policy_block = app.yolo_policy_block;
             let auto_mode_gate = app.auto_mode_gate;

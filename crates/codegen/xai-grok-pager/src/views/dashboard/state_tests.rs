@@ -862,10 +862,12 @@ fn state_with_open_peek() -> DashboardState {
 }
 
 /// Regression: with the peek open but the reply UNFOCUSED (Tab → row nav), generic editing chords
-/// must NOT leak into the hidden new-session dispatch draft behind the panel. Backspace / Delete
-/// are consumed. (`Unchanged`) instead of falling through to the hidden dispatch widget.
+/// must NOT leak into the hidden new-session dispatch draft behind the panel. Workshop: on that
+/// navigation surface Backspace / Delete are the row's delete key, so they come back as the
+/// delete action, never as an edit of the hidden dispatch widget.
 #[test]
 fn peek_unfocused_editing_chords_do_not_leak_to_dispatch() {
+    use crate::app::actions::Action;
     let mut state = state_with_open_peek();
     let reg = crate::actions::ActionRegistry::defaults();
     // Hidden new-session draft, caret at END (where Backspace bites;
@@ -882,8 +884,11 @@ fn peek_unfocused_editing_chords_do_not_leak_to_dispatch() {
     ] {
         let outcome = state.handle_key(&key, &reg);
         assert!(
-            matches!(outcome, InputOutcome::Unchanged),
-            "{key:?} must be consumed (Unchanged) with the peek open, got {outcome:?}",
+            matches!(
+                outcome,
+                InputOutcome::Action(Action::DashboardDeleteSelected)
+            ),
+            "{key:?} deletes the highlighted row with the peek open, got {outcome:?}",
         );
     }
     assert_eq!(
@@ -894,6 +899,138 @@ fn peek_unfocused_editing_chords_do_not_leak_to_dispatch() {
     assert!(
         !state.peek.as_ref().unwrap().focused,
         "consumed editing chords must not grab focus",
+    );
+}
+
+/// Workshop: a FOCUSED peek reply keeps Backspace / Delete as its own editing keys; typing a
+/// reply never deletes the peeked session.
+#[test]
+fn peek_focused_reply_keeps_backspace_and_delete_for_editing() {
+    use crate::app::actions::Action;
+    let mut state = state_with_open_peek();
+    let reg = crate::actions::ActionRegistry::defaults();
+    state.peek.as_mut().unwrap().focused = true;
+    for c in ['h', 'i'] {
+        let _ = state.handle_key(&KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), &reg);
+    }
+    assert_eq!(state.peek_reply.text(), "hi");
+    let outcome = state.handle_key(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &reg);
+    assert!(
+        !matches!(
+            outcome,
+            InputOutcome::Action(Action::DashboardDeleteSelected)
+        ),
+        "Backspace edits a focused reply, got {outcome:?}"
+    );
+    assert_eq!(
+        state.peek_reply.text(),
+        "h",
+        "Backspace erased the last letter"
+    );
+    state.peek_reply.set_cursor(0);
+    let outcome = state.handle_key(&KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE), &reg);
+    assert!(
+        !matches!(
+            outcome,
+            InputOutcome::Action(Action::DashboardDeleteSelected)
+        ),
+        "Delete edits a focused reply with text, got {outcome:?}"
+    );
+    assert!(
+        state.peek_reply.text().is_empty(),
+        "Delete erased the letter under the caret"
+    );
+    // An empty focused reply is a navigation surface again: Delete deletes the row.
+    let outcome = state.handle_key(&KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE), &reg);
+    assert!(
+        matches!(
+            outcome,
+            InputOutcome::Action(Action::DashboardDeleteSelected)
+        ),
+        "Delete on an empty focused reply deletes the row, got {outcome:?}"
+    );
+}
+
+/// Workshop: with the overview list focused, Delete and Backspace both delete the highlighted
+/// row at once — one action, no arm, no `y`; a held key (auto-repeat) counts once.
+#[test]
+fn list_focused_delete_and_backspace_delete_the_row_now() {
+    use crate::app::actions::Action;
+    let mut state = make_state_with_selection();
+    state.list_focused = true;
+    let reg = crate::actions::ActionRegistry::defaults();
+    for code in [KeyCode::Delete, KeyCode::Backspace] {
+        let outcome = state.handle_key(&KeyEvent::new(code, KeyModifiers::NONE), &reg);
+        assert!(
+            matches!(
+                outcome,
+                InputOutcome::Action(Action::DashboardDeleteSelected)
+            ),
+            "{code:?} deletes the highlighted row, got {outcome:?}"
+        );
+        assert!(
+            state.armed_delete_row().is_none(),
+            "no arm is left behind: the delete is immediate"
+        );
+    }
+    let mut held = KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE);
+    held.kind = KeyEventKind::Repeat;
+    assert!(
+        matches!(state.handle_key(&held, &reg), InputOutcome::Unchanged),
+        "a held Delete repeats nothing"
+    );
+    // Nothing highlighted (cursor on `+ New Agent`): nothing to delete.
+    state.focus_new_agent_button();
+    let outcome = state.handle_key(&KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE), &reg);
+    assert!(
+        !matches!(
+            outcome,
+            InputOutcome::Action(Action::DashboardDeleteSelected)
+        ),
+        "Delete with no row highlighted does nothing, got {outcome:?}"
+    );
+}
+
+/// Workshop: with the dispatch input focused, Delete follows the arrows — it deletes the
+/// highlighted row while the input is empty, and edits the draft once there is one. Backspace
+/// stays an editing key whenever the input is focused, even empty, so erasing a draft can never
+/// run on into a session.
+#[test]
+fn input_focused_delete_follows_the_arrows_and_backspace_never_deletes() {
+    use crate::app::actions::Action;
+    let mut state = make_state_with_selection();
+    state.list_focused = false;
+    let reg = crate::actions::ActionRegistry::defaults();
+    let outcome = state.handle_key(&KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE), &reg);
+    assert!(
+        matches!(
+            outcome,
+            InputOutcome::Action(Action::DashboardDeleteSelected)
+        ),
+        "Delete on an empty input deletes the highlighted row, got {outcome:?}"
+    );
+    let outcome = state.handle_key(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &reg);
+    assert!(
+        !matches!(
+            outcome,
+            InputOutcome::Action(Action::DashboardDeleteSelected)
+        ),
+        "Backspace on a focused input never deletes a row, got {outcome:?}"
+    );
+    state.dispatch.set_text("draft");
+    state.dispatch.set_cursor(0);
+    let outcome = state.handle_key(&KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE), &reg);
+    assert!(
+        !matches!(
+            outcome,
+            InputOutcome::Action(Action::DashboardDeleteSelected)
+        ),
+        "Delete with a draft typed edits the draft, got {outcome:?}"
+    );
+    assert_eq!(
+        state.dispatch.text(),
+        "raft",
+        "Delete erased the letter under the caret"
     );
 }
 

@@ -13,7 +13,7 @@ use super::cta::{
     handle_plugin_cta_catalog_loaded, handle_plugin_cta_debounce_expired,
     handle_plugin_cta_mcps_loaded,
 };
-use super::ctx::{find_agent_by_session_id, get_active_agent_mut};
+use super::ctx::{find_agent_by_session_id, get_active_agent, get_active_agent_mut};
 use super::notes::{handle_btw_response, handle_memory_note_saved};
 use super::prompt::{
     defer_to_open_reload_window, handle_compact_complete, handle_memory_command_complete,
@@ -127,6 +127,66 @@ pub(super) fn live_session_kind(app: &AppView, session_id: &str) -> LiveSessionK
         LiveSessionKind::ConversationOnly
     } else {
         LiveSessionKind::Missing
+    }
+}
+/// Workshop: the name a person knows a session by, for the delete toast — the loaded agent's
+/// dashboard label, else the roster row's title, else the resume picker's summary. `None` when
+/// the session is nowhere in view (the toast then stays generic).
+fn deleted_session_name(app: &AppView, session_id: &str) -> Option<String> {
+    let has_text = |s: &str| !s.trim().is_empty();
+    let from_agent = app
+        .agents
+        .values()
+        .find(|agent| {
+            agent
+                .session
+                .session_id
+                .as_ref()
+                .is_some_and(|id| id.0.as_ref() == session_id)
+        })
+        .map(crate::views::dashboard::row::top_level_label)
+        .filter(|label| !label.starts_with(crate::views::dashboard::row::NEW_SESSION_LABEL));
+    let from_roster = || {
+        app.leader_roster
+            .iter()
+            .chain(app.dashboard_local_sessions.iter())
+            .find(|e| e.session_id == session_id)
+            .and_then(|e| e.title.clone())
+            .filter(|t| has_text(t))
+    };
+    let from_picker = || {
+        let modal_entries = get_active_agent(app).and_then(|agent| match &agent.active_modal {
+            Some(crate::views::modal::ActiveModal::SessionPicker { entries, .. }) => {
+                entries.as_deref()
+            }
+            _ => None,
+        });
+        modal_entries
+            .into_iter()
+            .chain(app.session_picker_entries.as_deref())
+            .flatten()
+            .find(|e| e.id == session_id)
+            .map(|e| e.summary.clone())
+            .filter(|s| has_text(s))
+    };
+    from_agent
+        .or_else(from_roster)
+        .or_else(from_picker)
+        .map(|name| crate::views::dashboard::row::sanitize(name.trim()))
+}
+/// `Deleted “<name>”` (the name cut to one readable toast), or `Session deleted` without one.
+fn deleted_notice(name: Option<&str>) -> String {
+    match name {
+        Some(name) => {
+            let short: String = name.chars().take(48).collect();
+            let ellipsis = if short.chars().count() < name.chars().count() {
+                "\u{2026}"
+            } else {
+                ""
+            };
+            format!("Deleted \u{201c}{short}{ellipsis}\u{201d}")
+        }
+        None => "Session deleted".to_owned(),
     }
 }
 fn apply_workspace_transition(
@@ -1664,6 +1724,8 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             after,
         } => {
             use crate::app::actions::AfterSessionDelete;
+            // Workshop: the toast names what went, looked up before the lists drop it.
+            let deleted_name = deleted_session_name(app, &session_id);
             remove_session_from_pickers(
                 app,
                 &source,
@@ -1682,16 +1744,16 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             let membership_removal_failed = deleted_build
                 && !crate::app::workspace_sync::request_removal(app, &session_id, removal_cause);
             let delete_notice = if membership_removal_failed {
-                "Session deleted, but dashboard membership could not be removed"
+                "Session deleted, but dashboard membership could not be removed".to_owned()
             } else {
-                "Session deleted"
+                deleted_notice(deleted_name.as_deref())
             };
             if after == AfterSessionDelete::Stay {
                 app.dashboard_local_sessions
                     .retain(|entry| entry.session_id != session_id);
                 app.leader_roster
                     .retain(|entry| entry.session_id != session_id);
-                app.show_toast(delete_notice);
+                app.show_toast(&delete_notice);
                 return vec![];
             }
             if after == AfterSessionDelete::UnusedHusk {
@@ -1763,7 +1825,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             } else if foreground && after == AfterSessionDelete::Welcome {
                 effects.extend(dispatch_exit_session(app));
             }
-            app.show_toast(delete_notice);
+            app.show_toast(&delete_notice);
             effects
         }
         TaskResult::DeleteSessionFailed {
