@@ -678,6 +678,9 @@ pub async fn run(
     let screen_mode_override = screen_mode_relaunch::take_screen_mode_env_override();
     let cancel = CancellationToken::new();
     let startup_start = std::time::Instant::now();
+    // Workshop: the engine (`opencode serve`) is the slowest thing a launch waits for, and
+    // nothing below depends on it — so it starts now, under everything else.
+    let early_engine = crate::app::workshop::start_engine_early();
     let raw_config = xai_grok_shell::config::load_effective_config()
         .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
     let (grok_com_config, proxy_base_url) =
@@ -1175,6 +1178,7 @@ pub async fn run(
         writer_event_rx,
         &mut reader_thread,
         workshop_engine_resume,
+        early_engine,
     )
     .await;
     signal_handler::clear_quit_notify();

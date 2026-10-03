@@ -1106,6 +1106,7 @@ pub(crate) async fn run(
     mut writer_event_rx: tokio::sync::mpsc::UnboundedReceiver<WriterEvent>,
     reader_thread: &mut ReaderThread,
     workshop_engine_resume: Option<crate::app::workshop_sessions::EngineSession>,
+    early_engine: crate::app::workshop::EarlyEngine,
 ) -> anyhow::Result<RunResult> {
     crate::unified_log::init(connection.tx.clone());
     crate::unified_log::info("pager started", None, None);
@@ -1119,6 +1120,17 @@ pub(crate) async fn run(
             terminal.backend_mut().writer_mut().escape_writer(),
         )
     };
+    // Workshop: the engine slot and turn channel were made (and the engine's bring-up possibly
+    // started) by `app::run` before anything else; the loop adopts them.
+    let crate::app::workshop::EarlyEngine {
+        slot: workshop_engine_slot,
+        tx: workshop_turn_tx,
+        rx: mut workshop_turn_rx,
+        started: workshop_engine_started_early,
+    } = early_engine;
+    app.workshop_engine_slot = workshop_engine_slot;
+    app.workshop_turn_tx = Some(workshop_turn_tx);
+    app.workshop_engine_warm_started = workshop_engine_started_early;
     app.pending_startup = Some(pending_startup);
     app.tracing_rx = Some(tracing_handle.rx);
     app.last_known_terminal_rows = crossterm::terminal::size().map(|(_, r)| r).unwrap_or(0);
@@ -1740,14 +1752,12 @@ pub(crate) async fn run(
     let (progress_tx, mut progress_rx) =
         tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
     let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
-    // Workshop: a persistent channel for streaming Engine/Adapter turns. Submit handlers clone the
-    // sender (stored on `app`) into a detached turn task; the `select!` arm below renders its events.
-    // The sender lives as long as the loop, so the receiver never closes and the arm idles cleanly.
-    let (workshop_turn_tx, mut workshop_turn_rx) =
-        tokio::sync::mpsc::unbounded_channel::<crate::app::workshop::WorkshopTurnMsg>();
-    app.workshop_turn_tx = Some(workshop_turn_tx);
-    // Workshop: with an engine model active (a first run, or a home that last used one), the
-    // engine starts now, in the background, so the first message finds it ready.
+    // Workshop: `workshop_turn_rx` is the persistent channel for streaming Engine/Adapter turns
+    // (adopted above). Submit handlers clone the sender (stored on `app`) into a detached turn
+    // task; the `select!` arm below renders its events. The sender lives as long as the loop, so
+    // the receiver never closes and the arm idles cleanly.
+    // With an engine model active (a first run, or a home that last used one) the engine's
+    // bring-up started with `app::run`; this covers a connection that became an engine since.
     maybe_warm_engine_at_launch(&mut app);
     let voice_auth_factory = connection.auth_manager.clone();
     let mut tick_interval = tick_interval;

@@ -13,9 +13,11 @@
 //! Anything that does not match is `Unknown`, which the picker treats as Sign in (fail closed).
 //! This module never reads vendor credential files, keychains, or databases.
 
+use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::Path;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -154,8 +156,50 @@ pub fn interpret_status(vendor: Vendor, out: &ChildOutput) -> LoginState {
     }
 }
 
-/// Run the official status command for a verified binary.
+/// The picker's value for [`DetectConfig::reuse_status_for`]: it builds two snapshots back to
+/// back when it opens (the cached rows, then the live refresh), and each would otherwise start
+/// the vendor's CLI again for the same "are you signed in?" answer.
+pub const STATUS_FRESH_FOR: Duration = Duration::from_secs(10);
+
+type RecentStatus = HashMap<(Vendor, PathBuf), (Instant, LoginState)>;
+
+fn recent_status() -> &'static Mutex<RecentStatus> {
+    static RECENT: OnceLock<Mutex<RecentStatus>> = OnceLock::new();
+    RECENT.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Forget every recent status answer: the next [`login_state`] asks the CLI. Called after a
+/// sign-in Workshop itself ran, so the picker's re-probe sees the result.
+pub fn forget_recent_login_states() {
+    if let Ok(mut recent) = recent_status().lock() {
+        recent.clear();
+    }
+}
+
+/// Run the official status command for a verified binary. With
+/// [`DetectConfig::reuse_status_for`] set, a definite answer given within that long for the same
+/// binary (in this process) is reused; `Unknown` is never reused.
 pub fn login_state(vendor: Vendor, bin: &Path, cfg: &DetectConfig) -> LoginState {
+    let Some(fresh_for) = cfg.reuse_status_for else {
+        return login_state_by_running(vendor, bin, cfg);
+    };
+    let key = (vendor, bin.to_path_buf());
+    if let Ok(recent) = recent_status().lock()
+        && let Some((at, state)) = recent.get(&key)
+        && at.elapsed() < fresh_for
+    {
+        return state.clone();
+    }
+    let state = login_state_by_running(vendor, bin, cfg);
+    if !matches!(state, LoginState::Unknown { .. })
+        && let Ok(mut recent) = recent_status().lock()
+    {
+        recent.insert(key, (Instant::now(), state.clone()));
+    }
+    state
+}
+
+fn login_state_by_running(vendor: Vendor, bin: &Path, cfg: &DetectConfig) -> LoginState {
     let env: Vec<(OsString, OsString)> = match crate::env::minimal_env(&cfg.extra_env) {
         Ok(env) => env,
         Err(e) => return LoginState::unknown(e.to_string()),
@@ -307,5 +351,60 @@ mod tests {
         assert_eq!(login_argv(Vendor::Codex), &["login"]);
         assert_eq!(login_argv(Vendor::Cursor), &["login"]);
         assert_eq!(login_argv(Vendor::OpenCode), &["auth", "login"]);
+    }
+
+    /// A fake `codex` that counts its runs and answers "signed in" (exit 0).
+    #[cfg(unix)]
+    fn counting_codex(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = dir.join("codex");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\necho run >> '{}'\nexit 0\n",
+                dir.join("calls").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        bin
+    }
+
+    #[cfg(unix)]
+    fn runs(dir: &Path) -> usize {
+        std::fs::read_to_string(dir.join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_recent_answer_is_reused_only_when_asked_and_until_forgotten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = counting_codex(tmp.path());
+        let mut cfg = DetectConfig::hermetic(tmp.path().as_os_str(), tmp.path());
+        cfg.timeout = Duration::from_secs(10);
+
+        // Default: every call asks the CLI.
+        assert_eq!(login_state(Vendor::Codex, &bin, &cfg), LoginState::LoggedIn);
+        assert_eq!(login_state(Vendor::Codex, &bin, &cfg), LoginState::LoggedIn);
+        assert_eq!(runs(tmp.path()), 2);
+
+        // Opted in: the second call within the window reuses the first answer.
+        cfg.reuse_status_for = Some(Duration::from_secs(60));
+        assert_eq!(login_state(Vendor::Codex, &bin, &cfg), LoginState::LoggedIn);
+        assert_eq!(login_state(Vendor::Codex, &bin, &cfg), LoginState::LoggedIn);
+        assert_eq!(runs(tmp.path()), 3);
+
+        // After a sign-in Workshop ran, the next call asks again.
+        forget_recent_login_states();
+        assert_eq!(login_state(Vendor::Codex, &bin, &cfg), LoginState::LoggedIn);
+        assert_eq!(runs(tmp.path()), 4);
+
+        // An expired answer is asked again too.
+        cfg.reuse_status_for = Some(Duration::ZERO);
+        assert_eq!(login_state(Vendor::Codex, &bin, &cfg), LoginState::LoggedIn);
+        assert_eq!(runs(tmp.path()), 5);
     }
 }

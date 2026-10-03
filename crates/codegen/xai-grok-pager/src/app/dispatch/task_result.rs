@@ -1098,6 +1098,9 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::WorkshopLoginTerminalDone { rail, exit } => {
             use workshop_detect::process::InteractiveExit;
+            // The sign-in just ran may have changed the answer the status command gives; the
+            // re-probe below must ask the CLI, not reuse the answer from before the sign-in.
+            workshop_detect::status::forget_recent_login_states();
             if let Some(picker) = app.connection_picker.as_mut() {
                 if exit == InteractiveExit::Interrupted {
                     // A sign-in chained onto the one-keypress install: the row still reads

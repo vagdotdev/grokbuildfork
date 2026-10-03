@@ -1,8 +1,9 @@
 //! gate:no-theft (source level) for detection and the model-list probes. Login state and model
 //! lists come from spawning the vendor CLI; this crate never names another app's credential
-//! store or keychain, and the only file it reads or writes is Workshop's own model cache
-//! (`src/models/cache.rs`). The runtime half is `scripts/no-theft-fs-audit.sh`, which runs these
-//! probes under strace against decoy credential files.
+//! store or keychain, and the only files it reads or writes are Workshop's own caches under
+//! `$WORKSHOP_HOME/catalog-cache/` (`src/models/cache.rs`, `src/identity_cache.rs`). The runtime
+//! half is `scripts/no-theft-fs-audit.sh`, which runs these probes under strace against decoy
+//! credential files.
 
 use std::path::{Path, PathBuf};
 
@@ -29,8 +30,9 @@ const FILE_IO: &[&str] = &[
     "tokio::fs",
 ];
 
-/// The one module allowed to touch files: `$WORKSHOP_HOME/catalog-cache/<rail>-models.json`.
-const CACHE_MODULE: &str = "src/models/cache.rs";
+/// The modules allowed to touch files, both under `$WORKSHOP_HOME/catalog-cache/`: the rails'
+/// model lists (`<rail>-models.json`) and the verified CLI identities (`cli-identity.json`).
+const CACHE_MODULES: &[&str] = &["src/models/cache.rs", "src/identity_cache.rs"];
 
 fn code(line: &str) -> &str {
     if line.trim_start().starts_with("//") {
@@ -78,12 +80,13 @@ fn detection_and_model_probes_never_touch_foreign_credentials() {
                     violations.push(format!("{rel}:{}: `{needle}` in `{}`", n + 1, line.trim()));
                 }
             }
-            if rel != CACHE_MODULE {
+            if !CACHE_MODULES.contains(&rel.as_str()) {
                 for needle in FILE_IO {
                     if line.contains(needle) {
                         violations.push(format!(
-                            "{rel}:{}: file access outside {CACHE_MODULE}: `{}`",
+                            "{rel}:{}: file access outside {}: `{}`",
                             n + 1,
+                            CACHE_MODULES.join(", "),
                             line.trim()
                         ));
                     }

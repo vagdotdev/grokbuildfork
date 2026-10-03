@@ -130,7 +130,30 @@ fn run_probe(
 }
 
 /// Run `path --version` (and `--help` where needed) and confirm the binary is `vendor`.
+///
+/// With [`DetectConfig::identity_cache`] set, a binary that passed here before and is unchanged
+/// (same path, size and modification time) is answered from the cache without starting it; a
+/// verified identity is stored for the next time.
 pub fn identify(
+    vendor: Vendor,
+    path: &Path,
+    cfg: &DetectConfig,
+) -> Result<Identity, IdentifyError> {
+    let cache = cfg
+        .identity_cache
+        .as_ref()
+        .map(|p| crate::identity_cache::IdentityCache::new(p.clone()));
+    if let Some(hit) = cache.as_ref().and_then(|c| c.lookup(vendor, path)) {
+        return Ok(hit);
+    }
+    let id = identify_by_running(vendor, path, cfg)?;
+    if let Some(cache) = &cache {
+        cache.store(&id);
+    }
+    Ok(id)
+}
+
+fn identify_by_running(
     vendor: Vendor,
     path: &Path,
     cfg: &DetectConfig,

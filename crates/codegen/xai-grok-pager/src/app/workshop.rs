@@ -280,6 +280,24 @@ fn catalog_cache_dir() -> PathBuf {
     workshop_providers::catalog::fetch::default_cache_dir(&workshop_home())
 }
 
+/// Where the verified CLI identities are remembered between launches (`workshop-detect`'s
+/// [`workshop_detect::IdentityCache`]).
+fn identity_cache_path() -> PathBuf {
+    catalog_cache_dir().join("cli-identity.json")
+}
+
+/// The detection settings every Workshop probe uses: a verified binary is not re-run through
+/// `--version` / `--help` while unchanged, and one "signed in?" answer serves the picker's
+/// back-to-back snapshots. Each vendor CLI is a Node or Bun start, so on a launch this is the
+/// difference between the engine starting at once and after two spare `opencode` runs.
+pub fn detect_config() -> DetectConfig {
+    DetectConfig {
+        identity_cache: Some(identity_cache_path()),
+        reuse_status_for: Some(workshop_detect::status::STATUS_FRESH_FOR),
+        ..DetectConfig::default()
+    }
+}
+
 fn engine_cache_path() -> PathBuf {
     catalog_cache_dir().join("opencode-engine.json")
 }
@@ -441,12 +459,7 @@ async fn build_picker_snapshot(
     let local = workshop_providers::probe_all_local_servers(Duration::from_millis(600)).await;
     let rails: Vec<workshop_detect::RailState> = tokio::task::spawn_blocking(move || {
         let cache = workshop_detect::ModelsCache::new(catalog_cache_dir());
-        workshop_detect::picker_rails(
-            &workshop_detect::DetectConfig::default(),
-            &cache,
-            rail_models,
-        )
-        .to_vec()
+        workshop_detect::picker_rails(&detect_config(), &cache, rail_models).to_vec()
     })
     .await
     .unwrap_or_else(|_| {
@@ -1539,7 +1552,7 @@ async fn start_engine(
         })),
         ..InstallOptions::default()
     };
-    let detect_opts = DetectConfig::default();
+    let detect_opts = detect_config();
     let run_installer = |st: &mut EngineState, log: &Path| {
         st.last_phase = Some("install".into());
         st.save(&home);
@@ -1663,6 +1676,10 @@ async fn start_engine(
             Ok(engine)
         }
         Err(e) => {
+            // A binary that was taken on trust from the identity cache may be the cause (a
+            // quarantine flag, a broken install): the next launch runs the real `--version`
+            // check again, which is what the repair path above keys on.
+            workshop_detect::IdentityCache::new(identity_cache_path()).forget(&cli.path);
             state::append_log(&log, &format!("start failed: {e}"));
             Err(engine_fail(&mut st, &home, format!("did not start: {e}")))
         }
@@ -1735,6 +1752,38 @@ async fn acquire_engine(
             }
             Err(line)
         }
+    }
+}
+
+/// The engine slot and the turn channel, created before the terminal and the shell's own agent
+/// are set up so the engine's bring-up can start that early (see [`start_engine_early`]).
+pub struct EarlyEngine {
+    pub slot: EngineSlot,
+    pub tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
+    pub rx: mpsc::UnboundedReceiver<WorkshopTurnMsg>,
+    /// Whether [`warm_engine`] was spawned (the home's active connection is an engine model).
+    pub started: bool,
+}
+
+/// Start the engine's bring-up as the first thing a launch does, when the active connection is
+/// an engine model: `opencode serve` takes about a second to listen on any machine, and the
+/// terminal, the config, the shell's agent and the first frame are all work it can run under.
+/// Starting it with the composer instead (the previous order) put the whole TUI startup in front
+/// of it. The channel outlives this call: whatever the warm-up sends before the event loop reads
+/// (the warm engine, the resolved default model, a permission ask) waits in it.
+pub fn start_engine_early() -> EarlyEngine {
+    let slot = new_engine_slot();
+    let (tx, rx) = mpsc::unbounded_channel();
+    let started = load_active_connection().is_engine();
+    if started {
+        let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        tokio::spawn(warm_engine(slot.clone(), workspace, tx.clone()));
+    }
+    EarlyEngine {
+        slot,
+        tx,
+        rx,
+        started,
     }
 }
 
@@ -2305,7 +2354,7 @@ async fn detect_adapter_cli(adapter: &dyn workshop_adapters::Adapter) -> Detecti
     {
         return Detection::Installed(verified.cli);
     }
-    let detection = detect(adapter, &DetectConfig::default()).await;
+    let detection = detect(adapter, &detect_config()).await;
     if let Detection::Installed(cli) = &detection
         && let Ok(mut cache) = ADAPTER_CLI_CACHE.lock()
     {
@@ -2971,7 +3020,7 @@ pub fn run_rail_installer(
 /// The official CLI login command for a rail, to run attached to the user's terminal.
 pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
     let vendor = rail.vendor();
-    let cfg = workshop_detect::DetectConfig::default();
+    let cfg = detect_config();
     let probe = workshop_detect::probe_vendor(vendor, &cfg);
     let bin = probe
         .binary
