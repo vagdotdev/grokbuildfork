@@ -1839,7 +1839,7 @@ impl AppView {
         let restricted = self.team_name.is_none()
             && self.consumer_account()
             && is_restricted_tier(self.subscription_tier.as_deref());
-        let names: Vec<String> = if restricted {
+        let mut names: Vec<String> = if restricted {
             TIER_RESTRICTED_COMMANDS
                 .iter()
                 .map(|n| (*n).to_string())
@@ -1849,18 +1849,17 @@ impl AppView {
         };
         // Workshop: `/privacy` opens an xAI-account setting (coding data retention and training);
         // it is offered only once such an account is signed in through the optional xAI card,
-        // never to the free models, API keys or subscription CLIs. Denied alongside the tier
-        // list on every surface; `tier_restricted_commands` stays the tier list alone.
-        let mut denied = names.clone();
+        // never to the free models, API keys or subscription CLIs. It rides the same deny list
+        // so every later agent and dashboard surface inherits it.
         if !self.xai_account_signed_in() {
-            denied.push("privacy".to_owned());
+            names.push("privacy".to_owned());
         }
         for agent in self.agents.values_mut() {
-            agent.set_restricted_commands(&denied);
+            agent.set_restricted_commands(&names);
         }
-        self.welcome_prompt.set_restricted_commands(&denied);
+        self.welcome_prompt.set_restricted_commands(&names);
         if let Some(dashboard) = self.dashboard.as_mut() {
-            dashboard.set_restricted_commands(&denied);
+            dashboard.set_restricted_commands(&names);
         }
         self.tier_restricted_commands = names;
     }

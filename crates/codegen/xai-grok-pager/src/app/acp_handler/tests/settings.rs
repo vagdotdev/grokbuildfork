@@ -56,7 +56,8 @@
         assert!(handle_ext_notification(&notif, &mut app));
         assert!(app.is_api_key_auth);
         assert!(app.voice_mode_enabled);
-        assert!(app.tier_restricted_commands.is_empty());
+        // Workshop: an API key is not an xAI account, so `/privacy` alone stays denied.
+        assert_eq!(app.tier_restricted_commands, vec!["privacy".to_owned()]);
     }
 
     #[test]
@@ -68,7 +69,8 @@
         ));
         assert!(app.is_api_key_auth);
         assert!(!app.usage_visible);
-        assert!(app.tier_restricted_commands.is_empty());
+        // Workshop: an API key is not an xAI account, so `/privacy` alone stays denied.
+        assert_eq!(app.tier_restricted_commands, vec!["privacy".to_owned()]);
         assert!(app.voice_mode_enabled);
 
         // Later personal Free stamp must not keep API-key bypass or force-on voice.
@@ -94,6 +96,7 @@
         ));
         assert!(!app.is_api_key_auth);
         assert!(app.voice_mode_enabled);
+        // SuperGrok is an xAI account: nothing denied, `/privacy` included.
         assert!(app.tier_restricted_commands.is_empty());
     }
 

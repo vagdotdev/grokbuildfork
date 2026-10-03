@@ -2173,7 +2173,8 @@ fn external_auth_provider_keeps_billing_off_after_auth_meta() {
     app.usage_visible = false;
     app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
     assert!(!app.usage_visible);
-    assert!(app.tier_restricted_commands.is_empty());
+    // Workshop: external auth is not an xAI account, so `/privacy` alone is denied.
+    assert_eq!(app.tier_restricted_commands, vec!["privacy".to_owned()]);
     assert!(
         !app.welcome_prompt
             .slash_controller
@@ -2229,7 +2230,8 @@ fn apply_auth_meta_api_key_enables_voice_and_skips_tier_gate() {
     });
     assert!(app.is_api_key_auth);
     assert!(!app.usage_visible);
-    assert!(app.tier_restricted_commands.is_empty());
+    // Workshop: an API key is not an xAI account, so only `/privacy` is denied.
+    assert_eq!(app.tier_restricted_commands, vec!["privacy".to_owned()]);
     assert_tier_restricted_commands_present(&app);
     assert!(!app.is_voice_tier_restricted());
     assert!(app.voice_mode_enabled);
@@ -2240,7 +2242,7 @@ fn apply_auth_meta_api_key_enables_voice_and_skips_tier_gate() {
     });
     assert!(app.is_api_key_auth);
     assert!(app.voice_mode_enabled);
-    assert!(app.tier_restricted_commands.is_empty());
+    assert_eq!(app.tier_restricted_commands, vec!["privacy".to_owned()]);
     app.apply_auth_meta(&xai_grok_login::AuthMeta {
         auth_mode: Some("Oidc".into()),
         subscription_tier: Some("Free".into()),
@@ -2296,10 +2298,10 @@ fn apply_auth_meta_restricts_usage_for_free_tier() {
     let mut app = test_app();
     advertise_media_tools(&mut app);
     app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
-    assert_eq!(
-        app.tier_restricted_commands,
-        expected_tier_restricted_commands()
-    );
+    // Workshop: no tier and no team is no xAI account, so `/privacy` is denied too.
+    let mut expected = expected_tier_restricted_commands();
+    expected.push("privacy".to_owned());
+    assert_eq!(app.tier_restricted_commands, expected);
     assert_tier_restricted_commands_absent(&app);
     assert!(app.usage_visible);
 }
@@ -2380,8 +2382,8 @@ fn privacy_is_hidden_until_an_xai_account_is_signed_in() {
     app.apply_tier_restrictions();
     assert!(denied(&app), "a fresh home has no xAI account");
     assert!(
-        !app.tier_restricted_commands.contains(&"privacy".to_owned()),
-        "the tier list stays what upstream computes; /privacy is denied beside it"
+        app.tier_restricted_commands.contains(&"privacy".to_owned()),
+        "the deny list later agents inherit carries /privacy"
     );
 
     let mut app = test_app();
