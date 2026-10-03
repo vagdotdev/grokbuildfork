@@ -684,7 +684,7 @@ index 3a5ec1be..3ef86a2f 100644
  - **`Ctrl+G`** — toggle the **tasks pane**: everything running in the
    background, with its status.
 diff --git a/crates/codegen/xai-grok-pager/docs/tutorial/05-slash-commands.md b/crates/codegen/xai-grok-pager/docs/tutorial/05-slash-commands.md
-index 998c8ef0..3924c982 100644
+index 998c8ef0..0a591eeb 100644
 --- a/crates/codegen/xai-grok-pager/docs/tutorial/05-slash-commands.md
 +++ b/crates/codegen/xai-grok-pager/docs/tutorial/05-slash-commands.md
 @@ -6,19 +6,20 @@ A few worth knowing on day one:
@@ -702,7 +702,7 @@ index 998c8ef0..3924c982 100644
  | `/rewind` (alias `/undo`) | Rewind the conversation to an earlier turn |
  | `/docs` | Full How-to Guides, in the TUI or on the web |
 -| `/feedback` | Send feedback to the team |
-+| `/feedback` | Save a note and draft a GitHub issue from it |
++| `/feedback` | Save a note about what happened (kept under `~/.workshop`) |
  
  Two of those deserve a second look:
  
@@ -826,7 +826,7 @@ index 140ecbbd..977580e5 100644
  Start a prompt with `#` (or use `/remember`) to save a note for future
  sessions: `# the staging deploy uses eu-west`.
 diff --git a/crates/codegen/xai-grok-pager/docs/tutorial/09-where-next.md b/crates/codegen/xai-grok-pager/docs/tutorial/09-where-next.md
-index 8ffcc224..613c4739 100644
+index 8ffcc224..6c52e20b 100644
 --- a/crates/codegen/xai-grok-pager/docs/tutorial/09-where-next.md
 +++ b/crates/codegen/xai-grok-pager/docs/tutorial/09-where-next.md
 @@ -8,20 +8,20 @@ You know enough to be productive. When you want more:
@@ -851,8 +851,8 @@ index 8ffcc224..613c4739 100644
 -- Something feel off? `/feedback <text>` goes straight to the team, and bare
 -  `/feedback` opens a form with your saved drafts.
 +- Stay current with `workshop update`; see what changed with `/release-notes`.
-+- Something feel off? `/feedback` saves your note under `~/.workshop` and
-+  drafts a GitHub issue you can open with one key.
++- Something feel off? `/feedback` saves your note under `~/.workshop`; nothing
++  is sent anywhere.
  
  ## Reopen this tutorial
  
@@ -7871,10 +7871,10 @@ index 99024eb8..490cc1c4 100644
      perm: xai_acp_lib::AcpArgs<acp::RequestPermissionRequest>,
      agent: &mut AgentView,
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
-index 42279599..e023ec86 100644
+index 42279599..41e342be 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
-@@ -24,7 +24,28 @@ fn next_rewrite_nonce() -> u64 {
+@@ -24,7 +24,21 @@ fn next_rewrite_nonce() -> u64 {
  
  /// One copy of the send-time thank-you, shared by the immediate and modal commit paths.
  pub(crate) const FEEDBACK_THANKS_NOTICE: &str =
@@ -7882,12 +7882,8 @@ index 42279599..e023ec86 100644
 +    "Thanks for the feedback!";
 +
 +/// Workshop: the truthful commit notice. Nothing is posted anywhere: the note is appended to the
-+/// session's `feedback.jsonl` under the Workshop home, and the maintainer reads GitHub issues —
-+/// so the line says where the note went and carries a prefilled issue link.
-+pub(crate) fn workshop_feedback_notice(
-+    session_id: &agent_client_protocol::SessionId,
-+    text: &str,
-+) -> String {
++/// session's `feedback.jsonl` under the Workshop home, and the line says exactly that.
++pub(crate) fn workshop_feedback_notice(session_id: &agent_client_protocol::SessionId) -> String {
 +    let saved = xai_grok_shell::session::persistence::find_session_dir_by_id(session_id.0.as_ref())
 +        .map(|dir| dir.join("feedback.jsonl").display().to_string())
 +        .unwrap_or_else(|| {
@@ -7896,29 +7892,26 @@ index 42279599..e023ec86 100644
 +                crate::app::workshop::workshop_home().display()
 +            )
 +        });
-+    format!(
-+        "Thanks — saved to {saved} (nothing is sent anywhere). To reach the maintainer, open this prefilled issue: {}",
-+        workshop_brand::feedback_issue_url(text, xai_grok_version::full_version())
-+    )
++    format!("Thanks \u{2014} saved to {saved} (nothing is sent anywhere).")
 +}
  
  /// Minimal mode cannot show a toast, so the notice goes to the transcript instead.
  fn feedback_notice(app: &mut AppView, message: &str) {
-@@ -289,7 +310,7 @@ pub(super) fn dispatch_submit_feedback_modal(
+@@ -289,7 +303,7 @@ pub(super) fn dispatch_submit_feedback_modal(
      if draft_id.is_none() {
          agent
              .scrollback
 -            .push_block(RenderBlock::system(FEEDBACK_THANKS_NOTICE.to_string()));
-+            .push_block(RenderBlock::system(workshop_feedback_notice(&session_id, &text)));
++            .push_block(RenderBlock::system(workshop_feedback_notice(&session_id)));
      }
      let mut effects = vec![feedback_send_effect(
          id,
-@@ -418,7 +439,7 @@ pub(crate) fn commit_feedback(
+@@ -418,7 +432,7 @@ pub(crate) fn commit_feedback(
  
      agent
          .scrollback
 -        .push_block(RenderBlock::system(FEEDBACK_THANKS_NOTICE.to_string()));
-+        .push_block(RenderBlock::system(workshop_feedback_notice(&session_id, &trimmed)));
++        .push_block(RenderBlock::system(workshop_feedback_notice(&session_id)));
  
      Some(feedback_send_effect(
          id,
@@ -9227,7 +9220,7 @@ index 52274f21..7099b8fe 100644
      pub output: Option<PathBuf>,
      /// Emit machine-readable JSON output
 diff --git a/crates/codegen/xai-grok-pager/src/views/feedback_modal/render.rs b/crates/codegen/xai-grok-pager/src/views/feedback_modal/render.rs
-index ccc3b573..0db2158a 100644
+index ccc3b573..cbce3618 100644
 --- a/crates/codegen/xai-grok-pager/src/views/feedback_modal/render.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/feedback_modal/render.rs
 @@ -373,7 +373,7 @@ impl FeedbackModalState {
@@ -9235,7 +9228,7 @@ index ccc3b573..0db2158a 100644
              show_prefix: false,
              placeholder_when_focused: true,
 -            placeholder_override: Some("Tell us what happened"),
-+            placeholder_override: Some("What happened? Saved under ~/.workshop; drafts a GitHub issue"),
++            placeholder_override: Some("What happened? Saved under ~/.workshop, nothing is sent anywhere"),
              // Chips only: the fullscreen preview overlay would paint over the modal.
              image_preview: false,
              ..PromptStyle::overlay()
@@ -9284,7 +9277,7 @@ index ef7c763c..3ccb81f8 100644
          }
      }
 diff --git a/crates/codegen/xai-grok-pager/src/views/modal.rs b/crates/codegen/xai-grok-pager/src/views/modal.rs
-index 8217e5b1..4586e691 100644
+index 8217e5b1..6bbc948d 100644
 --- a/crates/codegen/xai-grok-pager/src/views/modal.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/modal.rs
 @@ -378,17 +378,59 @@ pub(crate) fn default_palette_entries(
@@ -9366,7 +9359,7 @@ index 8217e5b1..4586e691 100644
          },
          PaletteEntry {
 -            label: "Send Feedback".into(),
-+            label: "Feedback (saved locally, drafts a GitHub issue)".into(),
++            label: "Feedback (saved locally)".into(),
              shortcut: "/feedback".into(),
              command: PaletteCommand::OpenFeedbackModal,
          },

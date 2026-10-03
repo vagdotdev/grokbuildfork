@@ -252,6 +252,7 @@ fn test_app() -> AppView {
         welcome_menu_rects: Vec::new(),
         welcome_show_changelog_action: false,
         welcome_show_resume_action: true,
+        welcome_show_worktree_action: true,
         welcome_has_resumable_sessions: std::cell::OnceCell::new(),
         welcome_import_banner_rect: None,
         last_mouse_pos: None,

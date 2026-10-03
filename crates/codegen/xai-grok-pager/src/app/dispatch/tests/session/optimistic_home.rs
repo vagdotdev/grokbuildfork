@@ -133,8 +133,10 @@ fn maybe_create_home_session_skips_when_zdr_blocked() {
     assert!(app.agents.is_empty());
 }
 
+/// Workshop: a keystroke types into the home composer and the welcome card stays; Enter sends
+/// the message, which reveals the optimistic session (no second create) with the text on its way.
 #[test]
-fn welcome_keystroke_reveals_home_session_and_types() {
+fn welcome_keystroke_types_into_the_home_composer_and_enter_reveals_the_session() {
     for focused in [true, false] {
         let mut app = test_app();
         maybe_create_home_session(&mut app);
@@ -142,32 +144,49 @@ fn welcome_keystroke_reveals_home_session_and_types() {
         app.welcome_prompt_focused = focused;
         app.welcome_menu_index = (!focused).then_some(0);
 
-        let effects = leave_home_with(&mut app, &key_event(KeyCode::Char('h'), KeyModifiers::NONE));
+        let outcome = app.handle_input(&key_event(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert!(
+            matches!(outcome, InputOutcome::Changed),
+            "a keystroke stays on the welcome card, got {outcome:?}"
+        );
+        assert!(matches!(app.active_view, ActiveView::Welcome));
+        assert_eq!(app.home_session_agent, Some(home));
+        assert_eq!(app.welcome_prompt.text(), "h");
+        assert!(app.welcome_prompt_focused);
+        assert!(app.welcome_menu_index.is_none());
+
+        let outcome = app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE));
+        let InputOutcome::Action(Action::SendPrompt(text)) = outcome else {
+            panic!("Enter sends the typed message, got {outcome:?}");
+        };
+        assert_eq!(text, "h");
+        let effects = dispatch(Action::SendPrompt(text), &mut app);
         assert!(
             !creates_session(&effects),
-            "keystroke must reuse the optimistic session, got {effects:?}"
+            "the send must reuse the optimistic session, got {effects:?}"
         );
         assert!(matches!(app.active_view, ActiveView::Agent(id) if id == home));
         assert!(app.home_session_agent.is_none());
         assert_eq!(app.agents.len(), 1);
-        assert_eq!(app.agents.get(&home).map(|a| a.prompt.text()), Some("h"));
-        assert!(app.welcome_menu_index.is_none());
+        assert!(
+            app.welcome_prompt.text().is_empty(),
+            "the home draft moved onto the revealed session"
+        );
     }
 }
 
+/// Workshop: pasted text lands in the home composer; the card stays.
 #[test]
-fn welcome_paste_reveals_home_session() {
+fn welcome_paste_lands_in_the_home_composer() {
     let mut app = test_app();
     maybe_create_home_session(&mut app);
     let home = app.home_session_agent.expect("home session");
 
-    let effects = leave_home_with(&mut app, &Event::Paste("fix the bug".into()));
-    assert!(!creates_session(&effects));
-    assert!(matches!(app.active_view, ActiveView::Agent(id) if id == home));
-    assert_eq!(
-        app.agents.get(&home).map(|a| a.prompt.text()),
-        Some("fix the bug")
-    );
+    let outcome = app.handle_input(&Event::Paste("fix the bug".into()));
+    assert!(matches!(outcome, InputOutcome::Changed), "got {outcome:?}");
+    assert!(matches!(app.active_view, ActiveView::Welcome));
+    assert_eq!(app.home_session_agent, Some(home));
+    assert_eq!(app.welcome_prompt.text(), "fix the bug");
 }
 
 #[test]
@@ -683,12 +702,13 @@ fn leave_home_into_local_workspace_ack_keeps_the_keystroke_as_a_draft() {
     app.welcome_workspace_mode = crate::views::welcome::WelcomeWorkspaceMode::LocalWorkspace;
     assert!(maybe_create_home_session(&mut app).is_empty());
 
-    let effects = leave_home_with(&mut app, &key_event(KeyCode::Char('y'), KeyModifiers::NONE));
+    // Workshop: typing no longer leaves home, so the `/` of a command is the keystroke that does.
+    let effects = leave_home_with(&mut app, &key_event(KeyCode::Char('/'), KeyModifiers::NONE));
     assert!(matches!(app.active_view, ActiveView::Welcome));
     assert!(app.welcome_local_workspace_ack_pending);
     assert!(!creates_session(&effects), "got {effects:?}");
     assert!(app.agents.is_empty());
-    assert_eq!(app.welcome_prompt.text(), "y");
+    assert_eq!(app.welcome_prompt.text(), "/");
 }
 
 #[test]
@@ -946,21 +966,24 @@ fn home_session_create_failure_clears_placeholder_keeps_draft_and_warns() {
             .collect::<Vec<_>>(),
     );
 
-    let effects = leave_home_with(&mut app, &key_event(KeyCode::Char('!'), KeyModifiers::NONE));
-    assert!(
-        creates_session(&effects),
-        "after a failed create, the next keystroke must retry, got {effects:?}"
-    );
-    let ActiveView::Agent(id) = app.active_view else {
-        panic!("retry must leave home, got {:?}", app.active_view);
-    };
-    let Some(agent) = app.agents.get(&id) else {
-        panic!("expected agent {id:?}");
-    };
-    let text = agent.prompt.text();
+    // Workshop: the next keystroke keeps typing on the card; the send retries the create.
+    let outcome = app.handle_input(&key_event(KeyCode::Char('!'), KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Changed), "got {outcome:?}");
+    assert!(matches!(app.active_view, ActiveView::Welcome));
+    let text = app.welcome_prompt.text().to_owned();
     assert!(
         text.contains("keep me") && text.contains('!'),
         "got {text:?}"
+    );
+    let effects = dispatch(Action::SendPrompt(text), &mut app);
+    assert!(
+        creates_session(&effects),
+        "after a failed create, the send must retry, got {effects:?}"
+    );
+    assert!(
+        matches!(app.active_view, ActiveView::Agent(_)),
+        "the send leaves home, got {:?}",
+        app.active_view
     );
 }
 
@@ -1275,8 +1298,8 @@ fn send_from_welcome_honors_always_worktree() {
     assert!(matches!(app.active_view, ActiveView::Agent(_)));
 }
 
-/// Vim input mode parks an empty prompt on Scrollback; the worktree path must
-/// still land the forwarded first keystroke in the composer.
+/// Vim input mode parks an empty prompt on Scrollback; the worktree path must still isolate
+/// the session the first send creates. Workshop: the keystroke itself stays on the card.
 #[test]
 fn keystroke_from_welcome_honors_always_worktree_under_vim() {
     crate::appearance::cache::set_simple_mode(false);
@@ -1284,18 +1307,23 @@ fn keystroke_from_welcome_honors_always_worktree_under_vim() {
     app.new_session_worktree_mode = crate::app::app_view::WorktreeMode::Always;
     assert!(maybe_create_home_session(&mut app).is_empty());
 
-    let effects = leave_home_with(&mut app, &key_event(KeyCode::Char('h'), KeyModifiers::NONE));
+    let outcome = app.handle_input(&key_event(KeyCode::Char('h'), KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Changed), "got {outcome:?}");
+    assert!(matches!(app.active_view, ActiveView::Welcome));
+    assert_eq!(app.welcome_prompt.text(), "h");
+    let effects = dispatch(Action::SendPrompt("h".into()), &mut app);
     crate::appearance::cache::set_simple_mode(true);
     assert!(
         effects
             .iter()
             .any(|e| matches!(e, Effect::CreateWorktreeSession { .. })),
-        "first keystroke from home must isolate when Always, got {effects:?}"
+        "the first send from home must isolate when Always, got {effects:?}"
     );
-    let ActiveView::Agent(id) = app.active_view else {
-        panic!("keystroke must leave home, got {:?}", app.active_view);
-    };
-    assert_eq!(app.agents.get(&id).map(|a| a.prompt.text()), Some("h"));
+    assert!(
+        matches!(app.active_view, ActiveView::Agent(_)),
+        "the send must leave home, got {:?}",
+        app.active_view
+    );
 }
 
 #[test]
@@ -1304,7 +1332,11 @@ fn keystroke_from_welcome_in_chat_mode_creates_chat_session() {
     app.chat_mode = true;
     assert!(maybe_create_home_session(&mut app).is_empty());
 
-    let effects = leave_home_with(&mut app, &key_event(KeyCode::Char('h'), KeyModifiers::NONE));
+    let outcome = app.handle_input(&key_event(KeyCode::Char('h'), KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Changed), "got {outcome:?}");
+    assert!(matches!(app.active_view, ActiveView::Welcome));
+    assert_eq!(app.welcome_prompt.text(), "h");
+    let effects = dispatch(Action::SendPrompt("h".into()), &mut app);
     assert!(
         effects.iter().any(|e| matches!(
             e,
@@ -1315,10 +1347,11 @@ fn keystroke_from_welcome_in_chat_mode_creates_chat_session() {
         )),
         "got {effects:?}"
     );
-    let ActiveView::Agent(id) = app.active_view else {
-        panic!("keystroke must leave home, got {:?}", app.active_view);
-    };
-    assert_eq!(app.agents.get(&id).map(|a| a.prompt.text()), Some("h"));
+    assert!(
+        matches!(app.active_view, ActiveView::Agent(_)),
+        "the send must leave home, got {:?}",
+        app.active_view
+    );
 }
 
 #[test]
