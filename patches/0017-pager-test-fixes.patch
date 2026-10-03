@@ -101,7 +101,7 @@ index 5a5de0d0..5c5c4e98 100644
      );
  }
 diff --git a/crates/codegen/xai-grok-pager/src/slash/mod.rs b/crates/codegen/xai-grok-pager/src/slash/mod.rs
-index 32d1a5fa..0be16ddc 100644
+index 32d1a5fa..02b638ce 100644
 --- a/crates/codegen/xai-grok-pager/src/slash/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/slash/mod.rs
 @@ -38,17 +38,85 @@ pub use mode_support::{ModeSupport, Remedy};
@@ -312,7 +312,37 @@ index 32d1a5fa..0be16ddc 100644
  
          let text = "/model hello";
          // Cursor at 7: right after "/model ", before 'h'.
-@@ -3004,6 +3117,35 @@ mod tests {
+@@ -2525,6 +2638,8 @@ mod tests {
+             CommandRegistry::new(commands),
+             std::path::PathBuf::from("."),
+         );
++        // Workshop hides `/privacy` fail-closed; the stub of that name here is just a tie fixture.
++        ctrl.registry_mut().set_privacy_visible(true);
+         ctrl.set_mru(std::rc::Rc::new(std::cell::RefCell::new(store)));
+         ctrl
+     }
+@@ -2602,6 +2717,20 @@ mod tests {
+         assert!(!dispatchable(&ctrl, "auto"));
+     }
+ 
++    /// Workshop: `/privacy` opens an xAI-account setting, so a fresh registry hides it (neither
++    /// offered nor dispatchable) until `set_privacy_visible(true)` says such an account is in.
++    #[test]
++    fn privacy_is_fail_closed_until_an_xai_account_is_signed_in() {
++        let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
++        assert!(ctrl.registry().get("privacy").is_none());
++        assert!(ctrl.registry().get_for_dispatch("privacy").is_none());
++        ctrl.registry_mut().set_privacy_visible(true);
++        assert!(ctrl.registry().get("privacy").is_some());
++        assert!(ctrl.registry().get_for_dispatch("privacy").is_some());
++        ctrl.registry_mut().set_privacy_visible(false);
++        assert!(ctrl.registry().get("privacy").is_none());
++    }
++
+     /// With the gate open, both permission-mode toggles appear in completion for full-list, prefix, and exact-name queries.
+     #[test]
+     fn permission_mode_toggles_appear_in_completion_when_available() {
+@@ -3004,6 +3133,35 @@ mod tests {
          assert_eq!(order, vec!["/alpha", "/zulu"]);
      }
  
@@ -348,7 +378,7 @@ index 32d1a5fa..0be16ddc 100644
      /// Within the command group the menu leads with what you actually use.
      #[test]
      fn empty_query_orders_commands_by_recency_then_registry_order() {
-@@ -3402,7 +3544,7 @@ mod tests {
+@@ -3402,7 +3560,7 @@ mod tests {
      fn mid_text_slash_args_after_token() {
          let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
          let state = SlashState::default();

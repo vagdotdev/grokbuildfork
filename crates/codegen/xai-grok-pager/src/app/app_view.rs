@@ -1824,12 +1824,20 @@ impl AppView {
     /// Call after gate flips, startup, reconnect, and session create/switch (so new agents inherit the gate).
     pub fn sync_permission_mode_slash_gate(&mut self) {
         let available = self.auto_mode_gate;
+        // Workshop: `/privacy` opens an xAI-account setting (coding data retention and training)
+        // and is fail-closed hidden; it is offered only once such an account is signed in
+        // through the optional xAI card, never to the free models, API keys or the subscription
+        // CLIs. It rides this sync so every surface, including later agents, agrees.
+        let privacy = self.xai_account_signed_in();
         for agent in self.agents.values_mut() {
             agent.prompt.set_auto_mode_available(available);
+            agent.prompt.set_privacy_visible(privacy);
         }
         self.welcome_prompt.set_auto_mode_available(available);
+        self.welcome_prompt.set_privacy_visible(privacy);
         if let Some(dashboard) = self.dashboard.as_mut() {
             dashboard.set_auto_mode_available(available);
+            dashboard.set_privacy_visible(privacy);
         }
     }
     /// Recompute the tier-restricted slash commands from the current auth state.
@@ -1839,7 +1847,7 @@ impl AppView {
         let restricted = self.team_name.is_none()
             && self.consumer_account()
             && is_restricted_tier(self.subscription_tier.as_deref());
-        let mut names: Vec<String> = if restricted {
+        let names: Vec<String> = if restricted {
             TIER_RESTRICTED_COMMANDS
                 .iter()
                 .map(|n| (*n).to_string())
@@ -1847,28 +1855,6 @@ impl AppView {
         } else {
             Vec::new()
         };
-        // Workshop: `/privacy` opens an xAI-account setting (coding data retention and training);
-        // it is offered only once such an account is signed in through the optional xAI card,
-        // never to the free models, API keys or subscription CLIs. It rides the same deny list
-        // so every later agent and dashboard surface inherits it.
-        if !self.xai_account_signed_in() {
-            names.push("privacy".to_owned());
-        }
-        self.sync_restricted_commands(names);
-    }
-    /// Workshop: a launch the shell reports no auth meta for (the free models, the subscription
-    /// CLIs) has no xAI account, so `/privacy` is denied here too; the tier list is left as it is,
-    /// since without meta there is no tier to restrict on.
-    pub(crate) fn apply_restrictions_without_auth_meta(&mut self) {
-        let mut names = self.tier_restricted_commands.clone();
-        let privacy = "privacy".to_owned();
-        if !self.xai_account_signed_in() && !names.contains(&privacy) {
-            names.push(privacy);
-        }
-        self.sync_restricted_commands(names);
-    }
-    /// Push one deny list onto every slash surface and remember it for the surfaces created later.
-    fn sync_restricted_commands(&mut self, names: Vec<String>) {
         for agent in self.agents.values_mut() {
             agent.set_restricted_commands(&names);
         }
@@ -1877,6 +1863,8 @@ impl AppView {
             dashboard.set_restricted_commands(&names);
         }
         self.tier_restricted_commands = names;
+        // Workshop: an xAI account signing in (or out) is what shows or hides `/privacy`.
+        self.sync_permission_mode_slash_gate();
     }
     /// A personal subscription login. API keys, external auth providers, and backend-billed accounts carry no subscription tier
     pub(super) fn consumer_account(&self) -> bool {

@@ -2638,6 +2638,8 @@ mod tests {
             CommandRegistry::new(commands),
             std::path::PathBuf::from("."),
         );
+        // Workshop hides `/privacy` fail-closed; the stub of that name here is just a tie fixture.
+        ctrl.registry_mut().set_privacy_visible(true);
         ctrl.set_mru(std::rc::Rc::new(std::cell::RefCell::new(store)));
         ctrl
     }
@@ -2713,6 +2715,20 @@ mod tests {
         assert!(!visible(&ctrl, "auto"));
         assert!(dispatchable(&ctrl, "always-approve"));
         assert!(!dispatchable(&ctrl, "auto"));
+    }
+
+    /// Workshop: `/privacy` opens an xAI-account setting, so a fresh registry hides it (neither
+    /// offered nor dispatchable) until `set_privacy_visible(true)` says such an account is in.
+    #[test]
+    fn privacy_is_fail_closed_until_an_xai_account_is_signed_in() {
+        let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
+        assert!(ctrl.registry().get("privacy").is_none());
+        assert!(ctrl.registry().get_for_dispatch("privacy").is_none());
+        ctrl.registry_mut().set_privacy_visible(true);
+        assert!(ctrl.registry().get("privacy").is_some());
+        assert!(ctrl.registry().get_for_dispatch("privacy").is_some());
+        ctrl.registry_mut().set_privacy_visible(false);
+        assert!(ctrl.registry().get("privacy").is_none());
     }
 
     /// With the gate open, both permission-mode toggles appear in completion for full-list, prefix, and exact-name queries.

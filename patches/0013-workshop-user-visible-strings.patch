@@ -9563,7 +9563,7 @@ index cdad7a77..4b22deba 100644
          let tiny = row_text(10);
          assert!(tiny.contains("Tip"));
 diff --git a/crates/codegen/xai-grok-pager/src/views/prompt_widget/mod.rs b/crates/codegen/xai-grok-pager/src/views/prompt_widget/mod.rs
-index 91206bc1..2f995aac 100644
+index 91206bc1..aa78ba09 100644
 --- a/crates/codegen/xai-grok-pager/src/views/prompt_widget/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/prompt_widget/mod.rs
 @@ -167,7 +167,7 @@ pub struct PromptStyle {
@@ -9575,7 +9575,21 @@ index 91206bc1..2f995aac 100644
      pub placeholder_override: Option<&'static str>,
      /// The main composer hides the empty-textarea placeholder on focus; the feedback box keeps it visible.
      pub placeholder_when_focused: bool,
-@@ -3313,7 +3313,9 @@ impl PromptWidget {
+@@ -1283,6 +1283,13 @@ impl PromptWidget {
+             .set_voice_visible(visible);
+     }
+ 
++    /// Workshop: `/privacy` is offered only while an xAI account is signed in.
++    pub(crate) fn set_privacy_visible(&mut self, visible: bool) {
++        self.slash_controller
++            .registry_mut()
++            .set_privacy_visible(visible);
++    }
++
+     pub(crate) fn set_dashboard_visible(&mut self, visible: bool) {
+         self.slash_controller
+             .registry_mut()
+@@ -3313,7 +3320,9 @@ impl PromptWidget {
              && (!style.focused || style.placeholder_when_focused)
              && !voice_interim_shown
          {
