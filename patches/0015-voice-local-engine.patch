@@ -1789,7 +1789,7 @@ index 252cee35..550a5c17 100644
      assert_eq!(
          json.pointer("/findings/0/id")
 diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
-index eca1c956..2f602534 100644
+index eca1c956..be937a79 100644
 --- a/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
 @@ -2187,12 +2187,26 @@ fn paint_dispatch_config_badge(
@@ -1821,6 +1821,45 @@ index eca1c956..2f602534 100644
                  .bg(theme.bg_base)
                  .add_modifier(Modifier::BOLD),
          );
+@@ -2742,6 +2756,20 @@ fn render_footer(
+     } else {
+         "delete"
+     };
++    // Workshop: an idle row deletes on `Del` wherever the arrows move the cursor (list focused, or
++    // an empty input); the chip names that key, `Ctrl+X` stays the stop.
++    let delete_now =
++        stop_label == "delete" && (state.list_focused || state.dispatch.text().is_empty());
++    let stop_action = if delete_now {
++        crate::actions::ActionId::DashboardDelete
++    } else {
++        crate::actions::ActionId::DashboardStop
++    };
++    let stop_fallback = if delete_now {
++        key!(Delete)
++    } else {
++        key!('x', CONTROL)
++    };
+ 
+     // Overview list focused (via Tab), navigation hints: arrows / j-k move between agents, Enter opens
+     // the focused one, Tab returns to the input.
+@@ -2749,7 +2777,7 @@ fn render_footer(
+         let key_for = |id: crate::actions::ActionId, fallback: KeyShortcut| -> KeyShortcut {
+             registry.find(id).map(|d| d.default_key).unwrap_or(fallback)
+         };
+-        let stop = key_for(crate::actions::ActionId::DashboardStop, key!('x', CONTROL));
++        let stop = key_for(stop_action, stop_fallback);
+         let help = key_for(
+             crate::actions::ActionId::DashboardShortcutsHelp,
+             key!('.', CONTROL),
+@@ -2832,7 +2860,7 @@ fn render_footer(
+     } else {
+         enter
+     };
+-    let stop = resolve(crate::actions::ActionId::DashboardStop, key!('x', CONTROL));
++    let stop = resolve(stop_action, stop_fallback);
+     let help = resolve(
+         crate::actions::ActionId::DashboardShortcutsHelp,
+         key!('.', CONTROL),
 diff --git a/crates/codegen/xai-grok-pager/src/voice/handle.rs b/crates/codegen/xai-grok-pager/src/voice/handle.rs
 index 6b1daea6..42afcd9a 100644
 --- a/crates/codegen/xai-grok-pager/src/voice/handle.rs

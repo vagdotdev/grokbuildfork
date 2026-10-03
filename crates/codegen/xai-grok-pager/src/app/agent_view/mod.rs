@@ -2008,6 +2008,7 @@ fn resolve_action(action_id: Option<ActionId>) -> Option<InputOutcome> {
         | ActionId::DashboardTogglePin
         | ActionId::DashboardBeginRename
         | ActionId::DashboardStop
+        | ActionId::DashboardDelete
         | ActionId::DashboardCycleMode
         | ActionId::DashboardToggleGrouping
         | ActionId::DashboardReorderUp

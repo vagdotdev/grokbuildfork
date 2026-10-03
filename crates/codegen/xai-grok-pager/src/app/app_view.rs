@@ -3802,6 +3802,24 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
             crate::views::session_picker::PendingDeleteKey::Disarmed
             | crate::views::session_picker::PendingDeleteKey::NotArmed => {}
         }
+        // Workshop: Delete (or Backspace with nothing typed) deletes the highlighted row now.
+        if !ctx.chat_mode
+            && !focused_is_foreign
+            && crate::views::session_picker::delete_now_key(ev, ctx.sp_state)
+            && let Some(pd) = crate::views::session_picker::pending_delete_from_selection(
+                ctx.sp_state.selected,
+                &entry_map,
+                ctx.sp_entries.as_deref(),
+                ctx.sp_content_results.as_deref(),
+            )
+        {
+            *ctx.sp_pending_delete = None;
+            return InputOutcome::Action(Action::DeleteSession {
+                source: pd.source,
+                session_id: pd.session_id,
+                cwd: pd.cwd,
+            });
+        }
         if let Event::Key(key) = ev {
             if key.kind == KeyEventKind::Press
                 && (key!('c', CONTROL).matches(key) || key!('d', CONTROL).matches(key))

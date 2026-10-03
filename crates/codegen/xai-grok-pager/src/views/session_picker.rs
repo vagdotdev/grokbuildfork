@@ -100,6 +100,24 @@ pub(crate) fn pending_delete_from_selection(
         }
     }
 }
+/// Workshop: whether `ev` deletes the highlighted session at once — no `d`, no `y`. `Delete`
+/// always does while a row is highlighted (the line editor never binds it, so it has no typing
+/// job to lose); `Backspace` only while nothing is being typed (search inactive, filter empty),
+/// so erasing a filter can never run on into a session. A held key counts once (presses only).
+pub(crate) fn delete_now_key(ev: &crossterm::event::Event, state: &PickerState) -> bool {
+    use crossterm::event::{Event, KeyCode, KeyEventKind};
+    let Event::Key(k) = ev else {
+        return false;
+    };
+    if k.kind != KeyEventKind::Press || !k.modifiers.is_empty() || state.selection_hidden {
+        return false;
+    }
+    match k.code {
+        KeyCode::Delete => true,
+        KeyCode::Backspace => !state.search_active && state.query().is_empty(),
+        _ => false,
+    }
+}
 /// Route a key through an armed [`PendingDelete`]: `y` confirms, `n` cancels, any other unmodified key disarms and falls through.
 pub(crate) fn handle_pending_delete_key(
     pending: &mut Option<PendingDelete>,
@@ -923,6 +941,36 @@ mod tests {
             Some(v) => v,
             None => panic!("index {i} out of {}", xs.len()),
         }
+    }
+    /// Workshop: Delete deletes the highlighted row at once; Backspace does too only while
+    /// nothing is being typed; a hidden selection (typing in the search box), a modifier, a held
+    /// key or another key never do.
+    #[test]
+    fn delete_now_key_is_delete_or_an_idle_backspace() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+        let press = |code: KeyCode| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        let mut state = PickerState::default();
+        assert!(delete_now_key(&press(KeyCode::Delete), &state));
+        assert!(delete_now_key(&press(KeyCode::Backspace), &state));
+        assert!(!delete_now_key(&press(KeyCode::Char('d')), &state));
+        assert!(!delete_now_key(
+            &Event::Key(KeyEvent::new(KeyCode::Delete, KeyModifiers::CONTROL)),
+            &state
+        ));
+        let mut held = KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE);
+        held.kind = KeyEventKind::Repeat;
+        assert!(!delete_now_key(&Event::Key(held), &state));
+        // Typing a filter: Backspace erases it, Delete still deletes the (visible) row.
+        state.set_query("a");
+        state.search_active = true;
+        assert!(!delete_now_key(&press(KeyCode::Backspace), &state));
+        assert!(delete_now_key(&press(KeyCode::Delete), &state));
+        // A retained filter with the search left: Backspace is still not a delete.
+        state.search_active = false;
+        assert!(!delete_now_key(&press(KeyCode::Backspace), &state));
+        // No row highlighted while the caret is in the search box: nothing to delete.
+        state.selection_hidden = true;
+        assert!(!delete_now_key(&press(KeyCode::Delete), &state));
     }
     #[test]
     fn repo_name_from_cwd_two_components() {

@@ -55,7 +55,7 @@ index 7c41a29c..690ac9cc 100644
      crate::app::turn_completion::push_turn_terminal_marker(agent, event);
      crate::app::turn_completion::note_hook_blocked_turn(
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
-index f968c838..af1f7d97 100644
+index f968c838..a7812b94 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
 @@ -740,6 +740,30 @@ pub struct AgentView {
@@ -89,6 +89,14 @@ index f968c838..af1f7d97 100644
      /// Sticky: once the user types in the prompt, hide the tip for the session.
      pub tip_typing_dismissed: bool,
      pub todo: TodoPane,
+@@ -1984,6 +2008,7 @@ fn resolve_action(action_id: Option<ActionId>) -> Option<InputOutcome> {
+         | ActionId::DashboardTogglePin
+         | ActionId::DashboardBeginRename
+         | ActionId::DashboardStop
++        | ActionId::DashboardDelete
+         | ActionId::DashboardCycleMode
+         | ActionId::DashboardToggleGrouping
+         | ActionId::DashboardReorderUp
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/prompt.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/prompt.rs
 index 13962908..d142cf29 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/prompt.rs
@@ -293,7 +301,7 @@ index ae3b381c..89810676 100644
              return Some(activity);
          }
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/dashboard.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/dashboard.rs
-index cb31424d..d5c61a17 100644
+index cb31424d..c8912552 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/dashboard.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/dashboard.rs
 @@ -1804,6 +1804,14 @@ pub(super) fn dispatch_dashboard_stop(app: &mut AppView) -> Vec<Effect> {
@@ -319,6 +327,50 @@ index cb31424d..d5c61a17 100644
              || !agent.session.pending_prompts.is_empty()
      }
      pub(super) fn is_empty(&self) -> bool {
+@@ -2066,6 +2075,43 @@ pub(super) fn dispatch_dashboard_delete(app: &mut AppView) -> Vec<Effect> {
+     }
+     delete_dashboard_row(app, sel)
+ }
++/// Workshop: `Delete` / `Backspace` on the highlighted row deletes it at once — no arm, no
++/// `y`/`n`. Only a settled row goes; a row with work running is left alone with one toast (the
++/// stop stays on `Ctrl+X`, a different gesture from throwing a session away).
++pub(super) fn dispatch_dashboard_delete_selected(app: &mut AppView) -> Vec<Effect> {
++    use crate::views::dashboard::DashboardRowId;
++    let Some(sel) = app.dashboard.as_ref().and_then(|d| d.selected.clone()) else {
++        return vec![];
++    };
++    if let Some(d) = app.dashboard.as_mut() {
++        d.delete_confirm = None;
++    }
++    match &sel {
++        DashboardRowId::TopLevel(id) => {
++            let id = *id;
++            if app.workshop_turn_active && app.workshop_turn_agent == Some(id) {
++                app.show_toast("Stop the session before deleting");
++                return vec![];
++            }
++            if app.workspace_dashboard_enabled {
++                let Some(readiness) = app.agents.get(&id).map(dashboard_stop_readiness) else {
++                    return vec![];
++                };
++                if !readiness.can_close() {
++                    app.show_toast("Stop the session before deleting");
++                    return vec![];
++                }
++            }
++            delete_dashboard_row(app, sel)
++        }
++        DashboardRowId::Workspace { .. } if !app.workspace_dashboard_enabled => vec![],
++        // `delete_dashboard_row` already refuses busy roster rows, chat conversations and
++        // subagent rows with their own toasts.
++        DashboardRowId::Subagent { .. }
++        | DashboardRowId::Roster { .. }
++        | DashboardRowId::Workspace { .. } => delete_dashboard_row(app, sel),
++    }
++}
+ /// Delete `row`, which the caller has confirmed is idle and armed.
+ /// Takes `row` as a parameter (not read back off `delete_confirm`) and never cancels a turn or kills a task; delete is a settled-row operation.
+ fn delete_dashboard_row(
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs
 index b04f0f9c..86049684 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs
@@ -4347,9 +4399,18 @@ index 11f4ed27..0355c109 100644
              Some(TurnActivity::Responding) => return "Response".to_string(),
              Some(TurnActivity::AutoCompacting) => return "Compacting".to_string(),
 diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/row.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/row.rs
-index e8482b41..e84af4fd 100644
+index e8482b41..2f3a6e4c 100644
 --- a/crates/codegen/xai-grok-pager/src/views/dashboard/row.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/dashboard/row.rs
+@@ -534,7 +534,7 @@ pub(crate) fn is_empty_idle_top_level(agent: &AgentView) -> bool {
+             RowState::Working | RowState::NeedsInput
+         )
+ }
+-fn top_level_label(agent: &AgentView) -> String {
++pub(crate) fn top_level_label(agent: &AgentView) -> String {
+     if let Some(name) = agent.display_name.as_deref() {
+         let trimmed = name.trim();
+         if !trimmed.is_empty() {
 @@ -609,6 +609,7 @@ pub(crate) fn top_level_last_change_at(agent: &AgentView, state: RowState) -> Sy
      let anchor: Instant = match state {
          RowState::Working => agent

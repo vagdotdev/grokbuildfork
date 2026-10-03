@@ -129,6 +129,8 @@ pub enum ActionId {
     DashboardTogglePin,
     DashboardBeginRename,
     DashboardStop,
+    /// Workshop: `Delete` / `Backspace` deletes the highlighted settled row at once (no arm, no confirm).
+    DashboardDelete,
     DashboardCycleMode,
     DashboardToggleGrouping,
     DashboardReorderUp,

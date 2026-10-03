@@ -2756,6 +2756,20 @@ fn render_footer(
     } else {
         "delete"
     };
+    // Workshop: an idle row deletes on `Del` wherever the arrows move the cursor (list focused, or
+    // an empty input); the chip names that key, `Ctrl+X` stays the stop.
+    let delete_now =
+        stop_label == "delete" && (state.list_focused || state.dispatch.text().is_empty());
+    let stop_action = if delete_now {
+        crate::actions::ActionId::DashboardDelete
+    } else {
+        crate::actions::ActionId::DashboardStop
+    };
+    let stop_fallback = if delete_now {
+        key!(Delete)
+    } else {
+        key!('x', CONTROL)
+    };
 
     // Overview list focused (via Tab), navigation hints: arrows / j-k move between agents, Enter opens
     // the focused one, Tab returns to the input.
@@ -2763,7 +2777,7 @@ fn render_footer(
         let key_for = |id: crate::actions::ActionId, fallback: KeyShortcut| -> KeyShortcut {
             registry.find(id).map(|d| d.default_key).unwrap_or(fallback)
         };
-        let stop = key_for(crate::actions::ActionId::DashboardStop, key!('x', CONTROL));
+        let stop = key_for(stop_action, stop_fallback);
         let help = key_for(
             crate::actions::ActionId::DashboardShortcutsHelp,
             key!('.', CONTROL),
@@ -2846,7 +2860,7 @@ fn render_footer(
     } else {
         enter
     };
-    let stop = resolve(crate::actions::ActionId::DashboardStop, key!('x', CONTROL));
+    let stop = resolve(stop_action, stop_fallback);
     let help = resolve(
         crate::actions::ActionId::DashboardShortcutsHelp,
         key!('.', CONTROL),
