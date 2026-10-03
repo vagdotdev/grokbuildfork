@@ -510,7 +510,7 @@ pub fn activate_placeholder_session(conn: &WorkshopConnection) -> Result<String,
 /// connection actually offers, instead of the shell's placeholder ids. Returns `None` for a
 /// Shell connection (the shell's own list applies).
 pub fn connection_models_text() -> Option<String> {
-    let conn = load_active_connection();
+    let conn = models_cli_connection(load_active_connection(), is_first_run());
     let mut out = String::new();
     match &conn {
         WorkshopConnection::Shell => return None,
@@ -548,6 +548,16 @@ pub fn connection_models_text() -> Option<String> {
         }
     }
     Some(out)
+}
+
+/// The connection `workshop models` describes: the saved one, except that a home that never
+/// connected anything runs the first-run default (Big Pickle), the same one the TUI lands in —
+/// the shell's "You are not authenticated" is not what that home has.
+fn models_cli_connection(saved: WorkshopConnection, first_run: bool) -> WorkshopConnection {
+    match saved {
+        WorkshopConnection::Shell if first_run => first_run_connection(),
+        conn => conn,
+    }
 }
 
 /// What activating a Direct API / Local row needs the process to do.
@@ -2998,9 +3008,28 @@ pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
 mod tests {
     use super::{
         EngineModel, WorkshopConnection, announces_unfinished_action, asks_to_write_files,
-        claims_cannot_see_images, downloads_images, ends_with_code_block,
-        engine_question_answers, engine_questions, retired_pick, vision_model,
+        claims_cannot_see_images, downloads_images, ends_with_code_block, engine_question_answers,
+        engine_questions, models_cli_connection, retired_pick, vision_model,
     };
+
+    /// `workshop models` on a home that never connected anything describes the first-run
+    /// default (an engine model), not the shell's "not authenticated"; a saved connection and a
+    /// shell connection on a configured home are described as they are.
+    #[test]
+    fn models_cli_describes_the_first_run_default_on_a_fresh_home() {
+        assert!(matches!(
+            models_cli_connection(WorkshopConnection::Shell, true),
+            WorkshopConnection::Engine { .. }
+        ));
+        assert!(matches!(
+            models_cli_connection(WorkshopConnection::Shell, false),
+            WorkshopConnection::Shell
+        ));
+        let saved = WorkshopConnection::Engine {
+            model: EngineModel::big_pickle_seed(),
+        };
+        assert_eq!(models_cli_connection(saved.clone(), true), saved);
+    }
 
     #[test]
     fn vision_model_is_chosen_dynamically_from_the_live_catalog() {

@@ -158,7 +158,7 @@ jobs:
       - name: Upstream unit tests touched by the gate patches
         run: |
           cargo test -p xai-grok-login --lib -- config:: manager::tests::auth_scope flow::tests::weblogin_cred flow::tests::oidc_cred flow::tests::external_cred flow::tests::run_auth_flow_falls_through
-          cargo test -p xai-grok-shell --lib -- agent::auth_method:: cached_token_fallthrough
+          cargo test -p xai-grok-shell --lib -- agent::auth_method:: cached_token_fallthrough builtin::tests
           cargo test -p xai-grok-update --lib
           cargo test -p xai-dirs -p xai-grok-env
       - name: Pager unit tests (picker + turn routing + overlay isolation)

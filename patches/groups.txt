@@ -23,3 +23,4 @@
 0021-thinking-hidden-by-default.patch	product	crates/codegen/xai-grok-pager-render/src/appearance/cache.rs crates/codegen/xai-grok-shell/src/util/config/resolve/ui.rs crates/codegen/xai-grok-config-types/src/lib.rs
 0022-double-slash-voice.patch	product	crates/codegen/xai-grok-pager/src/slash/commands/voice.rs crates/codegen/xai-grok-pager/src/views/shortcuts_help.rs crates/codegen/xai-grok-pager/src/views/shortcuts_help_tests.rs
 0023-startup-auth-reload-no-retry-sleep.patch	product	crates/codegen/xai-grok-login/src/manager.rs
+0026-hygiene-no-grok-readme-memtrace-off.patch	product	crates/codegen/xai-grok-shell/src/builtin.rs crates/codegen/xai-grok-pager/src/memory_trace.rs crates/codegen/xai-grok-pager/src/slash/registry.rs crates/codegen/xai-grok-pager/src/views/dashboard/state.rs

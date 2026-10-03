@@ -1,6 +1,10 @@
 //! Built-in files extracted to `~/.grok/` on startup.
 
-const BUILTIN_FILES: &[(&str, &str)] = &[("README.md", include_str!("../README.md"))];
+/// Workshop: nothing is extracted. Upstream wrote its own `README.md` (the other product's, 110 KB
+/// of it) into every user's home; Workshop's system prompt points the model at the bundled user
+/// guide instead, so the file had no reader and broke the rule that nothing a user looks at names
+/// the other product.
+const BUILTIN_FILES: &[(&str, &str)] = &[];
 
 /// Extract built-in metadata files to `~/.grok/` on startup.
 /// User skills under `~/.grok/skills/` are never managed here. Platform skills are delivered separately through the bundled skill cache.
@@ -20,6 +24,7 @@ pub fn extract_builtin_files(grok_home: &std::path::Path) {
     for stale in &["CHANGELOG.json", "CHANGELOG.md"] {
         let _ = std::fs::remove_file(grok_home.join(stale));
     }
+    remove_extracted_upstream_readme(grok_home);
 
     for &(filename, content) in BUILTIN_FILES {
         if let Err(e) = std::fs::write(grok_home.join(filename), content) {
@@ -29,6 +34,18 @@ pub fn extract_builtin_files(grok_home: &std::path::Path) {
 
     let _ = std::fs::write(&marker, version);
     tracing::debug!(version, "Extracted built-in files");
+}
+
+/// Workshop: a `README.md` an earlier version extracted goes on the first launch of a new one —
+/// only when it is that file (its first line names the other product), never a user's own.
+fn remove_extracted_upstream_readme(grok_home: &std::path::Path) {
+    let path = grok_home.join("README.md");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    if text.lines().next().is_some_and(|l| l.trim() == "# Grok") {
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 /// `(name, sha256)` of every `SKILL.md` body ever extracted into `$GROK_HOME/skills/`; `help` rows hash the pre-substitution bytes.
@@ -201,7 +218,8 @@ mod tests {
 
         extract_builtin_files(home);
 
-        assert_ne!(
+        // Workshop: nothing is extracted, and a file that is not upstream's README is left alone.
+        assert_eq!(
             std::fs::read_to_string(home.join("README.md")).unwrap(),
             "old"
         );
@@ -216,6 +234,41 @@ mod tests {
                 "keep"
             );
         }
+    }
+
+    /// Workshop: a fresh home gets no `README.md`; the one an earlier version extracted (it
+    /// begins `# Grok`) is removed on the first launch of a new version, and only that one.
+    #[test]
+    fn no_upstream_readme_is_extracted_and_an_old_one_is_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        extract_builtin_files(home);
+        assert!(!home.join("README.md").exists(), "nothing extracted");
+        assert_eq!(
+            std::fs::read_to_string(home.join(".metadata_version")).unwrap(),
+            xai_grok_version::VERSION
+        );
+
+        std::fs::write(
+            home.join("README.md"),
+            "# Grok\n\nA terminal-based AI coding assistant.\n",
+        )
+        .unwrap();
+        std::fs::write(home.join(".metadata_version"), "0.2.4").unwrap();
+        extract_builtin_files(home);
+        assert!(
+            !home.join("README.md").exists(),
+            "the other product's README left by 0.2.4 is gone"
+        );
+
+        std::fs::write(home.join("README.md"), "# My notes\n").unwrap();
+        std::fs::write(home.join(".metadata_version"), "0.2.4").unwrap();
+        extract_builtin_files(home);
+        assert_eq!(
+            std::fs::read_to_string(home.join("README.md")).unwrap(),
+            "# My notes\n",
+            "a user's own file is never touched"
+        );
     }
 
     #[test]

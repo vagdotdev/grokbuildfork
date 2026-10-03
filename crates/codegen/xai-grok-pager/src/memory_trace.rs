@@ -384,12 +384,17 @@ pub(crate) fn record_purge(
 
 // ─── Startup ───────────────────────────────────────────────────────────────
 
-/// Env: disable with `GROK_MEMTRACE=0|false|off`.
+/// Workshop: off unless asked for. Nothing reads the samples (their consumer was upstream's
+/// trace upload), so a default-on sampler only wrote an unpruned `memtrace/<ts>-<pid>.jsonl`
+/// per launch and kept a thread. Enable with `WORKSHOP_MEMTRACE=1` (or `GROK_MEMTRACE=1`;
+/// `true` / `on` work too) when a memory question needs the trace.
 fn enabled_by_env() -> bool {
-    !matches!(
-        std::env::var("GROK_MEMTRACE").ok().as_deref(),
-        Some("0") | Some("false") | Some("off")
-    )
+    ["WORKSHOP_MEMTRACE", "GROK_MEMTRACE"].iter().any(|name| {
+        matches!(
+            std::env::var(name).ok().as_deref(),
+            Some("1") | Some("true") | Some("on")
+        )
+    })
 }
 
 fn interval_from_env() -> Duration {

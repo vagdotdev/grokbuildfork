@@ -1283,6 +1283,13 @@ impl PromptWidget {
             .set_voice_visible(visible);
     }
 
+    /// Workshop: `/privacy` is offered only while an xAI account is signed in.
+    pub(crate) fn set_privacy_visible(&mut self, visible: bool) {
+        self.slash_controller
+            .registry_mut()
+            .set_privacy_visible(visible);
+    }
+
     pub(crate) fn set_dashboard_visible(&mut self, visible: bool) {
         self.slash_controller
             .registry_mut()
