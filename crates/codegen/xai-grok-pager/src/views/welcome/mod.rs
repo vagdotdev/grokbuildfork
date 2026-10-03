@@ -2572,10 +2572,12 @@ pub(crate) fn render_session_picker_body(
             description: None,
             pinned: false,
         });
+        // Workshop: Delete removes the highlighted session at once; `d` (the action key's own
+        // chip below) still arms the two-step delete.
         default_shortcuts.push(HintItem {
             keys: vec![],
             label: "delete".into(),
-            custom_display: Some("d"),
+            custom_display: Some("Del"),
             description: None,
             pinned: false,
         });

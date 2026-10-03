@@ -43,7 +43,7 @@ index d63bea59..5663ad57 100644
          });
          let (needs, label, method_id, mode) = startup_auth_metadata(&built.methods);
 diff --git a/crates/codegen/xai-grok-pager/src/app/actions.rs b/crates/codegen/xai-grok-pager/src/app/actions.rs
-index f1602289..dc219224 100644
+index f1602289..fca19e04 100644
 --- a/crates/codegen/xai-grok-pager/src/app/actions.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/actions.rs
 @@ -618,7 +618,29 @@ pub enum Action {
@@ -76,7 +76,17 @@ index f1602289..dc219224 100644
      /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
      /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
      CancelLogin,
-@@ -1772,9 +1794,54 @@ pub enum Effect {
+@@ -819,6 +841,9 @@ pub enum Action {
+     DashboardStop,
+     /// Confirm permanent delete of the armed dashboard row.
+     DashboardDelete,
++    /// Workshop: `Delete` / `Backspace` on the highlighted row deletes it now, no arm, no confirm.
++    /// A busy row is left alone with a toast; the stop stays on `Ctrl+X`.
++    DashboardDeleteSelected,
+     /// Cycle the dispatch input's mode for the next spawned agent: Normal, Plan, Auto, Always-Approve, then back around.
+     /// Auto is skipped when gated off. Bound to Shift+Tab.
+     DashboardCycleMode,
+@@ -1772,9 +1797,54 @@ pub enum Effect {
          method_id: acp::AuthMethodId,
          use_oauth: bool,
          force_interactive: bool,
@@ -131,7 +141,7 @@ index f1602289..dc219224 100644
      /// Submit a manually-pasted auth code (ext request).
      SubmitAuthCode { request_seq: u64, code: String },
      /// Fetch MCP server list from the shell (x.ai/mcp/list).
-@@ -2659,6 +2726,29 @@ pub enum TaskResult {
+@@ -2659,6 +2729,29 @@ pub enum TaskResult {
          /// Forwarded from `Effect::SwitchModel.prev_model_id` for rollback on `IncompatibleAgent`.
          prev_model_id: Option<acp::ModelId>,
      },
@@ -180,7 +190,7 @@ index 05556693..41171fbf 100644
              ActionId::ShortcutsHelp => {
                  use crate::views::shortcuts_help;
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..0dacfc66 100644
+index fc9a4553..6cd101bf 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -677,7 +687,32 @@ index fc9a4553..0dacfc66 100644
  /// Welcome view input: overlays first, then composer, then the menu.
  fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
      if let Some(modal) = ctx.import_claude_modal.as_mut() {
-@@ -3750,6 +4075,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3477,6 +3802,24 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+             crate::views::session_picker::PendingDeleteKey::Disarmed
+             | crate::views::session_picker::PendingDeleteKey::NotArmed => {}
+         }
++        // Workshop: Delete (or Backspace with nothing typed) deletes the highlighted row now.
++        if !ctx.chat_mode
++            && !focused_is_foreign
++            && crate::views::session_picker::delete_now_key(ev, ctx.sp_state)
++            && let Some(pd) = crate::views::session_picker::pending_delete_from_selection(
++                ctx.sp_state.selected,
++                &entry_map,
++                ctx.sp_entries.as_deref(),
++                ctx.sp_content_results.as_deref(),
++            )
++        {
++            *ctx.sp_pending_delete = None;
++            return InputOutcome::Action(Action::DeleteSession {
++                source: pd.source,
++                session_id: pd.session_id,
++                cwd: pd.cwd,
++            });
++        }
+         if let Event::Key(key) = ev {
+             if key.kind == KeyEventKind::Press
+                 && (key!('c', CONTROL).matches(key) || key!('d', CONTROL).matches(key))
+@@ -3750,6 +4093,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                  return dispatch_menu_action(
                      idx,
                      ctx.has_claude_import,
@@ -685,7 +720,7 @@ index fc9a4553..0dacfc66 100644
                      ctx.show_changelog_action,
                      ctx.changelog_markdown.as_deref(),
                  );
-@@ -3888,6 +4214,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3888,6 +4232,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                          return dispatch_menu_action(
                              i,
                              ctx.has_claude_import,
@@ -693,7 +728,7 @@ index fc9a4553..0dacfc66 100644
                              ctx.show_changelog_action,
                              ctx.changelog_markdown.as_deref(),
                          );
-@@ -4138,39 +4465,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
+@@ -4138,39 +4483,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
      }
  }
  /// Dispatch an action for a welcome menu item by index.
@@ -752,7 +787,7 @@ index fc9a4553..0dacfc66 100644
      }
      if index == quit_idx {
          return InputOutcome::Action(Action::Quit);
-@@ -4381,6 +4711,9 @@ impl AppView {
+@@ -4381,6 +4729,9 @@ impl AppView {
          });
          let welcome_default_yolo = self.default_yolo;
          let welcome_auto_gate = self.auto_mode_gate;
@@ -762,7 +797,7 @@ index fc9a4553..0dacfc66 100644
          let Self {
              active_view,
              agents,
-@@ -4477,11 +4810,39 @@ impl AppView {
+@@ -4477,11 +4828,39 @@ impl AppView {
                              } else {
                                  self.tip.as_deref()
                              };
@@ -807,7 +842,7 @@ index fc9a4553..0dacfc66 100644
                              };
                              let hero_cta = crate::views::announcements::promo_cta(
                                  &self.active_announcements,
-@@ -4495,7 +4856,14 @@ impl AppView {
+@@ -4495,7 +4874,14 @@ impl AppView {
                                          &self.hidden_announcement_ids,
                                      )
                                  })
@@ -823,7 +858,7 @@ index fc9a4553..0dacfc66 100644
                              let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                  prompt_focus: if self.welcome_prompt_focused {
                                      WelcomePromptFocus::Focused
-@@ -4508,6 +4876,7 @@ impl AppView {
+@@ -4508,6 +4894,7 @@ impl AppView {
                                  consent_state: &self.consent_state,
                                  consent_hover_link: self.welcome_consent_hover_link,
                                  login_label: self.login_label.as_deref(),
@@ -831,7 +866,7 @@ index fc9a4553..0dacfc66 100644
                                  auth_code_input: self.auth_code_input.text(),
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
-@@ -4520,6 +4889,7 @@ impl AppView {
+@@ -4520,6 +4907,7 @@ impl AppView {
                                  team_name: self.team_name.as_deref(),
                                  has_access,
                                  has_claude_import: self.has_claude_import,
@@ -839,7 +874,7 @@ index fc9a4553..0dacfc66 100644
                                  mouse_pos: self.last_mouse_pos,
                                  is_zdr_blocked: zdr_blocked_for_draw,
                                  session_picker: self.session_picker_entries.as_deref(),
-@@ -4534,6 +4904,7 @@ impl AppView {
+@@ -4534,6 +4922,7 @@ impl AppView {
                                  pending_hint,
                                  startup_warnings: &self.startup_warnings,
                                  pending_update_version: self.pending_update_version.as_deref(),
@@ -847,7 +882,7 @@ index fc9a4553..0dacfc66 100644
                                  foreign_resume_hint: foreign_resume_hint.as_ref(),
                                  session_picker_content_results: self
                                      .session_picker_content_results
-@@ -4560,6 +4931,7 @@ impl AppView {
+@@ -4560,6 +4949,7 @@ impl AppView {
                                  welcome_announcement_expanded: self.welcome_announcement.expanded,
                                  upgrade_cta: hero_cta.map(|(_owner, label, _)| label),
                                  privacy_banner,
@@ -855,7 +890,7 @@ index fc9a4553..0dacfc66 100644
                                  #[cfg(feature = "local-workspace")]
                                  workspace_mode: self.welcome_workspace_mode,
                                  #[cfg(feature = "local-workspace")]
-@@ -4576,7 +4948,9 @@ impl AppView {
+@@ -4576,7 +4966,9 @@ impl AppView {
                                  &mut self.session_picker_state,
                              );
                              self.welcome_menu_rects = result.menu_rects;
@@ -865,7 +900,7 @@ index fc9a4553..0dacfc66 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4804,6 +5178,7 @@ impl AppView {
+@@ -4804,6 +5196,7 @@ impl AppView {
                                              .workspace_dashboard_enabled,
                                          overlay_header,
                                          overlay_stop_label: None,
@@ -873,7 +908,7 @@ index fc9a4553..0dacfc66 100644
                                      },
                                  );
                                  if let Some(modal) = self.import_claude_modal.as_mut() {
-@@ -4824,6 +5199,28 @@ impl AppView {
+@@ -4824,6 +5217,28 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -902,7 +937,7 @@ index fc9a4553..0dacfc66 100644
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5229,17 @@ impl AppView {
+@@ -4832,13 +5247,17 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
@@ -921,7 +956,7 @@ index fc9a4553..0dacfc66 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5521,7 @@ impl AppView {
+@@ -5120,6 +5539,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -929,7 +964,7 @@ index fc9a4553..0dacfc66 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5569,7 @@ impl AppView {
+@@ -5167,7 +5587,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -938,7 +973,7 @@ index fc9a4553..0dacfc66 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5684,7 @@ impl AppView {
+@@ -5282,6 +5702,7 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
@@ -946,7 +981,7 @@ index fc9a4553..0dacfc66 100644
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5300,11 +5703,7 @@ impl AppView {
+@@ -5300,11 +5721,7 @@ impl AppView {
              {
                  needs_redraw = true;
              } else {
@@ -959,7 +994,7 @@ index fc9a4553..0dacfc66 100644
              }
          }
          if matches!(self.active_view, ActiveView::AgentDashboard)
-@@ -5355,7 +5754,10 @@ impl AppView {
+@@ -5355,7 +5772,10 @@ impl AppView {
              }
              let spinner_frame_tick =
                  agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
@@ -971,7 +1006,7 @@ index fc9a4553..0dacfc66 100644
              needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
                  && spinner_frame_tick;
              needs_redraw |= matches!(
-@@ -5623,6 +6025,20 @@ impl AppView {
+@@ -5623,6 +6043,20 @@ impl AppView {
          }
          needs_redraw
      }
@@ -992,7 +1027,7 @@ index fc9a4553..0dacfc66 100644
      /// Check if animation ticks should be scheduled.
      pub fn needs_animation(&self) -> bool {
          self.tick_demand() != TickDemand::None
-@@ -5637,6 +6053,15 @@ impl AppView {
+@@ -5637,6 +6071,15 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -1008,7 +1043,7 @@ index fc9a4553..0dacfc66 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5781,9 +6206,94 @@ impl AppView {
+@@ -5781,9 +6224,94 @@ impl AppView {
                      TickDemand::None
                  }
              }
@@ -1104,7 +1139,7 @@ index fc9a4553..0dacfc66 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6315,9 @@ impl AppView {
+@@ -5805,7 +6333,9 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -2187,7 +2222,7 @@ index 42279599..e023ec86 100644
      Some(feedback_send_effect(
          id,
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
-index 89c36b27..16836a5b 100644
+index 89c36b27..2915bc02 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/router.rs
 @@ -1,7 +1,9 @@
@@ -2202,7 +2237,19 @@ index 89c36b27..16836a5b 100644
  };
  use super::billing::dispatch_open_supergrok_url;
  use super::ctx::{
-@@ -1242,6 +1244,23 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
+@@ -12,8 +14,9 @@ use super::dashboard::{
+     dispatch_dashboard_attach, dispatch_dashboard_begin_rename, dispatch_dashboard_change_location,
+     dispatch_dashboard_close_session_picker, dispatch_dashboard_commit_rename,
+     dispatch_dashboard_confirm_worktree, dispatch_dashboard_create_new_agent_with_detail,
+-    dispatch_dashboard_delete, dispatch_dashboard_dispatch, dispatch_dashboard_dispatch_slash,
+-    dispatch_dashboard_open_location_picker, dispatch_dashboard_open_session_picker,
++    dispatch_dashboard_delete, dispatch_dashboard_delete_selected, dispatch_dashboard_dispatch,
++    dispatch_dashboard_dispatch_slash, dispatch_dashboard_open_location_picker,
++    dispatch_dashboard_open_session_picker,
+     dispatch_dashboard_open_shortcuts_help, dispatch_dashboard_overlay_cycle,
+     dispatch_dashboard_overlay_exit, dispatch_dashboard_overlay_stop,
+     dispatch_dashboard_peek_cycle_mode, dispatch_dashboard_peek_reply,
+@@ -1242,6 +1245,23 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
              vec![]
          }
          Action::Login => dispatch_login(app),
@@ -2226,11 +2273,95 @@ index 89c36b27..16836a5b 100644
          Action::CancelLogin => dispatch_cancel_login(app),
          Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
          Action::CopyAuthUrl => {
+@@ -1473,6 +1493,7 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
+         }
+         Action::DashboardStop => dispatch_dashboard_stop(app),
+         Action::DashboardDelete => dispatch_dashboard_delete(app),
++        Action::DashboardDeleteSelected => dispatch_dashboard_delete_selected(app),
+         Action::DashboardCycleMode => {
+             let policy_block = app.yolo_policy_block;
+             let auto_mode_gate = app.auto_mode_gate;
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
-index b00317f2..603c25f8 100644
+index b00317f2..594b5a65 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
-@@ -281,7 +281,7 @@ pub(super) fn maybe_show_x11_primary_paste_hint(
+@@ -13,7 +13,7 @@ use super::cta::{
+     handle_plugin_cta_catalog_loaded, handle_plugin_cta_debounce_expired,
+     handle_plugin_cta_mcps_loaded,
+ };
+-use super::ctx::{find_agent_by_session_id, get_active_agent_mut};
++use super::ctx::{find_agent_by_session_id, get_active_agent, get_active_agent_mut};
+ use super::notes::{handle_btw_response, handle_memory_note_saved};
+ use super::prompt::{
+     defer_to_open_reload_window, handle_compact_complete, handle_memory_command_complete,
+@@ -129,6 +129,66 @@ pub(super) fn live_session_kind(app: &AppView, session_id: &str) -> LiveSessionK
+         LiveSessionKind::Missing
+     }
+ }
++/// Workshop: the name a person knows a session by, for the delete toast — the loaded agent's
++/// dashboard label, else the roster row's title, else the resume picker's summary. `None` when
++/// the session is nowhere in view (the toast then stays generic).
++fn deleted_session_name(app: &AppView, session_id: &str) -> Option<String> {
++    let has_text = |s: &str| !s.trim().is_empty();
++    let from_agent = app
++        .agents
++        .values()
++        .find(|agent| {
++            agent
++                .session
++                .session_id
++                .as_ref()
++                .is_some_and(|id| id.0.as_ref() == session_id)
++        })
++        .map(crate::views::dashboard::row::top_level_label)
++        .filter(|label| !label.starts_with(crate::views::dashboard::row::NEW_SESSION_LABEL));
++    let from_roster = || {
++        app.leader_roster
++            .iter()
++            .chain(app.dashboard_local_sessions.iter())
++            .find(|e| e.session_id == session_id)
++            .and_then(|e| e.title.clone())
++            .filter(|t| has_text(t))
++    };
++    let from_picker = || {
++        let modal_entries = get_active_agent(app).and_then(|agent| match &agent.active_modal {
++            Some(crate::views::modal::ActiveModal::SessionPicker { entries, .. }) => {
++                entries.as_deref()
++            }
++            _ => None,
++        });
++        modal_entries
++            .into_iter()
++            .chain(app.session_picker_entries.as_deref())
++            .flatten()
++            .find(|e| e.id == session_id)
++            .map(|e| e.summary.clone())
++            .filter(|s| has_text(s))
++    };
++    from_agent
++        .or_else(from_roster)
++        .or_else(from_picker)
++        .map(|name| crate::views::dashboard::row::sanitize(name.trim()))
++}
++/// `Deleted “<name>”` (the name cut to one readable toast), or `Session deleted` without one.
++fn deleted_notice(name: Option<&str>) -> String {
++    match name {
++        Some(name) => {
++            let short: String = name.chars().take(48).collect();
++            let ellipsis = if short.chars().count() < name.chars().count() {
++                "\u{2026}"
++            } else {
++                ""
++            };
++            format!("Deleted \u{201c}{short}{ellipsis}\u{201d}")
++        }
++        None => "Session deleted".to_owned(),
++    }
++}
+ fn apply_workspace_transition(
+     app: &mut AppView,
+     transition: crate::app::workspace_membership::WorkspaceTransition,
+@@ -281,7 +341,7 @@ pub(super) fn maybe_show_x11_primary_paste_hint(
      show_clipboard_toast(target, X11_PRIMARY_PASTE_HINT, app);
  }
  /// A clean `FullMiss` always qualifies; a remote read *error* (`AttachmentRead`) qualifies too.
@@ -2239,7 +2370,7 @@ index b00317f2..603c25f8 100644
  /// Every other failure (`TextRead`, `TargetInsertion`, `AlreadyReported`) is a real dead end and must keep toasting.
  pub(super) fn wrap_host_image_request_eligible(completion: ClipboardPasteCompletion) -> bool {
      matches!(
-@@ -999,6 +999,143 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -999,6 +1059,143 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              }
              vec![]
          }
@@ -2383,7 +2514,7 @@ index b00317f2..603c25f8 100644
          TaskResult::ChangelogFetched { markdown, entries } => {
              app.changelog_markdown = markdown;
              app.changelog_bullets =
-@@ -1172,6 +1309,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1172,6 +1369,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              } = &app.auth_state
                  && *current_seq == request_seq
              {
@@ -2395,7 +2526,7 @@ index b00317f2..603c25f8 100644
                  app.auth_state = AuthState::Pending { error: Some(error) };
                  app.auth_code_input.reset();
              }
-@@ -1185,6 +1327,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1185,6 +1387,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
          } => handle_auth_url_ready(app, request_seq, auth_url, external, mode),
          TaskResult::AuthCodeSubmitted { .. } => vec![],
          TaskResult::AuthCancelComplete => vec![],
@@ -2403,6 +2534,44 @@ index b00317f2..603c25f8 100644
          TaskResult::McpsListLoaded { agent_id, result } => {
              use crate::views::extensions_modal::TabDataState;
              if let Some(agent) = app.agents.get_mut(&agent_id)
+@@ -1521,6 +1724,8 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+             after,
+         } => {
+             use crate::app::actions::AfterSessionDelete;
++            // Workshop: the toast names what went, looked up before the lists drop it.
++            let deleted_name = deleted_session_name(app, &session_id);
+             remove_session_from_pickers(
+                 app,
+                 &source,
+@@ -1539,16 +1744,16 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+             let membership_removal_failed = deleted_build
+                 && !crate::app::workspace_sync::request_removal(app, &session_id, removal_cause);
+             let delete_notice = if membership_removal_failed {
+-                "Session deleted, but dashboard membership could not be removed"
++                "Session deleted, but dashboard membership could not be removed".to_owned()
+             } else {
+-                "Session deleted"
++                deleted_notice(deleted_name.as_deref())
+             };
+             if after == AfterSessionDelete::Stay {
+                 app.dashboard_local_sessions
+                     .retain(|entry| entry.session_id != session_id);
+                 app.leader_roster
+                     .retain(|entry| entry.session_id != session_id);
+-                app.show_toast(delete_notice);
++                app.show_toast(&delete_notice);
+                 return vec![];
+             }
+             if after == AfterSessionDelete::UnusedHusk {
+@@ -1620,7 +1825,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+             } else if foreground && after == AfterSessionDelete::Welcome {
+                 effects.extend(dispatch_exit_session(app));
+             }
+-            app.show_toast(delete_notice);
++            app.show_toast(&delete_notice);
+             effects
+         }
+         TaskResult::DeleteSessionFailed {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 index 0cbf3632..3724147b 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
@@ -3127,7 +3296,7 @@ index 0cbf3632..3724147b 100644
      let prior_seq = match &app.auth_state {
          AuthState::Authenticating { request_seq, .. } => *request_seq,
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs
-index 2049a2d9..c620a71c 100644
+index 2049a2d9..2a81eaf5 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs
 @@ -1048,7 +1048,7 @@ fn auth_complete_retries_stashed_prompt_from_dashboard() {
@@ -3163,11 +3332,123 @@ index 2049a2d9..c620a71c 100644
      assert!(effects.is_empty(), "a failed command must not dispatch");
      assert!(app.agents.is_empty(), "no session should be created");
      let toast = app
+@@ -6542,6 +6554,101 @@ fn dashboard_stop_moves_selection_down_one() {
+     assert!(!app.agents.contains_key(first_id));
+     assert_eq!(app.dashboard.as_ref().unwrap().selected, Some(second));
+ }
++/// Workshop: one Delete press on an idle row deletes it — no arm, no second press — and the
++/// toast that follows names the session (the row's label), then the cursor moves on as a Ctrl+X
++/// delete's would.
++#[serial_test::serial(GROK_AGENT_DASHBOARD)]
++#[test]
++fn dashboard_delete_selected_deletes_an_idle_row_in_one_press_and_names_it() {
++    let mut app = test_app();
++    let _ = dispatch_new_session_inner(&mut app, None);
++    let _ = dispatch_new_session_inner(&mut app, None);
++    for (i, agent) in app.agents.values_mut().enumerate() {
++        agent.display_name = Some(format!("Ghostty install {i}"));
++        agent.session.session_id = Some(acp::SessionId::new(format!("s{i}")));
++    }
++    open_dashboard(&mut app);
++    let order = dashboard_row_order(&app);
++    let [first, second, ..] = order.as_slice() else {
++        panic!("need >=2 rows, got {order:?}");
++    };
++    let first = first.clone();
++    let second = second.clone();
++    if let Some(d) = app.dashboard.as_mut() {
++        d.focus_row(first.clone());
++    }
++    let effects = dispatch_dashboard_delete_selected(&mut app);
++    let crate::views::dashboard::DashboardRowId::TopLevel(first_id) = &first else {
++        panic!("first row should be top-level");
++    };
++    let label = test_agent(&app, *first_id)
++        .display_name
++        .clone()
++        .expect("label");
++    let session_id = test_agent(&app, *first_id)
++        .session
++        .session_id
++        .as_ref()
++        .expect("session id")
++        .to_string();
++    assert!(
++        matches!(
++            effects.last(),
++            Some(crate::app::actions::Effect::DeleteSession { .. })
++        ),
++        "one Delete press must delete, got {effects:?}"
++    );
++    assert!(
++        app.dashboard.as_ref().unwrap().delete_confirm.is_none(),
++        "nothing is left armed"
++    );
++    let _ = dispatch_task_result(
++        crate::app::actions::TaskResult::DeleteSessionComplete {
++            source: "current".into(),
++            session_id,
++            after: crate::app::actions::AfterSessionDelete::Dashboard,
++        },
++        &mut app,
++    );
++    assert!(!app.agents.contains_key(first_id));
++    let d = app.dashboard.as_ref().unwrap();
++    assert_eq!(d.selected, Some(second));
++    assert_eq!(
++        d.error_toast.as_deref(),
++        Some(format!("Deleted \u{201c}{label}\u{201d}").as_str()),
++        "the toast names what went"
++    );
++}
++/// Workshop: Delete leaves a busy row alone — no cancel, no delete, one toast. The stop stays on
++/// Ctrl+X.
++#[serial_test::serial(GROK_AGENT_DASHBOARD)]
++#[test]
++fn dashboard_delete_selected_leaves_a_working_row_alone() {
++    let mut app = test_app();
++    let _ = dispatch_new_session_inner(&mut app, None);
++    let id = *app.agents.keys().next().unwrap();
++    {
++        let agent = app.agents.get_mut(&id).unwrap();
++        agent.session.session_id = Some(acp::SessionId::new("busy"));
++        agent.session.state = crate::app::agent::AgentState::TurnRunning;
++    }
++    open_dashboard(&mut app);
++    if let Some(d) = app.dashboard.as_mut() {
++        d.focus_row(crate::views::dashboard::DashboardRowId::TopLevel(id));
++    }
++    let effects = dispatch_dashboard_delete_selected(&mut app);
++    assert!(
++        effects.is_empty(),
++        "a working row is neither cancelled nor deleted: {effects:?}"
++    );
++    assert!(app.agents.contains_key(&id));
++    let d = app.dashboard.as_ref().unwrap();
++    assert!(d.delete_confirm.is_none());
++    assert_eq!(
++        d.error_toast.as_deref(),
++        Some("Stop the session before deleting")
++    );
++}
+ /// Closing the LAST row has no row below it, so the cursor falls back
+ /// to the previous row rather than disappearing.
+ #[serial_test::serial(GROK_AGENT_DASHBOARD)]
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-index bf64193d..bbd838fd 100644
+index bf64193d..5332016c 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-@@ -181,6 +181,36 @@ fn test_app() -> AppView {
+@@ -35,7 +35,8 @@ use super::dashboard::{
+     apply_pending_dispatch_config, dispatch_dashboard_attach, dispatch_dashboard_begin_rename,
+     dispatch_dashboard_commit_rename, dispatch_dashboard_confirm_worktree,
+     dispatch_dashboard_create_new_agent_with_detail, dispatch_dashboard_delete,
+-    dispatch_dashboard_dispatch, dispatch_dashboard_dispatch_slash,
++    dispatch_dashboard_delete_selected, dispatch_dashboard_dispatch,
++    dispatch_dashboard_dispatch_slash,
+     dispatch_dashboard_overlay_cycle, dispatch_dashboard_overlay_exit,
+     dispatch_dashboard_overlay_stop, dispatch_dashboard_peek_reply,
+     dispatch_dashboard_permission_followup, dispatch_dashboard_permission_select,
+@@ -181,6 +182,36 @@ fn test_app() -> AppView {
          auth_url_poll_handle: None,
          deferred_startup: Default::default(),
          auth_use_oauth: false,
@@ -3204,7 +3485,7 @@ index bf64193d..bbd838fd 100644
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -222,6 +252,8 @@ fn test_app() -> AppView {
+@@ -222,6 +253,8 @@ fn test_app() -> AppView {
          welcome_menu_index: None,
          welcome_menu_rects: Vec::new(),
          welcome_show_changelog_action: false,
@@ -3213,7 +3494,7 @@ index bf64193d..bbd838fd 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -273,10 +305,12 @@ fn test_app() -> AppView {
+@@ -273,10 +306,12 @@ fn test_app() -> AppView {
          session_picker_entries_query: None,
          session_picker_pending_delete: None,
          welcome_tick: 0,
@@ -3227,7 +3508,7 @@ index bf64193d..bbd838fd 100644
          foreign_resume_launch_generation: 0,
          foreign_resume_launch: None,
          quit_for_update: false,
-@@ -289,6 +323,9 @@ fn test_app() -> AppView {
+@@ -289,6 +324,9 @@ fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -3237,7 +3518,7 @@ index bf64193d..bbd838fd 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -585,6 +622,28 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
+@@ -585,6 +623,28 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
      std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
      sess_dir
  }
@@ -9171,7 +9452,7 @@ index dcbe4033..b0a519b1 100644
  pub mod credit_bar;
  pub mod dashboard;
 diff --git a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
-index b828a780..bb154c97 100644
+index b828a780..3ea7ee46 100644
 --- a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
 @@ -35,7 +35,7 @@ pub(crate) mod workspace_mode;
@@ -9461,7 +9742,21 @@ index b828a780..bb154c97 100644
          #[cfg(feature = "local-workspace")]
          workspace_mode_rects,
      }
-@@ -2718,8 +2789,9 @@ mod tests {
+@@ -2501,10 +2572,12 @@ pub(crate) fn render_session_picker_body(
+             description: None,
+             pinned: false,
+         });
++        // Workshop: Delete removes the highlighted session at once; `d` (the action key's own
++        // chip below) still arms the two-step delete.
+         default_shortcuts.push(HintItem {
+             keys: vec![],
+             label: "delete".into(),
+-            custom_display: Some("d"),
++            custom_display: Some("Del"),
+             description: None,
+             pinned: false,
+         });
+@@ -2718,8 +2791,9 @@ mod tests {
                  "badge must not label the product: {rendered:?}"
              );
          }
@@ -9473,7 +9768,7 @@ index b828a780..bb154c97 100644
          assert!(footer.contains("acme"), "footer keeps the team: {footer:?}");
          assert!(
              !footer.ends_with('\u{2502}'),
-@@ -2862,6 +2934,7 @@ mod tests {
+@@ -2862,6 +2936,7 @@ mod tests {
              consent_state: &ConsentState::Done,
              consent_hover_link: None,
              login_label: None,
@@ -9481,7 +9776,7 @@ index b828a780..bb154c97 100644
              auth_code_input: "",
              auth_code_cursor_byte: 0,
              clipboard_delivery: None,
-@@ -2874,6 +2947,7 @@ mod tests {
+@@ -2874,6 +2949,7 @@ mod tests {
              team_name: None,
              has_access: true,
              has_claude_import: false,
@@ -9489,7 +9784,7 @@ index b828a780..bb154c97 100644
              mouse_pos: None,
              is_zdr_blocked: false,
              session_picker,
-@@ -2882,6 +2956,7 @@ mod tests {
+@@ -2882,6 +2958,7 @@ mod tests {
              pending_hint: None,
              startup_warnings: &[],
              pending_update_version: None,
@@ -9497,7 +9792,7 @@ index b828a780..bb154c97 100644
              foreign_resume_hint: None,
              is_api_key_auth: false,
              session_picker_content_results: None,
-@@ -2903,6 +2978,7 @@ mod tests {
+@@ -2903,6 +2980,7 @@ mod tests {
              welcome_announcement_expanded: false,
              upgrade_cta: None,
              privacy_banner: false,
@@ -9505,7 +9800,7 @@ index b828a780..bb154c97 100644
              #[cfg(feature = "local-workspace")]
              workspace_mode: WelcomeWorkspaceMode::Sandbox,
              #[cfg(feature = "local-workspace")]
-@@ -3696,7 +3772,7 @@ mod tests {
+@@ -3696,7 +3774,7 @@ mod tests {
          };
          let one_line = WelcomeLayout::compute(input(None));
          assert_eq!(one_line.logo_tier, LogoTier::Full);
@@ -9514,7 +9809,7 @@ index b828a780..bb154c97 100644
  
          let tall = WelcomeLayout::compute(input(Some(13)));
          assert_eq!(tall.logo_tier, LogoTier::Compact);
-@@ -3786,20 +3862,30 @@ mod tests {
+@@ -3786,20 +3864,30 @@ mod tests {
          }
      }
  
@@ -9556,7 +9851,7 @@ index b828a780..bb154c97 100644
      }
  
      /// End to end: a draft that steps the logo tier down paints the compact art, not the full art clipped into fewer rows.
-@@ -3816,7 +3902,7 @@ mod tests {
+@@ -3816,7 +3904,7 @@ mod tests {
  
          let mut buf = Buffer::empty(area);
          let _ = render_welcome(area, &mut buf, &params, &mut prompt, &mut picker);
@@ -9565,7 +9860,7 @@ index b828a780..bb154c97 100644
  
          prompt.set_text(&["line"; 30].join("\n"));
          let mut buf = Buffer::empty(area);
-@@ -4096,8 +4182,12 @@ mod tests {
+@@ -4096,8 +4184,12 @@ mod tests {
              ..Default::default()
          };
          assert!(
@@ -9580,7 +9875,7 @@ index b828a780..bb154c97 100644
              "clamped slot must keep the box within the area"
          );
      }
-@@ -4584,7 +4674,8 @@ the usual channels. "
+@@ -4584,7 +4676,8 @@ the usual channels. "
              hero_box::min_content_height(
                  &short_input,
                  short_expanded.hero_info.height,

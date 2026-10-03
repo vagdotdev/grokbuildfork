@@ -1038,6 +1038,25 @@ impl AgentView {
                     | crate::views::session_picker::PendingDeleteKey::NotArmed => {}
                 }
 
+                // Workshop: Delete (or Backspace with nothing typed) deletes the highlighted row now.
+                if !chat_mode
+                    && !focused_is_foreign
+                    && crate::views::session_picker::delete_now_key(ev, state)
+                    && let Some(pd) = crate::views::session_picker::pending_delete_from_selection(
+                        state.selected,
+                        &entry_map,
+                        entries.as_deref(),
+                        content_results.as_deref(),
+                    )
+                {
+                    *pending_delete = None;
+                    return InputOutcome::Action(Action::DeleteSession {
+                        source: pd.source,
+                        session_id: pd.session_id,
+                        cwd: pd.cwd,
+                    });
+                }
+
                 if let crossterm::event::Event::Key(key) = ev
                     && let Some(selection) = session_picker_worktree_selection(
                         key,
