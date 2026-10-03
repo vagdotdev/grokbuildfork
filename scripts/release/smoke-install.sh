@@ -72,6 +72,13 @@ engine_asset="voice-engine-$version-$platform.tar.gz"
 if [[ -f "$dist/$engine_asset" && -f "$dist/MODEL.lock.json" ]]; then
   voice=true
   cp "$dist/$engine_asset" "$dist/MODEL.lock.json" "$dist"/ggml-*.bin "$www/dl/v$version/" 2>/dev/null || die "voice assets incomplete in $dist"
+  # The installer reads the model files from the lock's fixed models release, a sibling of the
+  # version directory; serve them there too.
+  models_tag=$(jq -r '.models_release_tag // empty' "$dist/MODEL.lock.json")
+  if [[ -n "$models_tag" ]]; then
+    mkdir -p "$www/dl/$models_tag"
+    cp "$dist"/ggml-*.bin "$www/dl/$models_tag/"
+  fi
   # The smallest tier is what CPU runners end up with; the smoke pins it to keep the run bounded.
   # A forced tier also opts in to installing voice now (the default install has no voice at all).
   export WORKSHOP_VOICE_TIER=${WORKSHOP_VOICE_TIER:-base}

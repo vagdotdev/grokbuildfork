@@ -25,6 +25,8 @@
     }
   },
   "mirror_url_template": "https://github.com/{release_repo}/releases/download/v{version}/{file}",
+  "models_release_tag": "voice-models-v1",
+  "models_mirror_url_template": "https://github.com/{release_repo}/releases/download/{models_release_tag}/{file}",
   "selection": {
     "interim_budget_ms": 1000,
     "min_ram_bytes_for_probe": 3221225472,
