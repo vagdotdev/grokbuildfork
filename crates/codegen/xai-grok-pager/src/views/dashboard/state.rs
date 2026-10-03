@@ -1309,6 +1309,12 @@ impl DashboardState {
         self.peek_reply.set_voice_visible(visible);
     }
 
+    /// Workshop: `/privacy` on both dashboard prompt registries, offered only with an xAI account.
+    pub(crate) fn set_privacy_visible(&mut self, visible: bool) {
+        self.dispatch.set_privacy_visible(visible);
+        self.peek_reply.set_privacy_visible(visible);
+    }
+
     /// Gate `/auto` on both dashboard prompt registries (dispatch and peek reply).
     /// See [`crate::slash::SlashController::set_auto_mode_available`].
     pub(crate) fn set_auto_mode_available(&mut self, available: bool) {

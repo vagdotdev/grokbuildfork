@@ -20,8 +20,17 @@ pub struct ModelLockFile {
     /// Fastest-to-slowest is the reverse of this order: `turbo`, `small`, `base`.
     pub tiers: Vec<String>,
     pub models: std::collections::BTreeMap<String, ModelPin>,
-    /// `{release_repo}`, `{version}` and `{file}` are substituted at run time.
+    /// `{release_repo}`, `{version}` and `{file}` are substituted at run time. The release of
+    /// the running version: the helper archive, `SHA256SUMS`, `MODEL.lock.json`.
     pub mirror_url_template: String,
+    /// The one GitHub release that holds the model files for every version (they never change
+    /// between releases, so each release re-uploading 1.2 GB of them was waste). `None` in a
+    /// lock without one: the models then live on the version's release, as they used to.
+    #[serde(default)]
+    pub models_release_tag: Option<String>,
+    /// `{release_repo}`, `{models_release_tag}` and `{file}` are substituted at run time.
+    #[serde(default)]
+    pub models_mirror_url_template: Option<String>,
     pub selection: SelectionParams,
     pub engine: EngineLock,
     pub license: String,
@@ -121,19 +130,40 @@ impl ModelPin {
     }
 
     /// The one URL the background prefetch uses: this file on the release mirror, never the
-    /// upstream host (the prefetch's egress is the mirror's host only).
+    /// upstream host (the prefetch's egress is the mirror's host only). [`MIRROR_BASE_ENV`]
+    /// (a flat test mirror) wins; otherwise the models' own release.
     pub fn prefetch_url(&self) -> Option<String> {
-        release_mirror_base().map(|base| format!("{base}/{}", self.file))
+        if std::env::var_os(MIRROR_BASE_ENV).is_some_and(|v| !v.is_empty()) {
+            return release_mirror_base().map(|base| format!("{base}/{}", self.file));
+        }
+        self.mirror_url(RELEASE_REPO, RELEASE_VERSION)
     }
 
+    /// This file on the project mirror: the fixed models release when the lock names one
+    /// (`models_release_tag`), else the release of the running version.
     pub fn mirror_url(&self, release_repo: &str, version: Option<&str>) -> Option<String> {
+        if release_repo.is_empty() {
+            return None;
+        }
+        let lock = lock();
+        if let (Some(tag), Some(template)) = (
+            lock.models_release_tag.as_deref(),
+            lock.models_mirror_url_template.as_deref(),
+        ) && !tag.trim().is_empty()
+        {
+            return Some(
+                template
+                    .replace("{release_repo}", release_repo)
+                    .replace("{models_release_tag}", tag.trim())
+                    .replace("{file}", &self.file),
+            );
+        }
         let version = version?.trim().trim_start_matches('v');
-        if version.is_empty() || release_repo.is_empty() {
+        if version.is_empty() {
             return None;
         }
         Some(
-            lock()
-                .mirror_url_template
+            lock.mirror_url_template
                 .replace("{release_repo}", release_repo)
                 .replace("{version}", version)
                 .replace("{file}", &self.file),
@@ -199,17 +229,51 @@ mod tests {
         assert!(pin("tiny").is_none());
     }
 
+    /// The model files live on one fixed release (`voice-models-v1`) for every version, so the
+    /// mirror URL names that tag, not the running version — and works for a source build too.
     #[test]
-    fn mirror_url_substitutes_repo_version_and_file() {
+    fn mirror_url_names_the_fixed_models_release() {
+        let l = lock();
+        assert_eq!(l.models_release_tag.as_deref(), Some("voice-models-v1"));
         let base = pin("base").unwrap();
         assert_eq!(
             base.mirror_url("owner/name", Some("v1.2.3")).as_deref(),
-            Some("https://github.com/owner/name/releases/download/v1.2.3/ggml-base.bin")
+            Some("https://github.com/owner/name/releases/download/voice-models-v1/ggml-base.bin")
         );
-        assert!(base.mirror_url("owner/name", None).is_none());
+        assert_eq!(
+            base.mirror_url("owner/name", None).as_deref(),
+            Some("https://github.com/owner/name/releases/download/voice-models-v1/ggml-base.bin")
+        );
+        assert!(base.mirror_url("", Some("v1.2.3")).is_none());
         let urls = base.download_urls();
         assert_eq!(urls.last(), Some(&base.upstream_url));
         assert!(urls.iter().all(|u| u.starts_with("https://")));
+        // The helper and the lock stay on the running version's release.
+        assert!(l.mirror_url_template.contains("v{version}"));
+    }
+
+    /// A lock without a models release (an older or a test lock) keeps the models on the
+    /// version's release, as before.
+    #[test]
+    fn mirror_url_falls_back_to_the_version_release_without_a_models_tag() {
+        let mut l: ModelLockFile = serde_json::from_str(MODEL_LOCK_JSON).unwrap();
+        l.models_release_tag = None;
+        l.models_mirror_url_template = None;
+        let base = l.models.get("base").unwrap();
+        let url = |version: Option<&str>| -> Option<String> {
+            let version = version?.trim().trim_start_matches('v');
+            Some(
+                l.mirror_url_template
+                    .replace("{release_repo}", "owner/name")
+                    .replace("{version}", version)
+                    .replace("{file}", &base.file),
+            )
+        };
+        assert_eq!(
+            url(Some("v1.2.3")).as_deref(),
+            Some("https://github.com/owner/name/releases/download/v1.2.3/ggml-base.bin")
+        );
+        assert!(url(None).is_none());
     }
 
     #[test]
@@ -230,7 +294,8 @@ mod tests {
             },
         );
         crate::test_support::with_env(&[(MIRROR_BASE_ENV, None)], || {
-            // A release build derives the GitHub release; a source build has no mirror.
+            // A release build derives the GitHub release for the helper; a source build has
+            // none. The model comes from the fixed models release either way.
             match RELEASE_VERSION {
                 Some(v) => assert_eq!(
                     release_mirror_base(),
@@ -241,6 +306,12 @@ mod tests {
                 ),
                 None => assert!(release_mirror_base().is_none()),
             }
+            assert_eq!(
+                base.prefetch_url(),
+                Some(format!(
+                    "https://github.com/{RELEASE_REPO}/releases/download/voice-models-v1/ggml-base.bin"
+                ))
+            );
         });
     }
 }

@@ -1,0 +1,226 @@
+diff --git a/crates/codegen/xai-grok-pager/src/memory_trace.rs b/crates/codegen/xai-grok-pager/src/memory_trace.rs
+index 04381803..8c74fbfb 100644
+--- a/crates/codegen/xai-grok-pager/src/memory_trace.rs
++++ b/crates/codegen/xai-grok-pager/src/memory_trace.rs
+@@ -384,12 +384,17 @@ pub(crate) fn record_purge(
+ 
+ // ─── Startup ───────────────────────────────────────────────────────────────
+ 
+-/// Env: disable with `GROK_MEMTRACE=0|false|off`.
++/// Workshop: off unless asked for. Nothing reads the samples (their consumer was upstream's
++/// trace upload), so a default-on sampler only wrote an unpruned `memtrace/<ts>-<pid>.jsonl`
++/// per launch and kept a thread. Enable with `WORKSHOP_MEMTRACE=1` (or `GROK_MEMTRACE=1`;
++/// `true` / `on` work too) when a memory question needs the trace.
+ fn enabled_by_env() -> bool {
+-    !matches!(
+-        std::env::var("GROK_MEMTRACE").ok().as_deref(),
+-        Some("0") | Some("false") | Some("off")
+-    )
++    ["WORKSHOP_MEMTRACE", "GROK_MEMTRACE"].iter().any(|name| {
++        matches!(
++            std::env::var(name).ok().as_deref(),
++            Some("1") | Some("true") | Some("on")
++        )
++    })
+ }
+ 
+ fn interval_from_env() -> Duration {
+diff --git a/crates/codegen/xai-grok-pager/src/slash/registry.rs b/crates/codegen/xai-grok-pager/src/slash/registry.rs
+index e0282855..72011b98 100644
+--- a/crates/codegen/xai-grok-pager/src/slash/registry.rs
++++ b/crates/codegen/xai-grok-pager/src/slash/registry.rs
+@@ -150,6 +150,9 @@ impl CommandRegistry {
+         hidden.insert("voice".to_string());
+         // `/auto` is fail-closed: hidden until `set_auto_mode_available(true)`.
+         hidden.insert("auto".to_string());
++        // Workshop: `/privacy` opens an xAI-account setting; hidden until `set_privacy_visible(true)`
++        // says such an account is signed in.
++        hidden.insert("privacy".to_string());
+         // Memory commands follow the shell's own gate: shown once the ACP catalog advertises them.
+         hidden.extend(SHELL_GATED_COMMANDS.iter().map(|name| name.to_string()));
+         // `/share` starts menu-hidden (still dispatchable) until `set_share_visible(true)`
+@@ -358,6 +361,11 @@ impl CommandRegistry {
+         self.set_command_visible("recap", visible);
+     }
+ 
++    /// Workshop: show `/privacy` only while an xAI account is signed in (its setting lives there).
++    pub fn set_privacy_visible(&mut self, visible: bool) {
++        self.set_command_visible("privacy", visible);
++    }
++
+     /// Show or hide the `/voice` command (runtime voice gate).
+     /// Hidden by default in [`Self::new`]; revealed when the gate is on (startup default on, or after a remote kill switch is lifted).
+     pub fn set_voice_visible(&mut self, visible: bool) {
+diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/state.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/state.rs
+index b6b95d6e..191887dc 100644
+--- a/crates/codegen/xai-grok-pager/src/views/dashboard/state.rs
++++ b/crates/codegen/xai-grok-pager/src/views/dashboard/state.rs
+@@ -1309,6 +1309,12 @@ impl DashboardState {
+         self.peek_reply.set_voice_visible(visible);
+     }
+ 
++    /// Workshop: `/privacy` on both dashboard prompt registries, offered only with an xAI account.
++    pub(crate) fn set_privacy_visible(&mut self, visible: bool) {
++        self.dispatch.set_privacy_visible(visible);
++        self.peek_reply.set_privacy_visible(visible);
++    }
++
+     /// Gate `/auto` on both dashboard prompt registries (dispatch and peek reply).
+     /// See [`crate::slash::SlashController::set_auto_mode_available`].
+     pub(crate) fn set_auto_mode_available(&mut self, available: bool) {
+@@ -2626,7 +2632,18 @@ impl DashboardState {
+         // open.
+         let is_typing_char = matches!(key.code, KeyCode::Char(_))
+             && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT);
++        // Workshop: Delete / Backspace are registry keys (delete the row) only while the reply is
++        // a navigation surface; a focused reply keeps them as its editing keys.
++        let reply_focused = self.peek.as_ref().is_some_and(|p| p.focused);
++        let is_reply_edit = key.modifiers.is_empty()
++            && reply_focused
++            && match key.code {
++                KeyCode::Backspace => true,
++                KeyCode::Delete => !self.peek_reply.text().is_empty(),
++                _ => false,
++            };
+         let peek_owned = is_typing_char
++            || is_reply_edit
+             || matches!(key.code, KeyCode::Esc | KeyCode::Enter)
+             || (matches!(key.code, KeyCode::Up | KeyCode::Down | KeyCode::Tab)
+                 && key.modifiers.is_empty());
+@@ -3324,6 +3341,19 @@ impl DashboardState {
+         if let Some(id) = from_registry {
+             let honor = match key.code {
+                 KeyCode::Up | KeyCode::Down if key.modifiers.is_empty() => list_keys_active,
++                // Workshop: Delete deletes the highlighted row whenever the arrows move it (list
++                // focused, or an empty input; with the peek open, an unfocused or empty reply);
++                // Backspace only once no input is active, so it never doubles as "erase the
++                // draft" and then eats a row on the keystroke after.
++                KeyCode::Delete | KeyCode::Backspace if key.modifiers.is_empty() => {
++                    let is_delete = key.code == KeyCode::Delete;
++                    let nav_surface = match self.peek.as_ref() {
++                        Some(p) => !p.focused || (is_delete && self.peek_reply.text().is_empty()),
++                        None if is_delete => list_keys_active,
++                        None => self.list_focused,
++                    };
++                    nav_surface && self.selected.is_some()
++                }
+                 KeyCode::Char(_)
+                     if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+                 {
+@@ -3338,7 +3368,12 @@ impl DashboardState {
+             // Never let an auto-repeat (held key) drive the destructive. CtrlCtrl+X arm-then-confirm: holding the
+             // key would arm and immediately confirm a delete. Require discrete presses, like the picker's `y`
+             // confirm. Non-destructive actions may still repeat.
+-            if id == crate::actions::ActionId::DashboardStop && key.kind == KeyEventKind::Repeat {
++            // The same for a held Delete: one press, one row.
++            if matches!(
++                id,
++                crate::actions::ActionId::DashboardStop | crate::actions::ActionId::DashboardDelete
++            ) && key.kind == KeyEventKind::Repeat
++            {
+                 return InputOutcome::Unchanged;
+             }
+             if honor && let Some(outcome) = dashboard_action_for_id(id, &mut self.error_toast) {
+@@ -4182,6 +4217,7 @@ fn dashboard_action_for_id(
+         ActionId::DashboardTogglePin => Some(InputOutcome::Action(Action::DashboardTogglePin)),
+         ActionId::DashboardBeginRename => Some(InputOutcome::Action(Action::DashboardBeginRename)),
+         ActionId::DashboardStop => Some(InputOutcome::Action(Action::DashboardStop)),
++        ActionId::DashboardDelete => Some(InputOutcome::Action(Action::DashboardDeleteSelected)),
+         ActionId::DashboardCycleMode => Some(InputOutcome::Action(Action::DashboardCycleMode)),
+         ActionId::DashboardToggleAutoApprove => {
+             Some(InputOutcome::Action(Action::DashboardToggleAutoApprove))
+diff --git a/crates/codegen/xai-grok-shell/src/builtin.rs b/crates/codegen/xai-grok-shell/src/builtin.rs
+index 4d998cf8..68f4acfc 100644
+--- a/crates/codegen/xai-grok-shell/src/builtin.rs
++++ b/crates/codegen/xai-grok-shell/src/builtin.rs
+@@ -1,6 +1,10 @@
+ //! Built-in files extracted to `~/.grok/` on startup.
+ 
+-const BUILTIN_FILES: &[(&str, &str)] = &[("README.md", include_str!("../README.md"))];
++/// Workshop: nothing is extracted. Upstream wrote its own `README.md` (the other product's, 110 KB
++/// of it) into every user's home; Workshop's system prompt points the model at the bundled user
++/// guide instead, so the file had no reader and broke the rule that nothing a user looks at names
++/// the other product.
++const BUILTIN_FILES: &[(&str, &str)] = &[];
+ 
+ /// Extract built-in metadata files to `~/.grok/` on startup.
+ /// User skills under `~/.grok/skills/` are never managed here. Platform skills are delivered separately through the bundled skill cache.
+@@ -20,6 +24,7 @@ pub fn extract_builtin_files(grok_home: &std::path::Path) {
+     for stale in &["CHANGELOG.json", "CHANGELOG.md"] {
+         let _ = std::fs::remove_file(grok_home.join(stale));
+     }
++    remove_extracted_upstream_readme(grok_home);
+ 
+     for &(filename, content) in BUILTIN_FILES {
+         if let Err(e) = std::fs::write(grok_home.join(filename), content) {
+@@ -31,6 +36,18 @@ pub fn extract_builtin_files(grok_home: &std::path::Path) {
+     tracing::debug!(version, "Extracted built-in files");
+ }
+ 
++/// Workshop: a `README.md` an earlier version extracted goes on the first launch of a new one —
++/// only when it is that file (its first line names the other product), never a user's own.
++fn remove_extracted_upstream_readme(grok_home: &std::path::Path) {
++    let path = grok_home.join("README.md");
++    let Ok(text) = std::fs::read_to_string(&path) else {
++        return;
++    };
++    if text.lines().next().is_some_and(|l| l.trim() == "# Grok") {
++        let _ = std::fs::remove_file(&path);
++    }
++}
++
+ /// `(name, sha256)` of every `SKILL.md` body ever extracted into `$GROK_HOME/skills/`; `help` rows hash the pre-substitution bytes.
+ const FORMER_PLATFORM_SKILL_HASHES: &[(&str, &str)] = &[
+     (
+@@ -201,7 +218,8 @@ mod tests {
+ 
+         extract_builtin_files(home);
+ 
+-        assert_ne!(
++        // Workshop: nothing is extracted, and a file that is not upstream's README is left alone.
++        assert_eq!(
+             std::fs::read_to_string(home.join("README.md")).unwrap(),
+             "old"
+         );
+@@ -218,6 +236,41 @@ mod tests {
+         }
+     }
+ 
++    /// Workshop: a fresh home gets no `README.md`; the one an earlier version extracted (it
++    /// begins `# Grok`) is removed on the first launch of a new version, and only that one.
++    #[test]
++    fn no_upstream_readme_is_extracted_and_an_old_one_is_removed() {
++        let tmp = tempfile::tempdir().unwrap();
++        let home = tmp.path();
++        extract_builtin_files(home);
++        assert!(!home.join("README.md").exists(), "nothing extracted");
++        assert_eq!(
++            std::fs::read_to_string(home.join(".metadata_version")).unwrap(),
++            xai_grok_version::VERSION
++        );
++
++        std::fs::write(
++            home.join("README.md"),
++            "# Grok\n\nA terminal-based AI coding assistant.\n",
++        )
++        .unwrap();
++        std::fs::write(home.join(".metadata_version"), "0.2.4").unwrap();
++        extract_builtin_files(home);
++        assert!(
++            !home.join("README.md").exists(),
++            "the other product's README left by 0.2.4 is gone"
++        );
++
++        std::fs::write(home.join("README.md"), "# My notes\n").unwrap();
++        std::fs::write(home.join(".metadata_version"), "0.2.4").unwrap();
++        extract_builtin_files(home);
++        assert_eq!(
++            std::fs::read_to_string(home.join("README.md")).unwrap(),
++            "# My notes\n",
++            "a user's own file is never touched"
++        );
++    }
++
+     #[test]
+     fn same_version_does_not_restore_missing_or_delete_legacy_skills() {
+         let tmp = tempfile::tempdir().unwrap();

@@ -1828,12 +1828,20 @@ impl AppView {
     /// Call after gate flips, startup, reconnect, and session create/switch (so new agents inherit the gate).
     pub fn sync_permission_mode_slash_gate(&mut self) {
         let available = self.auto_mode_gate;
+        // Workshop: `/privacy` opens an xAI-account setting (coding data retention and training)
+        // and is fail-closed hidden; it is offered only once such an account is signed in
+        // through the optional xAI card, never to the free models, API keys or the subscription
+        // CLIs. It rides this sync so every surface, including later agents, agrees.
+        let privacy = self.xai_account_signed_in();
         for agent in self.agents.values_mut() {
             agent.prompt.set_auto_mode_available(available);
+            agent.prompt.set_privacy_visible(privacy);
         }
         self.welcome_prompt.set_auto_mode_available(available);
+        self.welcome_prompt.set_privacy_visible(privacy);
         if let Some(dashboard) = self.dashboard.as_mut() {
             dashboard.set_auto_mode_available(available);
+            dashboard.set_privacy_visible(privacy);
         }
     }
     /// Recompute the tier-restricted slash commands from the current auth state.
@@ -1859,10 +1867,18 @@ impl AppView {
             dashboard.set_restricted_commands(&names);
         }
         self.tier_restricted_commands = names;
+        // Workshop: an xAI account signing in (or out) is what shows or hides `/privacy`.
+        self.sync_permission_mode_slash_gate();
     }
     /// A personal subscription login. API keys, external auth providers, and backend-billed accounts carry no subscription tier
     pub(super) fn consumer_account(&self) -> bool {
         !self.backend_billed && !self.is_api_key_auth && !self.has_external_auth_provider
+    }
+    /// Workshop: an xAI account is signed in (the optional card): the shell reported a
+    /// subscription tier or a team for a consumer login. The free models, API keys and the
+    /// subscription CLIs never produce either.
+    pub(crate) fn xai_account_signed_in(&self) -> bool {
+        self.consumer_account() && (self.subscription_tier.is_some() || self.team_name.is_some())
     }
     /// Whether voice is withheld for the current subscription tier (free / X Basic personal accounts).
     /// Workshop overlay: only for the opt-in xAI voice provider, whose server zero-limits those tiers;

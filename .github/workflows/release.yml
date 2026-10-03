@@ -8,7 +8,8 @@
 #   workshop-<version>-<platform>.tar.gz      (linux/macos x86_64/aarch64; windows best-effort)
 #   voice-engine-<version>-<platform>.tar.gz  (whisper.cpp dictation helper, same platforms)
 #   *.tar.gz.sha256                           (per-asset checksum written by the job that built it)
-#   ggml-*.bin + MODEL.lock.json              (Whisper model mirror pinned by voice/MODEL.lock.json)
+#   MODEL.lock.json                           (the Whisper model pins; the ggml-*.bin files themselves
+#                                              live once on the fixed `voice-models-v1` release)
 #   SHA256SUMS
 #   GitHub artifact attestations (SLSA provenance) when the repo is public
 # and an updated channel manifest on the `release-channel` branch, consumed by
@@ -325,8 +326,12 @@ jobs:
         run: gh release upload '${{ needs.meta.outputs.tag }}' dist/* --repo "$WORKSHOP_RELEASE_REPO" --clobber
 
   voice-models:
-    # Mirror the Whisper models pinned in voice/MODEL.lock.json next to the CLI assets so the
-    # installer and the app's self-heal never depend on Hugging Face being up.
+    # Mirror the Whisper models pinned in voice/MODEL.lock.json so the installer and the app's
+    # self-heal never depend on Hugging Face being up. The model files never change between
+    # releases, so they live on ONE fixed release (`models_release_tag` in the lock,
+    # `voice-models-v1`) that every version's clients read; re-uploading 1.2 GB of them onto every
+    # release was waste. The lock itself still ships with each version (the installer and the
+    # attestations read it there).
     name: Voice model mirror
     needs: [meta, lint]
     runs-on: ubuntu-latest
@@ -334,15 +339,23 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Reuse the mirror if a previous run of this tag already uploaded it
+      - name: Find the fixed models release (create it once) and what it already holds
         id: present
         run: |
-          have=$(gh release view '${{ needs.meta.outputs.tag }}' --repo "$WORKSHOP_RELEASE_REPO" --json assets -q '.assets[].name')
+          models_tag=$(jq -r '.models_release_tag' voice/MODEL.lock.json)
+          [ -n "$models_tag" ] && [ "$models_tag" != null ] || { echo "::error::voice/MODEL.lock.json names no models_release_tag"; exit 1; }
+          echo "models_tag=$models_tag" >> "$GITHUB_OUTPUT"
+          if ! gh release view "$models_tag" --repo "$WORKSHOP_RELEASE_REPO" >/dev/null 2>&1; then
+            gh release create "$models_tag" --repo "$WORKSHOP_RELEASE_REPO" --target "${{ github.sha }}" \
+              --title "Voice models" --latest=false \
+              --notes "Speech-recognition model files Workshop's dictation downloads (pinned in voice/MODEL.lock.json; verified by SHA-256). Shared by every Workshop version; not a Workshop release."
+          fi
+          have=$(gh release view "$models_tag" --repo "$WORKSHOP_RELEASE_REPO" --json assets -q '.assets[].name')
           skip=true
-          for f in MODEL.lock.json $(jq -r '.models[].file' voice/MODEL.lock.json); do
+          for f in $(jq -r '.models[].file' voice/MODEL.lock.json); do
             grep -qx "$f" <<<"$have" || skip=false
           done
-          [ "$skip" = true ] && echo "::notice::voice model mirror is already on the draft; skipping"
+          [ "$skip" = true ] && echo "::notice::every pinned model is already on $models_tag; skipping the fetch"
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         if: steps.present.outputs.skip != 'true'
@@ -352,9 +365,14 @@ jobs:
       - name: Fetch and verify every pinned tier
         if: steps.present.outputs.skip != 'true'
         run: scripts/release/fetch-voice-models.sh --dist dist --cache ~/.cache/workshop-voice-models
-      - name: Upload to the draft release
+      - name: Upload the model files to the fixed models release
         if: steps.present.outputs.skip != 'true'
-        run: gh release upload '${{ needs.meta.outputs.tag }}' dist/* --repo "$WORKSHOP_RELEASE_REPO" --clobber
+        run: |
+          for f in $(jq -r '.models[].file' voice/MODEL.lock.json); do
+            gh release upload '${{ steps.present.outputs.models_tag }}' "dist/$f" --repo "$WORKSHOP_RELEASE_REPO" --clobber
+          done
+      - name: Upload the lock to the draft release
+        run: gh release upload '${{ needs.meta.outputs.tag }}' voice/MODEL.lock.json --repo "$WORKSHOP_RELEASE_REPO" --clobber
 
   assemble:
     name: Assemble release (SHA256SUMS, attestations)
@@ -425,6 +443,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Download the release assets
         run: gh release download '${{ needs.meta.outputs.tag }}' --repo "$WORKSHOP_RELEASE_REPO" --dir dist
+      - name: Download the smoke's model tier from the fixed models release
+        # The model files live on `models_release_tag` (see the voice-models job); the smoke pins
+        # the smallest tier, so that one file is all it serves.
+        run: |
+          models_tag=$(jq -r '.models_release_tag' voice/MODEL.lock.json)
+          base_file=$(jq -r '.models.base.file' voice/MODEL.lock.json)
+          gh release download "$models_tag" --repo "$WORKSHOP_RELEASE_REPO" --dir dist --pattern "$base_file"
       - name: install.sh against a local mirror of the release assets (CLI + voice helper + model)
         run: |
           scripts/release/smoke-install.sh \

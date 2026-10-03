@@ -150,6 +150,9 @@ impl CommandRegistry {
         hidden.insert("voice".to_string());
         // `/auto` is fail-closed: hidden until `set_auto_mode_available(true)`.
         hidden.insert("auto".to_string());
+        // Workshop: `/privacy` opens an xAI-account setting; hidden until `set_privacy_visible(true)`
+        // says such an account is signed in.
+        hidden.insert("privacy".to_string());
         // Memory commands follow the shell's own gate: shown once the ACP catalog advertises them.
         hidden.extend(SHELL_GATED_COMMANDS.iter().map(|name| name.to_string()));
         // `/share` starts menu-hidden (still dispatchable) until `set_share_visible(true)`
@@ -356,6 +359,11 @@ impl CommandRegistry {
     /// Hidden by default in [`Self::new`]; revealed from initialize meta.
     pub fn set_recap_visible(&mut self, visible: bool) {
         self.set_command_visible("recap", visible);
+    }
+
+    /// Workshop: show `/privacy` only while an xAI account is signed in (its setting lives there).
+    pub fn set_privacy_visible(&mut self, visible: bool) {
+        self.set_command_visible("privacy", visible);
     }
 
     /// Show or hide the `/voice` command (runtime voice gate).

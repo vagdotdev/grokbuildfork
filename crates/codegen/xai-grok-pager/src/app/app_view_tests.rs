@@ -2365,6 +2365,66 @@ fn is_restricted_tier_classification() {
 fn voice_not_in_tier_restricted_commands() {
     assert!(!TIER_RESTRICTED_COMMANDS.contains(&"voice"));
 }
+/// Workshop: `/privacy` opens an xAI-account setting, so it is hidden on a fresh home (the free
+/// models), for API keys and for external auth, and offered once an xAI account (a tier or a
+/// team) is signed in — on the welcome composer, every agent and the dashboard alike. The tier
+/// deny list is not involved (a typed `/privacy` must never open the SuperGrok upsell).
+#[test]
+fn privacy_is_hidden_until_an_xai_account_is_signed_in() {
+    let hidden = |app: &AppView| {
+        app.welcome_prompt
+            .slash_controller
+            .registry()
+            .get("privacy")
+            .is_none()
+    };
+    let mut app = test_app_with_agent();
+    app.sync_permission_mode_slash_gate();
+    assert!(hidden(&app), "a fresh home has no xAI account");
+    assert!(
+        !app.tier_restricted_commands.contains(&"privacy".to_owned()),
+        "/privacy is hidden, not tier-restricted"
+    );
+    let agent = app.agents.values().next().expect("agent");
+    assert!(
+        agent
+            .prompt
+            .slash_controller
+            .registry()
+            .get("privacy")
+            .is_none(),
+        "the agent's composer agrees"
+    );
+
+    let mut app = test_app();
+    app.apply_auth_meta(&xai_grok_login::AuthMeta {
+        subscription_tier: Some("SuperGrok".into()),
+        ..Default::default()
+    });
+    assert!(!hidden(&app), "an xAI account with a tier sees /privacy");
+
+    let mut app = test_app();
+    app.apply_auth_meta(&xai_grok_login::AuthMeta {
+        team_name: Some("Acme Corp".into()),
+        ..Default::default()
+    });
+    assert!(!hidden(&app), "an xAI team account sees /privacy");
+
+    let mut app = test_app();
+    app.apply_auth_meta(&xai_grok_login::AuthMeta {
+        subscription_tier: Some("api_key".into()),
+        auth_mode: Some("api_key".into()),
+        ..Default::default()
+    });
+    assert!(hidden(&app), "an API key is not an xAI account");
+    assert!(
+        !app.welcome_prompt
+            .slash_controller
+            .registry()
+            .is_restricted("privacy"),
+        "never on the upsell path"
+    );
+}
 #[test]
 fn is_voice_tier_restricted_only_for_the_xai_provider() {
     let mut app = test_app();
