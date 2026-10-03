@@ -24,3 +24,4 @@
 0022-double-slash-voice.patch	product	crates/codegen/xai-grok-pager/src/slash/commands/voice.rs crates/codegen/xai-grok-pager/src/views/shortcuts_help.rs crates/codegen/xai-grok-pager/src/views/shortcuts_help_tests.rs
 0023-startup-auth-reload-no-retry-sleep.patch	product	crates/codegen/xai-grok-login/src/manager.rs
 0024-delete-key-deletes-sessions.patch	product	crates/codegen/xai-grok-pager/src/actions/mod.rs crates/codegen/xai-grok-pager/src/actions/defaults.rs crates/codegen/xai-grok-pager/src/views/dashboard/state.rs crates/codegen/xai-grok-pager/src/views/dashboard/state_tests.rs crates/codegen/xai-grok-pager/src/app/modals.rs
+0025-welcome-card-stays-until-first-send.patch	product	crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/optimistic_home.rs crates/codegen/xai-grok-pager/src/slash/commands/feedback.rs

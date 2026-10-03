@@ -967,7 +967,10 @@ fn pick_model(j: &mut Journey, filter: &str, label: &str) {
     wait_for(&mut j.h, pty_common::PICKER_OPEN, 15);
     wait_gone(&mut j.h, "detecting", 20);
     j.h.inject_keys(filter.as_bytes()).unwrap();
-    j.h.update(Duration::from_millis(600));
+    // The rails' model lists land after `detecting` goes (`Loading models…` in between); an
+    // Enter on a filter that matches nothing yet does nothing, so wait for the row itself.
+    wait_for(&mut j.h, label, 20);
+    j.h.update(Duration::from_millis(300));
     j.h.inject_keys(b"\r").unwrap();
     pty_common::wait_picker_closed(&mut j.h, 30);
     let started = Instant::now();

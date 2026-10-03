@@ -241,6 +241,7 @@ pub(crate) fn test_app() -> AppView {
         welcome_menu_rects: Vec::new(),
         welcome_show_changelog_action: false,
         welcome_show_resume_action: true,
+        welcome_show_worktree_action: true,
         welcome_has_resumable_sessions: std::cell::OnceCell::new(),
         welcome_import_banner_rect: None,
         last_mouse_pos: None,
@@ -3299,15 +3300,15 @@ fn welcome_ctrl_d_requires_confirmation() {
 #[test]
 fn menu_action_indices_without_changelog() {
     assert!(matches!(
-        dispatch_menu_action(0, false, true, false, None),
+        dispatch_menu_action(0, false, true, true, false, None),
         InputOutcome::Action(Action::OpenNewWorktreeDialog)
     ));
     assert!(matches!(
-        dispatch_menu_action(1, false, true, false, None),
+        dispatch_menu_action(1, false, true, true, false, None),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, false, true, false, None),
+        dispatch_menu_action(2, false, true, true, false, None),
         InputOutcome::Action(Action::Quit)
     ));
 }
@@ -3315,22 +3316,22 @@ fn menu_action_indices_without_changelog() {
 fn menu_action_changelog_sits_above_quit() {
     let md = Some("# notes");
     assert!(matches!(
-        dispatch_menu_action(1, false, true, true, md),
+        dispatch_menu_action(1, false, true, true, true, md),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, false, true, true, md),
+        dispatch_menu_action(2, false, true, true, true, md),
         InputOutcome::Action(Action::ShowReleaseNotes { .. })
     ));
     assert!(matches!(
-        dispatch_menu_action(3, false, true, true, md),
+        dispatch_menu_action(3, false, true, true, true, md),
         InputOutcome::Action(Action::Quit)
     ));
 }
 /// Workshop: the release-notes row never dead-ends; without fetched markdown it opens the bundled notes.
 #[test]
 fn menu_action_release_notes_before_fetch_opens_bundled_notes() {
-    match dispatch_menu_action(2, false, true, true, None) {
+    match dispatch_menu_action(2, false, true, true, true, None) {
         InputOutcome::Action(Action::ShowReleaseNotes { content, .. }) => {
             assert!(content.contains("# Workshop release notes"), "{content}");
         }
@@ -3341,19 +3342,19 @@ fn menu_action_release_notes_before_fetch_opens_bundled_notes() {
 #[test]
 fn menu_action_indices_without_resume() {
     assert!(matches!(
-        dispatch_menu_action(0, false, false, true, None),
+        dispatch_menu_action(0, false, true, false, true, None),
         InputOutcome::Action(Action::OpenNewWorktreeDialog)
     ));
     assert!(matches!(
-        dispatch_menu_action(1, false, false, true, None),
+        dispatch_menu_action(1, false, true, false, true, None),
         InputOutcome::Action(Action::ShowReleaseNotes { .. })
     ));
     assert!(matches!(
-        dispatch_menu_action(2, false, false, true, None),
+        dispatch_menu_action(2, false, true, false, true, None),
         InputOutcome::Action(Action::Quit)
     ));
     assert!(matches!(
-        dispatch_menu_action(1, false, false, false, None),
+        dispatch_menu_action(1, false, true, false, false, None),
         InputOutcome::Action(Action::Quit)
     ));
 }
@@ -3361,23 +3362,44 @@ fn menu_action_indices_without_resume() {
 fn menu_action_indices_with_import_and_changelog() {
     let md = Some("# notes");
     assert!(matches!(
-        dispatch_menu_action(0, true, true, true, md),
+        dispatch_menu_action(0, true, true, true, true, md),
         InputOutcome::Action(Action::ImportClaudeSettings)
     ));
     assert!(matches!(
-        dispatch_menu_action(1, true, true, true, md),
+        dispatch_menu_action(1, true, true, true, true, md),
         InputOutcome::Action(Action::OpenNewWorktreeDialog)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, true, true, true, md),
+        dispatch_menu_action(2, true, true, true, true, md),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(3, true, true, true, md),
+        dispatch_menu_action(3, true, true, true, true, md),
         InputOutcome::Action(Action::ShowReleaseNotes { .. })
     ));
     assert!(matches!(
-        dispatch_menu_action(4, true, true, true, md),
+        dispatch_menu_action(4, true, true, true, true, md),
+        InputOutcome::Action(Action::Quit)
+    ));
+}
+/// Workshop: outside a git repository the New worktree row is absent and the indices close up.
+#[test]
+fn menu_action_indices_without_worktree() {
+    let md = Some("# notes");
+    assert!(matches!(
+        dispatch_menu_action(0, false, false, true, true, md),
+        InputOutcome::Action(Action::FetchSessionList)
+    ));
+    assert!(matches!(
+        dispatch_menu_action(1, false, false, true, true, md),
+        InputOutcome::Action(Action::ShowReleaseNotes { .. })
+    ));
+    assert!(matches!(
+        dispatch_menu_action(2, false, false, true, true, md),
+        InputOutcome::Action(Action::Quit)
+    ));
+    assert!(matches!(
+        dispatch_menu_action(0, false, false, false, false, None),
         InputOutcome::Action(Action::Quit)
     ));
 }
@@ -4960,16 +4982,102 @@ fn welcome_pending_n_is_unchanged() {
     let outcome = app.handle_input(&key_event(KeyCode::Char('n'), KeyModifiers::NONE));
     assert!(matches!(outcome, InputOutcome::Unchanged));
 }
+/// Workshop: typing on the welcome screen types into the home composer; the card stays until the
+/// message is sent (Enter), which is the only keystroke that leaves home.
 #[test]
-fn welcome_done_n_leaves_home() {
+fn welcome_done_typing_stays_on_the_card_until_enter_sends() {
     let mut app = test_app();
     app.auth_state = AuthState::Done;
-    let outcome = app.handle_input(&key_event(KeyCode::Char('n'), KeyModifiers::NONE));
+    app.welcome_prompt_focused = false;
+    app.welcome_menu_index = Some(0);
+    for c in ['h', 'i'] {
+        let outcome = app.handle_input(&key_event(KeyCode::Char(c), KeyModifiers::NONE));
+        assert!(
+            matches!(outcome, InputOutcome::Changed),
+            "a letter stays on the welcome card, got {outcome:?}"
+        );
+    }
+    assert_eq!(app.welcome_prompt.text(), "hi");
+    assert!(app.welcome_prompt_focused, "typing focuses the composer");
+    assert!(
+        app.welcome_menu_index.is_none(),
+        "typing leaves the menu cursor"
+    );
+    let outcome = app.handle_input(&key_event(KeyCode::Backspace, KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Changed));
+    assert_eq!(
+        app.welcome_prompt.text(),
+        "h",
+        "editing keys edit the draft"
+    );
+    let outcome = app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        matches!(outcome, InputOutcome::Action(Action::SendPrompt(ref text)) if text == "h"),
+        "Enter sends the typed message, got {outcome:?}"
+    );
+}
+/// Workshop: a `/` opening an empty composer still goes to the agent view, where the slash
+/// dropdown lives; a `/` inside typed text is text.
+#[test]
+fn welcome_done_slash_on_an_empty_composer_leaves_home() {
+    let mut app = test_app();
+    app.auth_state = AuthState::Done;
+    let outcome = app.handle_input(&key_event(KeyCode::Char('/'), KeyModifiers::NONE));
     assert!(matches!(
         outcome,
         InputOutcome::ActionThenForward(Action::LeaveHome)
     ));
     assert!(app.welcome_prompt.text().is_empty());
+    let mut app = test_app();
+    app.auth_state = AuthState::Done;
+    let _ = app.handle_input(&key_event(KeyCode::Char('a'), KeyModifiers::NONE));
+    let outcome = app.handle_input(&key_event(KeyCode::Char('/'), KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Changed));
+    assert_eq!(app.welcome_prompt.text(), "a/");
+}
+/// Workshop: a bracketed paste of an image file's path is an attachment, so it goes to the
+/// agent view (where it becomes an `[Image #1]` chip); prose that merely mentions a path stays
+/// on the card as text.
+#[test]
+fn welcome_done_pasted_image_path_leaves_home_for_the_chip() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("cat.png");
+    // A 1x1 PNG, enough for the drop classifier to call it an image.
+    std::fs::write(
+        &png,
+        [
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ],
+    )
+    .unwrap();
+    assert!(!welcome_paste_is_text(&png.display().to_string()));
+    assert!(welcome_paste_is_text("install ghostty"));
+    assert!(welcome_paste_is_text(
+        "the file /tmp is a directory on Unix"
+    ));
+    let mut app = test_app();
+    app.auth_state = AuthState::Done;
+    let outcome = app.handle_input(&Event::Paste(png.display().to_string()));
+    assert!(matches!(
+        outcome,
+        InputOutcome::ActionThenForward(Action::LeaveHome)
+    ));
+    assert!(app.welcome_prompt.text().is_empty());
+}
+/// Workshop: pasted text lands in the home composer and the card stays.
+#[test]
+fn welcome_done_bracketed_paste_lands_in_the_home_composer() {
+    let mut app = test_app();
+    app.auth_state = AuthState::Done;
+    app.welcome_prompt_focused = false;
+    let outcome = app.handle_input(&Event::Paste("install ghostty".to_owned()));
+    assert!(matches!(outcome, InputOutcome::Changed));
+    assert_eq!(app.welcome_prompt.text(), "install ghostty");
+    assert!(app.welcome_prompt_focused);
 }
 #[test]
 fn welcome_done_ctrl_w_opens_new_worktree_dialog() {
@@ -4982,8 +5090,10 @@ fn welcome_done_ctrl_w_opens_new_worktree_dialog() {
         InputOutcome::Action(Action::OpenNewWorktreeDialog)
     ));
 }
+/// Workshop: a paste chord with text on the clipboard pastes into the home composer and the card
+/// stays; a clipboard without text (an image) still hands the paste to the agent view.
 #[test]
-fn welcome_paste_chords_leave_home() {
+fn welcome_paste_chords_paste_text_or_leave_home_for_an_image() {
     let chords = [
         KeyModifiers::CONTROL,
         KeyModifiers::SUPER,
@@ -4994,10 +5104,29 @@ fn welcome_paste_chords_leave_home() {
         let mut app = test_app();
         app.auth_state = AuthState::Done;
         app.welcome_prompt_focused = focused;
+        crate::clipboard::set_clipboard_probe_hook(
+            crate::clipboard::ClipboardProbeHook::no_raster(Some("open my photos")),
+        );
         let outcome = app.handle_input(&key_event(KeyCode::Char('v'), mods));
+        crate::clipboard::clear_clipboard_probe_hook();
+        assert!(
+            matches!(outcome, InputOutcome::Changed),
+            "{mods:?} focused={focused}: text pastes into the home composer, got {outcome:?}"
+        );
+        assert_eq!(app.welcome_prompt.text(), "open my photos");
+        assert!(app.welcome_prompt_focused);
+
+        let mut app = test_app();
+        app.auth_state = AuthState::Done;
+        app.welcome_prompt_focused = focused;
+        crate::clipboard::set_clipboard_probe_hook(
+            crate::clipboard::ClipboardProbeHook::no_raster(None),
+        );
+        let outcome = app.handle_input(&key_event(KeyCode::Char('v'), mods));
+        crate::clipboard::clear_clipboard_probe_hook();
         assert!(
             matches!(outcome, InputOutcome::ActionThenForward(Action::LeaveHome)),
-            "{mods:?} focused={focused}: paste must leave home, got {outcome:?}"
+            "{mods:?} focused={focused}: no text on the clipboard leaves home, got {outcome:?}"
         );
         assert!(app.welcome_prompt_focused);
     }

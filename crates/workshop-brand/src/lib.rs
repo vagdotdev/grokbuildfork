@@ -19,12 +19,13 @@ pub fn title() -> &'static str {
     TITLE
 }
 
-/// Composer placeholder: an invitation to type, with one concrete example.
-pub const PROMPT_PLACEHOLDER: &str = "Ask anything\u{2026} \"add a test for multiply\"";
+/// Composer placeholder: an invitation to type, with one concrete example — an everyday task,
+/// not a programming exercise (Workshop is for anything a person wants done on their computer).
+pub const PROMPT_PLACEHOLDER: &str = "Ask anything\u{2026} \"tidy up my Downloads folder\"";
 
-/// Subtitle under the hero title.
+/// Subtitle under the hero title: the one product name, and where a note goes.
 pub fn hero_subtitle() -> String {
-    "Thanks for trying Vagdev's Workshop \u{2014} /feedback saves a note.".to_owned()
+    "Thanks for trying Workshop \u{2014} /feedback saves a note.".to_owned()
 }
 
 /// Workshop's own release notes, bundled so `/release-notes` works offline and without a CDN.
@@ -32,43 +33,6 @@ pub const RELEASE_NOTES: &str = include_str!("../assets/release-notes.md");
 
 /// Public repository: issues and releases.
 pub const REPO_URL: &str = "https://github.com/vagdotdev/grokbuildfork";
-
-/// A prefilled "new issue" link for a feedback note (title and body URL-encoded, capped so the
-/// URL stays within what browsers accept).
-pub fn feedback_issue_url(text: &str, version: &str) -> String {
-    let text = text.trim();
-    let title: String = text
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .chars()
-        .take(80)
-        .collect();
-    // Short enough to stay one readable line in a transcript; the full note is on disk. The
-    // version the user ran is the one fact the maintainer always needs.
-    let note: String = text.chars().take(600).collect();
-    let body = format!("{note}\n\n— Workshop {version}");
-    format!(
-        "{REPO_URL}/issues/new?title={}&body={}",
-        url_encode(&format!("Feedback: {title}")),
-        url_encode(&body)
-    )
-}
-
-/// Percent-encode every byte outside the unreserved set (RFC 3986), so the text survives inside a
-/// query string in any browser.
-fn url_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() * 3);
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
 
 /// Whether a remote announcement may take the welcome hero's info slot.
 /// Only critical notices (outages, security) do; promos and product news are upstream marketing.
@@ -100,14 +64,26 @@ mod tests {
     fn subtitle_thanks_the_user_and_points_at_feedback() {
         assert_eq!(
             hero_subtitle(),
-            "Thanks for trying Vagdev's Workshop \u{2014} /feedback saves a note."
+            "Thanks for trying Workshop \u{2014} /feedback saves a note."
+        );
+        assert!(
+            !hero_subtitle().contains("Vagdev"),
+            "one product name: the subtitle uses the same one as the title"
+        );
+        assert!(
+            !hero_subtitle().to_ascii_lowercase().contains("github"),
+            "a note is saved, nothing is drafted anywhere"
         );
     }
 
     #[test]
-    fn placeholder_invites_typing_with_an_example() {
+    fn placeholder_invites_typing_with_an_everyday_example() {
         assert!(PROMPT_PLACEHOLDER.starts_with("Ask anything"));
-        assert!(PROMPT_PLACEHOLDER.contains("add a test for multiply"));
+        assert!(PROMPT_PLACEHOLDER.contains("tidy up my Downloads folder"));
+        assert!(
+            !PROMPT_PLACEHOLDER.contains("test"),
+            "the example is not a programming exercise"
+        );
     }
 
     #[test]
@@ -119,24 +95,6 @@ mod tests {
             !lower.contains("grok build"),
             "release notes name the product"
         );
-    }
-
-    #[test]
-    fn feedback_issue_url_is_prefilled_and_encoded() {
-        let url = feedback_issue_url(
-            "Picker closes on q\n\nTyping qwen leaves wen in the prompt.",
-            "0.2.2",
-        );
-        assert!(url.starts_with("https://github.com/vagdotdev/grokbuildfork/issues/new?title="));
-        assert!(url.contains("title=Feedback%3A%20Picker%20closes%20on%20q"));
-        assert!(url.contains("&body=Picker%20closes%20on%20q%0A%0ATyping"));
-        assert!(
-            url.ends_with("Workshop%200.2.2"),
-            "the version the user ran closes the body: {url}"
-        );
-        assert!(!url.contains(' ') && !url.contains('\n'));
-        let long = "x".repeat(10_000);
-        assert!(feedback_issue_url(&long, "0.2.2").len() < 1_000);
     }
 
     #[test]

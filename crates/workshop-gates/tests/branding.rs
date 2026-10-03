@@ -387,7 +387,11 @@ fn welcome_copy_is_one_name_and_an_invitation_to_type() {
     assert_eq!(workshop_brand::title(), "Workshop");
     assert_eq!(workshop_brand::title(), workshop_brand::TITLE);
     assert!(workshop_brand::PROMPT_PLACEHOLDER.starts_with("Ask anything"));
-    assert!(workshop_brand::PROMPT_PLACEHOLDER.contains("\"add a test for multiply\""));
+    assert!(workshop_brand::PROMPT_PLACEHOLDER.contains("\"tidy up my Downloads folder\""));
+    assert!(
+        !workshop_brand::hero_subtitle().contains("Vagdev"),
+        "the subtitle uses the one product name"
+    );
     assert!(!mentions_grok(&workshop_brand::hero_subtitle()));
     assert!(workshop_brand::RELEASE_NOTES.starts_with("# Workshop release notes"));
     // The notes may name the repository and, once, `~/.grok` as the directory Workshop refuses

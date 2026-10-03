@@ -4834,15 +4834,6 @@ mod tests {
         };
         a
     }
-    fn get_agent(
-        app: &AppView,
-        id: crate::app::agent::AgentId,
-    ) -> &crate::app::agent_view::AgentView {
-        let Some(a) = app.agents.get(&id) else {
-            panic!("missing agent {id:?}");
-        };
-        a
-    }
     use crate::render::draw::WriterSync;
     use crossterm::event::{KeyEvent, KeyEventState};
     #[test]
@@ -5267,7 +5258,9 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn welcome_paste_preserves_create_and_forwarded_prompt() {
+    /// Workshop: a paste on the welcome lands in the home composer and the card stays; no
+    /// session is asked for until the message is sent.
+    async fn welcome_paste_lands_in_the_home_composer_and_keeps_the_card() {
         let mut app = crate::app::app_view::tests::test_app();
         let (acp_tx, mut acp_rx) = tokio::sync::mpsc::unbounded_channel();
         app.acp_tx = acp_tx;
@@ -5291,19 +5284,16 @@ mod tests {
         )
         .await;
         assert!(!result.should_quit);
-        assert!(matches!(
-            acp_rx.recv().await.expect("session/new request"),
-            xai_acp_lib::AcpAgentMessage::NewSession(_)
-        ));
         assert!(
-            matches!(app.active_view, crate::app::app_view::ActiveView::Agent(_)),
-            "paste must leave the home screen, got {:?}",
+            acp_rx.try_recv().is_err(),
+            "a paste asks for no session; the message's send does"
+        );
+        assert!(
+            matches!(app.active_view, crate::app::app_view::ActiveView::Welcome),
+            "paste keeps the welcome card up, got {:?}",
             app.active_view
         );
-        assert_eq!(
-            get_agent(&app, crate::app::agent::AgentId(0)).prompt.text(),
-            "fix the bug"
-        );
+        assert_eq!(app.welcome_prompt.text(), "fix the bug");
     }
     #[tokio::test]
     async fn handled_counts_only_events_processed_before_suspend_break() {

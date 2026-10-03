@@ -20,8 +20,8 @@ You know enough to be productive. When you want more:
 - Automate anything: `workshop -p "summarize new TODOs" --output-format json`
   runs headless — great for scripts and CI.
 - Stay current with `workshop update`; see what changed with `/release-notes`.
-- Something feel off? `/feedback` saves your note under `~/.workshop` and
-  drafts a GitHub issue you can open with one key.
+- Something feel off? `/feedback` saves your note under `~/.workshop`; nothing
+  is sent anywhere.
 
 ## Reopen this tutorial
 

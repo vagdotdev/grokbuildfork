@@ -467,7 +467,7 @@ pub(crate) fn default_palette_entries(
             command: PaletteCommand::SlashCommand("/session-info".into()),
         },
         PaletteEntry {
-            label: "Feedback (saved locally, drafts a GitHub issue)".into(),
+            label: "Feedback (saved locally)".into(),
             shortcut: "/feedback".into(),
             command: PaletteCommand::OpenFeedbackModal,
         },
