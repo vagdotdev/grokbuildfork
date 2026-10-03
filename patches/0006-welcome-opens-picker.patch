@@ -190,7 +190,7 @@ index 05556693..41171fbf 100644
              ActionId::ShortcutsHelp => {
                  use crate::views::shortcuts_help;
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..6cd101bf 100644
+index fc9a4553..abe4dab4 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -221,7 +221,7 @@ index fc9a4553..6cd101bf 100644
      /// Minimal mode only: the Ctrl+T **force-show** pin for the todo panel.
      /// Minimal-mode-only per-session state, consolidated into a single field so the central `AppView` isn't peppered with loose minimal flags.
      /// Default-empty and inert outside `--minimal`; the `xai-grok-pager-minimal` crate reads/mutates it through the `crate::minimal_api` accessors.
-@@ -754,9 +764,15 @@ pub struct AppView {
+@@ -754,9 +764,18 @@ pub struct AppView {
      pub welcome_menu_index: Option<usize>,
      /// Hit-test rects for welcome menu items (populated during render).
      pub welcome_menu_rects: Vec<ratatui::layout::Rect>,
@@ -232,13 +232,16 @@ index fc9a4553..6cd101bf 100644
 +    /// Whether the welcome menu currently includes the "Resume session" row (Workshop hides it
 +    /// while this directory has nothing to resume). Set during render.
 +    pub welcome_show_resume_action: bool,
++    /// Whether the welcome menu currently includes the "New worktree" row (Workshop hides it
++    /// outside a git repository). Set during render.
++    pub welcome_show_worktree_action: bool,
 +    /// Workshop: whether this directory has a session worth resuming, probed once per launch by
 +    /// the first welcome frame that asks (the answer cannot change while the home screen is up).
 +    pub welcome_has_resumable_sessions: std::cell::OnceCell<bool>,
      /// Hit-test rect for the import-claude banner on the welcome screen.
      pub welcome_import_banner_rect: Option<ratatui::layout::Rect>,
      /// Last known mouse position (column, row), updated on every Mouse event.
-@@ -872,9 +888,13 @@ pub struct AppView {
+@@ -872,9 +891,13 @@ pub struct AppView {
      pub session_picker_pending_delete: Option<crate::views::session_picker::PendingDelete>,
      /// Tick counter for welcome screen spinner animation.
      pub welcome_tick: u64,
@@ -255,7 +258,7 @@ index fc9a4553..6cd101bf 100644
      /// CLI model override (`-m` / `--model`).
      /// Seeded into every new `AgentSession.deferred_model_switch` so the model is applied once the session is created.
      pub cli_model_override: Option<acp::ModelId>,
-@@ -954,7 +974,7 @@ pub struct AppView {
+@@ -954,7 +977,7 @@ pub struct AppView {
      /// One-shot gate for the small-screen `/compact-mode` tip: set after the first evaluation at a stable agent-view draw (regardless of outcome).
      /// Later resizes thus can never re-trigger the tip within this run.
      pub small_screen_tip_evaluated: bool,
@@ -264,7 +267,7 @@ index fc9a4553..6cd101bf 100644
      /// The environment gates are process-constant, so one evaluation decides the run.
      pub ssh_wrap_tip_evaluated: bool,
      /// State for the clipboard-image tip, polled opportunistically and only while the terminal is focused.
-@@ -1009,6 +1029,97 @@ pub struct AppView {
+@@ -1009,6 +1032,97 @@ pub struct AppView {
      pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
      /// Whether deferred welcome-screen login should force OAuth.
      pub auth_use_oauth: bool,
@@ -362,7 +365,7 @@ index fc9a4553..6cd101bf 100644
      /// Delivery state from the last clipboard copy during auth.
      pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
      /// Generation of the current auth copy feedback and its clear timer.
-@@ -1076,6 +1187,9 @@ pub struct AppView {
+@@ -1076,6 +1190,9 @@ pub struct AppView {
      /// Latest version string from a background update check.
      /// Set when a newer version is detected; rendered as a notification on the welcome screen.
      pub pending_update_version: Option<String>,
@@ -372,7 +375,7 @@ index fc9a4553..6cd101bf 100644
      /// When true, the event loop should exit so the user can relaunch to pick up the downloaded update.
      pub quit_for_update: bool,
      /// Printed to stderr after terminal restore when Welcome yes could not save trust.
-@@ -1429,11 +1543,16 @@ impl AppView {
+@@ -1429,11 +1546,17 @@ impl AppView {
              pending_effects: Vec::new(),
              pending_editor: None,
              pending_pager_path: None,
@@ -385,11 +388,12 @@ index fc9a4553..6cd101bf 100644
              welcome_menu_rects: Vec::new(),
              welcome_show_changelog_action: false,
 +            welcome_show_resume_action: true,
++            welcome_show_worktree_action: true,
 +            welcome_has_resumable_sessions: std::cell::OnceCell::new(),
              welcome_import_banner_rect: None,
              last_mouse_pos: None,
              last_scroll_pos: None,
-@@ -1488,7 +1607,8 @@ impl AppView {
+@@ -1488,7 +1611,8 @@ impl AppView {
              session_picker_entries_query: None,
              session_picker_pending_delete: None,
              welcome_tick: 0,
@@ -399,7 +403,7 @@ index fc9a4553..6cd101bf 100644
              cli_model_override: None,
              cli_effort_token: None,
              default_yolo: false,
-@@ -1543,6 +1663,36 @@ impl AppView {
+@@ -1543,6 +1667,36 @@ impl AppView {
              auth_url_poll_handle: None,
              deferred_startup: Default::default(),
              auth_use_oauth: false,
@@ -436,7 +440,7 @@ index fc9a4553..6cd101bf 100644
              auth_clipboard_delivery: None,
              auth_clipboard_feedback_generation: 0,
              team_id: None,
-@@ -1573,6 +1723,7 @@ impl AppView {
+@@ -1573,6 +1727,7 @@ impl AppView {
              startup_warnings: Vec::new(),
              is_api_key_auth: false,
              pending_update_version: None,
@@ -444,7 +448,7 @@ index fc9a4553..6cd101bf 100644
              foreign_resume_launch_generation: 0,
              foreign_resume_launch: None,
              quit_for_update: false,
-@@ -1709,11 +1860,15 @@ impl AppView {
+@@ -1709,11 +1864,15 @@ impl AppView {
      pub(super) fn consumer_account(&self) -> bool {
          !self.backend_billed && !self.is_api_key_auth && !self.has_external_auth_provider
      }
@@ -463,7 +467,7 @@ index fc9a4553..6cd101bf 100644
      }
      /// Draw-time expiry can flip the live-announcement predicate between pushes.
      /// Resync the slash gate only when it diverges from the stored flags (checked per frame, fan-out runs only on change).
-@@ -1891,6 +2046,37 @@ impl AppView {
+@@ -1891,6 +2050,37 @@ impl AppView {
              None
          }
      }
@@ -501,7 +505,7 @@ index fc9a4553..6cd101bf 100644
      /// Commit interim on real send keys only (not multiline bare Enter).
      fn maybe_commit_voice_interim_before_submit_key(&mut self, key: &crossterm::event::KeyEvent) {
          if self.registry.matches_id(ActionId::InterjectPrompt, key) {
-@@ -2404,6 +2590,20 @@ impl AppView {
+@@ -2404,6 +2594,20 @@ impl AppView {
              }
              return InputOutcome::Changed;
          }
@@ -522,12 +526,17 @@ index fc9a4553..6cd101bf 100644
          let zdr_blocked = self.is_zdr_blocked();
          let has_access = self.has_access();
          let welcome_pinned_upgrade_cta = crate::views::announcements::promo_cta(
-@@ -2442,7 +2642,12 @@ impl AppView {
+@@ -2442,7 +2646,17 @@ impl AppView {
                      menu_count: if zdr_blocked {
                          2
                      } else {
 -                        3 + if self.has_claude_import { 1 } else { 0 }
-+                        2 + if self.has_claude_import { 1 } else { 0 }
++                        1 + if self.has_claude_import { 1 } else { 0 }
++                            + if self.welcome_show_worktree_action {
++                                1
++                            } else {
++                                0
++                            }
 +                            + if self.welcome_show_resume_action {
 +                                1
 +                            } else {
@@ -536,15 +545,16 @@ index fc9a4553..6cd101bf 100644
                              + if self.welcome_show_changelog_action {
                                  1
                              } else {
-@@ -2483,6 +2688,7 @@ impl AppView {
+@@ -2483,6 +2697,8 @@ impl AppView {
                      welcome_doc_viewer: &mut self.welcome_doc_viewer,
                      changelog_markdown: &self.changelog_markdown,
                      show_changelog_action: self.welcome_show_changelog_action,
 +                    show_resume_action: self.welcome_show_resume_action,
++                    show_worktree_action: self.welcome_show_worktree_action,
                      has_pending_update: self.pending_update_version.is_some(),
                      has_foreign_resume,
                      cwd_has_git_ancestor: self.cwd_has_git_ancestor,
-@@ -2672,6 +2878,9 @@ impl AppView {
+@@ -2672,6 +2888,9 @@ impl AppView {
                  if let Some(outcome) = self.voice_esc_outcome(key_event) {
                      return outcome;
                  }
@@ -554,7 +564,7 @@ index fc9a4553..6cd101bf 100644
                  if let Event::Key(key) = ev
                      && key.kind != KeyEventKind::Release
                  {
-@@ -3143,8 +3352,10 @@ struct WelcomeInputCtx<'a> {
+@@ -3143,8 +3362,12 @@ struct WelcomeInputCtx<'a> {
      import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
      welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
      changelog_markdown: &'a Option<String>,
@@ -563,10 +573,12 @@ index fc9a4553..6cd101bf 100644
      show_changelog_action: bool,
 +    /// Whether the welcome menu currently includes the "Resume session" row.
 +    show_resume_action: bool,
++    /// Whether the welcome menu currently includes the "New worktree" row.
++    show_worktree_action: bool,
      has_pending_update: bool,
      /// A recent foreign session is available to resume when no update is pending.
      has_foreign_resume: bool,
-@@ -3171,6 +3382,120 @@ struct WelcomeInputCtx<'a> {
+@@ -3171,6 +3394,120 @@ struct WelcomeInputCtx<'a> {
      #[cfg(feature = "local-workspace")]
      session_picker_open: bool,
  }
@@ -687,7 +699,7 @@ index fc9a4553..6cd101bf 100644
  /// Welcome view input: overlays first, then composer, then the menu.
  fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
      if let Some(modal) = ctx.import_claude_modal.as_mut() {
-@@ -3477,6 +3802,24 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3477,6 +3814,24 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
              crate::views::session_picker::PendingDeleteKey::Disarmed
              | crate::views::session_picker::PendingDeleteKey::NotArmed => {}
          }
@@ -712,47 +724,122 @@ index fc9a4553..6cd101bf 100644
          if let Event::Key(key) = ev {
              if key.kind == KeyEventKind::Press
                  && (key!('c', CONTROL).matches(key) || key!('d', CONTROL).matches(key))
-@@ -3750,6 +4093,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3674,6 +4029,15 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+             && matches!(ctx.auth_state, AuthState::Done)
+         {
+             *ctx.prompt_focused = true;
++            // Workshop: pasted text lands in the home composer and the card stays; only a
++            // clipboard without text (an image) still hands the paste to the agent view.
++            if let Some(text) = crate::clipboard::system_clipboard_get()
++                && crate::clipboard::clipboard_text_is_pasteable(Some(&text))
++            {
++                *ctx.menu_index = None;
++                let _ = ctx.prompt.handle_paste(&text);
++                return InputOutcome::Changed;
++            }
+             return InputOutcome::ActionThenForward(Action::LeaveHome);
+         }
+         if matches!(ctx.auth_state, AuthState::Done)
+@@ -3721,7 +4085,12 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+         if matches!(ctx.auth_state, AuthState::Done) && crate::input::key::is_text_input_key(key) {
+             *ctx.prompt_focused = true;
+             *ctx.menu_index = None;
+-            return InputOutcome::ActionThenForward(Action::LeaveHome);
++            // Workshop: the welcome card stays while the message is typed and leaves when it is
++            // sent (Enter above). Only a `/` opening an empty composer still goes to the agent
++            // view, where the command dropdown lives; a command is not a message.
++            if welcome_keystroke_leaves_home(key, ctx.prompt.text()) {
++                return InputOutcome::ActionThenForward(Action::LeaveHome);
++            }
+         }
+         if *ctx.prompt_focused {
+             let had_highlight = ctx.prompt.textarea.selection_range().is_some();
+@@ -3750,6 +4119,8 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                  return dispatch_menu_action(
                      idx,
                      ctx.has_claude_import,
++                    ctx.show_worktree_action,
 +                    ctx.show_resume_action,
                      ctx.show_changelog_action,
                      ctx.changelog_markdown.as_deref(),
                  );
-@@ -3888,6 +4232,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3844,6 +4215,14 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+                     return InputOutcome::Unchanged;
+                 }
+                 *ctx.prompt_focused = true;
++                // Workshop: pasted text lands in the home composer and the card stays; an image
++                // or a dropped file path still goes to the agent view, which owns the attachment
++                // machinery (the `[Image #1]` chips).
++                if welcome_paste_is_text(text) {
++                    *ctx.menu_index = None;
++                    let _ = ctx.prompt.handle_paste(text);
++                    return InputOutcome::Changed;
++                }
+                 return InputOutcome::ActionThenForward(Action::LeaveHome);
+             }
+             AuthState::Authenticating {
+@@ -3888,6 +4267,8 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                          return dispatch_menu_action(
                              i,
                              ctx.has_claude_import,
++                            ctx.show_worktree_action,
 +                            ctx.show_resume_action,
                              ctx.show_changelog_action,
                              ctx.changelog_markdown.as_deref(),
                          );
-@@ -4138,39 +4483,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
+@@ -4109,6 +4490,21 @@ fn handle_menu_nav(
+         _ => None,
+     }
+ }
++/// Workshop: whether a bracketed paste on the welcome screen is plain text for the home composer.
++/// A wrap-host image or dropped file paths are attachments; the agent view owns those.
++pub(crate) fn welcome_paste_is_text(text: &str) -> bool {
++    crate::wrap_clipboard_image::try_decode_wrap_host_image_paste(text).is_none()
++        && crate::prompt_images::try_read_dropped_paths(text).is_empty()
++}
++/// Workshop: whether a printable key typed on the welcome screen leaves it for the agent view.
++/// Text stays in the home composer (the card leaves when the message is sent); only a `/` that
++/// opens an empty composer goes over, to the slash dropdown the agent view owns.
++pub(crate) fn welcome_keystroke_leaves_home(
++    key: &crossterm::event::KeyEvent,
++    composer_text: &str,
++) -> bool {
++    key.code == KeyCode::Char('/') && composer_text.trim().is_empty()
++}
+ /// Dispatch an action for a welcome menu item when not yet authenticated.
+ /// Menu layout: item 0 is Login, item 1 is Quit.
+ fn dispatch_pending_menu_action(index: usize) -> InputOutcome {
+@@ -4138,39 +4534,47 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
      }
  }
  /// Dispatch an action for a welcome menu item by index.
 -/// Menu order: `[Import]`, New worktree, Resume session, `[Changelog]`, Quit.
 -/// `show_changelog_action` is true when the Changelog row is rendered; release notes open only once `changelog_md` is available.
-+/// Menu order: `[Import]`, New worktree, `[Resume session]`, `[Release notes]`, Quit.
-+/// `show_resume_action` / `show_changelog_action` say which optional rows are rendered. Release
-+/// notes always open: the fetched markdown when there is one, else the bundled Workshop notes.
++/// Menu order: `[Import]`, `[New worktree]`, `[Resume session]`, `[Release notes]`, Quit.
++/// `show_worktree_action` / `show_resume_action` / `show_changelog_action` say which optional rows
++/// are rendered. Release notes always open: the fetched markdown when there is one, else the
++/// bundled Workshop notes.
  fn dispatch_menu_action(
      index: usize,
      has_claude_import: bool,
++    show_worktree_action: bool,
 +    show_resume_action: bool,
      show_changelog_action: bool,
      changelog_md: Option<&str>,
  ) -> InputOutcome {
      let base = if has_claude_import { 1 } else { 0 };
-     let worktree_idx = base;
+-    let worktree_idx = base;
 -    let resume_idx = base + 1;
 -    let (changelog_idx, quit_idx) = if show_changelog_action {
 -        (Some(base + 2), base + 3)
 -    } else {
 -        (None, base + 2)
 -    };
-+    let mut next = base + 1;
++    let mut next = base;
++    let worktree_idx = show_worktree_action.then(|| {
++        next += 1;
++        next - 1
++    });
 +    let resume_idx = show_resume_action.then(|| {
 +        next += 1;
 +        next - 1
@@ -765,7 +852,8 @@ index fc9a4553..6cd101bf 100644
      if has_claude_import && index == 0 {
          return InputOutcome::Action(Action::ImportClaudeSettings);
      }
-     if index == worktree_idx {
+-    if index == worktree_idx {
++    if Some(index) == worktree_idx {
          return InputOutcome::Action(Action::OpenNewWorktreeDialog);
      }
 -    if index == resume_idx {
@@ -787,7 +875,7 @@ index fc9a4553..6cd101bf 100644
      }
      if index == quit_idx {
          return InputOutcome::Action(Action::Quit);
-@@ -4381,6 +4729,9 @@ impl AppView {
+@@ -4381,6 +4785,9 @@ impl AppView {
          });
          let welcome_default_yolo = self.default_yolo;
          let welcome_auto_gate = self.auto_mode_gate;
@@ -797,7 +885,7 @@ index fc9a4553..6cd101bf 100644
          let Self {
              active_view,
              agents,
-@@ -4477,11 +4828,39 @@ impl AppView {
+@@ -4477,11 +4884,39 @@ impl AppView {
                              } else {
                                  self.tip.as_deref()
                              };
@@ -842,7 +930,7 @@ index fc9a4553..6cd101bf 100644
                              };
                              let hero_cta = crate::views::announcements::promo_cta(
                                  &self.active_announcements,
-@@ -4495,7 +4874,14 @@ impl AppView {
+@@ -4495,7 +4930,14 @@ impl AppView {
                                          &self.hidden_announcement_ids,
                                      )
                                  })
@@ -858,7 +946,7 @@ index fc9a4553..6cd101bf 100644
                              let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                  prompt_focus: if self.welcome_prompt_focused {
                                      WelcomePromptFocus::Focused
-@@ -4508,6 +4894,7 @@ impl AppView {
+@@ -4508,6 +4950,7 @@ impl AppView {
                                  consent_state: &self.consent_state,
                                  consent_hover_link: self.welcome_consent_hover_link,
                                  login_label: self.login_label.as_deref(),
@@ -866,15 +954,16 @@ index fc9a4553..6cd101bf 100644
                                  auth_code_input: self.auth_code_input.text(),
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
-@@ -4520,6 +4907,7 @@ impl AppView {
+@@ -4520,6 +4963,8 @@ impl AppView {
                                  team_name: self.team_name.as_deref(),
                                  has_access,
                                  has_claude_import: self.has_claude_import,
 +                                has_resumable_sessions,
++                                cwd_has_git_ancestor: self.cwd_has_git_ancestor,
                                  mouse_pos: self.last_mouse_pos,
                                  is_zdr_blocked: zdr_blocked_for_draw,
                                  session_picker: self.session_picker_entries.as_deref(),
-@@ -4534,6 +4922,7 @@ impl AppView {
+@@ -4534,6 +4979,7 @@ impl AppView {
                                  pending_hint,
                                  startup_warnings: &self.startup_warnings,
                                  pending_update_version: self.pending_update_version.as_deref(),
@@ -882,7 +971,7 @@ index fc9a4553..6cd101bf 100644
                                  foreign_resume_hint: foreign_resume_hint.as_ref(),
                                  session_picker_content_results: self
                                      .session_picker_content_results
-@@ -4560,6 +4949,7 @@ impl AppView {
+@@ -4560,6 +5006,7 @@ impl AppView {
                                  welcome_announcement_expanded: self.welcome_announcement.expanded,
                                  upgrade_cta: hero_cta.map(|(_owner, label, _)| label),
                                  privacy_banner,
@@ -890,17 +979,18 @@ index fc9a4553..6cd101bf 100644
                                  #[cfg(feature = "local-workspace")]
                                  workspace_mode: self.welcome_workspace_mode,
                                  #[cfg(feature = "local-workspace")]
-@@ -4576,7 +4966,9 @@ impl AppView {
+@@ -4576,7 +5023,10 @@ impl AppView {
                                  &mut self.session_picker_state,
                              );
                              self.welcome_menu_rects = result.menu_rects;
 +                            self.welcome_hero_animating = result.hero_animating;
                              self.welcome_show_changelog_action = result.changelog_action_present;
 +                            self.welcome_show_resume_action = result.resume_action_present;
++                            self.welcome_show_worktree_action = result.worktree_action_present;
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4804,6 +5196,7 @@ impl AppView {
+@@ -4804,6 +5254,7 @@ impl AppView {
                                              .workspace_dashboard_enabled,
                                          overlay_header,
                                          overlay_stop_label: None,
@@ -908,7 +998,7 @@ index fc9a4553..6cd101bf 100644
                                      },
                                  );
                                  if let Some(modal) = self.import_claude_modal.as_mut() {
-@@ -4824,6 +5217,28 @@ impl AppView {
+@@ -4824,6 +5275,28 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -937,7 +1027,7 @@ index fc9a4553..6cd101bf 100644
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5247,17 @@ impl AppView {
+@@ -4832,13 +5305,17 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
@@ -956,7 +1046,7 @@ index fc9a4553..6cd101bf 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5539,7 @@ impl AppView {
+@@ -5120,6 +5597,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -964,7 +1054,7 @@ index fc9a4553..6cd101bf 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5587,7 @@ impl AppView {
+@@ -5167,7 +5645,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -973,7 +1063,7 @@ index fc9a4553..6cd101bf 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5702,7 @@ impl AppView {
+@@ -5282,6 +5760,7 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
@@ -981,7 +1071,7 @@ index fc9a4553..6cd101bf 100644
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5300,11 +5721,7 @@ impl AppView {
+@@ -5300,11 +5779,7 @@ impl AppView {
              {
                  needs_redraw = true;
              } else {
@@ -994,7 +1084,7 @@ index fc9a4553..6cd101bf 100644
              }
          }
          if matches!(self.active_view, ActiveView::AgentDashboard)
-@@ -5355,7 +5772,10 @@ impl AppView {
+@@ -5355,7 +5830,10 @@ impl AppView {
              }
              let spinner_frame_tick =
                  agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
@@ -1006,7 +1096,7 @@ index fc9a4553..6cd101bf 100644
              needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
                  && spinner_frame_tick;
              needs_redraw |= matches!(
-@@ -5623,6 +6043,20 @@ impl AppView {
+@@ -5623,6 +6101,20 @@ impl AppView {
          }
          needs_redraw
      }
@@ -1027,7 +1117,7 @@ index fc9a4553..6cd101bf 100644
      /// Check if animation ticks should be scheduled.
      pub fn needs_animation(&self) -> bool {
          self.tick_demand() != TickDemand::None
-@@ -5637,6 +6071,15 @@ impl AppView {
+@@ -5637,6 +6129,15 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -1043,7 +1133,7 @@ index fc9a4553..6cd101bf 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5781,9 +6224,94 @@ impl AppView {
+@@ -5781,9 +6282,94 @@ impl AppView {
                      TickDemand::None
                  }
              }
@@ -1139,7 +1229,7 @@ index fc9a4553..6cd101bf 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6333,9 @@ impl AppView {
+@@ -5805,7 +6391,9 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -1151,7 +1241,7 @@ index fc9a4553..6cd101bf 100644
              } else {
                  (None, None, None, false, None, false)
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-index 483296d4..0666a439 100644
+index 483296d4..be33bd65 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 @@ -169,6 +169,36 @@ pub(crate) fn test_app() -> AppView {
@@ -1191,16 +1281,17 @@ index 483296d4..0666a439 100644
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -210,6 +240,8 @@ pub(crate) fn test_app() -> AppView {
+@@ -210,6 +240,9 @@ pub(crate) fn test_app() -> AppView {
          welcome_menu_index: None,
          welcome_menu_rects: Vec::new(),
          welcome_show_changelog_action: false,
 +        welcome_show_resume_action: true,
++        welcome_show_worktree_action: true,
 +        welcome_has_resumable_sessions: std::cell::OnceCell::new(),
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -261,10 +293,12 @@ pub(crate) fn test_app() -> AppView {
+@@ -261,10 +294,12 @@ pub(crate) fn test_app() -> AppView {
          session_picker_entries_query: None,
          session_picker_pending_delete: None,
          welcome_tick: 0,
@@ -1214,7 +1305,7 @@ index 483296d4..0666a439 100644
          foreign_resume_launch_generation: 0,
          foreign_resume_launch: None,
          quit_for_update: false,
-@@ -278,6 +312,9 @@ pub(crate) fn test_app() -> AppView {
+@@ -278,6 +313,9 @@ pub(crate) fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -1224,7 +1315,7 @@ index 483296d4..0666a439 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -616,6 +653,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
+@@ -616,6 +654,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
      );
  }
  #[test]
@@ -1232,7 +1323,7 @@ index 483296d4..0666a439 100644
  fn needs_animation_gates_prompt_history_tick_delivery() {
      let mut app = test_app_with_agent();
      let id = super::super::agent::AgentId(0);
-@@ -774,17 +812,70 @@ fn tick_demand_follows_the_mcp_chip() {
+@@ -774,17 +813,70 @@ fn tick_demand_follows_the_mcp_chip() {
          "the MCP chip spinner ticks while servers connect"
      );
  }
@@ -1306,7 +1397,7 @@ index 483296d4..0666a439 100644
  /// An open modal session picker that is still fetching keeps fast ticks alive on an otherwise-idle agent (its loading spinner must animate).
  /// That holds even after the fast foreign scan lands rows the default Grok filter hides; once the native list settles the demand parks again.
  #[test]
-@@ -2268,16 +2359,26 @@ fn is_restricted_tier_classification() {
+@@ -2268,16 +2360,26 @@ fn is_restricted_tier_classification() {
      assert!(!is_restricted_tier(Some("X Premium+")));
      assert!(!is_restricted_tier(Some("SomeFutureTier")));
  }
@@ -1337,49 +1428,48 @@ index 483296d4..0666a439 100644
      let meta = xai_grok_login::AuthMeta {
          subscription_tier: Some("SuperGrok".into()),
          ..Default::default()
-@@ -3198,15 +3299,15 @@ fn welcome_ctrl_d_requires_confirmation() {
+@@ -3198,15 +3300,15 @@ fn welcome_ctrl_d_requires_confirmation() {
  #[test]
  fn menu_action_indices_without_changelog() {
      assert!(matches!(
 -        dispatch_menu_action(0, false, false, None),
-+        dispatch_menu_action(0, false, true, false, None),
++        dispatch_menu_action(0, false, true, true, false, None),
          InputOutcome::Action(Action::OpenNewWorktreeDialog)
      ));
      assert!(matches!(
 -        dispatch_menu_action(1, false, false, None),
-+        dispatch_menu_action(1, false, true, false, None),
++        dispatch_menu_action(1, false, true, true, false, None),
          InputOutcome::Action(Action::FetchSessionList)
      ));
      assert!(matches!(
 -        dispatch_menu_action(2, false, false, None),
-+        dispatch_menu_action(2, false, true, false, None),
++        dispatch_menu_action(2, false, true, true, false, None),
          InputOutcome::Action(Action::Quit)
      ));
  }
-@@ -3214,46 +3315,69 @@ fn menu_action_indices_without_changelog() {
+@@ -3214,46 +3316,90 @@ fn menu_action_indices_without_changelog() {
  fn menu_action_changelog_sits_above_quit() {
      let md = Some("# notes");
      assert!(matches!(
 -        dispatch_menu_action(1, false, true, md),
-+        dispatch_menu_action(1, false, true, true, md),
++        dispatch_menu_action(1, false, true, true, true, md),
          InputOutcome::Action(Action::FetchSessionList)
      ));
      assert!(matches!(
 -        dispatch_menu_action(2, false, true, md),
-+        dispatch_menu_action(2, false, true, true, md),
++        dispatch_menu_action(2, false, true, true, true, md),
          InputOutcome::Action(Action::ShowReleaseNotes { .. })
      ));
      assert!(matches!(
 -        dispatch_menu_action(3, false, true, md),
-+        dispatch_menu_action(3, false, true, true, md),
++        dispatch_menu_action(3, false, true, true, true, md),
          InputOutcome::Action(Action::Quit)
      ));
  }
 +/// Workshop: the release-notes row never dead-ends; without fetched markdown it opens the bundled notes.
- #[test]
--fn menu_action_changelog_before_fetch_is_noop() {
++#[test]
 +fn menu_action_release_notes_before_fetch_opens_bundled_notes() {
-+    match dispatch_menu_action(2, false, true, true, None) {
++    match dispatch_menu_action(2, false, true, true, true, None) {
 +        InputOutcome::Action(Action::ShowReleaseNotes { content, .. }) => {
 +            assert!(content.contains("# Workshop release notes"), "{content}");
 +        }
@@ -1387,24 +1477,25 @@ index 483296d4..0666a439 100644
 +    }
 +}
 +/// Workshop: with nothing to resume the Resume row is absent and the indices close up.
-+#[test]
+ #[test]
+-fn menu_action_changelog_before_fetch_is_noop() {
 +fn menu_action_indices_without_resume() {
      assert!(matches!(
 -        dispatch_menu_action(2, false, true, None),
 -        InputOutcome::Unchanged
-+        dispatch_menu_action(0, false, false, true, None),
++        dispatch_menu_action(0, false, true, false, true, None),
 +        InputOutcome::Action(Action::OpenNewWorktreeDialog)
 +    ));
 +    assert!(matches!(
-+        dispatch_menu_action(1, false, false, true, None),
++        dispatch_menu_action(1, false, true, false, true, None),
 +        InputOutcome::Action(Action::ShowReleaseNotes { .. })
 +    ));
 +    assert!(matches!(
-+        dispatch_menu_action(2, false, false, true, None),
++        dispatch_menu_action(2, false, true, false, true, None),
 +        InputOutcome::Action(Action::Quit)
 +    ));
 +    assert!(matches!(
-+        dispatch_menu_action(1, false, false, false, None),
++        dispatch_menu_action(1, false, true, false, false, None),
 +        InputOutcome::Action(Action::Quit)
      ));
  }
@@ -1413,30 +1504,200 @@ index 483296d4..0666a439 100644
      let md = Some("# notes");
      assert!(matches!(
 -        dispatch_menu_action(0, true, true, md),
-+        dispatch_menu_action(0, true, true, true, md),
++        dispatch_menu_action(0, true, true, true, true, md),
          InputOutcome::Action(Action::ImportClaudeSettings)
      ));
      assert!(matches!(
 -        dispatch_menu_action(1, true, true, md),
-+        dispatch_menu_action(1, true, true, true, md),
++        dispatch_menu_action(1, true, true, true, true, md),
          InputOutcome::Action(Action::OpenNewWorktreeDialog)
      ));
      assert!(matches!(
 -        dispatch_menu_action(2, true, true, md),
-+        dispatch_menu_action(2, true, true, true, md),
++        dispatch_menu_action(2, true, true, true, true, md),
          InputOutcome::Action(Action::FetchSessionList)
      ));
      assert!(matches!(
 -        dispatch_menu_action(3, true, true, md),
-+        dispatch_menu_action(3, true, true, true, md),
++        dispatch_menu_action(3, true, true, true, true, md),
          InputOutcome::Action(Action::ShowReleaseNotes { .. })
      ));
      assert!(matches!(
 -        dispatch_menu_action(4, true, true, md),
-+        dispatch_menu_action(4, true, true, true, md),
++        dispatch_menu_action(4, true, true, true, true, md),
++        InputOutcome::Action(Action::Quit)
++    ));
++}
++/// Workshop: outside a git repository the New worktree row is absent and the indices close up.
++#[test]
++fn menu_action_indices_without_worktree() {
++    let md = Some("# notes");
++    assert!(matches!(
++        dispatch_menu_action(0, false, false, true, true, md),
++        InputOutcome::Action(Action::FetchSessionList)
++    ));
++    assert!(matches!(
++        dispatch_menu_action(1, false, false, true, true, md),
++        InputOutcome::Action(Action::ShowReleaseNotes { .. })
++    ));
++    assert!(matches!(
++        dispatch_menu_action(2, false, false, true, true, md),
++        InputOutcome::Action(Action::Quit)
++    ));
++    assert!(matches!(
++        dispatch_menu_action(0, false, false, false, false, None),
          InputOutcome::Action(Action::Quit)
      ));
  }
+@@ -4836,17 +4982,103 @@ fn welcome_pending_n_is_unchanged() {
+     let outcome = app.handle_input(&key_event(KeyCode::Char('n'), KeyModifiers::NONE));
+     assert!(matches!(outcome, InputOutcome::Unchanged));
+ }
++/// Workshop: typing on the welcome screen types into the home composer; the card stays until the
++/// message is sent (Enter), which is the only keystroke that leaves home.
+ #[test]
+-fn welcome_done_n_leaves_home() {
++fn welcome_done_typing_stays_on_the_card_until_enter_sends() {
+     let mut app = test_app();
+     app.auth_state = AuthState::Done;
+-    let outcome = app.handle_input(&key_event(KeyCode::Char('n'), KeyModifiers::NONE));
++    app.welcome_prompt_focused = false;
++    app.welcome_menu_index = Some(0);
++    for c in ['h', 'i'] {
++        let outcome = app.handle_input(&key_event(KeyCode::Char(c), KeyModifiers::NONE));
++        assert!(
++            matches!(outcome, InputOutcome::Changed),
++            "a letter stays on the welcome card, got {outcome:?}"
++        );
++    }
++    assert_eq!(app.welcome_prompt.text(), "hi");
++    assert!(app.welcome_prompt_focused, "typing focuses the composer");
++    assert!(
++        app.welcome_menu_index.is_none(),
++        "typing leaves the menu cursor"
++    );
++    let outcome = app.handle_input(&key_event(KeyCode::Backspace, KeyModifiers::NONE));
++    assert!(matches!(outcome, InputOutcome::Changed));
++    assert_eq!(
++        app.welcome_prompt.text(),
++        "h",
++        "editing keys edit the draft"
++    );
++    let outcome = app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE));
++    assert!(
++        matches!(outcome, InputOutcome::Action(Action::SendPrompt(ref text)) if text == "h"),
++        "Enter sends the typed message, got {outcome:?}"
++    );
++}
++/// Workshop: a `/` opening an empty composer still goes to the agent view, where the slash
++/// dropdown lives; a `/` inside typed text is text.
++#[test]
++fn welcome_done_slash_on_an_empty_composer_leaves_home() {
++    let mut app = test_app();
++    app.auth_state = AuthState::Done;
++    let outcome = app.handle_input(&key_event(KeyCode::Char('/'), KeyModifiers::NONE));
++    assert!(matches!(
++        outcome,
++        InputOutcome::ActionThenForward(Action::LeaveHome)
++    ));
++    assert!(app.welcome_prompt.text().is_empty());
++    let mut app = test_app();
++    app.auth_state = AuthState::Done;
++    let _ = app.handle_input(&key_event(KeyCode::Char('a'), KeyModifiers::NONE));
++    let outcome = app.handle_input(&key_event(KeyCode::Char('/'), KeyModifiers::NONE));
++    assert!(matches!(outcome, InputOutcome::Changed));
++    assert_eq!(app.welcome_prompt.text(), "a/");
++}
++/// Workshop: a bracketed paste of an image file's path is an attachment, so it goes to the
++/// agent view (where it becomes an `[Image #1]` chip); prose that merely mentions a path stays
++/// on the card as text.
++#[test]
++fn welcome_done_pasted_image_path_leaves_home_for_the_chip() {
++    let dir = tempfile::tempdir().unwrap();
++    let png = dir.path().join("cat.png");
++    // A 1x1 PNG, enough for the drop classifier to call it an image.
++    std::fs::write(
++        &png,
++        [
++            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
++            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
++            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
++            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
++            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
++        ],
++    )
++    .unwrap();
++    assert!(!welcome_paste_is_text(&png.display().to_string()));
++    assert!(welcome_paste_is_text("install ghostty"));
++    assert!(welcome_paste_is_text(
++        "the file /tmp is a directory on Unix"
++    ));
++    let mut app = test_app();
++    app.auth_state = AuthState::Done;
++    let outcome = app.handle_input(&Event::Paste(png.display().to_string()));
+     assert!(matches!(
+         outcome,
+         InputOutcome::ActionThenForward(Action::LeaveHome)
+     ));
+     assert!(app.welcome_prompt.text().is_empty());
+ }
++/// Workshop: pasted text lands in the home composer and the card stays.
++#[test]
++fn welcome_done_bracketed_paste_lands_in_the_home_composer() {
++    let mut app = test_app();
++    app.auth_state = AuthState::Done;
++    app.welcome_prompt_focused = false;
++    let outcome = app.handle_input(&Event::Paste("install ghostty".to_owned()));
++    assert!(matches!(outcome, InputOutcome::Changed));
++    assert_eq!(app.welcome_prompt.text(), "install ghostty");
++    assert!(app.welcome_prompt_focused);
++}
+ #[test]
+ fn welcome_done_ctrl_w_opens_new_worktree_dialog() {
+     let mut app = test_app();
+@@ -4858,8 +5090,10 @@ fn welcome_done_ctrl_w_opens_new_worktree_dialog() {
+         InputOutcome::Action(Action::OpenNewWorktreeDialog)
+     ));
+ }
++/// Workshop: a paste chord with text on the clipboard pastes into the home composer and the card
++/// stays; a clipboard without text (an image) still hands the paste to the agent view.
+ #[test]
+-fn welcome_paste_chords_leave_home() {
++fn welcome_paste_chords_paste_text_or_leave_home_for_an_image() {
+     let chords = [
+         KeyModifiers::CONTROL,
+         KeyModifiers::SUPER,
+@@ -4870,10 +5104,29 @@ fn welcome_paste_chords_leave_home() {
+         let mut app = test_app();
+         app.auth_state = AuthState::Done;
+         app.welcome_prompt_focused = focused;
++        crate::clipboard::set_clipboard_probe_hook(
++            crate::clipboard::ClipboardProbeHook::no_raster(Some("open my photos")),
++        );
++        let outcome = app.handle_input(&key_event(KeyCode::Char('v'), mods));
++        crate::clipboard::clear_clipboard_probe_hook();
++        assert!(
++            matches!(outcome, InputOutcome::Changed),
++            "{mods:?} focused={focused}: text pastes into the home composer, got {outcome:?}"
++        );
++        assert_eq!(app.welcome_prompt.text(), "open my photos");
++        assert!(app.welcome_prompt_focused);
++
++        let mut app = test_app();
++        app.auth_state = AuthState::Done;
++        app.welcome_prompt_focused = focused;
++        crate::clipboard::set_clipboard_probe_hook(
++            crate::clipboard::ClipboardProbeHook::no_raster(None),
++        );
+         let outcome = app.handle_input(&key_event(KeyCode::Char('v'), mods));
++        crate::clipboard::clear_clipboard_probe_hook();
+         assert!(
+             matches!(outcome, InputOutcome::ActionThenForward(Action::LeaveHome)),
+-            "{mods:?} focused={focused}: paste must leave home, got {outcome:?}"
++            "{mods:?} focused={focused}: no text on the clipboard leaves home, got {outcome:?}"
+         );
+         assert!(app.welcome_prompt_focused);
+     }
 diff --git a/crates/codegen/xai-grok-pager/src/app/cli.rs b/crates/codegen/xai-grok-pager/src/app/cli.rs
 index 87f63aef..96f1e81d 100644
 --- a/crates/codegen/xai-grok-pager/src/app/cli.rs
@@ -2170,10 +2431,10 @@ index 658d7468..1d13309c 100644
      if !applied && let Some(generation) = verify {
          app.promote_deferred_gate(generation, "check_failed");
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
-index 42279599..e023ec86 100644
+index 42279599..41e342be 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
-@@ -24,7 +24,28 @@ fn next_rewrite_nonce() -> u64 {
+@@ -24,7 +24,21 @@ fn next_rewrite_nonce() -> u64 {
  
  /// One copy of the send-time thank-you, shared by the immediate and modal commit paths.
  pub(crate) const FEEDBACK_THANKS_NOTICE: &str =
@@ -2181,12 +2442,8 @@ index 42279599..e023ec86 100644
 +    "Thanks for the feedback!";
 +
 +/// Workshop: the truthful commit notice. Nothing is posted anywhere: the note is appended to the
-+/// session's `feedback.jsonl` under the Workshop home, and the maintainer reads GitHub issues —
-+/// so the line says where the note went and carries a prefilled issue link.
-+pub(crate) fn workshop_feedback_notice(
-+    session_id: &agent_client_protocol::SessionId,
-+    text: &str,
-+) -> String {
++/// session's `feedback.jsonl` under the Workshop home, and the line says exactly that.
++pub(crate) fn workshop_feedback_notice(session_id: &agent_client_protocol::SessionId) -> String {
 +    let saved = xai_grok_shell::session::persistence::find_session_dir_by_id(session_id.0.as_ref())
 +        .map(|dir| dir.join("feedback.jsonl").display().to_string())
 +        .unwrap_or_else(|| {
@@ -2195,29 +2452,26 @@ index 42279599..e023ec86 100644
 +                crate::app::workshop::workshop_home().display()
 +            )
 +        });
-+    format!(
-+        "Thanks — saved to {saved} (nothing is sent anywhere). To reach the maintainer, open this prefilled issue: {}",
-+        workshop_brand::feedback_issue_url(text, xai_grok_version::full_version())
-+    )
++    format!("Thanks \u{2014} saved to {saved} (nothing is sent anywhere).")
 +}
  
  /// Minimal mode cannot show a toast, so the notice goes to the transcript instead.
  fn feedback_notice(app: &mut AppView, message: &str) {
-@@ -289,7 +310,7 @@ pub(super) fn dispatch_submit_feedback_modal(
+@@ -289,7 +303,7 @@ pub(super) fn dispatch_submit_feedback_modal(
      if draft_id.is_none() {
          agent
              .scrollback
 -            .push_block(RenderBlock::system(FEEDBACK_THANKS_NOTICE.to_string()));
-+            .push_block(RenderBlock::system(workshop_feedback_notice(&session_id, &text)));
++            .push_block(RenderBlock::system(workshop_feedback_notice(&session_id)));
      }
      let mut effects = vec![feedback_send_effect(
          id,
-@@ -418,7 +439,7 @@ pub(crate) fn commit_feedback(
+@@ -418,7 +432,7 @@ pub(crate) fn commit_feedback(
  
      agent
          .scrollback
 -        .push_block(RenderBlock::system(FEEDBACK_THANKS_NOTICE.to_string()));
-+        .push_block(RenderBlock::system(workshop_feedback_notice(&session_id, &trimmed)));
++        .push_block(RenderBlock::system(workshop_feedback_notice(&session_id)));
  
      Some(feedback_send_effect(
          id,
@@ -3435,7 +3689,7 @@ index 2049a2d9..2a81eaf5 100644
  /// to the previous row rather than disappearing.
  #[serial_test::serial(GROK_AGENT_DASHBOARD)]
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-index bf64193d..5332016c 100644
+index bf64193d..1ab94680 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 @@ -35,7 +35,8 @@ use super::dashboard::{
@@ -3485,16 +3739,17 @@ index bf64193d..5332016c 100644
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -222,6 +253,8 @@ fn test_app() -> AppView {
+@@ -222,6 +253,9 @@ fn test_app() -> AppView {
          welcome_menu_index: None,
          welcome_menu_rects: Vec::new(),
          welcome_show_changelog_action: false,
 +        welcome_show_resume_action: true,
++        welcome_show_worktree_action: true,
 +        welcome_has_resumable_sessions: std::cell::OnceCell::new(),
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -273,10 +306,12 @@ fn test_app() -> AppView {
+@@ -273,10 +307,12 @@ fn test_app() -> AppView {
          session_picker_entries_query: None,
          session_picker_pending_delete: None,
          welcome_tick: 0,
@@ -3508,7 +3763,7 @@ index bf64193d..5332016c 100644
          foreign_resume_launch_generation: 0,
          foreign_resume_launch: None,
          quit_for_update: false,
-@@ -289,6 +324,9 @@ fn test_app() -> AppView {
+@@ -289,6 +325,9 @@ fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -3518,7 +3773,7 @@ index bf64193d..5332016c 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -585,6 +623,28 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
+@@ -585,6 +624,28 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
      std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
      sess_dir
  }
@@ -3867,7 +4122,7 @@ index 1c507697..89312ddd 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..48a1b59e 100644
+index eda61b3c..c7e7b9a6 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -4885,6 +5140,60 @@ index eda61b3c..48a1b59e 100644
  fn process_effects(
      effs: Vec<super::actions::Effect>,
      tasks: &mut JoinSet<TaskResult>,
+@@ -4036,15 +4834,6 @@ mod tests {
+         };
+         a
+     }
+-    fn get_agent(
+-        app: &AppView,
+-        id: crate::app::agent::AgentId,
+-    ) -> &crate::app::agent_view::AgentView {
+-        let Some(a) = app.agents.get(&id) else {
+-            panic!("missing agent {id:?}");
+-        };
+-        a
+-    }
+     use crate::render::draw::WriterSync;
+     use crossterm::event::{KeyEvent, KeyEventState};
+     #[test]
+@@ -4469,7 +5258,9 @@ mod tests {
+         }
+     }
+     #[tokio::test]
+-    async fn welcome_paste_preserves_create_and_forwarded_prompt() {
++    /// Workshop: a paste on the welcome lands in the home composer and the card stays; no
++    /// session is asked for until the message is sent.
++    async fn welcome_paste_lands_in_the_home_composer_and_keeps_the_card() {
+         let mut app = crate::app::app_view::tests::test_app();
+         let (acp_tx, mut acp_rx) = tokio::sync::mpsc::unbounded_channel();
+         app.acp_tx = acp_tx;
+@@ -4493,19 +5284,16 @@ mod tests {
+         )
+         .await;
+         assert!(!result.should_quit);
+-        assert!(matches!(
+-            acp_rx.recv().await.expect("session/new request"),
+-            xai_acp_lib::AcpAgentMessage::NewSession(_)
+-        ));
+         assert!(
+-            matches!(app.active_view, crate::app::app_view::ActiveView::Agent(_)),
+-            "paste must leave the home screen, got {:?}",
+-            app.active_view
++            acp_rx.try_recv().is_err(),
++            "a paste asks for no session; the message's send does"
+         );
+-        assert_eq!(
+-            get_agent(&app, crate::app::agent::AgentId(0)).prompt.text(),
+-            "fix the bug"
++        assert!(
++            matches!(app.active_view, crate::app::app_view::ActiveView::Welcome),
++            "paste keeps the welcome card up, got {:?}",
++            app.active_view
+         );
++        assert_eq!(app.welcome_prompt.text(), "fix the bug");
+     }
+     #[tokio::test]
+     async fn handled_counts_only_events_processed_before_suspend_break() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/mod.rs b/crates/codegen/xai-grok-pager/src/app/mod.rs
 index 60fe34f9..f647dfc2 100644
 --- a/crates/codegen/xai-grok-pager/src/app/mod.rs
@@ -9452,7 +9761,7 @@ index dcbe4033..b0a519b1 100644
  pub mod credit_bar;
  pub mod dashboard;
 diff --git a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
-index b828a780..3ea7ee46 100644
+index b828a780..530f7b9f 100644
 --- a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
 @@ -35,7 +35,7 @@ pub(crate) mod workspace_mode;
@@ -9464,7 +9773,7 @@ index b828a780..3ea7ee46 100644
  use logo::{LogoTier, logo_line_count, render_logo, render_logo_tier};
  use menu::render_menu;
  pub(crate) use toast::paint_welcome_toast;
-@@ -151,9 +151,12 @@ pub struct WelcomeRenderResult {
+@@ -151,9 +151,15 @@ pub struct WelcomeRenderResult {
      pub consent_link_rects: Vec<(usize, Rect)>,
      /// `None` when this frame did not paint the notice.
      pub consent_legibility: Option<crate::app::consent::ConsentLegibility>,
@@ -9476,10 +9785,13 @@ index b828a780..3ea7ee46 100644
 +    /// Whether the "Resume session" menu row was rendered (Workshop hides it when nothing can be
 +    /// resumed), so the input handler's index-to-action mapping matches the rows on screen.
 +    pub resume_action_present: bool,
++    /// Whether the "New worktree" menu row was rendered (Workshop hides it outside a git
++    /// repository); same purpose as `resume_action_present`.
++    pub worktree_action_present: bool,
      /// Hit-test rect for the clickable changelog info block (opens release notes).
      pub changelog_cta_rect: Option<Rect>,
      /// Whether the announcement overflowed (the "expandable" signal).
-@@ -166,6 +169,10 @@ pub struct WelcomeRenderResult {
+@@ -166,6 +172,10 @@ pub struct WelcomeRenderResult {
      pub privacy_banner_opt_out_rect: Option<Rect>,
      pub privacy_banner_terms_rect: Option<Rect>,
      pub privacy_banner_policy_rect: Option<Rect>,
@@ -9490,7 +9802,7 @@ index b828a780..3ea7ee46 100644
      /// Hit-test rects for the chat workspace-mode segmented control.
      #[cfg(feature = "local-workspace")]
      pub workspace_mode_rects: WorkspaceModeHitRects,
-@@ -283,7 +290,7 @@ pub(super) struct WelcomeLayout {
+@@ -283,7 +293,7 @@ pub(super) struct WelcomeLayout {
      /// In-box info slot: it shows either the announcement or the changelog (the announcement takes priority).
      pub(super) hero_info: Rect,
      pub(super) hero_menu: Rect,
@@ -9499,7 +9811,7 @@ index b828a780..3ea7ee46 100644
      pub(super) logo_tier: LogoTier,
  }
  
-@@ -544,19 +551,16 @@ pub(super) fn render_version_badge(
+@@ -544,19 +554,16 @@ pub(super) fn render_version_badge(
          ));
          spans.push(sep.clone());
      }
@@ -9515,7 +9827,8 @@ index b828a780..3ea7ee46 100644
 +    // first-run home; the composer names the active connection instead.
 +    let _ = (show_api_key, is_api_key_auth, sep);
  
-     let channel = xai_grok_update::channel_label();
+-    let channel = xai_grok_update::channel_label();
++    let channel = welcome_channel_chip(xai_grok_update::channel_label());
      match &mode {
          VersionBadgeMode::Full { .. } => {
              spans.push(Span::styled(
@@ -9524,7 +9837,7 @@ index b828a780..3ea7ee46 100644
                  Style::default()
                      .fg(theme.text_primary)
                      .add_modifier(Modifier::BOLD),
-@@ -576,7 +580,7 @@ pub(super) fn render_version_badge(
+@@ -576,7 +583,7 @@ pub(super) fn render_version_badge(
          }
          VersionBadgeMode::HeroInline => {
              spans.push(Span::styled(
@@ -9533,7 +9846,20 @@ index b828a780..3ea7ee46 100644
                  Style::default()
                      .fg(theme.text_primary)
                      .add_modifier(Modifier::BOLD),
-@@ -687,6 +691,8 @@ pub struct WelcomeRenderParams<'a> {
+@@ -597,6 +604,12 @@ pub(super) fn render_version_badge(
+     Paragraph::new(version_line).render(version_area, buf);
+ }
+ 
++/// Workshop has one release channel, so a `[stable]` chip says nothing to a person; only a build
++/// ahead of the channel (`[alpha]`) is worth a word on the welcome.
++fn welcome_channel_chip(label: &str) -> &str {
++    if label.contains("stable") { "" } else { label }
++}
++
+ /// Render the prompt box and version line (shared across welcome states). When `skip_version` is
+ /// true the version badge is not rendered (it was already drawn inside the hero box).
+ #[allow(clippy::too_many_arguments)]
+@@ -687,6 +700,8 @@ pub struct WelcomeRenderParams<'a> {
      pub consent_state: &'a crate::app::consent::ConsentState,
      pub consent_hover_link: Option<usize>,
      pub login_label: Option<&'a str>,
@@ -9542,17 +9868,20 @@ index b828a780..3ea7ee46 100644
      pub auth_code_input: &'a str,
      pub auth_code_cursor_byte: usize,
      pub clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
-@@ -699,6 +705,9 @@ pub struct WelcomeRenderParams<'a> {
+@@ -699,6 +714,12 @@ pub struct WelcomeRenderParams<'a> {
      pub team_name: Option<&'a str>,
      pub has_access: bool,
      pub has_claude_import: bool,
 +    /// Workshop: this directory has a session with messages (or an engine conversation) to come
 +    /// back to; the "Resume session" row is hidden otherwise.
 +    pub has_resumable_sessions: bool,
++    /// Workshop: the cwd is inside a git repository, so "New worktree" can do something; the row
++    /// is hidden otherwise (Ctrl+W is a no-op there already).
++    pub cwd_has_git_ancestor: bool,
      pub mouse_pos: Option<(u16, u16)>,
      pub is_zdr_blocked: bool,
      pub session_picker: Option<&'a [SessionPickerEntry]>,
-@@ -707,6 +716,8 @@ pub struct WelcomeRenderParams<'a> {
+@@ -707,6 +728,8 @@ pub struct WelcomeRenderParams<'a> {
      pub pending_hint: Option<crate::views::shortcuts_bar::PendingHint>,
      pub startup_warnings: &'a [StartupWarning],
      pub pending_update_version: Option<&'a str>,
@@ -9561,7 +9890,7 @@ index b828a780..3ea7ee46 100644
      /// Recent foreign session offered on ctrl+u, suppressed by a pending update.
      pub foreign_resume_hint: Option<&'a xai_grok_foreign_sessions::RecentForeignSession>,
      pub is_api_key_auth: bool,
-@@ -743,6 +754,10 @@ pub struct WelcomeRenderParams<'a> {
+@@ -743,6 +766,10 @@ pub struct WelcomeRenderParams<'a> {
      pub upgrade_cta: Option<&'a str>,
      /// Non-blocking welcome privacy banner above the prompt.
      pub privacy_banner: bool,
@@ -9572,7 +9901,7 @@ index b828a780..3ea7ee46 100644
      /// Chat-mode workspace picker selection (`local-workspace` feature).
      #[cfg(feature = "local-workspace")]
      pub workspace_mode: WelcomeWorkspaceMode,
-@@ -789,10 +804,24 @@ pub fn render_welcome(
+@@ -789,10 +816,24 @@ pub fn render_welcome(
      };
      render_top_bar(top_bar_inner, buf, &theme, None);
  
@@ -9599,7 +9928,7 @@ index b828a780..3ea7ee46 100644
              let menu = [("l", login_text.as_str()), ("q", "Quit")];
              let msg = error.as_deref().map(|e| (e, theme.accent_error));
              let info = PromptInfo {
-@@ -845,7 +874,7 @@ pub fn render_welcome(
+@@ -845,7 +886,7 @@ pub fn render_welcome(
                  content_area,
                  buf,
                  Some((
@@ -9608,7 +9937,7 @@ index b828a780..3ea7ee46 100644
                      theme.gray_bright,
                  )),
                  &menu,
-@@ -1025,7 +1054,7 @@ fn render_welcome_trust(
+@@ -1025,7 +1066,7 @@ fn render_welcome_trust(
          Line::default(),
          // Two lines so the warning never clips at narrow / compact widths (a single ~78-char line would truncate "...posing security risks")
          Line::from(Span::styled(
@@ -9617,7 +9946,7 @@ index b828a780..3ea7ee46 100644
              Style::default().fg(theme.gray),
          ))
          .alignment(Alignment::Center),
-@@ -1470,9 +1499,10 @@ fn render_welcome_authenticating(
+@@ -1470,9 +1511,10 @@ fn render_welcome_authenticating(
                  );
                  push_auth_copy_block(&mut lines, theme, clipboard_delivery);
              } else {
@@ -9629,7 +9958,7 @@ index b828a780..3ea7ee46 100644
                          Style::default().fg(theme.gray),
                      ))
                      .alignment(Alignment::Center),
-@@ -1736,7 +1766,7 @@ fn render_welcome_done(
+@@ -1736,7 +1778,7 @@ fn render_welcome_done(
          let action_line = if w.action.is_some() { 1 } else { 0 };
          msg_lines + action_line + 1 // +1 for buffer spacing
      });
@@ -9638,12 +9967,18 @@ index b828a780..3ea7ee46 100644
      let has_resume_tip = !has_update_tip && p.foreign_resume_hint.is_some();
      // Tip slot precedence: pending update, then privacy banner (wraps, so its height depends on width), then resume hint, then random tip
      // The update outranks the upsell so a ready update is never invisible; the banner takes the slot back once it's applied
-@@ -1788,10 +1818,14 @@ fn render_welcome_done(
+@@ -1787,11 +1829,19 @@ fn render_welcome_done(
+             // The key string is right-aligned by render_menu, so [x] sits at the very end of the row
              items.push((key_i_with_x, "Import Claude settings"));
          }
-         items.push((key_w, "New worktree"));
+-        items.push((key_w, "New worktree"));
 -        items.push((key_resume, "Resume session"));
 -        // "Changelog" above Quit; no shortcut, opened by click (row or block)
++        // Workshop: outside a git repository a worktree cannot be made, so the row does not
++        // offer it (a first-time user in their home directory sees no git vocabulary).
++        if p.cwd_has_git_ancestor {
++            items.push((key_w, "New worktree"));
++        }
 +        // Workshop: nothing to resume on a fresh directory, so the row does not offer it.
 +        if p.has_resumable_sessions {
 +            items.push((key_resume, "Resume session"));
@@ -9656,7 +9991,7 @@ index b828a780..3ea7ee46 100644
          }
          items.push((key_q, "Quit"));
          owned_menu = items;
-@@ -1913,6 +1947,7 @@ fn render_welcome_done(
+@@ -1913,6 +1963,7 @@ fn render_welcome_done(
              &layout,
              buf,
              theme,
@@ -9664,7 +9999,7 @@ index b828a780..3ea7ee46 100644
              menu_items,
              p.selected,
              p.mouse_pos,
-@@ -2128,7 +2163,11 @@ fn render_welcome_done(
+@@ -2128,7 +2179,11 @@ fn render_welcome_done(
          (None, None)
      } else {
          // Privacy banner owns the tip slot when visible (above the prompt), except a pending-update notification, which outranks it
@@ -9677,7 +10012,7 @@ index b828a780..3ea7ee46 100644
              let [_, tip_centered, _] = Layout::horizontal([
                  Constraint::Min(0),
                  Constraint::Length(content_area.width),
-@@ -2182,11 +2221,36 @@ fn render_welcome_done(
+@@ -2182,11 +2237,36 @@ fn render_welcome_done(
              Paragraph::new(line)
                  .style(Style::default().bg(theme.bg_base))
                  .render(tip_inset, buf);
@@ -9714,7 +10049,7 @@ index b828a780..3ea7ee46 100644
              && let Some(hint) = p.foreign_resume_hint
              && layout.tip.height > 0
          {
-@@ -2249,6 +2313,7 @@ fn render_welcome_done(
+@@ -2249,6 +2329,7 @@ fn render_welcome_done(
              &usage_info,
              if p.privacy_banner
                  || p.pending_update_version.is_some()
@@ -9722,15 +10057,16 @@ index b828a780..3ea7ee46 100644
                  || p.foreign_resume_hint.is_some()
              {
                  // Banner/update/resume tip already rendered above with custom styling.
-@@ -2283,6 +2348,7 @@ fn render_welcome_done(
+@@ -2283,6 +2364,8 @@ fn render_welcome_done(
          consent_link_rects: Vec::new(),
          consent_legibility: None,
          changelog_action_present: show_changelog_action,
 +        resume_action_present: p.has_access && !show_picker && p.has_resumable_sessions,
++        worktree_action_present: p.has_access && !show_picker && p.cwd_has_git_ancestor,
          changelog_cta_rect,
          announcement_truncated,
          announcement_rect,
-@@ -2291,6 +2357,11 @@ fn render_welcome_done(
+@@ -2291,6 +2374,11 @@ fn render_welcome_done(
          privacy_banner_opt_out_rect,
          privacy_banner_terms_rect,
          privacy_banner_policy_rect,
@@ -9742,7 +10078,7 @@ index b828a780..3ea7ee46 100644
          #[cfg(feature = "local-workspace")]
          workspace_mode_rects,
      }
-@@ -2501,10 +2572,12 @@ pub(crate) fn render_session_picker_body(
+@@ -2501,10 +2589,12 @@ pub(crate) fn render_session_picker_body(
              description: None,
              pinned: false,
          });
@@ -9756,7 +10092,7 @@ index b828a780..3ea7ee46 100644
              description: None,
              pinned: false,
          });
-@@ -2718,8 +2791,9 @@ mod tests {
+@@ -2718,8 +2808,9 @@ mod tests {
                  "badge must not label the product: {rendered:?}"
              );
          }
@@ -9768,7 +10104,7 @@ index b828a780..3ea7ee46 100644
          assert!(footer.contains("acme"), "footer keeps the team: {footer:?}");
          assert!(
              !footer.ends_with('\u{2502}'),
-@@ -2862,6 +2936,7 @@ mod tests {
+@@ -2862,6 +2953,7 @@ mod tests {
              consent_state: &ConsentState::Done,
              consent_hover_link: None,
              login_label: None,
@@ -9776,15 +10112,16 @@ index b828a780..3ea7ee46 100644
              auth_code_input: "",
              auth_code_cursor_byte: 0,
              clipboard_delivery: None,
-@@ -2874,6 +2949,7 @@ mod tests {
+@@ -2874,6 +2966,8 @@ mod tests {
              team_name: None,
              has_access: true,
              has_claude_import: false,
 +            has_resumable_sessions: true,
++            cwd_has_git_ancestor: true,
              mouse_pos: None,
              is_zdr_blocked: false,
              session_picker,
-@@ -2882,6 +2958,7 @@ mod tests {
+@@ -2882,6 +2976,7 @@ mod tests {
              pending_hint: None,
              startup_warnings: &[],
              pending_update_version: None,
@@ -9792,7 +10129,7 @@ index b828a780..3ea7ee46 100644
              foreign_resume_hint: None,
              is_api_key_auth: false,
              session_picker_content_results: None,
-@@ -2903,6 +2980,7 @@ mod tests {
+@@ -2903,6 +2998,7 @@ mod tests {
              welcome_announcement_expanded: false,
              upgrade_cta: None,
              privacy_banner: false,
@@ -9800,7 +10137,57 @@ index b828a780..3ea7ee46 100644
              #[cfg(feature = "local-workspace")]
              workspace_mode: WelcomeWorkspaceMode::Sandbox,
              #[cfg(feature = "local-workspace")]
-@@ -3696,7 +3774,7 @@ mod tests {
+@@ -2921,6 +3017,49 @@ mod tests {
+         buffer_text(&buf)
+     }
+ 
++    /// Workshop: the menu offers only what can work here — no "New worktree" outside a git
++    /// repository, no "Resume session" with nothing to resume — and the result flags say which
++    /// rows were drawn so the input handler's indices match the screen.
++    #[test]
++    fn menu_hides_worktree_outside_git_and_resume_with_nothing_to_resume() {
++        let auth = AuthState::Done;
++        let trust = TrustState::Done;
++        let mut params = render_params(&auth, &trust, None);
++        let text = render_done_text(&params);
++        assert!(
++            text.contains("New worktree") && text.contains("Resume session"),
++            "{text}"
++        );
++
++        params.cwd_has_git_ancestor = false;
++        params.has_resumable_sessions = false;
++        let area = Rect::new(0, 0, 100, 40);
++        let mut buf = Buffer::empty(area);
++        let mut prompt = PromptWidget::new();
++        let mut picker = PickerState::default();
++        let result = render_welcome(area, &mut buf, &params, &mut prompt, &mut picker);
++        let text = buffer_text(&buf);
++        assert!(!text.contains("New worktree"), "{text}");
++        assert!(!text.contains("Resume session"), "{text}");
++        assert!(text.contains("Quit"), "{text}");
++        assert!(!result.worktree_action_present);
++        assert!(!result.resume_action_present);
++    }
++
++    /// Workshop has one release channel: the welcome never shows a `[stable]` chip (the audit's
++    /// "what is this little [stable] for?"); a build ahead of it still says `[alpha]`.
++    #[test]
++    fn welcome_shows_no_stable_channel_chip() {
++        assert_eq!(welcome_channel_chip(" [stable]"), "");
++        assert_eq!(welcome_channel_chip(" [alpha]"), " [alpha]");
++        assert_eq!(welcome_channel_chip(""), "");
++        let auth = AuthState::Done;
++        let trust = TrustState::Done;
++        let params = render_params(&auth, &trust, None);
++        let text = render_done_text(&params);
++        assert!(!text.contains("[stable]"), "{text}");
++    }
++
+     #[test]
+     fn foreign_resume_tip_names_each_tool_and_age() {
+         use xai_grok_foreign_sessions::ForeignSessionTool;
+@@ -3696,7 +3835,7 @@ mod tests {
          };
          let one_line = WelcomeLayout::compute(input(None));
          assert_eq!(one_line.logo_tier, LogoTier::Full);
@@ -9809,7 +10196,7 @@ index b828a780..3ea7ee46 100644
  
          let tall = WelcomeLayout::compute(input(Some(13)));
          assert_eq!(tall.logo_tier, LogoTier::Compact);
-@@ -3786,20 +3864,30 @@ mod tests {
+@@ -3786,20 +3925,30 @@ mod tests {
          }
      }
  
@@ -9851,7 +10238,7 @@ index b828a780..3ea7ee46 100644
      }
  
      /// End to end: a draft that steps the logo tier down paints the compact art, not the full art clipped into fewer rows.
-@@ -3816,7 +3904,7 @@ mod tests {
+@@ -3816,7 +3965,7 @@ mod tests {
  
          let mut buf = Buffer::empty(area);
          let _ = render_welcome(area, &mut buf, &params, &mut prompt, &mut picker);
@@ -9860,7 +10247,7 @@ index b828a780..3ea7ee46 100644
  
          prompt.set_text(&["line"; 30].join("\n"));
          let mut buf = Buffer::empty(area);
-@@ -4096,8 +4184,12 @@ mod tests {
+@@ -4096,8 +4245,12 @@ mod tests {
              ..Default::default()
          };
          assert!(
@@ -9875,7 +10262,7 @@ index b828a780..3ea7ee46 100644
              "clamped slot must keep the box within the area"
          );
      }
-@@ -4584,7 +4676,8 @@ the usual channels. "
+@@ -4584,7 +4737,8 @@ the usual channels. "
              hero_box::min_content_height(
                  &short_input,
                  short_expanded.hero_info.height,

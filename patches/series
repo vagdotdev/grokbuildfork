@@ -26,3 +26,4 @@
 0022-double-slash-voice.patch  # product
 0023-startup-auth-reload-no-retry-sleep.patch  # product
 0024-delete-key-deletes-sessions.patch  # product
+0025-welcome-card-stays-until-first-send.patch  # product
