@@ -1908,6 +1908,63 @@ index be26f22a..0e3f9cfe 100644
  [features]
  # `audio` = "microphone capture is compiled in". It's enabled on every OS for
  # production builds: macOS/Windows link `cpal`; Linux shells out to a system
+diff --git a/crates/codegen/xai-grok-voice/src/audio/capture_linux.rs b/crates/codegen/xai-grok-voice/src/audio/capture_linux.rs
+index 3cd7b521..7dd688e7 100644
+--- a/crates/codegen/xai-grok-voice/src/audio/capture_linux.rs
++++ b/crates/codegen/xai-grok-voice/src/audio/capture_linux.rs
+@@ -184,6 +184,11 @@ fn pw_record_supports_raw() -> bool {
+     String::from_utf8_lossy(&help).contains("--raw")
+ }
+ 
++/// What a person reads when no recorder program is on `PATH` (Workshop records through
++/// PipeWire's `pw-record`, PulseAudio's `parec` or ALSA's `arecord`).
++pub const NO_RECORDER_MESSAGE: &str = "No microphone recorder found \u{2014} install pipewire \
++                                       (or pulseaudio-utils) and try /voice again";
++
+ /// [`candidate_recorders`], or a `VoiceError` naming what to install when `PATH` has none.
+ fn require_recorders(
+     available: impl Fn(&str) -> bool,
+@@ -191,11 +196,8 @@ fn require_recorders(
+ ) -> Result<Vec<Recorder>, VoiceError> {
+     let recorders = candidate_recorders(&available, &pw_record_supports_raw);
+     if recorders.is_empty() {
+-        return Err(VoiceError::Config(
+-            "no microphone recorder found on PATH: install pipewire (pw-record), \
+-             pulseaudio-utils (parec), or alsa-utils (arecord)"
+-                .into(),
+-        ));
++        // One sentence a person can act on; the program names stay for `/doctor`'s detail.
++        return Err(VoiceError::Config(NO_RECORDER_MESSAGE.into()));
+     }
+     Ok(recorders)
+ }
+@@ -336,7 +338,7 @@ pub fn input_device_info() -> Result<crate::probe::InputDeviceInfo, VoiceError>
+     // `require_recorders` returns a non-empty list on `Ok`; degrade to an error rather than panic if that ever changes
+     let recorder = *recorders
+         .first()
+-        .ok_or_else(|| VoiceError::Config("no microphone recorder found on PATH".into()))?;
++        .ok_or_else(|| VoiceError::Config(NO_RECORDER_MESSAGE.into()))?;
+     Ok(crate::probe::InputDeviceInfo {
+         name: recorder.program().to_string(),
+         detail: "system recorder; uses the audio server's default input".to_string(),
+@@ -485,7 +487,16 @@ mod tests {
+     #[test]
+     fn no_recorder_on_path_is_an_error() {
+         let err = require_recorders(|_| false, || true).unwrap_err();
+-        assert!(config_message(err).contains("no microphone recorder"));
++        let message = config_message(err);
++        assert!(
++            message.starts_with("No microphone recorder found"),
++            "{message}"
++        );
++        assert!(message.contains("try /voice again"), "{message}");
++        assert!(
++            !message.contains("PATH") && !message.contains("arecord"),
++            "one sentence, not a package list: {message}"
++        );
+     }
+ 
+     #[test]
 diff --git a/crates/codegen/xai-grok-voice/src/config.rs b/crates/codegen/xai-grok-voice/src/config.rs
 index 8a7f7fb4..130d6772 100644
 --- a/crates/codegen/xai-grok-voice/src/config.rs
@@ -2274,6 +2331,20 @@ index 8a7f7fb4..130d6772 100644
 +        );
      }
  }
+diff --git a/crates/codegen/xai-grok-voice/src/error.rs b/crates/codegen/xai-grok-voice/src/error.rs
+index 1d9b7b54..1b61fe8d 100644
+--- a/crates/codegen/xai-grok-voice/src/error.rs
++++ b/crates/codegen/xai-grok-voice/src/error.rs
+@@ -2,7 +2,8 @@ use thiserror::Error;
+ 
+ #[derive(Debug, Error)]
+ pub enum VoiceError {
+-    #[error("configuration: {0}")]
++    // Workshop: the message alone; "configuration:" was an internal category a person read first.
++    #[error("{0}")]
+     Config(String),
+ 
+     #[error("STT: {0}")]
 diff --git a/crates/codegen/xai-grok-voice/src/event.rs b/crates/codegen/xai-grok-voice/src/event.rs
 index 1f795284..68735fa5 100644
 --- a/crates/codegen/xai-grok-voice/src/event.rs

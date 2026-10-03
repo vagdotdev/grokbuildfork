@@ -718,7 +718,7 @@ index daaf550f..60bcca32 100644
      {
          let Some(mut target) =
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
-index a80f3faf..6eb31bcc 100644
+index a80f3faf..3b1b0192 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
 @@ -420,7 +420,15 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
@@ -762,6 +762,32 @@ index a80f3faf..6eb31bcc 100644
      agent.prompt.set_compact(compact);
      agent.prompt.adopt_slash_mru(slash_mru);
      agent.prompt.adopt_command_tags(command_tags);
+@@ -1382,19 +1396,19 @@ pub(in crate::app::dispatch) fn handle_session_created(
+         agent_count > 1 || (app.screen_mode.is_minimal() && app.next_agent_id > 1);
+     if let Some(agent) = app.agents.get_mut(&agent_id) {
+         let session_id_clone = session_id.clone();
++        // Workshop: a session id is a serial number, not a name a person would say; the line
++        // says what happened and where the other sessions are.
+         if agent.session.created_via_new
+             && has_switch_target
+             && let Some(cmd) = switch_hint
+         {
+             agent.scrollback.push_block(RenderBlock::system(format!(
+-                "Session {}, use {cmd} to switch between sessions",
+-                session_id_clone.0,
++                "New session \u{2014} {cmd} switches between sessions",
+             )));
+         } else if agent_count > 1 {
+-            agent.scrollback.push_block(RenderBlock::system(format!(
+-                "Session: {}",
+-                session_id_clone.0,
+-            )));
++            agent
++                .scrollback
++                .push_block(RenderBlock::system("New session".to_owned()));
+         }
+         agent.bind_session_id(session_id);
+         if let Some(m) = new_models {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/load.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/load.rs
 index 23ab562f..b000bda9 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/load.rs
