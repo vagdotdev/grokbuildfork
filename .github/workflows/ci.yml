@@ -211,12 +211,13 @@ jobs:
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test pty_rail_install -- --nocapture --include-ignored
-      - name: PTY gate — voice gets ready in the background from the release mirror only
-        # A default install ships no voice helper or model. Nothing is fetched before the first
-        # reply; then the helper (verified against SHA256SUMS, linked as bin/voice-engine) and the
-        # model arrive from a loopback mirror, `/voice` meanwhile reads `Voice is getting ready —
-        # 6%`, and the mirror saw exactly those three files. `WORKSHOP_VOICE_AUTO=0` fetches
-        # nothing on its own; a `/voice` press still asks.
+      - name: PTY gate — voice is fetched from the release mirror only, on request or in the background
+        # A default install ships no voice helper or model, and by default fetches nothing until
+        # the first `/voice` press asks. With the background setup turned on
+        # (`WORKSHOP_VOICE_AUTO=1`): nothing before the first reply; then the helper (verified
+        # against SHA256SUMS, linked as bin/voice-engine) and the model arrive from a loopback
+        # mirror, `/voice` meanwhile reads `Voice is getting ready — 6%`, and the mirror saw
+        # exactly those three files.
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test pty_voice_prefetch -- --nocapture --include-ignored --test-threads=1

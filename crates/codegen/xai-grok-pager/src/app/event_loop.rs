@@ -1471,8 +1471,9 @@ pub(crate) async fn run(
     }
     app.voice_config.client_identifier = crate::client_identity::HEADLESS_CLIENT_TYPE.to_string();
     app.voice_config.user_agent = crate::client_identity::client_user_agent();
-    // Workshop: on a returning launch voice gets ready in the background half a minute in (a
-    // first run waits for its first reply, see `handle_workshop_turn_msg`).
+    // Workshop: with the background voice setup turned on (`[voice] auto_download`), a returning
+    // launch starts it half a minute in (a first run waits for its first reply, see
+    // `handle_workshop_turn_msg`); by default the first `/voice` fetches on request.
     if !needs_interactive_login {
         post_render_effects.extend(crate::app::workshop::maybe_start_voice_prefetch(
             &mut app,
@@ -2475,6 +2476,7 @@ pub(crate) async fn run(
                 // `None` means the dedicated terminal reader thread has ended.
                 let Some(ev) = maybe_ev else { break };
                 let typed_char = typed_character(&ev.event);
+                app.note_terminal_input(&ev.event);
                 let handled_at = std::time::Instant::now();
                 let waited =
                     super::event_loop_stall::input_wait(ev.arrived_at, handled_at, loop_entry);
