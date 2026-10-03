@@ -180,7 +180,7 @@ index 05556693..41171fbf 100644
              ActionId::ShortcutsHelp => {
                  use crate::views::shortcuts_help;
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..93c9e0b5 100644
+index fc9a4553..c0f295de 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -552,7 +552,7 @@ index fc9a4553..93c9e0b5 100644
      has_pending_update: bool,
      /// A recent foreign session is available to resume when no update is pending.
      has_foreign_resume: bool,
-@@ -3171,6 +3378,120 @@ struct WelcomeInputCtx<'a> {
+@@ -3171,6 +3378,130 @@ struct WelcomeInputCtx<'a> {
      #[cfg(feature = "local-workspace")]
      session_picker_open: bool,
  }
@@ -649,13 +649,23 @@ index fc9a4553..93c9e0b5 100644
 +                };
 +                return InputOutcome::Action(Action::ConnectionPicker(input));
 +            }
++            let shift = key
++                .modifiers
++                .contains(crossterm::event::KeyModifiers::SHIFT);
 +            let input = match key.code {
 +                KeyCode::Up => PickerInput::Up,
 +                KeyCode::Down => PickerInput::Down,
++                KeyCode::Home => PickerInput::Home,
++                KeyCode::End => PickerInput::End,
++                KeyCode::PageUp => PickerInput::PageUp,
++                KeyCode::PageDown => PickerInput::PageDown,
 +                KeyCode::Right => PickerInput::Open,
 +                KeyCode::Left => PickerInput::Left,
-+                // One list, no tabs: Tab is swallowed so it never reaches the composer.
-+                KeyCode::Tab | KeyCode::BackTab => return InputOutcome::Changed,
++                // One list, no tabs: Tab jumps between its sections (and never reaches the
++                // composer behind the overlay).
++                KeyCode::BackTab => PickerInput::PrevSection,
++                KeyCode::Tab if shift => PickerInput::PrevSection,
++                KeyCode::Tab => PickerInput::NextSection,
 +                KeyCode::Enter => PickerInput::Enter,
 +                KeyCode::Esc => PickerInput::Back,
 +                KeyCode::Backspace => PickerInput::Backspace,
@@ -673,7 +683,7 @@ index fc9a4553..93c9e0b5 100644
  /// Welcome view input: overlays first, then composer, then the menu.
  fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
      if let Some(modal) = ctx.import_claude_modal.as_mut() {
-@@ -3750,6 +4071,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3750,6 +4081,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                  return dispatch_menu_action(
                      idx,
                      ctx.has_claude_import,
@@ -681,7 +691,7 @@ index fc9a4553..93c9e0b5 100644
                      ctx.show_changelog_action,
                      ctx.changelog_markdown.as_deref(),
                  );
-@@ -3888,6 +4210,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3888,6 +4220,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                          return dispatch_menu_action(
                              i,
                              ctx.has_claude_import,
@@ -689,7 +699,7 @@ index fc9a4553..93c9e0b5 100644
                              ctx.show_changelog_action,
                              ctx.changelog_markdown.as_deref(),
                          );
-@@ -4138,39 +4461,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
+@@ -4138,39 +4471,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
      }
  }
  /// Dispatch an action for a welcome menu item by index.
@@ -748,7 +758,7 @@ index fc9a4553..93c9e0b5 100644
      }
      if index == quit_idx {
          return InputOutcome::Action(Action::Quit);
-@@ -4381,6 +4707,9 @@ impl AppView {
+@@ -4381,6 +4717,9 @@ impl AppView {
          });
          let welcome_default_yolo = self.default_yolo;
          let welcome_auto_gate = self.auto_mode_gate;
@@ -758,7 +768,7 @@ index fc9a4553..93c9e0b5 100644
          let Self {
              active_view,
              agents,
-@@ -4477,11 +4806,39 @@ impl AppView {
+@@ -4477,11 +4816,39 @@ impl AppView {
                              } else {
                                  self.tip.as_deref()
                              };
@@ -803,7 +813,7 @@ index fc9a4553..93c9e0b5 100644
                              };
                              let hero_cta = crate::views::announcements::promo_cta(
                                  &self.active_announcements,
-@@ -4495,7 +4852,14 @@ impl AppView {
+@@ -4495,7 +4862,14 @@ impl AppView {
                                          &self.hidden_announcement_ids,
                                      )
                                  })
@@ -819,7 +829,7 @@ index fc9a4553..93c9e0b5 100644
                              let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                  prompt_focus: if self.welcome_prompt_focused {
                                      WelcomePromptFocus::Focused
-@@ -4508,6 +4872,7 @@ impl AppView {
+@@ -4508,6 +4882,7 @@ impl AppView {
                                  consent_state: &self.consent_state,
                                  consent_hover_link: self.welcome_consent_hover_link,
                                  login_label: self.login_label.as_deref(),
@@ -827,7 +837,7 @@ index fc9a4553..93c9e0b5 100644
                                  auth_code_input: self.auth_code_input.text(),
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
-@@ -4520,6 +4885,7 @@ impl AppView {
+@@ -4520,6 +4895,7 @@ impl AppView {
                                  team_name: self.team_name.as_deref(),
                                  has_access,
                                  has_claude_import: self.has_claude_import,
@@ -835,7 +845,7 @@ index fc9a4553..93c9e0b5 100644
                                  mouse_pos: self.last_mouse_pos,
                                  is_zdr_blocked: zdr_blocked_for_draw,
                                  session_picker: self.session_picker_entries.as_deref(),
-@@ -4534,6 +4900,7 @@ impl AppView {
+@@ -4534,6 +4910,7 @@ impl AppView {
                                  pending_hint,
                                  startup_warnings: &self.startup_warnings,
                                  pending_update_version: self.pending_update_version.as_deref(),
@@ -843,7 +853,7 @@ index fc9a4553..93c9e0b5 100644
                                  foreign_resume_hint: foreign_resume_hint.as_ref(),
                                  session_picker_content_results: self
                                      .session_picker_content_results
-@@ -4560,6 +4927,7 @@ impl AppView {
+@@ -4560,6 +4937,7 @@ impl AppView {
                                  welcome_announcement_expanded: self.welcome_announcement.expanded,
                                  upgrade_cta: hero_cta.map(|(_owner, label, _)| label),
                                  privacy_banner,
@@ -851,7 +861,7 @@ index fc9a4553..93c9e0b5 100644
                                  #[cfg(feature = "local-workspace")]
                                  workspace_mode: self.welcome_workspace_mode,
                                  #[cfg(feature = "local-workspace")]
-@@ -4576,7 +4944,9 @@ impl AppView {
+@@ -4576,7 +4954,9 @@ impl AppView {
                                  &mut self.session_picker_state,
                              );
                              self.welcome_menu_rects = result.menu_rects;
@@ -861,7 +871,7 @@ index fc9a4553..93c9e0b5 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4804,6 +5174,7 @@ impl AppView {
+@@ -4804,6 +5184,7 @@ impl AppView {
                                              .workspace_dashboard_enabled,
                                          overlay_header,
                                          overlay_stop_label: None,
@@ -869,7 +879,7 @@ index fc9a4553..93c9e0b5 100644
                                      },
                                  );
                                  if let Some(modal) = self.import_claude_modal.as_mut() {
-@@ -4824,6 +5195,28 @@ impl AppView {
+@@ -4824,6 +5205,28 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -898,7 +908,7 @@ index fc9a4553..93c9e0b5 100644
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5225,17 @@ impl AppView {
+@@ -4832,13 +5235,17 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
@@ -917,7 +927,7 @@ index fc9a4553..93c9e0b5 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5517,7 @@ impl AppView {
+@@ -5120,6 +5527,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -925,7 +935,7 @@ index fc9a4553..93c9e0b5 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5565,7 @@ impl AppView {
+@@ -5167,7 +5575,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -934,15 +944,21 @@ index fc9a4553..93c9e0b5 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5680,7 @@ impl AppView {
+@@ -5282,6 +5690,13 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
 +        needs_redraw |= self.tick_rail_install();
++        // Workshop: the picker repaints the moment its first load runs overdue (`detecting…`
++        // gives way to a retry), without waiting for a key.
++        needs_redraw |= self
++            .connection_picker
++            .as_mut()
++            .is_some_and(workshop_auth::PickerState::tick);
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5300,11 +5699,7 @@ impl AppView {
+@@ -5300,11 +5715,7 @@ impl AppView {
              {
                  needs_redraw = true;
              } else {
@@ -955,7 +971,7 @@ index fc9a4553..93c9e0b5 100644
              }
          }
          if matches!(self.active_view, ActiveView::AgentDashboard)
-@@ -5355,7 +5750,10 @@ impl AppView {
+@@ -5355,7 +5766,10 @@ impl AppView {
              }
              let spinner_frame_tick =
                  agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
@@ -967,7 +983,7 @@ index fc9a4553..93c9e0b5 100644
              needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
                  && spinner_frame_tick;
              needs_redraw |= matches!(
-@@ -5623,6 +6021,20 @@ impl AppView {
+@@ -5623,6 +6037,20 @@ impl AppView {
          }
          needs_redraw
      }
@@ -988,7 +1004,7 @@ index fc9a4553..93c9e0b5 100644
      /// Check if animation ticks should be scheduled.
      pub fn needs_animation(&self) -> bool {
          self.tick_demand() != TickDemand::None
-@@ -5637,6 +6049,15 @@ impl AppView {
+@@ -5637,6 +6065,15 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -1004,7 +1020,7 @@ index fc9a4553..93c9e0b5 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5781,9 +6202,94 @@ impl AppView {
+@@ -5781,9 +6218,94 @@ impl AppView {
                      TickDemand::None
                  }
              }
@@ -1100,7 +1116,7 @@ index fc9a4553..93c9e0b5 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6311,9 @@ impl AppView {
+@@ -5805,7 +6327,9 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -8633,10 +8649,10 @@ index 51c3c5f1..adf9568d 100644
      fn run_set_default_model_resolves_case_insensitively() {
 diff --git a/crates/codegen/xai-grok-pager/src/views/connection_picker.rs b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
 new file mode 100644
-index 00000000..37edb75a
+index 00000000..8479791d
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
-@@ -0,0 +1,393 @@
+@@ -0,0 +1,405 @@
 +//! Workshop connection picker overlay (ratatui view over `workshop_auth::PickerState`).
 +//!
 +//! One list behind `/model` and `/auth`: `⌕ type to filter`, quiet group headers (`OpenCode`, a
@@ -8796,7 +8812,19 @@ index 00000000..37edb75a
 +            (false, _, true) => " · Ctrl+A hide non-chat".to_owned(),
 +            _ => String::new(),
 +        };
-+        format!("↑↓ · {enter} · {back}{refresh}{show_all}")
++        // Tab walks the section headers; it has nothing to do in a sub-menu or a filtered list.
++        let sections = if picker
++            .models_lines()
++            .iter()
++            .filter(|l| matches!(l, ModelsLine::Header(_)))
++            .count()
++            > 1
++        {
++            " · Tab section"
++        } else {
++            ""
++        };
++        format!("↑↓{sections} · {enter} · {back}{refresh}{show_all}")
 +    };
 +    Paragraph::new(Line::from(Span::styled(
 +        keys,

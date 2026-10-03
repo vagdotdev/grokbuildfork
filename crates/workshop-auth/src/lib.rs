@@ -30,6 +30,7 @@ pub mod config_write;
 pub mod text;
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 pub use workshop_detect::{Pill, Rail, RailState};
 pub use workshop_providers::{
@@ -280,6 +281,8 @@ pub enum RowKind {
 /// What a signed-in vendor shows while its CLI's model list has not arrived: the detect layer's
 /// own copy.
 pub const LOADING_MODELS: &str = workshop_detect::copy::LOADING_MODELS;
+/// Vendor-row suffix once the first load has run past [`LOAD_PATIENCE`] without an answer.
+pub const CHECK_FAILED: &str = "Couldn't check \u{2014} press Enter to retry";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelsRow {
@@ -552,6 +555,16 @@ pub fn models_rows(
 pub enum PickerInput {
     Up,
     Down,
+    /// First row (`Home`) / last row (`End`).
+    Home,
+    End,
+    /// A page of rows up / down (`PgUp` / `PgDn`, [`PAGE_STEP`] rows).
+    PageUp,
+    PageDown,
+    /// The first row of the next / previous section (`Tab` / `Shift+Tab`): `OpenCode`, a
+    /// connected provider, `Subscriptions`. Nothing inside a sub-menu or a filtered list.
+    NextSection,
+    PrevSection,
     /// Open the highlighted row's sub-menu (`→`); nothing on a row without one.
     Open,
     /// Leave the open sub-menu (`←`); nothing at the top level.
@@ -570,6 +583,14 @@ pub enum PickerInput {
     /// Show / hide the non-chat models (classifiers, routers…) (`Ctrl+A`).
     ToggleShowAll,
 }
+
+/// Rows a `PgUp` / `PgDn` press moves by. The overlay is at most a few dozen rows tall, so a
+/// fixed step is predictable wherever the terminal's height lands.
+pub const PAGE_STEP: usize = 10;
+
+/// How long the first load may show `detecting…` before the picker says it could not check and
+/// offers a retry; no status spins forever, whatever a vendor CLI does.
+pub const LOAD_PATIENCE: Duration = Duration::from_secs(15);
 
 /// One line of the list as rendered: a group header or a selectable row.
 #[derive(Debug, Clone, PartialEq)]
@@ -660,6 +681,10 @@ pub struct PickerState {
     pub xai_armed: bool,
     /// Loaders still running (rows may be partial).
     pub loading: bool,
+    /// When the running load started, for [`Self::load_overdue`]; `None` once it landed.
+    pub loading_since: Option<Instant>,
+    /// The overdue state was already painted once (see [`Self::tick`]).
+    overdue_noticed: bool,
     /// A live refresh of the model lists is wanted (or running); the rows shown are the cached
     /// ones until the live snapshot lands.
     pub refresh_pending: bool,
@@ -703,6 +728,8 @@ impl PickerState {
             parent_id: None,
             xai_armed: false,
             loading: true,
+            loading_since: Some(Instant::now()),
+            overdue_noticed: false,
             refresh_pending: false,
             refresh_in_flight: false,
             status: None,
@@ -997,7 +1024,11 @@ impl PickerState {
                     return out;
                 };
                 if state.pill == Pill::Detecting {
-                    out.push((Tone::Dim, "detecting\u{2026}".into()));
+                    if self.load_overdue() {
+                        out.push((Tone::Dim, CHECK_FAILED.into()));
+                    } else {
+                        out.push((Tone::Dim, "detecting\u{2026}".into()));
+                    }
                 } else if !state.installed {
                     out.push((Tone::Dim, "install".into()));
                 } else if !state.is_ready() {
@@ -1074,6 +1105,7 @@ impl PickerState {
             RowKind::ApiKeys => "open",
             RowKind::XaiOptional => "sign in",
             RowKind::Vendor(rail) => match self.rail(*rail) {
+                Some(s) if s.pill == Pill::Detecting && self.load_overdue() => "retry",
                 Some(s) if s.pill == Pill::Detecting => "select",
                 Some(s) if !s.installed => "install",
                 Some(s) if !s.is_ready() => "sign in",
@@ -1105,6 +1137,8 @@ impl PickerState {
             self.refresh_in_flight = false;
         }
         self.loading = false;
+        self.loading_since = None;
+        self.overdue_noticed = false;
         // A vendor sub-menu whose list went away (signed out meanwhile) falls back to the list,
         // on the vendor's row.
         if self.submenu.is_some() && self.visible_rows().is_empty() {
@@ -1128,6 +1162,70 @@ impl PickerState {
 
     pub fn selected_row(&self) -> Option<ModelsRow> {
         self.visible_rows().get(self.selected).cloned()
+    }
+
+    /// The first load has run past [`LOAD_PATIENCE`]: the vendor rows stop saying `detecting…`
+    /// and offer a retry instead, so a hung CLI never leaves the picker spinning.
+    pub fn load_overdue(&self) -> bool {
+        self.loading
+            && self
+                .loading_since
+                .is_some_and(|since| since.elapsed() >= LOAD_PATIENCE)
+    }
+
+    /// Host tick: `true` once, the moment the load becomes overdue, so the overlay repaints
+    /// without waiting for a key.
+    pub fn tick(&mut self) -> bool {
+        if self.load_overdue() && !self.overdue_noticed {
+            self.overdue_noticed = true;
+            return true;
+        }
+        false
+    }
+
+    /// Indices into [`Self::visible_rows`] of the first row under each group header, in order;
+    /// empty inside a sub-menu or a filtered list (no headers there).
+    fn section_starts(&self) -> Vec<usize> {
+        let mut starts = Vec::new();
+        let mut rows = 0;
+        let mut after_header = false;
+        for line in self.models_lines() {
+            match line {
+                ModelsLine::Header(_) => after_header = true,
+                ModelsLine::Row(_) => {
+                    if after_header {
+                        starts.push(rows);
+                        after_header = false;
+                    }
+                    rows += 1;
+                }
+            }
+        }
+        starts
+    }
+
+    /// `Tab` / `Shift+Tab`: the first row of the next / previous section. Backwards from inside
+    /// a section lands on that section's first row first (the way `Home` would), then on the
+    /// one before.
+    fn jump_section(&mut self, forward: bool) -> PickerOutcome {
+        let starts = self.section_starts();
+        let target = if forward {
+            starts.iter().copied().find(|&s| s > self.selected)
+        } else {
+            starts.iter().rev().copied().find(|&s| s < self.selected)
+        };
+        if let Some(target) = target {
+            self.selected = target;
+            self.xai_armed = false;
+        }
+        PickerOutcome::Changed
+    }
+
+    /// Start the patience clock again for a retry (the host runs the loaders).
+    fn restart_load(&mut self) {
+        self.loading = true;
+        self.loading_since = Some(Instant::now());
+        self.overdue_noticed = false;
     }
 
     /// Whether `row` is (or holds) the active connection.
@@ -1252,7 +1350,12 @@ impl PickerState {
             };
         }
         match input {
-            PickerInput::Refresh => PickerOutcome::Refresh,
+            PickerInput::Refresh => {
+                if self.loading {
+                    self.restart_load();
+                }
+                PickerOutcome::Refresh
+            }
             // Type-to-filter; every printable key is consumed here and none reaches the composer
             // behind the overlay.
             PickerInput::Char(c) if !c.is_control() => {
@@ -1287,6 +1390,29 @@ impl PickerState {
                 self.xai_armed = false;
                 PickerOutcome::Changed
             }
+            PickerInput::Home => {
+                self.selected = 0;
+                self.xai_armed = false;
+                PickerOutcome::Changed
+            }
+            PickerInput::End => {
+                self.selected = self.visible_rows().len().saturating_sub(1);
+                self.xai_armed = false;
+                PickerOutcome::Changed
+            }
+            PickerInput::PageUp => {
+                self.selected = self.selected.saturating_sub(PAGE_STEP);
+                self.xai_armed = false;
+                PickerOutcome::Changed
+            }
+            PickerInput::PageDown => {
+                let last = self.visible_rows().len().saturating_sub(1);
+                self.selected = (self.selected + PAGE_STEP).min(last);
+                self.xai_armed = false;
+                PickerOutcome::Changed
+            }
+            PickerInput::NextSection => self.jump_section(true),
+            PickerInput::PrevSection => self.jump_section(false),
             PickerInput::Left => {
                 if self.submenu.is_some() {
                     self.close_submenu();
@@ -1365,7 +1491,11 @@ impl PickerState {
                 let Some(state) = self.rail(rail).cloned() else {
                     return PickerOutcome::Changed;
                 };
-                if !state.installed && state.pill == Pill::Install {
+                if state.pill == Pill::Detecting && self.load_overdue() {
+                    // The first load never answered: run the loaders again.
+                    self.restart_load();
+                    PickerOutcome::Refresh
+                } else if !state.installed && state.pill == Pill::Install {
                     PickerOutcome::RailInstall(rail)
                 } else if state.is_ready() && !state.models.is_empty() {
                     self.open_submenu(&row, Submenu::Vendor(rail));
@@ -1771,6 +1901,127 @@ mod tests {
             ..PickerSnapshot::default()
         });
         p
+    }
+
+    /// Home, End, PgUp and PgDn move the highlight: to the first and last row, and by a page
+    /// of rows, clamped at both ends. Nothing else about the picker changes.
+    #[test]
+    fn home_end_and_page_keys_move_the_highlight() {
+        let models: Vec<EngineModel> = (0..14)
+            .map(|i| {
+                engine(
+                    &format!("Model {i}"),
+                    &format!("opencode/model-{i}"),
+                    i == 0,
+                    true,
+                )
+            })
+            .collect();
+        let mut p = loaded_with_engine(&models);
+        let last = p.visible_rows().len() - 1;
+        assert!(last >= PAGE_STEP, "a list longer than one page: {last}");
+        assert_eq!(p.handle(PickerInput::End), PickerOutcome::Changed);
+        assert_eq!(p.selected, last);
+        assert_eq!(p.handle(PickerInput::Home), PickerOutcome::Changed);
+        assert_eq!(p.selected, 0);
+        assert_eq!(p.handle(PickerInput::PageDown), PickerOutcome::Changed);
+        assert_eq!(p.selected, PAGE_STEP);
+        assert_eq!(p.handle(PickerInput::PageDown), PickerOutcome::Changed);
+        assert_eq!(p.selected, (2 * PAGE_STEP).min(last), "clamped at the end");
+        assert_eq!(p.handle(PickerInput::PageUp), PickerOutcome::Changed);
+        assert_eq!(p.selected, (2 * PAGE_STEP).min(last) - PAGE_STEP);
+        p.selected = 3;
+        assert_eq!(p.handle(PickerInput::PageUp), PickerOutcome::Changed);
+        assert_eq!(p.selected, 0, "clamped at the top");
+        assert!(p.submenu.is_none() && p.filter.is_empty());
+    }
+
+    /// Tab and Shift+Tab jump between the sections of the one list: the first row under each
+    /// header (`OpenCode`, `Subscriptions`); backwards from inside a section lands on its first
+    /// row first. In a sub-menu or a filtered list there are no headers, so nothing moves.
+    #[test]
+    fn tab_jumps_between_sections() {
+        let mut p = loaded_with_rails(&[
+            rail(Rail::Claude, true, true),
+            rail(Rail::Codex, true, false),
+            rail(Rail::Cursor, false, false),
+        ]);
+        let lines = rendered(&p);
+        let subscriptions_first = lines
+            .iter()
+            .position(|l| l == &format!("# {SUBSCRIPTIONS_HEADER}"))
+            .expect("Subscriptions header");
+        // Rows before the Subscriptions header, minus the OpenCode header line itself.
+        let first_vendor = subscriptions_first - 1;
+        assert_eq!(p.selected, 0, "opens on the active OpenCode model");
+        assert_eq!(p.handle(PickerInput::NextSection), PickerOutcome::Changed);
+        assert_eq!(p.selected, first_vendor);
+        assert!(p.selected_row().unwrap().is_vendor(), "{:?}", titles(&p));
+        assert_eq!(p.handle(PickerInput::NextSection), PickerOutcome::Changed);
+        assert_eq!(p.selected, first_vendor, "no section after the last one");
+        p.selected = first_vendor + 2;
+        assert_eq!(p.handle(PickerInput::PrevSection), PickerOutcome::Changed);
+        assert_eq!(p.selected, first_vendor, "back to this section's first row");
+        assert_eq!(p.handle(PickerInput::PrevSection), PickerOutcome::Changed);
+        assert_eq!(p.selected, 0, "then to the one before");
+        assert_eq!(p.handle(PickerInput::PrevSection), PickerOutcome::Changed);
+        assert_eq!(p.selected, 0, "nothing before the first");
+
+        // A filtered list is flat: Tab leaves the highlight where it is.
+        for c in "cl".chars() {
+            p.handle(PickerInput::Char(c));
+        }
+        assert!(p.section_starts().is_empty());
+        let before = p.selected;
+        assert_eq!(p.handle(PickerInput::NextSection), PickerOutcome::Changed);
+        assert_eq!(p.selected, before);
+    }
+
+    /// No status spins forever: once the first load has run past `LOAD_PATIENCE`, a vendor row
+    /// stops saying `detecting…`, offers `Enter retry`, and Enter runs the loaders again (the
+    /// clock restarts). The host's tick repaints once at that moment; a landed snapshot clears it.
+    #[test]
+    fn an_overdue_first_load_offers_a_retry_instead_of_detecting_forever() {
+        let mut p = PickerState::new();
+        assert!(p.loading && !p.load_overdue());
+        assert!(
+            !p.tick(),
+            "nothing to repaint while the load is within patience"
+        );
+        let detecting = p.rows.iter().find(|r| r.is_vendor()).cloned().unwrap();
+        assert_eq!(suffix_text(&p, &detecting), "detecting\u{2026}");
+
+        p.loading_since = Some(Instant::now() - LOAD_PATIENCE);
+        assert!(p.load_overdue());
+        assert!(
+            p.tick(),
+            "the overlay repaints the moment the load runs overdue"
+        );
+        assert!(!p.tick(), "and only once");
+        assert_eq!(suffix_text(&p, &detecting), CHECK_FAILED);
+        select_row(&mut p, &detecting.title());
+        assert_eq!(p.enter_verb(), "retry");
+        assert_eq!(p.handle(PickerInput::Enter), PickerOutcome::Refresh);
+        assert!(
+            p.loading && !p.load_overdue(),
+            "the patience clock restarted"
+        );
+        assert_eq!(suffix_text(&p, &detecting), "detecting\u{2026}");
+
+        // Ctrl+R while still loading restarts the clock too.
+        p.loading_since = Some(Instant::now() - LOAD_PATIENCE);
+        assert_eq!(p.handle(PickerInput::Refresh), PickerOutcome::Refresh);
+        assert!(!p.load_overdue());
+
+        // A landed snapshot ends the loading state for good.
+        let rows = models_rows(&workshop_providers::Catalog::builtin(), |_| false, &[], &[]);
+        p.apply_snapshot(PickerSnapshot {
+            rows,
+            ..PickerSnapshot::default()
+        });
+        assert!(!p.loading && p.loading_since.is_none() && !p.load_overdue());
+        p.loading_since = Some(Instant::now() - LOAD_PATIENCE);
+        assert!(!p.load_overdue(), "a finished load is never overdue");
     }
 
     /// The owner's layout: OpenCode's models, then the Subscriptions section — every vendor as
