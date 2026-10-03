@@ -2,7 +2,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum VoiceError {
-    #[error("configuration: {0}")]
+    // Workshop: the message alone; "configuration:" was an internal category a person read first.
+    #[error("{0}")]
     Config(String),
 
     #[error("STT: {0}")]

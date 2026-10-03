@@ -3723,6 +3723,20 @@ fn ctrl_q_sets_pending_action() {
     assert!(app.pending_action.is_some());
     assert_eq!(app.pending_action.as_ref().unwrap().label, Some("quit"));
 }
+/// Workshop: the second Ctrl+Q has the dashboard's two-second window, not the one-second
+/// default — long enough to read `press again to quit` and press again.
+#[test]
+fn ctrl_q_confirm_window_is_two_seconds() {
+    let mut app = test_app_with_agent();
+    let before = std::time::Instant::now();
+    let _ = app.handle_input(&ctrl_q());
+    let pending = app.pending_action.as_ref().expect("armed quit");
+    let window = pending.expires_at.saturating_duration_since(before);
+    assert!(
+        window > PendingAction::TTL && window <= crate::views::dashboard::state::CONFIRM_WINDOW,
+        "quit confirm window {window:?}"
+    );
+}
 #[test]
 fn ctrl_q_double_press_quits() {
     let mut app = test_app_with_agent();
