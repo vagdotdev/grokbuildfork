@@ -1412,6 +1412,8 @@ pub(crate) async fn run(
             app.usage_visible = false;
             app.sync_billing_surface_to_agents();
         }
+        // Workshop: no auth meta is no xAI account; `/privacy` has nothing to open.
+        app.apply_restrictions_without_auth_meta();
     }
     let voice_mode_enabled = crate::app::resolve_voice_mode_live(
         remote_settings.as_ref().and_then(|s| s.voice_mode_enabled),
