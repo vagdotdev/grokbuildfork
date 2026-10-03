@@ -3727,6 +3727,26 @@ fn force_reload_adopts_fresh_disk_token() {
     mgr.force_reload_from_disk_with(RELOAD_RETRY_TRIES, StdDuration::ZERO);
     assert_eq!(mgr.current().unwrap().key, "fresh-from-disk");
 }
+/// Workshop: a home that never signed in has no `auth.json` and nothing in memory. The reload
+/// must return after one read — the retry sleeps protect in-memory credentials, and there are
+/// none — instead of costing every launch the whole backoff budget (2 × 50 ms, twice on the
+/// startup path).
+#[test]
+fn force_reload_with_nothing_in_memory_does_not_sleep_on_missing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+    assert!(mgr.current_or_expired().is_none());
+    assert!(!dir.path().join("auth.json").exists());
+    let started = Instant::now();
+    mgr.force_reload_from_disk_with(3, StdDuration::from_millis(200));
+    assert!(
+        started.elapsed() < StdDuration::from_millis(150),
+        "a missing auth.json with no in-memory credentials must not retry with backoff (took {:?})",
+        started.elapsed()
+    );
+    assert!(mgr.current_or_expired().is_none());
+    assert!(mgr.permanent_failure().is_none());
+}
 /// A token carrying `principal_id` without `principal_type` is matched on the id alone: the pinned team is accepted, not falsely rejected.
 #[tokio::test]
 async fn pin_matches_principal_id_without_principal_type() {
