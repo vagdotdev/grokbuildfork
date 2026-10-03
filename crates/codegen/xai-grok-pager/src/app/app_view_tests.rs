@@ -2386,6 +2386,19 @@ fn privacy_is_hidden_until_an_xai_account_is_signed_in() {
         "the deny list later agents inherit carries /privacy"
     );
 
+    // A launch the shell reports no auth meta for (the free models): the same denial, nothing
+    // else restricted.
+    let mut app = test_app();
+    app.apply_restrictions_without_auth_meta();
+    assert!(denied(&app));
+    assert_eq!(app.tier_restricted_commands, vec!["privacy".to_owned()]);
+    app.apply_restrictions_without_auth_meta();
+    assert_eq!(
+        app.tier_restricted_commands,
+        vec!["privacy".to_owned()],
+        "applied twice, denied once"
+    );
+
     let mut app = test_app();
     app.apply_auth_meta(&xai_grok_login::AuthMeta {
         subscription_tier: Some("SuperGrok".into()),

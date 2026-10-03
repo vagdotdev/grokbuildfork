@@ -1854,6 +1854,21 @@ impl AppView {
         if !self.xai_account_signed_in() {
             names.push("privacy".to_owned());
         }
+        self.sync_restricted_commands(names);
+    }
+    /// Workshop: a launch the shell reports no auth meta for (the free models, the subscription
+    /// CLIs) has no xAI account, so `/privacy` is denied here too; the tier list is left as it is,
+    /// since without meta there is no tier to restrict on.
+    pub(crate) fn apply_restrictions_without_auth_meta(&mut self) {
+        let mut names = self.tier_restricted_commands.clone();
+        let privacy = "privacy".to_owned();
+        if !self.xai_account_signed_in() && !names.contains(&privacy) {
+            names.push(privacy);
+        }
+        self.sync_restricted_commands(names);
+    }
+    /// Push one deny list onto every slash surface and remember it for the surfaces created later.
+    fn sync_restricted_commands(&mut self, names: Vec<String>) {
         for agent in self.agents.values_mut() {
             agent.set_restricted_commands(&names);
         }
