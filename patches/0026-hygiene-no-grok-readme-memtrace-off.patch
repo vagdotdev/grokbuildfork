@@ -1,35 +1,3 @@
-diff --git a/crates/codegen/xai-grok-pager/src/app/acp_handler/tests/settings.rs b/crates/codegen/xai-grok-pager/src/app/acp_handler/tests/settings.rs
-index e149aaa6..088f60e1 100644
---- a/crates/codegen/xai-grok-pager/src/app/acp_handler/tests/settings.rs
-+++ b/crates/codegen/xai-grok-pager/src/app/acp_handler/tests/settings.rs
-@@ -56,7 +56,8 @@
-         assert!(handle_ext_notification(&notif, &mut app));
-         assert!(app.is_api_key_auth);
-         assert!(app.voice_mode_enabled);
--        assert!(app.tier_restricted_commands.is_empty());
-+        // Workshop: an API key is not an xAI account, so `/privacy` alone stays denied.
-+        assert_eq!(app.tier_restricted_commands, vec!["privacy".to_owned()]);
-     }
- 
-     #[test]
-@@ -68,7 +69,8 @@
-         ));
-         assert!(app.is_api_key_auth);
-         assert!(!app.usage_visible);
--        assert!(app.tier_restricted_commands.is_empty());
-+        // Workshop: an API key is not an xAI account, so `/privacy` alone stays denied.
-+        assert_eq!(app.tier_restricted_commands, vec!["privacy".to_owned()]);
-         assert!(app.voice_mode_enabled);
- 
-         // Later personal Free stamp must not keep API-key bypass or force-on voice.
-@@ -94,6 +96,7 @@
-         ));
-         assert!(!app.is_api_key_auth);
-         assert!(app.voice_mode_enabled);
-+        // SuperGrok is an xAI account: nothing denied, `/privacy` included.
-         assert!(app.tier_restricted_commands.is_empty());
-     }
- 
 diff --git a/crates/codegen/xai-grok-pager/src/memory_trace.rs b/crates/codegen/xai-grok-pager/src/memory_trace.rs
 index 04381803..8c74fbfb 100644
 --- a/crates/codegen/xai-grok-pager/src/memory_trace.rs
@@ -57,6 +25,49 @@ index 04381803..8c74fbfb 100644
  }
  
  fn interval_from_env() -> Duration {
+diff --git a/crates/codegen/xai-grok-pager/src/slash/registry.rs b/crates/codegen/xai-grok-pager/src/slash/registry.rs
+index e0282855..72011b98 100644
+--- a/crates/codegen/xai-grok-pager/src/slash/registry.rs
++++ b/crates/codegen/xai-grok-pager/src/slash/registry.rs
+@@ -150,6 +150,9 @@ impl CommandRegistry {
+         hidden.insert("voice".to_string());
+         // `/auto` is fail-closed: hidden until `set_auto_mode_available(true)`.
+         hidden.insert("auto".to_string());
++        // Workshop: `/privacy` opens an xAI-account setting; hidden until `set_privacy_visible(true)`
++        // says such an account is signed in.
++        hidden.insert("privacy".to_string());
+         // Memory commands follow the shell's own gate: shown once the ACP catalog advertises them.
+         hidden.extend(SHELL_GATED_COMMANDS.iter().map(|name| name.to_string()));
+         // `/share` starts menu-hidden (still dispatchable) until `set_share_visible(true)`
+@@ -358,6 +361,11 @@ impl CommandRegistry {
+         self.set_command_visible("recap", visible);
+     }
+ 
++    /// Workshop: show `/privacy` only while an xAI account is signed in (its setting lives there).
++    pub fn set_privacy_visible(&mut self, visible: bool) {
++        self.set_command_visible("privacy", visible);
++    }
++
+     /// Show or hide the `/voice` command (runtime voice gate).
+     /// Hidden by default in [`Self::new`]; revealed when the gate is on (startup default on, or after a remote kill switch is lifted).
+     pub fn set_voice_visible(&mut self, visible: bool) {
+diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/state.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/state.rs
+index b6b95d6e..7428dc79 100644
+--- a/crates/codegen/xai-grok-pager/src/views/dashboard/state.rs
++++ b/crates/codegen/xai-grok-pager/src/views/dashboard/state.rs
+@@ -1309,6 +1309,12 @@ impl DashboardState {
+         self.peek_reply.set_voice_visible(visible);
+     }
+ 
++    /// Workshop: `/privacy` on both dashboard prompt registries, offered only with an xAI account.
++    pub(crate) fn set_privacy_visible(&mut self, visible: bool) {
++        self.dispatch.set_privacy_visible(visible);
++        self.peek_reply.set_privacy_visible(visible);
++    }
++
+     /// Gate `/auto` on both dashboard prompt registries (dispatch and peek reply).
+     /// See [`crate::slash::SlashController::set_auto_mode_available`].
+     pub(crate) fn set_auto_mode_available(&mut self, available: bool) {
 diff --git a/crates/codegen/xai-grok-shell/src/builtin.rs b/crates/codegen/xai-grok-shell/src/builtin.rs
 index 4d998cf8..68f4acfc 100644
 --- a/crates/codegen/xai-grok-shell/src/builtin.rs
