@@ -10,7 +10,7 @@ pub struct FeedbackCommand;
 impl SlashCommand for FeedbackCommand {
     slash_meta! {
         name: "feedback",
-        description: "Send feedback about the current session",
+        description: "Save a note about the current session",
         usage: "/feedback [text]",
         takes_args: true,
         arg_placeholder: "[feedback text]",

@@ -770,6 +770,9 @@ pub struct AppView {
     /// Whether the welcome menu currently includes the "Resume session" row (Workshop hides it
     /// while this directory has nothing to resume). Set during render.
     pub welcome_show_resume_action: bool,
+    /// Whether the welcome menu currently includes the "New worktree" row (Workshop hides it
+    /// outside a git repository). Set during render.
+    pub welcome_show_worktree_action: bool,
     /// Workshop: whether this directory has a session worth resuming, probed once per launch by
     /// the first welcome frame that asks (the answer cannot change while the home screen is up).
     pub welcome_has_resumable_sessions: std::cell::OnceCell<bool>,
@@ -1552,6 +1555,7 @@ impl AppView {
             welcome_menu_rects: Vec::new(),
             welcome_show_changelog_action: false,
             welcome_show_resume_action: true,
+            welcome_show_worktree_action: true,
             welcome_has_resumable_sessions: std::cell::OnceCell::new(),
             welcome_import_banner_rect: None,
             last_mouse_pos: None,
@@ -2642,7 +2646,12 @@ impl AppView {
                     menu_count: if zdr_blocked {
                         2
                     } else {
-                        2 + if self.has_claude_import { 1 } else { 0 }
+                        1 + if self.has_claude_import { 1 } else { 0 }
+                            + if self.welcome_show_worktree_action {
+                                1
+                            } else {
+                                0
+                            }
                             + if self.welcome_show_resume_action {
                                 1
                             } else {
@@ -2689,6 +2698,7 @@ impl AppView {
                     changelog_markdown: &self.changelog_markdown,
                     show_changelog_action: self.welcome_show_changelog_action,
                     show_resume_action: self.welcome_show_resume_action,
+                    show_worktree_action: self.welcome_show_worktree_action,
                     has_pending_update: self.pending_update_version.is_some(),
                     has_foreign_resume,
                     cwd_has_git_ancestor: self.cwd_has_git_ancestor,
@@ -3356,6 +3366,8 @@ struct WelcomeInputCtx<'a> {
     show_changelog_action: bool,
     /// Whether the welcome menu currently includes the "Resume session" row.
     show_resume_action: bool,
+    /// Whether the welcome menu currently includes the "New worktree" row.
+    show_worktree_action: bool,
     has_pending_update: bool,
     /// A recent foreign session is available to resume when no update is pending.
     has_foreign_resume: bool,
@@ -4017,6 +4029,15 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
             && matches!(ctx.auth_state, AuthState::Done)
         {
             *ctx.prompt_focused = true;
+            // Workshop: pasted text lands in the home composer and the card stays; only a
+            // clipboard without text (an image) still hands the paste to the agent view.
+            if let Some(text) = crate::clipboard::system_clipboard_get()
+                && crate::clipboard::clipboard_text_is_pasteable(Some(&text))
+            {
+                *ctx.menu_index = None;
+                let _ = ctx.prompt.handle_paste(&text);
+                return InputOutcome::Changed;
+            }
             return InputOutcome::ActionThenForward(Action::LeaveHome);
         }
         if matches!(ctx.auth_state, AuthState::Done)
@@ -4064,7 +4085,12 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
         if matches!(ctx.auth_state, AuthState::Done) && crate::input::key::is_text_input_key(key) {
             *ctx.prompt_focused = true;
             *ctx.menu_index = None;
-            return InputOutcome::ActionThenForward(Action::LeaveHome);
+            // Workshop: the welcome card stays while the message is typed and leaves when it is
+            // sent (Enter above). Only a `/` opening an empty composer still goes to the agent
+            // view, where the command dropdown lives; a command is not a message.
+            if welcome_keystroke_leaves_home(key, ctx.prompt.text()) {
+                return InputOutcome::ActionThenForward(Action::LeaveHome);
+            }
         }
         if *ctx.prompt_focused {
             let had_highlight = ctx.prompt.textarea.selection_range().is_some();
@@ -4093,6 +4119,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                 return dispatch_menu_action(
                     idx,
                     ctx.has_claude_import,
+                    ctx.show_worktree_action,
                     ctx.show_resume_action,
                     ctx.show_changelog_action,
                     ctx.changelog_markdown.as_deref(),
@@ -4188,6 +4215,13 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                     return InputOutcome::Unchanged;
                 }
                 *ctx.prompt_focused = true;
+                // Workshop: pasted text lands in the home composer and the card stays; an image
+                // paste still goes to the agent view, which owns the image machinery.
+                if crate::wrap_clipboard_image::try_decode_wrap_host_image_paste(text).is_none() {
+                    *ctx.menu_index = None;
+                    let _ = ctx.prompt.handle_paste(text);
+                    return InputOutcome::Changed;
+                }
                 return InputOutcome::ActionThenForward(Action::LeaveHome);
             }
             AuthState::Authenticating {
@@ -4232,6 +4266,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                         return dispatch_menu_action(
                             i,
                             ctx.has_claude_import,
+                            ctx.show_worktree_action,
                             ctx.show_resume_action,
                             ctx.show_changelog_action,
                             ctx.changelog_markdown.as_deref(),
@@ -4454,6 +4489,15 @@ fn handle_menu_nav(
         _ => None,
     }
 }
+/// Workshop: whether a printable key typed on the welcome screen leaves it for the agent view.
+/// Text stays in the home composer (the card leaves when the message is sent); only a `/` that
+/// opens an empty composer goes over, to the slash dropdown the agent view owns.
+pub(crate) fn welcome_keystroke_leaves_home(
+    key: &crossterm::event::KeyEvent,
+    composer_text: &str,
+) -> bool {
+    key.code == KeyCode::Char('/') && composer_text.trim().is_empty()
+}
 /// Dispatch an action for a welcome menu item when not yet authenticated.
 /// Menu layout: item 0 is Login, item 1 is Quit.
 fn dispatch_pending_menu_action(index: usize) -> InputOutcome {
@@ -4483,19 +4527,24 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
     }
 }
 /// Dispatch an action for a welcome menu item by index.
-/// Menu order: `[Import]`, New worktree, `[Resume session]`, `[Release notes]`, Quit.
-/// `show_resume_action` / `show_changelog_action` say which optional rows are rendered. Release
-/// notes always open: the fetched markdown when there is one, else the bundled Workshop notes.
+/// Menu order: `[Import]`, `[New worktree]`, `[Resume session]`, `[Release notes]`, Quit.
+/// `show_worktree_action` / `show_resume_action` / `show_changelog_action` say which optional rows
+/// are rendered. Release notes always open: the fetched markdown when there is one, else the
+/// bundled Workshop notes.
 fn dispatch_menu_action(
     index: usize,
     has_claude_import: bool,
+    show_worktree_action: bool,
     show_resume_action: bool,
     show_changelog_action: bool,
     changelog_md: Option<&str>,
 ) -> InputOutcome {
     let base = if has_claude_import { 1 } else { 0 };
-    let worktree_idx = base;
-    let mut next = base + 1;
+    let mut next = base;
+    let worktree_idx = show_worktree_action.then(|| {
+        next += 1;
+        next - 1
+    });
     let resume_idx = show_resume_action.then(|| {
         next += 1;
         next - 1
@@ -4508,7 +4557,7 @@ fn dispatch_menu_action(
     if has_claude_import && index == 0 {
         return InputOutcome::Action(Action::ImportClaudeSettings);
     }
-    if index == worktree_idx {
+    if Some(index) == worktree_idx {
         return InputOutcome::Action(Action::OpenNewWorktreeDialog);
     }
     if Some(index) == resume_idx {
@@ -4908,6 +4957,7 @@ impl AppView {
                                 has_access,
                                 has_claude_import: self.has_claude_import,
                                 has_resumable_sessions,
+                                cwd_has_git_ancestor: self.cwd_has_git_ancestor,
                                 mouse_pos: self.last_mouse_pos,
                                 is_zdr_blocked: zdr_blocked_for_draw,
                                 session_picker: self.session_picker_entries.as_deref(),
@@ -4969,6 +5019,7 @@ impl AppView {
                             self.welcome_hero_animating = result.hero_animating;
                             self.welcome_show_changelog_action = result.changelog_action_present;
                             self.welcome_show_resume_action = result.resume_action_present;
+                            self.welcome_show_worktree_action = result.worktree_action_present;
                             self.welcome_prompt_rect = result.prompt_rect;
                             self.welcome_import_banner_rect = result.import_banner_rect;
                             self.welcome_auth_url_rect = result.auth_url_rect;

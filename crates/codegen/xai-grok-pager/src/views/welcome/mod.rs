@@ -157,6 +157,9 @@ pub struct WelcomeRenderResult {
     /// Whether the "Resume session" menu row was rendered (Workshop hides it when nothing can be
     /// resumed), so the input handler's index-to-action mapping matches the rows on screen.
     pub resume_action_present: bool,
+    /// Whether the "New worktree" menu row was rendered (Workshop hides it outside a git
+    /// repository); same purpose as `resume_action_present`.
+    pub worktree_action_present: bool,
     /// Hit-test rect for the clickable changelog info block (opens release notes).
     pub changelog_cta_rect: Option<Rect>,
     /// Whether the announcement overflowed (the "expandable" signal).
@@ -556,7 +559,7 @@ pub(super) fn render_version_badge(
     // first-run home; the composer names the active connection instead.
     let _ = (show_api_key, is_api_key_auth, sep);
 
-    let channel = xai_grok_update::channel_label();
+    let channel = welcome_channel_chip(xai_grok_update::channel_label());
     match &mode {
         VersionBadgeMode::Full { .. } => {
             spans.push(Span::styled(
@@ -599,6 +602,12 @@ pub(super) fn render_version_badge(
 
     let version_line = Line::from(spans).alignment(align);
     Paragraph::new(version_line).render(version_area, buf);
+}
+
+/// Workshop has one release channel, so a `[stable]` chip says nothing to a person; only a build
+/// ahead of the channel (`[alpha]`) is worth a word on the welcome.
+fn welcome_channel_chip(label: &str) -> &str {
+    if label.contains("stable") { "" } else { label }
 }
 
 /// Render the prompt box and version line (shared across welcome states). When `skip_version` is
@@ -708,6 +717,9 @@ pub struct WelcomeRenderParams<'a> {
     /// Workshop: this directory has a session with messages (or an engine conversation) to come
     /// back to; the "Resume session" row is hidden otherwise.
     pub has_resumable_sessions: bool,
+    /// Workshop: the cwd is inside a git repository, so "New worktree" can do something; the row
+    /// is hidden otherwise (Ctrl+W is a no-op there already).
+    pub cwd_has_git_ancestor: bool,
     pub mouse_pos: Option<(u16, u16)>,
     pub is_zdr_blocked: bool,
     pub session_picker: Option<&'a [SessionPickerEntry]>,
@@ -1817,7 +1829,11 @@ fn render_welcome_done(
             // The key string is right-aligned by render_menu, so [x] sits at the very end of the row
             items.push((key_i_with_x, "Import Claude settings"));
         }
-        items.push((key_w, "New worktree"));
+        // Workshop: outside a git repository a worktree cannot be made, so the row does not
+        // offer it (a first-time user in their home directory sees no git vocabulary).
+        if p.cwd_has_git_ancestor {
+            items.push((key_w, "New worktree"));
+        }
         // Workshop: nothing to resume on a fresh directory, so the row does not offer it.
         if p.has_resumable_sessions {
             items.push((key_resume, "Resume session"));
@@ -2349,6 +2365,7 @@ fn render_welcome_done(
         consent_legibility: None,
         changelog_action_present: show_changelog_action,
         resume_action_present: p.has_access && !show_picker && p.has_resumable_sessions,
+        worktree_action_present: p.has_access && !show_picker && p.cwd_has_git_ancestor,
         changelog_cta_rect,
         announcement_truncated,
         announcement_rect,
@@ -2950,6 +2967,7 @@ mod tests {
             has_access: true,
             has_claude_import: false,
             has_resumable_sessions: true,
+            cwd_has_git_ancestor: true,
             mouse_pos: None,
             is_zdr_blocked: false,
             session_picker,
@@ -2997,6 +3015,49 @@ mod tests {
         let mut picker = PickerState::default();
         render_welcome(area, &mut buf, params, &mut prompt, &mut picker);
         buffer_text(&buf)
+    }
+
+    /// Workshop: the menu offers only what can work here — no "New worktree" outside a git
+    /// repository, no "Resume session" with nothing to resume — and the result flags say which
+    /// rows were drawn so the input handler's indices match the screen.
+    #[test]
+    fn menu_hides_worktree_outside_git_and_resume_with_nothing_to_resume() {
+        let auth = AuthState::Done;
+        let trust = TrustState::Done;
+        let mut params = render_params(&auth, &trust, None);
+        let text = render_done_text(&params);
+        assert!(
+            text.contains("New worktree") && text.contains("Resume session"),
+            "{text}"
+        );
+
+        params.cwd_has_git_ancestor = false;
+        params.has_resumable_sessions = false;
+        let area = Rect::new(0, 0, 100, 40);
+        let mut buf = Buffer::empty(area);
+        let mut prompt = PromptWidget::new();
+        let mut picker = PickerState::default();
+        let result = render_welcome(area, &mut buf, &params, &mut prompt, &mut picker);
+        let text = buffer_text(&buf);
+        assert!(!text.contains("New worktree"), "{text}");
+        assert!(!text.contains("Resume session"), "{text}");
+        assert!(text.contains("Quit"), "{text}");
+        assert!(!result.worktree_action_present);
+        assert!(!result.resume_action_present);
+    }
+
+    /// Workshop has one release channel: the welcome never shows a `[stable]` chip (the audit's
+    /// "what is this little [stable] for?"); a build ahead of it still says `[alpha]`.
+    #[test]
+    fn welcome_shows_no_stable_channel_chip() {
+        assert_eq!(welcome_channel_chip(" [stable]"), "");
+        assert_eq!(welcome_channel_chip(" [alpha]"), " [alpha]");
+        assert_eq!(welcome_channel_chip(""), "");
+        let auth = AuthState::Done;
+        let trust = TrustState::Done;
+        let params = render_params(&auth, &trust, None);
+        let text = render_done_text(&params);
+        assert!(!text.contains("[stable]"), "{text}");
     }
 
     #[test]
