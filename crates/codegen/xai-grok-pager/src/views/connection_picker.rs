@@ -157,7 +157,19 @@ pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, picker: &PickerState,
             (false, _, true) => " · Ctrl+A hide non-chat".to_owned(),
             _ => String::new(),
         };
-        format!("↑↓ · {enter} · {back}{refresh}{show_all}")
+        // Tab walks the section headers; it has nothing to do in a sub-menu or a filtered list.
+        let sections = if picker
+            .models_lines()
+            .iter()
+            .filter(|l| matches!(l, ModelsLine::Header(_)))
+            .count()
+            > 1
+        {
+            " · Tab section"
+        } else {
+            ""
+        };
+        format!("↑↓{sections} · {enter} · {back}{refresh}{show_all}")
     };
     Paragraph::new(Line::from(Span::styled(
         keys,
