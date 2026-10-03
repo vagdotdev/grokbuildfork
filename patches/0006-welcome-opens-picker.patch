@@ -9171,7 +9171,7 @@ index dcbe4033..b0a519b1 100644
  pub mod credit_bar;
  pub mod dashboard;
 diff --git a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
-index b828a780..bb154c97 100644
+index b828a780..3ea7ee46 100644
 --- a/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/welcome/mod.rs
 @@ -35,7 +35,7 @@ pub(crate) mod workspace_mode;
@@ -9461,7 +9461,21 @@ index b828a780..bb154c97 100644
          #[cfg(feature = "local-workspace")]
          workspace_mode_rects,
      }
-@@ -2718,8 +2789,9 @@ mod tests {
+@@ -2501,10 +2572,12 @@ pub(crate) fn render_session_picker_body(
+             description: None,
+             pinned: false,
+         });
++        // Workshop: Delete removes the highlighted session at once; `d` (the action key's own
++        // chip below) still arms the two-step delete.
+         default_shortcuts.push(HintItem {
+             keys: vec![],
+             label: "delete".into(),
+-            custom_display: Some("d"),
++            custom_display: Some("Del"),
+             description: None,
+             pinned: false,
+         });
+@@ -2718,8 +2791,9 @@ mod tests {
                  "badge must not label the product: {rendered:?}"
              );
          }
@@ -9473,7 +9487,7 @@ index b828a780..bb154c97 100644
          assert!(footer.contains("acme"), "footer keeps the team: {footer:?}");
          assert!(
              !footer.ends_with('\u{2502}'),
-@@ -2862,6 +2934,7 @@ mod tests {
+@@ -2862,6 +2936,7 @@ mod tests {
              consent_state: &ConsentState::Done,
              consent_hover_link: None,
              login_label: None,
@@ -9481,7 +9495,7 @@ index b828a780..bb154c97 100644
              auth_code_input: "",
              auth_code_cursor_byte: 0,
              clipboard_delivery: None,
-@@ -2874,6 +2947,7 @@ mod tests {
+@@ -2874,6 +2949,7 @@ mod tests {
              team_name: None,
              has_access: true,
              has_claude_import: false,
@@ -9489,7 +9503,7 @@ index b828a780..bb154c97 100644
              mouse_pos: None,
              is_zdr_blocked: false,
              session_picker,
-@@ -2882,6 +2956,7 @@ mod tests {
+@@ -2882,6 +2958,7 @@ mod tests {
              pending_hint: None,
              startup_warnings: &[],
              pending_update_version: None,
@@ -9497,7 +9511,7 @@ index b828a780..bb154c97 100644
              foreign_resume_hint: None,
              is_api_key_auth: false,
              session_picker_content_results: None,
-@@ -2903,6 +2978,7 @@ mod tests {
+@@ -2903,6 +2980,7 @@ mod tests {
              welcome_announcement_expanded: false,
              upgrade_cta: None,
              privacy_banner: false,
@@ -9505,7 +9519,7 @@ index b828a780..bb154c97 100644
              #[cfg(feature = "local-workspace")]
              workspace_mode: WelcomeWorkspaceMode::Sandbox,
              #[cfg(feature = "local-workspace")]
-@@ -3696,7 +3772,7 @@ mod tests {
+@@ -3696,7 +3774,7 @@ mod tests {
          };
          let one_line = WelcomeLayout::compute(input(None));
          assert_eq!(one_line.logo_tier, LogoTier::Full);
@@ -9514,7 +9528,7 @@ index b828a780..bb154c97 100644
  
          let tall = WelcomeLayout::compute(input(Some(13)));
          assert_eq!(tall.logo_tier, LogoTier::Compact);
-@@ -3786,20 +3862,30 @@ mod tests {
+@@ -3786,20 +3864,30 @@ mod tests {
          }
      }
  
@@ -9556,7 +9570,7 @@ index b828a780..bb154c97 100644
      }
  
      /// End to end: a draft that steps the logo tier down paints the compact art, not the full art clipped into fewer rows.
-@@ -3816,7 +3902,7 @@ mod tests {
+@@ -3816,7 +3904,7 @@ mod tests {
  
          let mut buf = Buffer::empty(area);
          let _ = render_welcome(area, &mut buf, &params, &mut prompt, &mut picker);
@@ -9565,7 +9579,7 @@ index b828a780..bb154c97 100644
  
          prompt.set_text(&["line"; 30].join("\n"));
          let mut buf = Buffer::empty(area);
-@@ -4096,8 +4182,12 @@ mod tests {
+@@ -4096,8 +4184,12 @@ mod tests {
              ..Default::default()
          };
          assert!(
@@ -9580,7 +9594,7 @@ index b828a780..bb154c97 100644
              "clamped slot must keep the box within the area"
          );
      }
-@@ -4584,7 +4674,8 @@ the usual channels. "
+@@ -4584,7 +4676,8 @@ the usual channels. "
              hero_box::min_content_height(
                  &short_input,
                  short_expanded.hero_info.height,
