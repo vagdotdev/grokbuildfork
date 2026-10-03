@@ -38,6 +38,13 @@ pub struct DetectConfig {
     pub check_login: bool,
     /// Override for the directories checked for the Cursor desktop app.
     pub cursor_app_paths: Option<Vec<PathBuf>>,
+    /// Where verified identities are remembered ([`crate::IdentityCache`]), so a binary that
+    /// passed `--version` / `--help` once is not probed again while unchanged. `None` runs the
+    /// probes every time.
+    pub identity_cache: Option<PathBuf>,
+    /// Reuse a definite "signed in / signed out" answer for the same binary given within this
+    /// long, in this process ([`crate::status::login_state`]). `None` asks the CLI every time.
+    pub reuse_status_for: Option<Duration>,
 }
 
 impl Default for DetectConfig {
@@ -55,6 +62,8 @@ impl Default for DetectConfig {
             extra_env: Vec::new(),
             check_login: true,
             cursor_app_paths: None,
+            identity_cache: None,
+            reuse_status_for: None,
         }
     }
 }

@@ -398,3 +398,61 @@ fn extra_dirs_are_scanned_after_path() {
     let vp = probe_vendor(Vendor::Codex, &cfg);
     assert!(vp.binary.as_ref().unwrap().path.ends_with("vendors/codex"));
 }
+
+/// Each identity probe is a full CLI start. With an identity cache, a binary verified once is
+/// not started again for `--version` / `--help` while its path, size and mtime are unchanged;
+/// the status command still runs (it is the live answer the picker shows).
+#[test]
+fn a_verified_binary_is_not_probed_again_while_unchanged() {
+    let state = tempfile::tempdir().unwrap();
+    let mut cfg = cfg_with(&["vendors"], &state, &[]);
+    cfg.identity_cache = Some(state.path().join("catalog-cache").join("cli-identity.json"));
+    let identity_probes = |vendor: &str| {
+        calls(&state, vendor)
+            .lines()
+            .filter(|l| l.contains("--version") || l.contains("--help"))
+            .count()
+    };
+    let status_probes = |vendor: &str| {
+        calls(&state, vendor)
+            .lines()
+            .filter(|l| l.contains("status") || l.contains("auth list"))
+            .count()
+    };
+
+    let first = probe_all(&cfg);
+    assert!(first.opencode.installed() && first.cursor.installed());
+    let after_first: Vec<usize> = ["claude", "codex", "cursor", "opencode"]
+        .iter()
+        .map(|v| identity_probes(v))
+        .collect();
+    assert!(after_first.iter().all(|&n| n >= 1), "{after_first:?}");
+    assert_eq!(status_probes("opencode"), 1);
+
+    let second = probe_all(&cfg);
+    for vendor in Vendor::ALL {
+        assert_eq!(
+            second.get(vendor).binary,
+            first.get(vendor).binary,
+            "{vendor:?}: the cached identity is the verified one"
+        );
+    }
+    let after_second: Vec<usize> = ["claude", "codex", "cursor", "opencode"]
+        .iter()
+        .map(|v| identity_probes(v))
+        .collect();
+    assert_eq!(
+        after_second, after_first,
+        "no --version/--help run on the second probe"
+    );
+    assert_eq!(
+        status_probes("opencode"),
+        2,
+        "the status command still runs"
+    );
+
+    // Without the cache (the default) the probes run again.
+    cfg.identity_cache = None;
+    probe_all(&cfg);
+    assert!(identity_probes("opencode") > after_first[3]);
+}

@@ -2227,7 +2227,7 @@ index 89c36b27..16836a5b 100644
          Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
          Action::CopyAuthUrl => {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
-index b00317f2..33c0d5e2 100644
+index b00317f2..603c25f8 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 @@ -281,7 +281,7 @@ pub(super) fn maybe_show_x11_primary_paste_hint(
@@ -2239,7 +2239,7 @@ index b00317f2..33c0d5e2 100644
  /// Every other failure (`TextRead`, `TargetInsertion`, `AlreadyReported`) is a real dead end and must keep toasting.
  pub(super) fn wrap_host_image_request_eligible(completion: ClipboardPasteCompletion) -> bool {
      matches!(
-@@ -999,6 +999,140 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -999,6 +999,143 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              }
              vec![]
          }
@@ -2342,6 +2342,9 @@ index b00317f2..33c0d5e2 100644
 +        }
 +        TaskResult::WorkshopLoginTerminalDone { rail, exit } => {
 +            use workshop_detect::process::InteractiveExit;
++            // The sign-in just ran may have changed the answer the status command gives; the
++            // re-probe below must ask the CLI, not reuse the answer from before the sign-in.
++            workshop_detect::status::forget_recent_login_states();
 +            if let Some(picker) = app.connection_picker.as_mut() {
 +                if exit == InteractiveExit::Interrupted {
 +                    // A sign-in chained onto the one-keypress install: the row still reads
@@ -2380,7 +2383,7 @@ index b00317f2..33c0d5e2 100644
          TaskResult::ChangelogFetched { markdown, entries } => {
              app.changelog_markdown = markdown;
              app.changelog_bullets =
-@@ -1172,6 +1306,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1172,6 +1309,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              } = &app.auth_state
                  && *current_seq == request_seq
              {
@@ -2392,7 +2395,7 @@ index b00317f2..33c0d5e2 100644
                  app.auth_state = AuthState::Pending { error: Some(error) };
                  app.auth_code_input.reset();
              }
-@@ -1185,6 +1324,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1185,6 +1327,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
          } => handle_auth_url_ready(app, request_seq, auth_url, external, mode),
          TaskResult::AuthCodeSubmitted { .. } => vec![],
          TaskResult::AuthCancelComplete => vec![],
@@ -3583,7 +3586,7 @@ index 1c507697..89312ddd 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..6012979e 100644
+index eda61b3c..48a1b59e 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -3697,15 +3700,34 @@ index eda61b3c..6012979e 100644
  }
  /// Consume a pending in-process switch between `/minimal` and `/fullscreen`.
  /// Returns `true` when the caller must quit (exec fallback armed on `app.relaunch`).
-@@ -1044,6 +1105,7 @@ pub(crate) async fn run(
+@@ -1044,6 +1105,8 @@ pub(crate) async fn run(
      >,
      mut writer_event_rx: tokio::sync::mpsc::UnboundedReceiver<WriterEvent>,
      reader_thread: &mut ReaderThread,
 +    workshop_engine_resume: Option<crate::app::workshop_sessions::EngineSession>,
++    early_engine: crate::app::workshop::EarlyEngine,
  ) -> anyhow::Result<RunResult> {
      crate::unified_log::init(connection.tx.clone());
      crate::unified_log::info("pager started", None, None);
-@@ -1075,7 +1137,7 @@ pub(crate) async fn run(
+@@ -1057,6 +1120,17 @@ pub(crate) async fn run(
+             terminal.backend_mut().writer_mut().escape_writer(),
+         )
+     };
++    // Workshop: the engine slot and turn channel were made (and the engine's bring-up possibly
++    // started) by `app::run` before anything else; the loop adopts them.
++    let crate::app::workshop::EarlyEngine {
++        slot: workshop_engine_slot,
++        tx: workshop_turn_tx,
++        rx: mut workshop_turn_rx,
++        started: workshop_engine_started_early,
++    } = early_engine;
++    app.workshop_engine_slot = workshop_engine_slot;
++    app.workshop_turn_tx = Some(workshop_turn_tx);
++    app.workshop_engine_warm_started = workshop_engine_started_early;
+     app.pending_startup = Some(pending_startup);
+     app.tracing_rx = Some(tracing_handle.rx);
+     app.last_known_terminal_rows = crossterm::terminal::size().map(|(_, r)| r).unwrap_or(0);
+@@ -1075,7 +1149,7 @@ pub(crate) async fn run(
      let remote_permission_mode = remote_settings
          .as_ref()
          .and_then(|s| s.permission_mode.as_deref());
@@ -3714,7 +3736,7 @@ index eda61b3c..6012979e 100644
          args.yolo,
          args.permission_mode_flag.as_deref(),
          remote_permission_mode,
-@@ -1098,11 +1160,26 @@ pub(crate) async fn run(
+@@ -1098,11 +1172,26 @@ pub(crate) async fn run(
          .as_ref()
          .and_then(|root| root.get("ui").cloned());
      let cli_owns_mode = args.yolo || args.permission_mode_flag.is_some();
@@ -3743,7 +3765,7 @@ index eda61b3c..6012979e 100644
      app.yolo_policy_block = launch_yolo.policy_block;
      if let Some(warning) = launch_yolo.blocked_warning {
          tracing::warn!("{warning}");
-@@ -1271,19 +1348,42 @@ pub(crate) async fn run(
+@@ -1271,19 +1360,42 @@ pub(crate) async fn run(
              "auto-triggering login at startup"
          );
      }
@@ -3793,7 +3815,7 @@ index eda61b3c..6012979e 100644
      };
      app.has_external_auth_provider =
          crate::slash::commands::usage::detect_external_auth_provider(&app.auth_methods);
-@@ -1359,6 +1459,14 @@ pub(crate) async fn run(
+@@ -1359,6 +1471,14 @@ pub(crate) async fn run(
      }
      app.voice_config.client_identifier = crate::client_identity::HEADLESS_CLIENT_TYPE.to_string();
      app.voice_config.user_agent = crate::client_identity::client_user_agent();
@@ -3808,23 +3830,21 @@ index eda61b3c..6012979e 100644
      app.zdr_access_enabled = xai_grok_shell::util::config::resolve_zdr_access_enabled(
          requirements.as_ref(),
          user_config.as_ref(),
-@@ -1632,6 +1740,15 @@ pub(crate) async fn run(
+@@ -1632,6 +1752,13 @@ pub(crate) async fn run(
      let (progress_tx, mut progress_rx) =
          tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
      let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
-+    // Workshop: a persistent channel for streaming Engine/Adapter turns. Submit handlers clone the
-+    // sender (stored on `app`) into a detached turn task; the `select!` arm below renders its events.
-+    // The sender lives as long as the loop, so the receiver never closes and the arm idles cleanly.
-+    let (workshop_turn_tx, mut workshop_turn_rx) =
-+        tokio::sync::mpsc::unbounded_channel::<crate::app::workshop::WorkshopTurnMsg>();
-+    app.workshop_turn_tx = Some(workshop_turn_tx);
-+    // Workshop: with an engine model active (a first run, or a home that last used one), the
-+    // engine starts now, in the background, so the first message finds it ready.
++    // Workshop: `workshop_turn_rx` is the persistent channel for streaming Engine/Adapter turns
++    // (adopted above). Submit handlers clone the sender (stored on `app`) into a detached turn
++    // task; the `select!` arm below renders its events. The sender lives as long as the loop, so
++    // the receiver never closes and the arm idles cleanly.
++    // With an engine model active (a first run, or a home that last used one) the engine's
++    // bring-up started with `app::run`; this covers a connection that became an engine since.
 +    maybe_warm_engine_at_launch(&mut app);
      let voice_auth_factory = connection.auth_manager.clone();
      let mut tick_interval = tick_interval;
      let mut animation_tick_at: Option<Instant> = None;
-@@ -1759,6 +1876,16 @@ pub(crate) async fn run(
+@@ -1759,6 +1886,16 @@ pub(crate) async fn run(
                  git_ref: args.worktree_ref.clone(),
              })
          }
@@ -3841,7 +3861,7 @@ index eda61b3c..6012979e 100644
          MaterializedStartup::NewAuto => None,
      };
      if let Some(action) = startup_action {
-@@ -1892,7 +2019,7 @@ pub(crate) async fn run(
+@@ -1892,7 +2029,7 @@ pub(crate) async fn run(
          if process_effects(workspace_effects, &mut tasks, &mut app, &progress_tx) {
              break;
          }
@@ -3850,7 +3870,7 @@ index eda61b3c..6012979e 100644
              &mut app,
              terminal,
              &input_paused,
-@@ -1902,9 +2029,16 @@ pub(crate) async fn run(
+@@ -1902,9 +2039,16 @@ pub(crate) async fn run(
              &mut suspend_retry_after,
              &mut suspend_wait_reports,
          ) {
@@ -3870,7 +3890,7 @@ index eda61b3c..6012979e 100644
          }
          if run_pending_mode_switch(
              &mut app,
-@@ -1921,6 +2055,22 @@ pub(crate) async fn run(
+@@ -1921,6 +2065,22 @@ pub(crate) async fn run(
          ) {
              break;
          }
@@ -3893,7 +3913,7 @@ index eda61b3c..6012979e 100644
          if let VoiceState::ColdStart { hold, target } = app.voice_state {
              if app.voice_cmd_tx.is_none() && app.voice_can_start_pipeline() {
                  let voice_auth = crate::voice::build_voice_auth(voice_auth_factory.clone());
-@@ -2314,6 +2464,7 @@ pub(crate) async fn run(
+@@ -2314,6 +2474,7 @@ pub(crate) async fn run(
              maybe_ev = input_rx.recv() => {
                  // `None` means the dedicated terminal reader thread has ended.
                  let Some(ev) = maybe_ev else { break };
@@ -3901,7 +3921,7 @@ index eda61b3c..6012979e 100644
                  let handled_at = std::time::Instant::now();
                  let waited =
                      super::event_loop_stall::input_wait(ev.arrived_at, handled_at, loop_entry);
-@@ -2331,6 +2482,9 @@ pub(crate) async fn run(
+@@ -2331,6 +2492,9 @@ pub(crate) async fn run(
                  if result.should_quit {
                      break;
                  }
@@ -3911,7 +3931,7 @@ index eda61b3c..6012979e 100644
                  if !app.pending_effects.is_empty() {
                      let effs = std::mem::take(&mut app.pending_effects);
                      if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
-@@ -2885,6 +3039,23 @@ pub(crate) async fn run(
+@@ -2885,6 +3049,23 @@ pub(crate) async fn run(
                  presenter.request(false);
              }
  
@@ -3935,7 +3955,7 @@ index eda61b3c..6012979e 100644
              // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
              // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
              // Voice is only serviced when nothing else is pending
-@@ -3096,6 +3267,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3096,6 +3277,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
      app.abandon_startup();
      let exit_info = app.active_agent().and_then(|agent| {
          let sid = agent.session.session_id.as_ref()?;
@@ -3945,7 +3965,7 @@ index eda61b3c..6012979e 100644
          let summary = if app.screen_mode.is_fullscreen() {
              use crate::views::session_title;
              let last_prompt = session_title::last_user_prompt_line(agent);
-@@ -3109,7 +3283,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3109,7 +3293,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
              None
          };
          Some(super::ExitInfo {
@@ -3954,7 +3974,7 @@ index eda61b3c..6012979e 100644
              minimal: app.screen_mode.is_minimal(),
              summary,
          })
-@@ -3143,7 +3317,9 @@ struct RoutedInputEvent {
+@@ -3143,7 +3327,9 @@ struct RoutedInputEvent {
      is_startup_replay: bool,
  }
  fn tty_suspend_armed(app: &AppView) -> bool {
@@ -3965,7 +3985,7 @@ index eda61b3c..6012979e 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4110,618 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4120,618 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -4585,7 +4605,7 @@ index eda61b3c..6012979e 100644
      effs: Vec<super::actions::Effect>,
      tasks: &mut JoinSet<TaskResult>,
 diff --git a/crates/codegen/xai-grok-pager/src/app/mod.rs b/crates/codegen/xai-grok-pager/src/app/mod.rs
-index 60fe34f9..ee4df3e7 100644
+index 60fe34f9..f647dfc2 100644
 --- a/crates/codegen/xai-grok-pager/src/app/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/mod.rs
 @@ -13,6 +13,15 @@ pub mod actions;
@@ -4604,7 +4624,17 @@ index 60fe34f9..ee4df3e7 100644
  pub mod bundle;
  pub(crate) mod cancel_latency;
  pub mod cli;
-@@ -815,9 +824,20 @@ pub async fn run(
+@@ -669,6 +678,9 @@ pub async fn run(
+     let screen_mode_override = screen_mode_relaunch::take_screen_mode_env_override();
+     let cancel = CancellationToken::new();
+     let startup_start = std::time::Instant::now();
++    // Workshop: the engine (`opencode serve`) is the slowest thing a launch waits for, and
++    // nothing below depends on it — so it starts now, under everything else.
++    let early_engine = crate::app::workshop::start_engine_early();
+     let raw_config = xai_grok_shell::config::load_effective_config()
+         .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
+     let (grok_com_config, proxy_base_url) =
+@@ -815,9 +827,20 @@ pub async fn run(
          }
          session_startup::set_active_local_workspace(lw)?;
      }
@@ -4626,15 +4656,16 @@ index 60fe34f9..ee4df3e7 100644
      let mut materialize_ctx = session_startup::MaterializeCtx::from_pager_args(&args);
      materialize_ctx.restore_progress_on_stdout =
          std::io::IsTerminal::is_terminal(&std::io::stdout());
-@@ -1154,6 +1174,7 @@ pub async fn run(
+@@ -1154,6 +1177,8 @@ pub async fn run(
          bg_update_rx,
          writer_event_rx,
          &mut reader_thread,
 +        workshop_engine_resume,
++        early_engine,
      )
      .await;
      signal_handler::clear_quit_notify();
-@@ -1233,7 +1254,7 @@ pub async fn run(
+@@ -1233,7 +1258,7 @@ pub async fn run(
          Err(run_error) => Err(run_error),
      }
  }
@@ -4643,7 +4674,7 @@ index 60fe34f9..ee4df3e7 100644
  /// Best-effort: closed-pane EIO/BrokenPipe must not panic (`panic = "abort"`).
  /// TODO: extend beyond --minimal by rebuilding resume argv from launch flags (see screen_mode_relaunch)
  fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write) {
-@@ -1253,11 +1274,12 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
+@@ -1253,11 +1278,12 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
          }
          let _ = writeln!(w);
      }
@@ -4659,7 +4690,7 @@ index 60fe34f9..ee4df3e7 100644
      }
  }
  /// Screen-mode relaunch failure fallback (same quit tail as plain resume).
-@@ -1474,6 +1496,11 @@ fn init_terminal(
+@@ -1474,6 +1500,11 @@ fn init_terminal(
          startup_typeahead.extend(event_loop::capture_startup_typeahead(
              std::time::Duration::from_millis(0),
          ));
@@ -4671,7 +4702,7 @@ index 60fe34f9..ee4df3e7 100644
          set_terminal_title("");
          if want_minimal && clear_main_screen {
              xai_grok_shell::util::with_locked_stderr(|stderr| {
-@@ -1671,10 +1698,10 @@ pub(crate) fn set_terminal_title(title: &str) {
+@@ -1671,10 +1702,10 @@ pub(crate) fn set_terminal_title(title: &str) {
  fn terminal_title_string(title: &str) -> String {
      let sanitized: String = title.chars().filter(|c| !c.is_control()).collect();
      if sanitized.is_empty() {
@@ -4685,7 +4716,7 @@ index 60fe34f9..ee4df3e7 100644
      }
  }
  #[cfg(test)]
-@@ -1724,11 +1751,11 @@ mod tests {
+@@ -1724,11 +1755,11 @@ mod tests {
      fn terminal_title_strips_control_characters() {
          assert_eq!(
              terminal_title_string("evil\x07\x1b]52;c;payload\x07title"),
@@ -4701,7 +4732,7 @@ index 60fe34f9..ee4df3e7 100644
      }
      #[test]
      fn hunk_tracker_mode_nothing_set_is_none() {
-@@ -2245,9 +2272,9 @@ mod tests {
+@@ -2245,9 +2276,9 @@ mod tests {
          assert!(!args.no_alt_screen);
      }
      #[test]
@@ -4713,7 +4744,7 @@ index 60fe34f9..ee4df3e7 100644
      }
      #[test]
      fn cli_help_output_header() {
-@@ -2257,9 +2284,9 @@ mod tests {
+@@ -2257,9 +2288,9 @@ mod tests {
          assert_eq!(
              first_5,
              vec![
@@ -4725,7 +4756,7 @@ index 60fe34f9..ee4df3e7 100644
                  "",
                  "Arguments:",
              ]
-@@ -2305,7 +2332,7 @@ mod tests {
+@@ -2305,7 +2336,7 @@ mod tests {
          print_exit_resume_hint(&bare_exit_info("sess-abc", false), 80, &mut buf);
          assert_eq!(
              String::from_utf8(buf).unwrap(),
@@ -4734,7 +4765,7 @@ index 60fe34f9..ee4df3e7 100644
          );
      }
      #[test]
-@@ -2314,7 +2341,7 @@ mod tests {
+@@ -2314,7 +2345,7 @@ mod tests {
          print_exit_resume_hint(&bare_exit_info("sess-abc", true), 80, &mut buf);
          assert_eq!(
              String::from_utf8(buf).unwrap(),
@@ -4743,7 +4774,7 @@ index 60fe34f9..ee4df3e7 100644
          );
      }
      #[test]
-@@ -2338,8 +2365,7 @@ mod tests {
+@@ -2338,8 +2369,7 @@ mod tests {
                  "> make the suite deterministic\n",
                  "  Pinned the seed; 200 consecutive green runs.\n",
                  "\n",
@@ -4753,7 +4784,7 @@ index 60fe34f9..ee4df3e7 100644
              )
          );
      }
-@@ -2360,7 +2386,7 @@ mod tests {
+@@ -2360,7 +2390,7 @@ mod tests {
          assert!(out.contains(&format!("\n{}…\n", "t".repeat(19))));
          assert!(out.contains(&format!("\n> {}…\n", "p".repeat(17))));
          assert!(out.contains(&format!("\n  {}…\n", "r".repeat(17))));
@@ -4764,10 +4795,10 @@ index 60fe34f9..ee4df3e7 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..485a87b0
+index 00000000..098ae509
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,3384 @@
+@@ -0,0 +1,3433 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -5050,6 +5081,24 @@ index 00000000..485a87b0
 +    workshop_providers::catalog::fetch::default_cache_dir(&workshop_home())
 +}
 +
++/// Where the verified CLI identities are remembered between launches (`workshop-detect`'s
++/// [`workshop_detect::IdentityCache`]).
++fn identity_cache_path() -> PathBuf {
++    catalog_cache_dir().join("cli-identity.json")
++}
++
++/// The detection settings every Workshop probe uses: a verified binary is not re-run through
++/// `--version` / `--help` while unchanged, and one "signed in?" answer serves the picker's
++/// back-to-back snapshots. Each vendor CLI is a Node or Bun start, so on a launch this is the
++/// difference between the engine starting at once and after two spare `opencode` runs.
++pub fn detect_config() -> DetectConfig {
++    DetectConfig {
++        identity_cache: Some(identity_cache_path()),
++        reuse_status_for: Some(workshop_detect::status::STATUS_FRESH_FOR),
++        ..DetectConfig::default()
++    }
++}
++
 +fn engine_cache_path() -> PathBuf {
 +    catalog_cache_dir().join("opencode-engine.json")
 +}
@@ -5211,12 +5260,7 @@ index 00000000..485a87b0
 +    let local = workshop_providers::probe_all_local_servers(Duration::from_millis(600)).await;
 +    let rails: Vec<workshop_detect::RailState> = tokio::task::spawn_blocking(move || {
 +        let cache = workshop_detect::ModelsCache::new(catalog_cache_dir());
-+        workshop_detect::picker_rails(
-+            &workshop_detect::DetectConfig::default(),
-+            &cache,
-+            rail_models,
-+        )
-+        .to_vec()
++        workshop_detect::picker_rails(&detect_config(), &cache, rail_models).to_vec()
 +    })
 +    .await
 +    .unwrap_or_else(|_| {
@@ -6309,7 +6353,7 @@ index 00000000..485a87b0
 +        })),
 +        ..InstallOptions::default()
 +    };
-+    let detect_opts = DetectConfig::default();
++    let detect_opts = detect_config();
 +    let run_installer = |st: &mut EngineState, log: &Path| {
 +        st.last_phase = Some("install".into());
 +        st.save(&home);
@@ -6433,6 +6477,10 @@ index 00000000..485a87b0
 +            Ok(engine)
 +        }
 +        Err(e) => {
++            // A binary that was taken on trust from the identity cache may be the cause (a
++            // quarantine flag, a broken install): the next launch runs the real `--version`
++            // check again, which is what the repair path above keys on.
++            workshop_detect::IdentityCache::new(identity_cache_path()).forget(&cli.path);
 +            state::append_log(&log, &format!("start failed: {e}"));
 +            Err(engine_fail(&mut st, &home, format!("did not start: {e}")))
 +        }
@@ -6505,6 +6553,38 @@ index 00000000..485a87b0
 +            }
 +            Err(line)
 +        }
++    }
++}
++
++/// The engine slot and the turn channel, created before the terminal and the shell's own agent
++/// are set up so the engine's bring-up can start that early (see [`start_engine_early`]).
++pub struct EarlyEngine {
++    pub slot: EngineSlot,
++    pub tx: mpsc::UnboundedSender<WorkshopTurnMsg>,
++    pub rx: mpsc::UnboundedReceiver<WorkshopTurnMsg>,
++    /// Whether [`warm_engine`] was spawned (the home's active connection is an engine model).
++    pub started: bool,
++}
++
++/// Start the engine's bring-up as the first thing a launch does, when the active connection is
++/// an engine model: `opencode serve` takes about a second to listen on any machine, and the
++/// terminal, the config, the shell's agent and the first frame are all work it can run under.
++/// Starting it with the composer instead (the previous order) put the whole TUI startup in front
++/// of it. The channel outlives this call: whatever the warm-up sends before the event loop reads
++/// (the warm engine, the resolved default model, a permission ask) waits in it.
++pub fn start_engine_early() -> EarlyEngine {
++    let slot = new_engine_slot();
++    let (tx, rx) = mpsc::unbounded_channel();
++    let started = load_active_connection().is_engine();
++    if started {
++        let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
++        tokio::spawn(warm_engine(slot.clone(), workspace, tx.clone()));
++    }
++    EarlyEngine {
++        slot,
++        tx,
++        rx,
++        started,
 +    }
 +}
 +
@@ -7075,7 +7155,7 @@ index 00000000..485a87b0
 +    {
 +        return Detection::Installed(verified.cli);
 +    }
-+    let detection = detect(adapter, &DetectConfig::default()).await;
++    let detection = detect(adapter, &detect_config()).await;
 +    if let Detection::Installed(cli) = &detection
 +        && let Ok(mut cache) = ADAPTER_CLI_CACHE.lock()
 +    {
@@ -7741,7 +7821,7 @@ index 00000000..485a87b0
 +/// The official CLI login command for a rail, to run attached to the user's terminal.
 +pub fn rail_login_argv(rail: workshop_detect::Rail) -> Vec<String> {
 +    let vendor = rail.vendor();
-+    let cfg = workshop_detect::DetectConfig::default();
++    let cfg = detect_config();
 +    let probe = workshop_detect::probe_vendor(vendor, &cfg);
 +    let bin = probe
 +        .binary
