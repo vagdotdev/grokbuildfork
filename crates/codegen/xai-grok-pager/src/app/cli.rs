@@ -56,6 +56,9 @@ pub enum Command {
     /// Print persisted token and cost usage for a session
     Usage(crate::usage_cmd::UsageArgs),
     /// Fetch and install managed configuration
+    // Workshop: an xAI-enterprise flow (`GROK_DEPLOYMENT_KEY`, console.x.ai); kept for
+    // compatibility, off the help page a person reads.
+    #[command(hide = true)]
     Setup {
         /// Print the fetched configuration as JSON instead of installing it; writes nothing to ~/.workshop.
         #[arg(long)]

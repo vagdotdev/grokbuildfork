@@ -1847,18 +1847,32 @@ impl AppView {
         } else {
             Vec::new()
         };
-        for agent in self.agents.values_mut() {
-            agent.set_restricted_commands(&names);
+        // Workshop: `/privacy` opens an xAI-account setting (coding data retention and training);
+        // it is offered only once such an account is signed in through the optional xAI card,
+        // never to the free models, API keys or subscription CLIs. Denied alongside the tier
+        // list on every surface; `tier_restricted_commands` stays the tier list alone.
+        let mut denied = names.clone();
+        if !self.xai_account_signed_in() {
+            denied.push("privacy".to_owned());
         }
-        self.welcome_prompt.set_restricted_commands(&names);
+        for agent in self.agents.values_mut() {
+            agent.set_restricted_commands(&denied);
+        }
+        self.welcome_prompt.set_restricted_commands(&denied);
         if let Some(dashboard) = self.dashboard.as_mut() {
-            dashboard.set_restricted_commands(&names);
+            dashboard.set_restricted_commands(&denied);
         }
         self.tier_restricted_commands = names;
     }
     /// A personal subscription login. API keys, external auth providers, and backend-billed accounts carry no subscription tier
     pub(super) fn consumer_account(&self) -> bool {
         !self.backend_billed && !self.is_api_key_auth && !self.has_external_auth_provider
+    }
+    /// Workshop: an xAI account is signed in (the optional card): the shell reported a
+    /// subscription tier or a team for a consumer login. The free models, API keys and the
+    /// subscription CLIs never produce either.
+    pub(crate) fn xai_account_signed_in(&self) -> bool {
+        self.consumer_account() && (self.subscription_tier.is_some() || self.team_name.is_some())
     }
     /// Whether voice is withheld for the current subscription tier (free / X Basic personal accounts).
     /// Workshop overlay: only for the opt-in xAI voice provider, whose server zero-limits those tiers;
