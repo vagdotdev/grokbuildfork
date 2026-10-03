@@ -1396,19 +1396,19 @@ pub(in crate::app::dispatch) fn handle_session_created(
         agent_count > 1 || (app.screen_mode.is_minimal() && app.next_agent_id > 1);
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         let session_id_clone = session_id.clone();
+        // Workshop: a session id is a serial number, not a name a person would say; the line
+        // says what happened and where the other sessions are.
         if agent.session.created_via_new
             && has_switch_target
             && let Some(cmd) = switch_hint
         {
             agent.scrollback.push_block(RenderBlock::system(format!(
-                "Session {}, use {cmd} to switch between sessions",
-                session_id_clone.0,
+                "New session \u{2014} {cmd} switches between sessions",
             )));
         } else if agent_count > 1 {
-            agent.scrollback.push_block(RenderBlock::system(format!(
-                "Session: {}",
-                session_id_clone.0,
-            )));
+            agent
+                .scrollback
+                .push_block(RenderBlock::system("New session".to_owned()));
         }
         agent.bind_session_id(session_id);
         if let Some(m) = new_models {

@@ -25,3 +25,4 @@
 0021-thinking-hidden-by-default.patch  # product
 0022-double-slash-voice.patch  # product
 0023-startup-auth-reload-no-retry-sleep.patch  # product
+0027-audit-polish-mode-legend.patch  # product

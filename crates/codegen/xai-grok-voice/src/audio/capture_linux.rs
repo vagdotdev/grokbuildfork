@@ -184,6 +184,11 @@ fn pw_record_supports_raw() -> bool {
     String::from_utf8_lossy(&help).contains("--raw")
 }
 
+/// What a person reads when no recorder program is on `PATH` (Workshop records through
+/// PipeWire's `pw-record`, PulseAudio's `parec` or ALSA's `arecord`).
+pub const NO_RECORDER_MESSAGE: &str = "No microphone recorder found \u{2014} install pipewire \
+                                       (or pulseaudio-utils) and try /voice again";
+
 /// [`candidate_recorders`], or a `VoiceError` naming what to install when `PATH` has none.
 fn require_recorders(
     available: impl Fn(&str) -> bool,
@@ -191,11 +196,8 @@ fn require_recorders(
 ) -> Result<Vec<Recorder>, VoiceError> {
     let recorders = candidate_recorders(&available, &pw_record_supports_raw);
     if recorders.is_empty() {
-        return Err(VoiceError::Config(
-            "no microphone recorder found on PATH: install pipewire (pw-record), \
-             pulseaudio-utils (parec), or alsa-utils (arecord)"
-                .into(),
-        ));
+        // One sentence a person can act on; the program names stay for `/doctor`'s detail.
+        return Err(VoiceError::Config(NO_RECORDER_MESSAGE.into()));
     }
     Ok(recorders)
 }
@@ -336,7 +338,7 @@ pub fn input_device_info() -> Result<crate::probe::InputDeviceInfo, VoiceError> 
     // `require_recorders` returns a non-empty list on `Ok`; degrade to an error rather than panic if that ever changes
     let recorder = *recorders
         .first()
-        .ok_or_else(|| VoiceError::Config("no microphone recorder found on PATH".into()))?;
+        .ok_or_else(|| VoiceError::Config(NO_RECORDER_MESSAGE.into()))?;
     Ok(crate::probe::InputDeviceInfo {
         name: recorder.program().to_string(),
         detail: "system recorder; uses the audio server's default input".to_string(),
@@ -485,7 +487,16 @@ mod tests {
     #[test]
     fn no_recorder_on_path_is_an_error() {
         let err = require_recorders(|_| false, || true).unwrap_err();
-        assert!(config_message(err).contains("no microphone recorder"));
+        let message = config_message(err);
+        assert!(
+            message.starts_with("No microphone recorder found"),
+            "{message}"
+        );
+        assert!(message.contains("try /voice again"), "{message}");
+        assert!(
+            !message.contains("PATH") && !message.contains("arecord"),
+            "one sentence, not a package list: {message}"
+        );
     }
 
     #[test]
