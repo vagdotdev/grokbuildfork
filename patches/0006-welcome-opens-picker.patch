@@ -1206,7 +1206,7 @@ index fc9a4553..b6b92198 100644
              } else {
                  (None, None, None, false, None, false)
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-index 483296d4..526fd4fe 100644
+index 483296d4..be33bd65 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 @@ -169,6 +169,36 @@ pub(crate) fn test_app() -> AppView {
@@ -1514,7 +1514,7 @@ index 483296d4..526fd4fe 100644
          InputOutcome::Action(Action::Quit)
      ));
  }
-@@ -4836,17 +4982,101 @@ fn welcome_pending_n_is_unchanged() {
+@@ -4836,17 +4982,103 @@ fn welcome_pending_n_is_unchanged() {
      let outcome = app.handle_input(&key_event(KeyCode::Char('n'), KeyModifiers::NONE));
      assert!(matches!(outcome, InputOutcome::Unchanged));
  }
@@ -1594,7 +1594,9 @@ index 483296d4..526fd4fe 100644
 +    .unwrap();
 +    assert!(!welcome_paste_is_text(&png.display().to_string()));
 +    assert!(welcome_paste_is_text("install ghostty"));
-+    assert!(welcome_paste_is_text("the file /tmp is a directory on Unix"));
++    assert!(welcome_paste_is_text(
++        "the file /tmp is a directory on Unix"
++    ));
 +    let mut app = test_app();
 +    app.auth_state = AuthState::Done;
 +    let outcome = app.handle_input(&Event::Paste(png.display().to_string()));
@@ -1618,7 +1620,7 @@ index 483296d4..526fd4fe 100644
  #[test]
  fn welcome_done_ctrl_w_opens_new_worktree_dialog() {
      let mut app = test_app();
-@@ -4858,8 +5088,10 @@ fn welcome_done_ctrl_w_opens_new_worktree_dialog() {
+@@ -4858,8 +5090,10 @@ fn welcome_done_ctrl_w_opens_new_worktree_dialog() {
          InputOutcome::Action(Action::OpenNewWorktreeDialog)
      ));
  }
@@ -1630,7 +1632,7 @@ index 483296d4..526fd4fe 100644
      let chords = [
          KeyModifiers::CONTROL,
          KeyModifiers::SUPER,
-@@ -4870,10 +5102,29 @@ fn welcome_paste_chords_leave_home() {
+@@ -4870,10 +5104,29 @@ fn welcome_paste_chords_leave_home() {
          let mut app = test_app();
          app.auth_state = AuthState::Done;
          app.welcome_prompt_focused = focused;

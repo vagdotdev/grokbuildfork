@@ -5056,7 +5056,9 @@ fn welcome_done_pasted_image_path_leaves_home_for_the_chip() {
     .unwrap();
     assert!(!welcome_paste_is_text(&png.display().to_string()));
     assert!(welcome_paste_is_text("install ghostty"));
-    assert!(welcome_paste_is_text("the file /tmp is a directory on Unix"));
+    assert!(welcome_paste_is_text(
+        "the file /tmp is a directory on Unix"
+    ));
     let mut app = test_app();
     app.auth_state = AuthState::Done;
     let outcome = app.handle_input(&Event::Paste(png.display().to_string()));
