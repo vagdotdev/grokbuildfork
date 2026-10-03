@@ -255,6 +255,15 @@ pub enum TickDemand {
 /// Tick cadence for [`TickDemand::Slow`] (~12fps).
 /// Matches the welcome logo's `SHIMMER_FPS` so slow ticks sample every shimmer frame, and bounds the latency of the macOS Cmd link-hover underline.
 pub const SLOW_TICK_INTERVAL: Duration = Duration::from_millis(83);
+/// Workshop: how long the welcome hero keeps spinning after the user's last input. A welcome
+/// screen nobody is touching then parks (no frames written, no CPU) until the next key, and the
+/// spin picks up from the frame it held.
+pub const HERO_IDLE_PAUSE: Duration = Duration::from_secs(30);
+
+/// Workshop: whether the hero is still within its spin window after the last input.
+pub fn hero_spins_after_input(last_input_at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(last_input_at) < HERO_IDLE_PAUSE
+}
 /// Welcome toast lifetime (wall clock, so the duration holds whether the event loop is ticking Slow or Fast).
 const WELCOME_TOAST_DURATION: Duration = Duration::from_secs(2);
 fn reconnect_success_hides_mismatch(current: Option<&str>, incoming: &str) -> bool {
@@ -895,6 +904,10 @@ pub struct AppView {
     /// Workshop: the last welcome paint spun the hero (wide layout, logo shown, animation on), as
     /// reported by the renderer. Off until the first paint and whenever the resting frame is drawn.
     pub welcome_hero_animating: bool,
+    /// Workshop: when the user last touched the terminal (a key, the mouse, a paste, or coming
+    /// back to the window). The hero spins for [`HERO_IDLE_PAUSE`] after that and then holds its
+    /// frame, so a welcome screen left open stops repainting ([`Self::welcome_hero_spins`]).
+    pub welcome_last_input_at: Instant,
     /// CLI model override (`-m` / `--model`).
     /// Seeded into every new `AgentSession.deferred_model_switch` so the model is applied once the session is created.
     pub cli_model_override: Option<acp::ModelId>,
@@ -1609,6 +1622,7 @@ impl AppView {
             welcome_tick: 0,
             welcome_hero_frame: 0,
             welcome_hero_animating: false,
+            welcome_last_input_at: Instant::now(),
             cli_model_override: None,
             cli_effort_token: None,
             default_yolo: false,
@@ -6228,13 +6242,24 @@ impl AppView {
     }
     /// Workshop: whether the welcome hero should advance a frame on the next tick — the user has
     /// not turned it off (`[ui] hero_animation = false`), the terminal can show it (colour on, no
-    /// legacy console), the last paint spun it (wide layout, logo shown) and the terminal is
-    /// focused. Leaving the welcome screen ends it by construction: the tick only runs here for
-    /// [`ActiveView::Welcome`].
+    /// legacy console), the last paint spun it (wide layout, logo shown), the terminal is
+    /// focused, and the user touched it in the last [`HERO_IDLE_PAUSE`]. Leaving the welcome
+    /// screen ends it by construction: the tick only runs here for [`ActiveView::Welcome`].
     pub fn welcome_hero_spins(&self) -> bool {
         self.hero_animation_enabled()
             && self.welcome_hero_animating
             && self.notification_service.focus_tracker.is_focused()
+            && hero_spins_after_input(self.welcome_last_input_at, Instant::now())
+    }
+    /// Workshop: the user touched the terminal (see [`Self::welcome_last_input_at`]).
+    pub fn note_terminal_input(&mut self, event: &crossterm::event::Event) {
+        use crossterm::event::Event;
+        if matches!(
+            event,
+            Event::Key(_) | Event::Mouse(_) | Event::Paste(_) | Event::FocusGained
+        ) {
+            self.welcome_last_input_at = Instant::now();
+        }
     }
     /// Workshop: `[ui] hero_animation` (default on) and the terminal's ability to show the spin.
     pub fn hero_animation_enabled(&self) -> bool {

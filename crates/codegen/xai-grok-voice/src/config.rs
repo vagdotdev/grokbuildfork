@@ -31,8 +31,10 @@ pub struct VoiceConfig {
     pub model: Option<String>,
     /// Workshop overlay: path of the `voice-engine` helper; unset = beside the running binary.
     pub engine_path: Option<String>,
-    /// Workshop overlay: fetch the helper and this machine's speech model in the background so
-    /// `/voice` is ready when first pressed (default on; `WORKSHOP_VOICE_AUTO=0` also turns it off).
+    /// Workshop overlay: fetch the helper and this machine's speech model in the background
+    /// before anyone asks for voice. Default off: the first `/voice` (or `//`) fetches them, with
+    /// one progress line, so a user who never dictates never downloads 150–570 MB and the first
+    /// session's bandwidth goes to the model's replies. `WORKSHOP_VOICE_AUTO=1` also turns it on.
     pub auto_download: bool,
     /// HTTPS API root (or bare host) for `provider = "xai"`. Empty for a normal launch.
     /// Bases may end in `/v1` or `/xai/v1`; the default STT path de-duplicates a leading `v1/` so both become `…/v1/stt`.
@@ -57,7 +59,7 @@ impl Default for VoiceConfig {
             provider: VoiceProvider::Local,
             model: None,
             engine_path: None,
-            auto_download: true,
+            auto_download: false,
             // No hosted endpoint by default (gate:no-xai): the xAI provider requires an explicit base.
             api_base: String::new(),
             stt_ws_path: "/v1/stt".into(),
@@ -367,8 +369,10 @@ auto_download = false
         assert!(cfg.client_identifier.is_empty());
         assert!(cfg.user_agent.is_empty());
         assert!(
-            VoiceConfig::default().auto_download,
-            "voice gets ready in the background unless turned off"
+            !VoiceConfig::default().auto_download,
+            "voice is fetched on the first /voice unless the background setup is turned on"
         );
+        let on: toml::Table = toml::from_str("[voice]\nauto_download = true\n").unwrap();
+        assert!(VoiceConfig::from_config_table(&on, None).auto_download);
     }
 }
