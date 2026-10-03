@@ -1909,10 +1909,10 @@ index be26f22a..0e3f9cfe 100644
  # `audio` = "microphone capture is compiled in". It's enabled on every OS for
  # production builds: macOS/Windows link `cpal`; Linux shells out to a system
 diff --git a/crates/codegen/xai-grok-voice/src/config.rs b/crates/codegen/xai-grok-voice/src/config.rs
-index 8a7f7fb4..130d6772 100644
+index 8a7f7fb4..d36750c4 100644
 --- a/crates/codegen/xai-grok-voice/src/config.rs
 +++ b/crates/codegen/xai-grok-voice/src/config.rs
-@@ -5,12 +5,36 @@ use crate::error::VoiceError;
+@@ -5,12 +5,38 @@ use crate::error::VoiceError;
  /// Default STT capture rate (Hz). Shared with the `__mic-capture` helper's argv default so parent and child agree when `--rate` is omitted.
  pub const DEFAULT_SAMPLE_RATE: u32 = 16_000;
  
@@ -1945,14 +1945,16 @@ index 8a7f7fb4..130d6772 100644
 +    pub model: Option<String>,
 +    /// Workshop overlay: path of the `voice-engine` helper; unset = beside the running binary.
 +    pub engine_path: Option<String>,
-+    /// Workshop overlay: fetch the helper and this machine's speech model in the background so
-+    /// `/voice` is ready when first pressed (default on; `WORKSHOP_VOICE_AUTO=0` also turns it off).
++    /// Workshop overlay: fetch the helper and this machine's speech model in the background
++    /// before anyone asks for voice. Default off: the first `/voice` (or `//`) fetches them, with
++    /// one progress line, so a user who never dictates never downloads 150–570 MB and the first
++    /// session's bandwidth goes to the model's replies. `WORKSHOP_VOICE_AUTO=1` also turns it on.
 +    pub auto_download: bool,
 +    /// HTTPS API root (or bare host) for `provider = "xai"`. Empty for a normal launch.
      /// Bases may end in `/v1` or `/xai/v1`; the default STT path de-duplicates a leading `v1/` so both become `…/v1/stt`.
      pub api_base: String,
      pub stt_ws_path: String,
-@@ -30,7 +54,12 @@ pub struct VoiceConfig {
+@@ -30,7 +56,12 @@ pub struct VoiceConfig {
  impl Default for VoiceConfig {
      fn default() -> Self {
          Self {
@@ -1960,13 +1962,13 @@ index 8a7f7fb4..130d6772 100644
 +            provider: VoiceProvider::Local,
 +            model: None,
 +            engine_path: None,
-+            auto_download: true,
++            auto_download: false,
 +            // No hosted endpoint by default (gate:no-xai): the xAI provider requires an explicit base.
 +            api_base: String::new(),
              stt_ws_path: "/v1/stt".into(),
              language: "en".into(),
              sample_rate: DEFAULT_SAMPLE_RATE,
-@@ -48,7 +77,8 @@ impl VoiceConfig {
+@@ -48,7 +79,8 @@ impl VoiceConfig {
          ws_url(&self.api_base, &self.stt_ws_path)
      }
  
@@ -1976,7 +1978,7 @@ index 8a7f7fb4..130d6772 100644
      ///
      /// `resolved_endpoints_base` carries the caller's env/CLI overrides; it ranks below the raw table so config keeps beating env (shell precedence).
      pub fn from_config_table(root: &toml::Table, resolved_endpoints_base: Option<&str>) -> Self {
-@@ -57,22 +87,26 @@ impl VoiceConfig {
+@@ -57,22 +89,26 @@ impl VoiceConfig {
              .and_then(|t| toml::Value::Table(t.clone()).try_into().ok())
              .unwrap_or_default();
  
@@ -2016,7 +2018,7 @@ index 8a7f7fb4..130d6772 100644
          cfg
      }
  }
-@@ -92,6 +126,13 @@ fn strip_scheme<'a>(s: &'a str, scheme: &str) -> Option<&'a str> {
+@@ -92,6 +128,13 @@ fn strip_scheme<'a>(s: &'a str, scheme: &str) -> Option<&'a str> {
  fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
      let base = api_base.trim().trim_end_matches('/');
      let path = path.trim().trim_start_matches('/');
@@ -2030,7 +2032,7 @@ index 8a7f7fb4..130d6772 100644
      if strip_scheme(base, "http://").is_some() || strip_scheme(base, "ws://").is_some() {
          return Err(VoiceError::Config(format!(
              "insecure voice api_base {api_base:?}: voice requires a TLS endpoint \
-@@ -114,42 +155,59 @@ fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
+@@ -114,42 +157,59 @@ fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
  mod tests {
      use super::*;
  
@@ -2110,7 +2112,7 @@ index 8a7f7fb4..130d6772 100644
              "wss://proxy.example.com/xai/v1/stt"
          );
      }
-@@ -162,24 +220,23 @@ mod tests {
+@@ -162,24 +222,23 @@ mod tests {
              "HTTP://localhost:8080",
              "Ws://localhost:8080",
          ] {
@@ -2140,7 +2142,7 @@ index 8a7f7fb4..130d6772 100644
          assert_eq!(cfg.api_base, "https://proxy.example.com/xai/v1");
          assert_eq!(
              cfg.stt_ws_url().unwrap(),
-@@ -188,12 +245,30 @@ xai_api_base_url = "https://proxy.example.com/xai/v1"
+@@ -188,12 +247,30 @@ xai_api_base_url = "https://proxy.example.com/xai/v1"
      }
  
      #[test]
@@ -2172,7 +2174,7 @@ index 8a7f7fb4..130d6772 100644
  api_base = "  "
  language = "fr"
  "#,
-@@ -205,31 +280,30 @@ language = "fr"
+@@ -205,31 +282,30 @@ language = "fr"
      }
  
      #[test]
@@ -2214,7 +2216,7 @@ index 8a7f7fb4..130d6772 100644
      }
  
      /// config.toml beats the env/CLI fallback, matching the shell's endpoints precedence.
-@@ -239,6 +313,8 @@ api_base = "  "
+@@ -239,6 +315,8 @@ api_base = "  "
              r#"
  [endpoints]
  xai_api_base_url = "https://config.example.com"
@@ -2223,7 +2225,7 @@ index 8a7f7fb4..130d6772 100644
  "#,
          )
          .unwrap();
-@@ -253,19 +329,20 @@ xai_api_base_url = "https://config.example.com"
+@@ -253,19 +331,20 @@ xai_api_base_url = "https://config.example.com"
  [endpoints]
  xai_api_base_url = "https://proxy.example.com/xai/v1"
  [voice]
@@ -2248,7 +2250,7 @@ index 8a7f7fb4..130d6772 100644
          let table: toml::Table = toml::from_str(
              r#"
  [voice]
-@@ -273,12 +350,25 @@ enabled = false
+@@ -273,12 +352,27 @@ enabled = false
  client_identifier = "spoofed"
  user_agent = "malicious/9.9"
  language = "es"
@@ -2269,9 +2271,11 @@ index 8a7f7fb4..130d6772 100644
          assert!(cfg.client_identifier.is_empty());
          assert!(cfg.user_agent.is_empty());
 +        assert!(
-+            VoiceConfig::default().auto_download,
-+            "voice gets ready in the background unless turned off"
++            !VoiceConfig::default().auto_download,
++            "voice is fetched on the first /voice unless the background setup is turned on"
 +        );
++        let on: toml::Table = toml::from_str("[voice]\nauto_download = true\n").unwrap();
++        assert!(VoiceConfig::from_config_table(&on, None).auto_download);
      }
  }
 diff --git a/crates/codegen/xai-grok-voice/src/event.rs b/crates/codegen/xai-grok-voice/src/event.rs

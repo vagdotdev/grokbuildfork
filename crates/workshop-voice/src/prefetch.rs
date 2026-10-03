@@ -10,16 +10,24 @@ use std::sync::{Arc, Mutex};
 use crate::store::{ModelStore, Progress};
 use crate::{doctor, engine, helper, tier};
 
-/// Environment override: a falsy value (`0`, `false`, `off`, `no`) turns the background setup off.
+/// Environment override: a truthy value (`1`, `true`, `on`, `yes`) turns the background setup
+/// on, a falsy one (`0`, `false`, `off`, `no`) off; anything else leaves the config flag.
 pub const AUTO_ENV: &str = "WORKSHOP_VOICE_AUTO";
 
-/// Whether the background setup runs: the config flag (`voice.auto_download`, default on) unless
-/// [`AUTO_ENV`] turns it off.
+/// Whether the background setup runs: the config flag (`voice.auto_download`, default off — the
+/// first `/voice` fetches on request) unless [`AUTO_ENV`] decides.
 pub fn auto_enabled(config_flag: bool) -> bool {
-    if let Some(v) = std::env::var_os(AUTO_ENV) {
+    auto_enabled_with(config_flag, std::env::var_os(AUTO_ENV).as_deref())
+}
+
+fn auto_enabled_with(config_flag: bool, env: Option<&std::ffi::OsStr>) -> bool {
+    if let Some(v) = env {
         let v = v.to_string_lossy().trim().to_ascii_lowercase();
         if matches!(v.as_str(), "0" | "false" | "off" | "no") {
             return false;
+        }
+        if matches!(v.as_str(), "1" | "true" | "on" | "yes") {
+            return true;
         }
     }
     config_flag
@@ -151,25 +159,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn auto_env_turns_the_setup_off() {
-        let _g = crate::test_support::ENV_LOCK.lock().unwrap();
-        for (value, expected) in [
-            (None, true),
-            (Some("1"), true),
-            (Some("0"), false),
-            (Some("false"), false),
-            (Some(" OFF "), false),
-            (Some("no"), false),
-            (Some("yes"), true),
+    fn auto_env_turns_the_setup_on_or_off() {
+        use std::ffi::OsStr;
+        // (env, with the config flag on, with it off)
+        for (value, flag_on, flag_off) in [
+            (None, true, false),
+            (Some("1"), true, true),
+            (Some("yes"), true, true),
+            (Some(" ON "), true, true),
+            (Some("0"), false, false),
+            (Some("false"), false, false),
+            (Some(" OFF "), false, false),
+            (Some("no"), false, false),
+            (Some("maybe"), true, false),
         ] {
-            crate::test_support::with_env(&[(AUTO_ENV, value)], || {
-                assert_eq!(auto_enabled(true), expected, "{value:?}");
-                assert!(
-                    !auto_enabled(false),
-                    "{value:?}: the config flag still rules"
-                );
-            });
+            let env = value.map(OsStr::new);
+            assert_eq!(auto_enabled_with(true, env), flag_on, "{value:?} / flag on");
+            assert_eq!(
+                auto_enabled_with(false, env),
+                flag_off,
+                "{value:?} / flag off"
+            );
         }
+        let _g = crate::test_support::ENV_LOCK.lock().unwrap();
+        crate::test_support::with_env(&[(AUTO_ENV, Some("1"))], || {
+            assert!(auto_enabled(false), "the env var reaches auto_enabled");
+        });
     }
 
     #[test]

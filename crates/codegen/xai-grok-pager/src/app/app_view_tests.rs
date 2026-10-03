@@ -295,6 +295,7 @@ pub(crate) fn test_app() -> AppView {
         welcome_tick: 0,
         welcome_hero_frame: 0,
         welcome_hero_animating: false,
+        welcome_last_input_at: Instant::now(),
         startup_warnings: Vec::new(),
         is_api_key_auth: false,
         pending_update_version: None,
@@ -852,6 +853,22 @@ fn tick_demand_welcome_is_slow_while_the_hero_spins() {
     );
     app.notification_service.focus_tracker.on_focus_gained();
     assert_eq!(app.tick_demand(), TickDemand::Slow);
+    // Workshop: a welcome screen nobody has touched for `HERO_IDLE_PAUSE` holds its frame and
+    // parks the loop; the next key (or the mouse, a paste, coming back to the window) resumes it.
+    app.welcome_last_input_at = Instant::now() - HERO_IDLE_PAUSE - Duration::from_secs(1);
+    assert!(!app.welcome_hero_spins());
+    assert_eq!(app.tick_demand(), TickDemand::None);
+    let parked = app.welcome_hero_frame;
+    app.tick();
+    assert_eq!(
+        app.welcome_hero_frame, parked,
+        "no frame advances while idle"
+    );
+    app.note_terminal_input(&Event::Resize(80, 24));
+    assert!(!app.welcome_hero_spins(), "a resize is not the user");
+    app.note_terminal_input(&Event::Key(KeyEvent::from(KeyCode::Char('a'))));
+    assert!(app.welcome_hero_spins());
+    assert_eq!(app.tick_demand(), TickDemand::Slow);
     // `[ui] hero_animation = false` shows the resting frame: nothing to tick for.
     app.current_ui.hero_animation = Some(false);
     assert!(!app.hero_animation_enabled());
@@ -863,6 +880,22 @@ fn tick_demand_welcome_is_slow_while_the_hero_spins() {
     assert_eq!(app.welcome_hero_frame, 0);
     app.session_picker_content_loading = true;
     assert_eq!(app.tick_demand(), TickDemand::Fast);
+}
+
+/// Workshop: the spin window after the last input, independent of the terminal (the test above
+/// returns early under `NO_COLOR`).
+#[test]
+fn hero_spin_window_after_input() {
+    let t0 = Instant::now();
+    assert!(hero_spins_after_input(t0, t0));
+    assert!(hero_spins_after_input(
+        t0,
+        t0 + HERO_IDLE_PAUSE - Duration::from_millis(1)
+    ));
+    assert!(!hero_spins_after_input(t0, t0 + HERO_IDLE_PAUSE));
+    assert!(!hero_spins_after_input(t0, t0 + Duration::from_secs(3600)));
+    // A clock that reads earlier than the input (tests, suspend) counts as fresh input.
+    assert!(hero_spins_after_input(t0 + Duration::from_secs(5), t0));
 }
 
 /// A welcome toast needs the clock to expire even when the hero rests.
