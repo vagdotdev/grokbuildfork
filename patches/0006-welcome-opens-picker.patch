@@ -180,7 +180,7 @@ index 05556693..41171fbf 100644
              ActionId::ShortcutsHelp => {
                  use crate::views::shortcuts_help;
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..93c9e0b5 100644
+index fc9a4553..0dacfc66 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -254,7 +254,7 @@ index fc9a4553..93c9e0b5 100644
      /// The environment gates are process-constant, so one evaluation decides the run.
      pub ssh_wrap_tip_evaluated: bool,
      /// State for the clipboard-image tip, polled opportunistically and only while the terminal is focused.
-@@ -1009,6 +1029,94 @@ pub struct AppView {
+@@ -1009,6 +1029,97 @@ pub struct AppView {
      pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
      /// Whether deferred welcome-screen login should force OAuth.
      pub auth_use_oauth: bool,
@@ -289,6 +289,8 @@ index fc9a4553..93c9e0b5 100644
 +    /// Workshop: the prompt of the last Engine/Adapter turn, kept so Enter on an empty composer
 +    /// can retry it after a failure.
 +    pub workshop_last_prompt: Option<String>,
++    /// The images that went with `workshop_last_prompt`; a retry sends them again.
++    pub workshop_last_images: Vec<workshop_adapters::opencode_engine::PromptFile>,
 +    /// True while an Engine/Adapter turn streams; a second submit is rejected and Esc/Ctrl-C cancels.
 +    pub workshop_turn_active: bool,
 +    /// Sender the event loop installs once so submit handlers can stream a turn's events back into
@@ -328,9 +330,10 @@ index fc9a4553..93c9e0b5 100644
 +    /// arrives (the finished row is built from input + result together).
 +    pub workshop_turn_tool_inputs:
 +        std::collections::HashMap<crate::scrollback::EntryId, (String, serde_json::Value)>,
-+    /// Prompts submitted while an Engine/Adapter turn was running, oldest first; each becomes
-+    /// its own turn when the running one ends.
-+    pub workshop_turn_queue: std::collections::VecDeque<String>,
++    /// Prompts submitted while an Engine/Adapter turn was running, oldest first, each with the
++    /// images pasted with it; each becomes its own turn when the running one ends.
++    pub workshop_turn_queue:
++        std::collections::VecDeque<(String, Vec<workshop_adapters::opencode_engine::PromptFile>)>,
 +    /// Permission answers of the current engine turn by tool call id: a call that asks twice
 +    /// (`external_directory`, then `bash`) is answered once by the user and once from here.
 +    pub workshop_turn_decided_calls:
@@ -349,7 +352,7 @@ index fc9a4553..93c9e0b5 100644
      /// Delivery state from the last clipboard copy during auth.
      pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
      /// Generation of the current auth copy feedback and its clear timer.
-@@ -1076,6 +1184,9 @@ pub struct AppView {
+@@ -1076,6 +1187,9 @@ pub struct AppView {
      /// Latest version string from a background update check.
      /// Set when a newer version is detected; rendered as a notification on the welcome screen.
      pub pending_update_version: Option<String>,
@@ -359,7 +362,7 @@ index fc9a4553..93c9e0b5 100644
      /// When true, the event loop should exit so the user can relaunch to pick up the downloaded update.
      pub quit_for_update: bool,
      /// Printed to stderr after terminal restore when Welcome yes could not save trust.
-@@ -1429,11 +1540,16 @@ impl AppView {
+@@ -1429,11 +1543,16 @@ impl AppView {
              pending_effects: Vec::new(),
              pending_editor: None,
              pending_pager_path: None,
@@ -376,7 +379,7 @@ index fc9a4553..93c9e0b5 100644
              welcome_import_banner_rect: None,
              last_mouse_pos: None,
              last_scroll_pos: None,
-@@ -1488,7 +1604,8 @@ impl AppView {
+@@ -1488,7 +1607,8 @@ impl AppView {
              session_picker_entries_query: None,
              session_picker_pending_delete: None,
              welcome_tick: 0,
@@ -386,7 +389,7 @@ index fc9a4553..93c9e0b5 100644
              cli_model_override: None,
              cli_effort_token: None,
              default_yolo: false,
-@@ -1543,6 +1660,35 @@ impl AppView {
+@@ -1543,6 +1663,36 @@ impl AppView {
              auth_url_poll_handle: None,
              deferred_startup: Default::default(),
              auth_use_oauth: false,
@@ -400,6 +403,7 @@ index fc9a4553..93c9e0b5 100644
 +            workshop_turn_running: Vec::new(),
 +            workshop_turn_errored: false,
 +            workshop_last_prompt: None,
++            workshop_last_images: Vec::new(),
 +            workshop_turn_active: false,
 +            workshop_turn_tx: None,
 +            workshop_turn_cancel: None,
@@ -422,7 +426,7 @@ index fc9a4553..93c9e0b5 100644
              auth_clipboard_delivery: None,
              auth_clipboard_feedback_generation: 0,
              team_id: None,
-@@ -1573,6 +1719,7 @@ impl AppView {
+@@ -1573,6 +1723,7 @@ impl AppView {
              startup_warnings: Vec::new(),
              is_api_key_auth: false,
              pending_update_version: None,
@@ -430,7 +434,7 @@ index fc9a4553..93c9e0b5 100644
              foreign_resume_launch_generation: 0,
              foreign_resume_launch: None,
              quit_for_update: false,
-@@ -1709,11 +1856,15 @@ impl AppView {
+@@ -1709,11 +1860,15 @@ impl AppView {
      pub(super) fn consumer_account(&self) -> bool {
          !self.backend_billed && !self.is_api_key_auth && !self.has_external_auth_provider
      }
@@ -449,7 +453,7 @@ index fc9a4553..93c9e0b5 100644
      }
      /// Draw-time expiry can flip the live-announcement predicate between pushes.
      /// Resync the slash gate only when it diverges from the stored flags (checked per frame, fan-out runs only on change).
-@@ -1891,6 +2042,37 @@ impl AppView {
+@@ -1891,6 +2046,37 @@ impl AppView {
              None
          }
      }
@@ -487,7 +491,7 @@ index fc9a4553..93c9e0b5 100644
      /// Commit interim on real send keys only (not multiline bare Enter).
      fn maybe_commit_voice_interim_before_submit_key(&mut self, key: &crossterm::event::KeyEvent) {
          if self.registry.matches_id(ActionId::InterjectPrompt, key) {
-@@ -2404,6 +2586,20 @@ impl AppView {
+@@ -2404,6 +2590,20 @@ impl AppView {
              }
              return InputOutcome::Changed;
          }
@@ -508,7 +512,7 @@ index fc9a4553..93c9e0b5 100644
          let zdr_blocked = self.is_zdr_blocked();
          let has_access = self.has_access();
          let welcome_pinned_upgrade_cta = crate::views::announcements::promo_cta(
-@@ -2442,7 +2638,12 @@ impl AppView {
+@@ -2442,7 +2642,12 @@ impl AppView {
                      menu_count: if zdr_blocked {
                          2
                      } else {
@@ -522,7 +526,7 @@ index fc9a4553..93c9e0b5 100644
                              + if self.welcome_show_changelog_action {
                                  1
                              } else {
-@@ -2483,6 +2684,7 @@ impl AppView {
+@@ -2483,6 +2688,7 @@ impl AppView {
                      welcome_doc_viewer: &mut self.welcome_doc_viewer,
                      changelog_markdown: &self.changelog_markdown,
                      show_changelog_action: self.welcome_show_changelog_action,
@@ -530,7 +534,7 @@ index fc9a4553..93c9e0b5 100644
                      has_pending_update: self.pending_update_version.is_some(),
                      has_foreign_resume,
                      cwd_has_git_ancestor: self.cwd_has_git_ancestor,
-@@ -2672,6 +2874,9 @@ impl AppView {
+@@ -2672,6 +2878,9 @@ impl AppView {
                  if let Some(outcome) = self.voice_esc_outcome(key_event) {
                      return outcome;
                  }
@@ -540,7 +544,7 @@ index fc9a4553..93c9e0b5 100644
                  if let Event::Key(key) = ev
                      && key.kind != KeyEventKind::Release
                  {
-@@ -3143,8 +3348,10 @@ struct WelcomeInputCtx<'a> {
+@@ -3143,8 +3352,10 @@ struct WelcomeInputCtx<'a> {
      import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
      welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
      changelog_markdown: &'a Option<String>,
@@ -552,7 +556,7 @@ index fc9a4553..93c9e0b5 100644
      has_pending_update: bool,
      /// A recent foreign session is available to resume when no update is pending.
      has_foreign_resume: bool,
-@@ -3171,6 +3378,120 @@ struct WelcomeInputCtx<'a> {
+@@ -3171,6 +3382,120 @@ struct WelcomeInputCtx<'a> {
      #[cfg(feature = "local-workspace")]
      session_picker_open: bool,
  }
@@ -673,7 +677,7 @@ index fc9a4553..93c9e0b5 100644
  /// Welcome view input: overlays first, then composer, then the menu.
  fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
      if let Some(modal) = ctx.import_claude_modal.as_mut() {
-@@ -3750,6 +4071,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3750,6 +4075,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                  return dispatch_menu_action(
                      idx,
                      ctx.has_claude_import,
@@ -681,7 +685,7 @@ index fc9a4553..93c9e0b5 100644
                      ctx.show_changelog_action,
                      ctx.changelog_markdown.as_deref(),
                  );
-@@ -3888,6 +4210,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3888,6 +4214,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                          return dispatch_menu_action(
                              i,
                              ctx.has_claude_import,
@@ -689,7 +693,7 @@ index fc9a4553..93c9e0b5 100644
                              ctx.show_changelog_action,
                              ctx.changelog_markdown.as_deref(),
                          );
-@@ -4138,39 +4461,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
+@@ -4138,39 +4465,42 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
      }
  }
  /// Dispatch an action for a welcome menu item by index.
@@ -748,7 +752,7 @@ index fc9a4553..93c9e0b5 100644
      }
      if index == quit_idx {
          return InputOutcome::Action(Action::Quit);
-@@ -4381,6 +4707,9 @@ impl AppView {
+@@ -4381,6 +4711,9 @@ impl AppView {
          });
          let welcome_default_yolo = self.default_yolo;
          let welcome_auto_gate = self.auto_mode_gate;
@@ -758,7 +762,7 @@ index fc9a4553..93c9e0b5 100644
          let Self {
              active_view,
              agents,
-@@ -4477,11 +4806,39 @@ impl AppView {
+@@ -4477,11 +4810,39 @@ impl AppView {
                              } else {
                                  self.tip.as_deref()
                              };
@@ -803,7 +807,7 @@ index fc9a4553..93c9e0b5 100644
                              };
                              let hero_cta = crate::views::announcements::promo_cta(
                                  &self.active_announcements,
-@@ -4495,7 +4852,14 @@ impl AppView {
+@@ -4495,7 +4856,14 @@ impl AppView {
                                          &self.hidden_announcement_ids,
                                      )
                                  })
@@ -819,7 +823,7 @@ index fc9a4553..93c9e0b5 100644
                              let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                  prompt_focus: if self.welcome_prompt_focused {
                                      WelcomePromptFocus::Focused
-@@ -4508,6 +4872,7 @@ impl AppView {
+@@ -4508,6 +4876,7 @@ impl AppView {
                                  consent_state: &self.consent_state,
                                  consent_hover_link: self.welcome_consent_hover_link,
                                  login_label: self.login_label.as_deref(),
@@ -827,7 +831,7 @@ index fc9a4553..93c9e0b5 100644
                                  auth_code_input: self.auth_code_input.text(),
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
-@@ -4520,6 +4885,7 @@ impl AppView {
+@@ -4520,6 +4889,7 @@ impl AppView {
                                  team_name: self.team_name.as_deref(),
                                  has_access,
                                  has_claude_import: self.has_claude_import,
@@ -835,7 +839,7 @@ index fc9a4553..93c9e0b5 100644
                                  mouse_pos: self.last_mouse_pos,
                                  is_zdr_blocked: zdr_blocked_for_draw,
                                  session_picker: self.session_picker_entries.as_deref(),
-@@ -4534,6 +4900,7 @@ impl AppView {
+@@ -4534,6 +4904,7 @@ impl AppView {
                                  pending_hint,
                                  startup_warnings: &self.startup_warnings,
                                  pending_update_version: self.pending_update_version.as_deref(),
@@ -843,7 +847,7 @@ index fc9a4553..93c9e0b5 100644
                                  foreign_resume_hint: foreign_resume_hint.as_ref(),
                                  session_picker_content_results: self
                                      .session_picker_content_results
-@@ -4560,6 +4927,7 @@ impl AppView {
+@@ -4560,6 +4931,7 @@ impl AppView {
                                  welcome_announcement_expanded: self.welcome_announcement.expanded,
                                  upgrade_cta: hero_cta.map(|(_owner, label, _)| label),
                                  privacy_banner,
@@ -851,7 +855,7 @@ index fc9a4553..93c9e0b5 100644
                                  #[cfg(feature = "local-workspace")]
                                  workspace_mode: self.welcome_workspace_mode,
                                  #[cfg(feature = "local-workspace")]
-@@ -4576,7 +4944,9 @@ impl AppView {
+@@ -4576,7 +4948,9 @@ impl AppView {
                                  &mut self.session_picker_state,
                              );
                              self.welcome_menu_rects = result.menu_rects;
@@ -861,7 +865,7 @@ index fc9a4553..93c9e0b5 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4804,6 +5174,7 @@ impl AppView {
+@@ -4804,6 +5178,7 @@ impl AppView {
                                              .workspace_dashboard_enabled,
                                          overlay_header,
                                          overlay_stop_label: None,
@@ -869,7 +873,7 @@ index fc9a4553..93c9e0b5 100644
                                      },
                                  );
                                  if let Some(modal) = self.import_claude_modal.as_mut() {
-@@ -4824,6 +5195,28 @@ impl AppView {
+@@ -4824,6 +5199,28 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -898,7 +902,7 @@ index fc9a4553..93c9e0b5 100644
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5225,17 @@ impl AppView {
+@@ -4832,13 +5229,17 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
@@ -917,7 +921,7 @@ index fc9a4553..93c9e0b5 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5517,7 @@ impl AppView {
+@@ -5120,6 +5521,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -925,7 +929,7 @@ index fc9a4553..93c9e0b5 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5565,7 @@ impl AppView {
+@@ -5167,7 +5569,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -934,7 +938,7 @@ index fc9a4553..93c9e0b5 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5680,7 @@ impl AppView {
+@@ -5282,6 +5684,7 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
@@ -942,7 +946,7 @@ index fc9a4553..93c9e0b5 100644
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5300,11 +5699,7 @@ impl AppView {
+@@ -5300,11 +5703,7 @@ impl AppView {
              {
                  needs_redraw = true;
              } else {
@@ -955,7 +959,7 @@ index fc9a4553..93c9e0b5 100644
              }
          }
          if matches!(self.active_view, ActiveView::AgentDashboard)
-@@ -5355,7 +5750,10 @@ impl AppView {
+@@ -5355,7 +5754,10 @@ impl AppView {
              }
              let spinner_frame_tick =
                  agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
@@ -967,7 +971,7 @@ index fc9a4553..93c9e0b5 100644
              needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
                  && spinner_frame_tick;
              needs_redraw |= matches!(
-@@ -5623,6 +6021,20 @@ impl AppView {
+@@ -5623,6 +6025,20 @@ impl AppView {
          }
          needs_redraw
      }
@@ -988,7 +992,7 @@ index fc9a4553..93c9e0b5 100644
      /// Check if animation ticks should be scheduled.
      pub fn needs_animation(&self) -> bool {
          self.tick_demand() != TickDemand::None
-@@ -5637,6 +6049,15 @@ impl AppView {
+@@ -5637,6 +6053,15 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -1004,7 +1008,7 @@ index fc9a4553..93c9e0b5 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5781,9 +6202,94 @@ impl AppView {
+@@ -5781,9 +6206,94 @@ impl AppView {
                      TickDemand::None
                  }
              }
@@ -1100,7 +1104,7 @@ index fc9a4553..93c9e0b5 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6311,9 @@ impl AppView {
+@@ -5805,7 +6315,9 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -1112,10 +1116,10 @@ index fc9a4553..93c9e0b5 100644
              } else {
                  (None, None, None, false, None, false)
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-index 483296d4..0127c483 100644
+index 483296d4..0666a439 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-@@ -169,6 +169,35 @@ pub(crate) fn test_app() -> AppView {
+@@ -169,6 +169,36 @@ pub(crate) fn test_app() -> AppView {
          auth_url_poll_handle: None,
          deferred_startup: Default::default(),
          auth_use_oauth: false,
@@ -1148,10 +1152,11 @@ index 483296d4..0127c483 100644
 +        workshop_turn_running: Vec::new(),
 +        workshop_turn_errored: false,
 +        workshop_last_prompt: None,
++        workshop_last_images: Vec::new(),
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -210,6 +239,8 @@ pub(crate) fn test_app() -> AppView {
+@@ -210,6 +240,8 @@ pub(crate) fn test_app() -> AppView {
          welcome_menu_index: None,
          welcome_menu_rects: Vec::new(),
          welcome_show_changelog_action: false,
@@ -1160,7 +1165,7 @@ index 483296d4..0127c483 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -261,10 +292,12 @@ pub(crate) fn test_app() -> AppView {
+@@ -261,10 +293,12 @@ pub(crate) fn test_app() -> AppView {
          session_picker_entries_query: None,
          session_picker_pending_delete: None,
          welcome_tick: 0,
@@ -1174,7 +1179,7 @@ index 483296d4..0127c483 100644
          foreign_resume_launch_generation: 0,
          foreign_resume_launch: None,
          quit_for_update: false,
-@@ -278,6 +311,9 @@ pub(crate) fn test_app() -> AppView {
+@@ -278,6 +312,9 @@ pub(crate) fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -1184,7 +1189,7 @@ index 483296d4..0127c483 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -616,6 +652,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
+@@ -616,6 +653,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
      );
  }
  #[test]
@@ -1192,7 +1197,7 @@ index 483296d4..0127c483 100644
  fn needs_animation_gates_prompt_history_tick_delivery() {
      let mut app = test_app_with_agent();
      let id = super::super::agent::AgentId(0);
-@@ -774,17 +811,70 @@ fn tick_demand_follows_the_mcp_chip() {
+@@ -774,17 +812,70 @@ fn tick_demand_follows_the_mcp_chip() {
          "the MCP chip spinner ticks while servers connect"
      );
  }
@@ -1266,7 +1271,7 @@ index 483296d4..0127c483 100644
  /// An open modal session picker that is still fetching keeps fast ticks alive on an otherwise-idle agent (its loading spinner must animate).
  /// That holds even after the fast foreign scan lands rows the default Grok filter hides; once the native list settles the demand parks again.
  #[test]
-@@ -2268,16 +2358,26 @@ fn is_restricted_tier_classification() {
+@@ -2268,16 +2359,26 @@ fn is_restricted_tier_classification() {
      assert!(!is_restricted_tier(Some("X Premium+")));
      assert!(!is_restricted_tier(Some("SomeFutureTier")));
  }
@@ -1297,7 +1302,7 @@ index 483296d4..0127c483 100644
      let meta = xai_grok_login::AuthMeta {
          subscription_tier: Some("SuperGrok".into()),
          ..Default::default()
-@@ -3198,15 +3298,15 @@ fn welcome_ctrl_d_requires_confirmation() {
+@@ -3198,15 +3299,15 @@ fn welcome_ctrl_d_requires_confirmation() {
  #[test]
  fn menu_action_indices_without_changelog() {
      assert!(matches!(
@@ -1316,7 +1321,7 @@ index 483296d4..0127c483 100644
          InputOutcome::Action(Action::Quit)
      ));
  }
-@@ -3214,46 +3314,69 @@ fn menu_action_indices_without_changelog() {
+@@ -3214,46 +3315,69 @@ fn menu_action_indices_without_changelog() {
  fn menu_action_changelog_sits_above_quit() {
      let md = Some("# notes");
      assert!(matches!(
@@ -3156,10 +3161,10 @@ index 2049a2d9..c620a71c 100644
      assert!(app.agents.is_empty(), "no session should be created");
      let toast = app
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-index bf64193d..762f3b70 100644
+index bf64193d..bbd838fd 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-@@ -181,6 +181,35 @@ fn test_app() -> AppView {
+@@ -181,6 +181,36 @@ fn test_app() -> AppView {
          auth_url_poll_handle: None,
          deferred_startup: Default::default(),
          auth_use_oauth: false,
@@ -3192,10 +3197,11 @@ index bf64193d..762f3b70 100644
 +        workshop_turn_running: Vec::new(),
 +        workshop_turn_errored: false,
 +        workshop_last_prompt: None,
++        workshop_last_images: Vec::new(),
          auth_clipboard_delivery: None,
          auth_clipboard_feedback_generation: 0,
          team_id: None,
-@@ -222,6 +251,8 @@ fn test_app() -> AppView {
+@@ -222,6 +252,8 @@ fn test_app() -> AppView {
          welcome_menu_index: None,
          welcome_menu_rects: Vec::new(),
          welcome_show_changelog_action: false,
@@ -3204,7 +3210,7 @@ index bf64193d..762f3b70 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -273,10 +304,12 @@ fn test_app() -> AppView {
+@@ -273,10 +305,12 @@ fn test_app() -> AppView {
          session_picker_entries_query: None,
          session_picker_pending_delete: None,
          welcome_tick: 0,
@@ -3218,7 +3224,7 @@ index bf64193d..762f3b70 100644
          foreign_resume_launch_generation: 0,
          foreign_resume_launch: None,
          quit_for_update: false,
-@@ -289,6 +322,9 @@ fn test_app() -> AppView {
+@@ -289,6 +323,9 @@ fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -3228,7 +3234,7 @@ index bf64193d..762f3b70 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -585,6 +621,28 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
+@@ -585,6 +622,28 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
      std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
      sess_dir
  }
@@ -3577,7 +3583,7 @@ index 1c507697..89312ddd 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..d34c3802 100644
+index eda61b3c..6012979e 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -4383,7 +4389,7 @@ index eda61b3c..d34c3802 100644
 +            true
 +        }
 +        M::FollowUp(text) => {
-+            app.workshop_turn_queue.push_back(text);
++            app.workshop_turn_queue.push_back((text, Vec::new()));
 +            false
 +        }
 +        M::Error(line) => {
@@ -4758,10 +4764,10 @@ index 60fe34f9..ee4df3e7 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..1ad53fe8
+index 00000000..485a87b0
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,3344 @@
+@@ -0,0 +1,3384 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -5821,6 +5827,8 @@ index 00000000..1ad53fe8
 +        adapter_id: AdapterId,
 +        resume: Option<String>,
 +        model: Option<String>,
++        /// The picked model as the picker names it (`GPT-6-Astra`): the failure line says it.
++        name: String,
 +    },
 +}
 +
@@ -6032,6 +6040,39 @@ index 00000000..1ad53fe8
 +        mime: image.mime_type.clone(),
 +        url,
 +        filename: format!("image-{}.{ext}", image.display_number),
++    })
++}
++
++/// The one plain line shown when a pasted image could not go with the prompt (its file is gone).
++pub const IMAGE_NOT_ATTACHED_LINE: &str =
++    "An image couldn't be attached \u{2014} paste it again to send it";
++
++/// A pasted image as a vendor CLI takes it: the file it is saved in and its bytes. One pasted as
++/// bytes only is written under Workshop's tmp folder first. `None` when its file is gone.
++fn adapter_image(file: &PromptFile) -> Option<workshop_adapters::PromptImage> {
++    use base64::Engine as _;
++    let (path, data) = match file.url.strip_prefix("data:") {
++        Some(rest) => {
++            let (_, encoded) = rest.split_once(";base64,")?;
++            let data = base64::engine::general_purpose::STANDARD
++                .decode(encoded)
++                .ok()?;
++            let dir = workshop_home().join("tmp").join("images");
++            std::fs::create_dir_all(&dir).ok()?;
++            let path = dir.join(format!("{}-{}", uuid::Uuid::new_v4(), file.filename));
++            std::fs::write(&path, &data).ok()?;
++            (path, data)
++        }
++        None => {
++            let path = url::Url::parse(&file.url).ok()?.to_file_path().ok()?;
++            let data = std::fs::read(&path).ok()?;
++            (path, data)
++        }
++    };
++    Some(workshop_adapters::PromptImage {
++        path,
++        mime: file.mime.clone(),
++        data: data.into(),
 +    })
 +}
 +
@@ -6967,34 +7008,33 @@ index 00000000..1ad53fe8
 +            adapter_id,
 +            resume,
 +            model,
++            name,
 +        } => {
 +            let adapter = workshop_adapters::vendors::by_id(*adapter_id);
 +            let cli = match detect_adapter_cli(&*adapter).await {
 +                Detection::Installed(cli) => cli,
 +                Detection::Unverified { reason, .. } => {
 +                    log_failure_cause(&format!("{} could not be verified: {reason}", adapter.id()));
-+                    return Err(TurnStartError::Other(failure_line(
-+                        model.as_deref().unwrap_or(&adapter.id().to_string()),
-+                    )));
++                    return Err(TurnStartError::Other(failure_line(name)));
 +                }
 +                Detection::NotInstalled => {
 +                    log_failure_cause(&format!("{} is not installed", adapter.id()));
-+                    return Err(TurnStartError::Other(failure_line(
-+                        model.as_deref().unwrap_or(&adapter.id().to_string()),
-+                    )));
++                    return Err(TurnStartError::Other(failure_line(name)));
 +                }
 +            };
 +            let mut req = RunRequest::new(spec.text.clone(), &spec.cwd);
 +            req.model = model.clone();
 +            req.resume = resume.clone();
 +            req.permission = permission;
++            req.images = spec.images.iter().filter_map(adapter_image).collect();
++            if req.images.len() < spec.images.len() {
++                let _ = tx.send(WorkshopTurnMsg::Notice(IMAGE_NOT_ATTACHED_LINE.to_owned()));
++            }
 +            let handle = spawn(&*adapter, &cli, req, &SupervisorOptions::default())
 +                .await
 +                .map_err(|e| {
 +                    log_failure_cause(&e.to_string());
-+                    TurnStartError::Other(failure_line(
-+                        model.as_deref().unwrap_or(&adapter.id().to_string()),
-+                    ))
++                    TurnStartError::Other(failure_line(name))
 +                })?;
 +            Ok((TurnStream::Adapter(handle), None))
 +        }
@@ -7110,7 +7150,7 @@ index 00000000..1ad53fe8
 +
 +    let mut model_name = match &spec.kind {
 +        WorkshopTurnKind::Engine { model, .. } => model.name.clone(),
-+        WorkshopTurnKind::Adapter { adapter_id, .. } => adapter_id.to_string(),
++        WorkshopTurnKind::Adapter { name, .. } => name.clone(),
 +    };
 +    let is_engine = matches!(spec.kind, WorkshopTurnKind::Engine { .. });
 +    let mut cancelled = false;
@@ -7251,6 +7291,9 @@ index 00000000..1ad53fe8
 +                    if vision_switch.is_some() {
 +                        continue;
 +                    }
++                    // One failure line a turn: a backend that reports the same failure again
++                    // (or once per retry of its own) only adds to the log.
++                    let already_failed = errored;
 +                    errored = true;
 +                    if stream.stalled() {
 +                        // The engine's idle ceiling ended the turn: reported as `Stalled` below,
@@ -7275,7 +7318,9 @@ index 00000000..1ad53fe8
 +                            break;
 +                        }
 +                        log_failure_cause(&message);
-+                        let _ = tx.send(WorkshopTurnMsg::Error(failure_line(&model_name)));
++                        if !already_failed {
++                            let _ = tx.send(WorkshopTurnMsg::Error(failure_line(&model_name)));
++                        }
 +                    }
 +                }
 +                Some(AdapterEvent::Thinking { text }) => {
@@ -7421,6 +7466,7 @@ index 00000000..1ad53fe8
 +                                *resume = Some(session);
 +                            }
 +                            spec.text = prompt;
++                            spec.images.clear();
 +                            match build_stream(&spec, &tx, permission).await {
 +                                Ok((next, _)) => {
 +                                    stream = next;

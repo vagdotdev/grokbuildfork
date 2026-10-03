@@ -46,6 +46,9 @@ clap = { workspace = true }
 workshop-brand = { path = "../workshop-brand" }
 # Voice prefetch gate: the test lock pins a model by SHA-256.
 sha2 = { workspace = true }
+# Rails image gate: the pasted PNG, and the image block the CLI receives.
+base64 = { workspace = true }
+image = { workspace = true, features = ["png"] }
 
 [lints]
 workspace = true

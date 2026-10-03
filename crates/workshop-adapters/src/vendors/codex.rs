@@ -7,16 +7,21 @@
 //!
 //! * identity, status, login: `workshop-detect` (the one detection stack, shared with the
 //!   picker) verifies the binary, asks the official status command and runs the login.
-//! * run:      `codex exec --json -s <sandbox> --skip-git-repo-check [-m M] -`
-//!   (prompt on stdin via the `-` sentinel). Headless exec never asks for
-//!   approvals (`AskForApproval::Never`), so the sandbox flag is the policy:
+//! * run:      `codex exec --json [-i FILE]... -s <sandbox> --skip-git-repo-check [-m M] -`
+//!   (prompt on stdin via the `-` sentinel, attached images as `-i`). Headless exec never asks
+//!   for approvals (`AskForApproval::Never`), so the sandbox flag is the policy:
 //!   `read-only`, `workspace-write` (no network), or `danger-full-access` for
 //!   always-approve (every command runs, unsandboxed, as `--yolo`).
-//! * resume:   `codex exec resume <id> --json --skip-git-repo-check
+//! * resume:   `codex exec resume <id> --json [-i FILE]... --skip-git-repo-check
 //!   -c sandbox_mode="<sandbox>" [-m M] -` (resume has no `-s` flag).
 //!
 //! `exec` has no ask-user-question item (that lives in the app-server protocol only), so no
 //! question event is raised here.
+//!
+//! A top-level `error` line is not the end of a turn: Codex 0.157.1 prints one for every retry of
+//! its own (`Reconnecting... 2/5 (…)`) and repeats the final reason right before `turn.failed`,
+//! and an `error` item is a non-fatal notice (`Falling back from WebSockets to HTTPS
+//! transport…`). The turn fails once, on `turn.failed` (or an exit without it), with the reason.
 
 use std::collections::HashSet;
 
@@ -87,23 +92,26 @@ impl Adapter for CodexAdapter {
 
     fn run_args(&self, req: &RunRequest) -> Vec<String> {
         let mut args: Vec<String> = match &req.resume {
-            None => vec![
-                "exec".into(),
-                "--json".into(),
+            None => vec!["exec".into(), "--json".into()],
+            Some(id) => vec!["exec".into(), "resume".into(), id.clone(), "--json".into()],
+        };
+        // `-i` takes one or more files, so each is followed by a flag, never by the `-` sentinel.
+        for image in &req.images {
+            args.push("-i".into());
+            args.push(image.path.display().to_string());
+        }
+        match &req.resume {
+            None => args.extend([
                 "-s".into(),
                 sandbox(req.permission).into(),
                 "--skip-git-repo-check".into(),
-            ],
-            Some(id) => vec![
-                "exec".into(),
-                "resume".into(),
-                id.clone(),
-                "--json".into(),
+            ]),
+            Some(_) => args.extend([
                 "--skip-git-repo-check".into(),
                 "-c".into(),
                 format!("sandbox_mode=\"{}\"", sandbox(req.permission)),
-            ],
-        };
+            ]),
+        }
         if let Some(model) = &req.model {
             args.push("-m".into());
             args.push(model.clone());
@@ -124,6 +132,7 @@ pub struct CodexNormalizer {
     terminal: Option<Terminal>,
     started_items: HashSet<String>,
     last_message: Option<String>,
+    last_error: Option<String>,
 }
 
 impl CodexNormalizer {
@@ -217,9 +226,10 @@ impl Normalizer for CodexNormalizer {
                     "reasoning" => events.push(AdapterEvent::Thinking {
                         text: json::str(item, "text").unwrap_or_default().to_string(),
                     }),
-                    "error" => events.push(AdapterEvent::Error {
-                        message: json::str(item, "message").unwrap_or_default().to_string(),
-                    }),
+                    "error" => tracing::debug!(
+                        message = json::str(item, "message").unwrap_or_default(),
+                        "codex notice"
+                    ),
                     "command_execution" | "mcp_tool_call" | "web_search" | "file_change" => {
                         if self.started_items.insert(id.to_string())
                             && let Some(call) = Self::tool_call_for(item, id, kind)
@@ -298,16 +308,19 @@ impl Normalizer for CodexNormalizer {
                 let message = v
                     .get("error")
                     .and_then(|e| json::str(e, "message"))
-                    .unwrap_or("turn failed")
-                    .to_string();
+                    .map(str::to_owned)
+                    .or_else(|| self.last_error.take())
+                    .unwrap_or_else(|| "turn failed".into());
                 events.push(AdapterEvent::Error {
                     message: message.clone(),
                 });
                 self.terminal = Some(Terminal::Failed(message));
             }
-            Some("error") => events.push(AdapterEvent::Error {
-                message: json::str(&v, "message").unwrap_or_default().to_string(),
-            }),
+            Some("error") => {
+                let message = json::str(&v, "message").unwrap_or_default();
+                tracing::debug!(message, "codex error line");
+                self.last_error = Some(message.to_string());
+            }
             Some(_) => {}
             None => {
                 return Err(NormalizeError::Shape(format!(
@@ -323,10 +336,11 @@ impl Normalizer for CodexNormalizer {
         if self.terminal.is_some() {
             return Vec::new();
         }
-        let message = format!(
-            "codex exited ({}) before `turn.completed`",
-            exit_code.map_or("signal".to_string(), |c| c.to_string())
-        );
+        let exit = exit_code.map_or("signal".to_string(), |c| c.to_string());
+        let message = match self.last_error.take() {
+            Some(reason) => format!("codex exited ({exit}): {reason}"),
+            None => format!("codex exited ({exit}) before `turn.completed`"),
+        };
         self.terminal = Some(Terminal::Failed(message.clone()));
         vec![AdapterEvent::Error { message }]
     }
@@ -392,6 +406,118 @@ mod tests {
                 "gpt-5-codex",
                 "-"
             ]
+        );
+    }
+
+    /// Attached images go to Codex as `-i` files, on the first run and on a resume, each followed
+    /// by a flag so the `-` stdin sentinel is never taken for another image.
+    #[test]
+    fn attached_images_are_image_flags() {
+        let image = |path: &str| crate::adapter::PromptImage {
+            path: path.into(),
+            mime: "image/png".into(),
+            data: std::sync::Arc::from(&b""[..]),
+        };
+        let mut req = RunRequest::new("[Image #1] [Image #2]", "/tmp");
+        req.images = vec![image("/s/image-1.png"), image("/s/image-2.png")];
+        assert_eq!(
+            CodexAdapter.run_args(&req),
+            vec![
+                "exec",
+                "--json",
+                "-i",
+                "/s/image-1.png",
+                "-i",
+                "/s/image-2.png",
+                "-s",
+                "read-only",
+                "--skip-git-repo-check",
+                "-"
+            ]
+        );
+        req.resume = Some("thread-1".into());
+        req.model = Some("gpt-6-astra".into());
+        assert_eq!(
+            CodexAdapter.run_args(&req),
+            vec![
+                "exec",
+                "resume",
+                "thread-1",
+                "--json",
+                "-i",
+                "/s/image-1.png",
+                "-i",
+                "/s/image-2.png",
+                "--skip-git-repo-check",
+                "-c",
+                "sandbox_mode=\"read-only\"",
+                "-m",
+                "gpt-6-astra",
+                "-"
+            ]
+        );
+    }
+
+    /// Codex 0.157.1 prints an `error` line per retry of its own and an `error` item for the
+    /// transport fallback (captured from a rejected ChatGPT login). A retry that recovers is no
+    /// failure; one that gives up fails the turn once, with the reason.
+    #[test]
+    fn retries_are_not_failures_and_a_failed_turn_errors_once() {
+        let retry = r#"{"type":"error","message":"Reconnecting... 2/5 (workspace routing discovery unauthorized (401))"}"#;
+        let fallback = r#"{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Falling back from WebSockets to HTTPS transport. workspace routing discovery unauthorized (401)"}}"#;
+        let feed = |lines: &[&str]| {
+            let mut n = CodexNormalizer::default();
+            let events: Vec<AdapterEvent> = lines
+                .iter()
+                .flat_map(|l| n.on_line(l).expect("valid line"))
+                .collect();
+            (n, events)
+        };
+
+        let (n, events) = feed(&[
+            r#"{"type":"thread.started","thread_id":"t1"}"#,
+            r#"{"type":"turn.started"}"#,
+            retry,
+            fallback,
+            r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"OK"}}"#,
+            r#"{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":1}}"#,
+        ]);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AdapterEvent::Error { .. })),
+            "{events:?}"
+        );
+        assert_eq!(n.terminal(), Some(&Terminal::Completed));
+
+        let (n, events) = feed(&[
+            r#"{"type":"thread.started","thread_id":"t2"}"#,
+            r#"{"type":"turn.started"}"#,
+            retry,
+            fallback,
+            retry,
+            r#"{"type":"error","message":"workspace routing discovery unauthorized (401)"}"#,
+            r#"{"type":"turn.failed","error":{"message":"workspace routing discovery unauthorized (401)"}}"#,
+        ]);
+        assert_eq!(
+            events,
+            vec![AdapterEvent::Error {
+                message: "workspace routing discovery unauthorized (401)".into()
+            }]
+        );
+        assert!(matches!(n.terminal(), Some(Terminal::Failed(_))));
+
+        // An exit without `turn.failed` still names the last reason Codex gave.
+        let (mut n, events) = feed(&[
+            r#"{"type":"turn.started"}"#,
+            r#"{"type":"error","message":"model gpt-9 not found"}"#,
+        ]);
+        assert!(events.is_empty(), "{events:?}");
+        assert_eq!(
+            n.on_eof(Some(1)),
+            vec![AdapterEvent::Error {
+                message: "codex exited (1): model gpt-9 not found".into()
+            }]
         );
     }
 

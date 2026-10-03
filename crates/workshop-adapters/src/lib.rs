@@ -51,7 +51,7 @@ pub mod worktree;
 
 pub use adapter::{
     Adapter, AdapterId, AskReply, NormalizeError, Normalizer, PermissionPolicy, PinStatus,
-    PromptDelivery, RunRequest, Terminal, VersionPin,
+    PromptDelivery, PromptImage, RunRequest, Terminal, VersionPin,
 };
 pub use event::{AdapterEvent, QuestionChoice, QuestionPrompt, Usage, question_answers_prompt};
 pub use supervisor::{Replier, RunHandle, RunOutcome, SpawnError, SupervisorOptions, spawn};

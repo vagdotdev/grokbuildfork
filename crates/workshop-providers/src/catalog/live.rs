@@ -20,7 +20,7 @@ use crate::manifest::{ProviderManifest, manifest};
 /// Hosted providers whose model list is fetched live (keyless `GET`), in picker order.
 pub const REFRESH_PROVIDERS: [&str; 3] = ["kilo", "openrouter", "nvidia"];
 /// Providers shown from the compiled seed only (their list endpoint needs a key).
-const SEED_ONLY_PROVIDERS: [&str; 1] = ["google"];
+const SEED_ONLY_PROVIDERS: [&str; 2] = ["google", "openai"];
 
 /// Lists younger than this are not re-fetched when `/model` opens (`r` forces a fetch).
 pub const PICKER_MAX_AGE: Duration = Duration::from_secs(5 * 60);
@@ -332,7 +332,7 @@ mod tests {
         let out = load_cached(tmp.path());
         assert_eq!(out.catalog, Catalog::builtin());
         let ids: Vec<&str> = out.status.iter().map(|s| s.provider_id.as_str()).collect();
-        assert_eq!(ids, ["kilo", "openrouter", "nvidia", "google"]);
+        assert_eq!(ids, ["kilo", "openrouter", "nvidia", "google", "openai"]);
         for s in &out.status {
             assert_eq!(s.freshness, Freshness::Seed, "{}", s.provider_id);
             assert!(s.rows > 0, "{}", s.provider_id);
