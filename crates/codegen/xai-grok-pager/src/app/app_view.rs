@@ -3487,13 +3487,23 @@ fn handle_connection_picker_input(
                 };
                 return InputOutcome::Action(Action::ConnectionPicker(input));
             }
+            let shift = key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::SHIFT);
             let input = match key.code {
                 KeyCode::Up => PickerInput::Up,
                 KeyCode::Down => PickerInput::Down,
+                KeyCode::Home => PickerInput::Home,
+                KeyCode::End => PickerInput::End,
+                KeyCode::PageUp => PickerInput::PageUp,
+                KeyCode::PageDown => PickerInput::PageDown,
                 KeyCode::Right => PickerInput::Open,
                 KeyCode::Left => PickerInput::Left,
-                // One list, no tabs: Tab is swallowed so it never reaches the composer.
-                KeyCode::Tab | KeyCode::BackTab => return InputOutcome::Changed,
+                // One list, no tabs: Tab jumps between its sections (and never reaches the
+                // composer behind the overlay).
+                KeyCode::BackTab => PickerInput::PrevSection,
+                KeyCode::Tab if shift => PickerInput::PrevSection,
+                KeyCode::Tab => PickerInput::NextSection,
                 KeyCode::Enter => PickerInput::Enter,
                 KeyCode::Esc => PickerInput::Back,
                 KeyCode::Backspace => PickerInput::Backspace,
@@ -5761,6 +5771,12 @@ impl AppView {
         needs_redraw |= self.minimal_state.transcript.is_some();
         needs_redraw |= self.poll_clipboard_focus_tip();
         needs_redraw |= self.tick_rail_install();
+        // Workshop: the picker repaints the moment its first load runs overdue (`detecting…`
+        // gives way to a retry), without waiting for a key.
+        needs_redraw |= self
+            .connection_picker
+            .as_mut()
+            .is_some_and(workshop_auth::PickerState::tick);
         if matches!(self.active_view, ActiveView::Welcome) {
             self.welcome_tick = self.welcome_tick.wrapping_add(1);
             if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
