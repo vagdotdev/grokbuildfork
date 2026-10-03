@@ -70,10 +70,23 @@ index b430bd0a..e4c271f4 100644
                      && let Some(selection) = session_picker_worktree_selection(
                          key,
 diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/state.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/state.rs
-index b6b95d6e..03a41476 100644
+index b6b95d6e..191887dc 100644
 --- a/crates/codegen/xai-grok-pager/src/views/dashboard/state.rs
 +++ b/crates/codegen/xai-grok-pager/src/views/dashboard/state.rs
-@@ -2626,7 +2626,18 @@ impl DashboardState {
+@@ -1309,6 +1309,12 @@ impl DashboardState {
+         self.peek_reply.set_voice_visible(visible);
+     }
+ 
++    /// Workshop: `/privacy` on both dashboard prompt registries, offered only with an xAI account.
++    pub(crate) fn set_privacy_visible(&mut self, visible: bool) {
++        self.dispatch.set_privacy_visible(visible);
++        self.peek_reply.set_privacy_visible(visible);
++    }
++
+     /// Gate `/auto` on both dashboard prompt registries (dispatch and peek reply).
+     /// See [`crate::slash::SlashController::set_auto_mode_available`].
+     pub(crate) fn set_auto_mode_available(&mut self, available: bool) {
+@@ -2626,7 +2632,18 @@ impl DashboardState {
          // open.
          let is_typing_char = matches!(key.code, KeyCode::Char(_))
              && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT);
@@ -92,7 +105,7 @@ index b6b95d6e..03a41476 100644
              || matches!(key.code, KeyCode::Esc | KeyCode::Enter)
              || (matches!(key.code, KeyCode::Up | KeyCode::Down | KeyCode::Tab)
                  && key.modifiers.is_empty());
-@@ -3324,6 +3335,19 @@ impl DashboardState {
+@@ -3324,6 +3341,19 @@ impl DashboardState {
          if let Some(id) = from_registry {
              let honor = match key.code {
                  KeyCode::Up | KeyCode::Down if key.modifiers.is_empty() => list_keys_active,
@@ -112,7 +125,7 @@ index b6b95d6e..03a41476 100644
                  KeyCode::Char(_)
                      if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
                  {
-@@ -3338,7 +3362,12 @@ impl DashboardState {
+@@ -3338,7 +3368,12 @@ impl DashboardState {
              // Never let an auto-repeat (held key) drive the destructive. CtrlCtrl+X arm-then-confirm: holding the
              // key would arm and immediately confirm a delete. Require discrete presses, like the picker's `y`
              // confirm. Non-destructive actions may still repeat.
@@ -126,7 +139,7 @@ index b6b95d6e..03a41476 100644
                  return InputOutcome::Unchanged;
              }
              if honor && let Some(outcome) = dashboard_action_for_id(id, &mut self.error_toast) {
-@@ -4182,6 +4211,7 @@ fn dashboard_action_for_id(
+@@ -4182,6 +4217,7 @@ fn dashboard_action_for_id(
          ActionId::DashboardTogglePin => Some(InputOutcome::Action(Action::DashboardTogglePin)),
          ActionId::DashboardBeginRename => Some(InputOutcome::Action(Action::DashboardBeginRename)),
          ActionId::DashboardStop => Some(InputOutcome::Action(Action::DashboardStop)),
