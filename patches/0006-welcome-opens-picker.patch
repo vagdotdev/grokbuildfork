@@ -190,7 +190,7 @@ index 05556693..41171fbf 100644
              ActionId::ShortcutsHelp => {
                  use crate::views::shortcuts_help;
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..a40729c7 100644
+index fc9a4553..be439e35 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
@@ -598,7 +598,23 @@ index fc9a4553..a40729c7 100644
                  if let Event::Key(key) = ev
                      && key.kind != KeyEventKind::Release
                  {
-@@ -3143,8 +3378,12 @@ struct WelcomeInputCtx<'a> {
+@@ -3039,7 +3274,14 @@ impl AppView {
+         };
+         if def.requires_confirmation {
+             let shortcut = KeyShortcut::from(*key);
+-            self.pending_action = Some(PendingAction::new(Action::Quit, shortcut, def.label));
++            // Workshop: two seconds to read `press again to quit` and press again (the
++            // dashboard's confirm window); the one-second default lost people who read first.
++            self.pending_action = Some(PendingAction::with_ttl(
++                Action::Quit,
++                shortcut,
++                Some(def.label),
++                crate::views::dashboard::state::CONFIRM_WINDOW,
++            ));
+             InputOutcome::Changed
+         } else {
+             InputOutcome::Action(Action::Quit)
+@@ -3143,8 +3385,12 @@ struct WelcomeInputCtx<'a> {
      import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
      welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
      changelog_markdown: &'a Option<String>,
@@ -612,7 +628,7 @@ index fc9a4553..a40729c7 100644
      has_pending_update: bool,
      /// A recent foreign session is available to resume when no update is pending.
      has_foreign_resume: bool,
-@@ -3171,6 +3410,130 @@ struct WelcomeInputCtx<'a> {
+@@ -3171,6 +3417,130 @@ struct WelcomeInputCtx<'a> {
      #[cfg(feature = "local-workspace")]
      session_picker_open: bool,
  }
@@ -743,7 +759,7 @@ index fc9a4553..a40729c7 100644
  /// Welcome view input: overlays first, then composer, then the menu.
  fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
      if let Some(modal) = ctx.import_claude_modal.as_mut() {
-@@ -3477,6 +3840,24 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3477,6 +3847,24 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
              crate::views::session_picker::PendingDeleteKey::Disarmed
              | crate::views::session_picker::PendingDeleteKey::NotArmed => {}
          }
@@ -768,7 +784,7 @@ index fc9a4553..a40729c7 100644
          if let Event::Key(key) = ev {
              if key.kind == KeyEventKind::Press
                  && (key!('c', CONTROL).matches(key) || key!('d', CONTROL).matches(key))
-@@ -3674,6 +4055,15 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3674,6 +4062,15 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
              && matches!(ctx.auth_state, AuthState::Done)
          {
              *ctx.prompt_focused = true;
@@ -784,7 +800,7 @@ index fc9a4553..a40729c7 100644
              return InputOutcome::ActionThenForward(Action::LeaveHome);
          }
          if matches!(ctx.auth_state, AuthState::Done)
-@@ -3721,7 +4111,12 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3721,7 +4118,12 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
          if matches!(ctx.auth_state, AuthState::Done) && crate::input::key::is_text_input_key(key) {
              *ctx.prompt_focused = true;
              *ctx.menu_index = None;
@@ -798,7 +814,7 @@ index fc9a4553..a40729c7 100644
          }
          if *ctx.prompt_focused {
              let had_highlight = ctx.prompt.textarea.selection_range().is_some();
-@@ -3750,6 +4145,8 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3750,6 +4152,8 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                  return dispatch_menu_action(
                      idx,
                      ctx.has_claude_import,
@@ -807,7 +823,7 @@ index fc9a4553..a40729c7 100644
                      ctx.show_changelog_action,
                      ctx.changelog_markdown.as_deref(),
                  );
-@@ -3844,6 +4241,14 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3844,6 +4248,14 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                      return InputOutcome::Unchanged;
                  }
                  *ctx.prompt_focused = true;
@@ -822,7 +838,7 @@ index fc9a4553..a40729c7 100644
                  return InputOutcome::ActionThenForward(Action::LeaveHome);
              }
              AuthState::Authenticating {
-@@ -3888,6 +4293,8 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3888,6 +4300,8 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                          return dispatch_menu_action(
                              i,
                              ctx.has_claude_import,
@@ -831,7 +847,7 @@ index fc9a4553..a40729c7 100644
                              ctx.show_changelog_action,
                              ctx.changelog_markdown.as_deref(),
                          );
-@@ -4109,6 +4516,21 @@ fn handle_menu_nav(
+@@ -4109,6 +4523,21 @@ fn handle_menu_nav(
          _ => None,
      }
  }
@@ -853,7 +869,7 @@ index fc9a4553..a40729c7 100644
  /// Dispatch an action for a welcome menu item when not yet authenticated.
  /// Menu layout: item 0 is Login, item 1 is Quit.
  fn dispatch_pending_menu_action(index: usize) -> InputOutcome {
-@@ -4138,39 +4560,47 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
+@@ -4138,39 +4567,47 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
      }
  }
  /// Dispatch an action for a welcome menu item by index.
@@ -919,7 +935,7 @@ index fc9a4553..a40729c7 100644
      }
      if index == quit_idx {
          return InputOutcome::Action(Action::Quit);
-@@ -4381,6 +4811,9 @@ impl AppView {
+@@ -4381,6 +4818,9 @@ impl AppView {
          });
          let welcome_default_yolo = self.default_yolo;
          let welcome_auto_gate = self.auto_mode_gate;
@@ -929,7 +945,7 @@ index fc9a4553..a40729c7 100644
          let Self {
              active_view,
              agents,
-@@ -4477,11 +4910,39 @@ impl AppView {
+@@ -4477,11 +4917,39 @@ impl AppView {
                              } else {
                                  self.tip.as_deref()
                              };
@@ -974,7 +990,7 @@ index fc9a4553..a40729c7 100644
                              };
                              let hero_cta = crate::views::announcements::promo_cta(
                                  &self.active_announcements,
-@@ -4495,7 +4956,14 @@ impl AppView {
+@@ -4495,7 +4963,14 @@ impl AppView {
                                          &self.hidden_announcement_ids,
                                      )
                                  })
@@ -990,7 +1006,7 @@ index fc9a4553..a40729c7 100644
                              let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                  prompt_focus: if self.welcome_prompt_focused {
                                      WelcomePromptFocus::Focused
-@@ -4508,6 +4976,7 @@ impl AppView {
+@@ -4508,6 +4983,7 @@ impl AppView {
                                  consent_state: &self.consent_state,
                                  consent_hover_link: self.welcome_consent_hover_link,
                                  login_label: self.login_label.as_deref(),
@@ -998,7 +1014,7 @@ index fc9a4553..a40729c7 100644
                                  auth_code_input: self.auth_code_input.text(),
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
-@@ -4520,6 +4989,8 @@ impl AppView {
+@@ -4520,6 +4996,8 @@ impl AppView {
                                  team_name: self.team_name.as_deref(),
                                  has_access,
                                  has_claude_import: self.has_claude_import,
@@ -1007,7 +1023,7 @@ index fc9a4553..a40729c7 100644
                                  mouse_pos: self.last_mouse_pos,
                                  is_zdr_blocked: zdr_blocked_for_draw,
                                  session_picker: self.session_picker_entries.as_deref(),
-@@ -4534,6 +5005,7 @@ impl AppView {
+@@ -4534,6 +5012,7 @@ impl AppView {
                                  pending_hint,
                                  startup_warnings: &self.startup_warnings,
                                  pending_update_version: self.pending_update_version.as_deref(),
@@ -1015,7 +1031,7 @@ index fc9a4553..a40729c7 100644
                                  foreign_resume_hint: foreign_resume_hint.as_ref(),
                                  session_picker_content_results: self
                                      .session_picker_content_results
-@@ -4560,6 +5032,7 @@ impl AppView {
+@@ -4560,6 +5039,7 @@ impl AppView {
                                  welcome_announcement_expanded: self.welcome_announcement.expanded,
                                  upgrade_cta: hero_cta.map(|(_owner, label, _)| label),
                                  privacy_banner,
@@ -1023,7 +1039,7 @@ index fc9a4553..a40729c7 100644
                                  #[cfg(feature = "local-workspace")]
                                  workspace_mode: self.welcome_workspace_mode,
                                  #[cfg(feature = "local-workspace")]
-@@ -4576,7 +5049,10 @@ impl AppView {
+@@ -4576,7 +5056,10 @@ impl AppView {
                                  &mut self.session_picker_state,
                              );
                              self.welcome_menu_rects = result.menu_rects;
@@ -1034,7 +1050,7 @@ index fc9a4553..a40729c7 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4804,6 +5280,7 @@ impl AppView {
+@@ -4804,6 +5287,7 @@ impl AppView {
                                              .workspace_dashboard_enabled,
                                          overlay_header,
                                          overlay_stop_label: None,
@@ -1042,7 +1058,7 @@ index fc9a4553..a40729c7 100644
                                      },
                                  );
                                  if let Some(modal) = self.import_claude_modal.as_mut() {
-@@ -4824,6 +5301,28 @@ impl AppView {
+@@ -4824,6 +5308,28 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -1071,7 +1087,7 @@ index fc9a4553..a40729c7 100644
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5331,17 @@ impl AppView {
+@@ -4832,13 +5338,17 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
@@ -1090,7 +1106,7 @@ index fc9a4553..a40729c7 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5623,7 @@ impl AppView {
+@@ -5120,6 +5630,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -1098,7 +1114,7 @@ index fc9a4553..a40729c7 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5671,7 @@ impl AppView {
+@@ -5167,7 +5678,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -1107,7 +1123,7 @@ index fc9a4553..a40729c7 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5786,13 @@ impl AppView {
+@@ -5282,6 +5793,13 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
@@ -1121,7 +1137,7 @@ index fc9a4553..a40729c7 100644
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5300,11 +5811,7 @@ impl AppView {
+@@ -5300,11 +5818,7 @@ impl AppView {
              {
                  needs_redraw = true;
              } else {
@@ -1134,7 +1150,7 @@ index fc9a4553..a40729c7 100644
              }
          }
          if matches!(self.active_view, ActiveView::AgentDashboard)
-@@ -5355,7 +5862,10 @@ impl AppView {
+@@ -5355,7 +5869,10 @@ impl AppView {
              }
              let spinner_frame_tick =
                  agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
@@ -1146,7 +1162,7 @@ index fc9a4553..a40729c7 100644
              needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
                  && spinner_frame_tick;
              needs_redraw |= matches!(
-@@ -5623,6 +6133,20 @@ impl AppView {
+@@ -5623,6 +6140,20 @@ impl AppView {
          }
          needs_redraw
      }
@@ -1167,7 +1183,7 @@ index fc9a4553..a40729c7 100644
      /// Check if animation ticks should be scheduled.
      pub fn needs_animation(&self) -> bool {
          self.tick_demand() != TickDemand::None
-@@ -5637,6 +6161,15 @@ impl AppView {
+@@ -5637,6 +6168,15 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -1183,7 +1199,7 @@ index fc9a4553..a40729c7 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5781,9 +6314,94 @@ impl AppView {
+@@ -5781,9 +6321,94 @@ impl AppView {
                      TickDemand::None
                  }
              }
@@ -1206,8 +1222,8 @@ index fc9a4553..a40729c7 100644
 +                    TickDemand::None
 +                }
 +            }
-         }
-     }
++        }
++    }
 +    /// Workshop: whether the welcome hero should advance a frame on the next tick — the user has
 +    /// not turned it off (`[ui] hero_animation = false`), the terminal can show it (colour on, no
 +    /// legacy console), the last paint spun it (wide layout, logo shown) and the terminal is
@@ -1250,8 +1266,8 @@ index fc9a4553..a40729c7 100644
 +                true
 +            }
 +            _ => false,
-+        }
-+    }
+         }
+     }
 +    /// Workshop: the turn-status row's activity for the running Engine/Adapter turn — the newest
 +    /// tool call still running, else the wait for the model (as the ACP tracker reports the gap
 +    /// before the first token and after each tool result).
@@ -1279,7 +1295,7 @@ index fc9a4553..a40729c7 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6423,9 @@ impl AppView {
+@@ -5805,7 +6430,9 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -1291,7 +1307,7 @@ index fc9a4553..a40729c7 100644
              } else {
                  (None, None, None, false, None, false)
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-index 483296d4..d0f431b7 100644
+index 483296d4..faf5fee3 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 @@ -169,6 +169,36 @@ pub(crate) fn test_app() -> AppView {
@@ -1457,13 +1473,12 @@ index 483296d4..d0f431b7 100644
 -    assert!(TIER_RESTRICTED_COMMANDS.contains(&"voice"));
 +fn voice_not_in_tier_restricted_commands() {
 +    assert!(!TIER_RESTRICTED_COMMANDS.contains(&"voice"));
- }
++}
 +/// Workshop: `/privacy` opens an xAI-account setting, so it is hidden on a fresh home (the free
 +/// models), for API keys and for external auth, and offered once an xAI account (a tier or a
 +/// team) is signed in — on the welcome composer, every agent and the dashboard alike. The tier
 +/// deny list is not involved (a typed `/privacy` must never open the SuperGrok upsell).
- #[test]
--fn is_voice_tier_restricted_tracks_tier() {
++#[test]
 +fn privacy_is_hidden_until_an_xai_account_is_signed_in() {
 +    let hidden = |app: &AppView| {
 +        app.welcome_prompt
@@ -1518,8 +1533,9 @@ index 483296d4..d0f431b7 100644
 +            .is_restricted("privacy"),
 +        "never on the upsell path"
 +    );
-+}
-+#[test]
+ }
+ #[test]
+-fn is_voice_tier_restricted_tracks_tier() {
 +fn is_voice_tier_restricted_only_for_the_xai_provider() {
      let mut app = test_app();
      app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
@@ -1625,15 +1641,13 @@ index 483296d4..d0f431b7 100644
      assert!(matches!(
 -        dispatch_menu_action(2, true, true, md),
 +        dispatch_menu_action(2, true, true, true, true, md),
-         InputOutcome::Action(Action::FetchSessionList)
-     ));
-     assert!(matches!(
--        dispatch_menu_action(3, true, true, md),
++        InputOutcome::Action(Action::FetchSessionList)
++    ));
++    assert!(matches!(
 +        dispatch_menu_action(3, true, true, true, true, md),
-         InputOutcome::Action(Action::ShowReleaseNotes { .. })
-     ));
-     assert!(matches!(
--        dispatch_menu_action(4, true, true, md),
++        InputOutcome::Action(Action::ShowReleaseNotes { .. })
++    ));
++    assert!(matches!(
 +        dispatch_menu_action(4, true, true, true, true, md),
 +        InputOutcome::Action(Action::Quit)
 +    ));
@@ -1644,13 +1658,15 @@ index 483296d4..d0f431b7 100644
 +    let md = Some("# notes");
 +    assert!(matches!(
 +        dispatch_menu_action(0, false, false, true, true, md),
-+        InputOutcome::Action(Action::FetchSessionList)
-+    ));
-+    assert!(matches!(
+         InputOutcome::Action(Action::FetchSessionList)
+     ));
+     assert!(matches!(
+-        dispatch_menu_action(3, true, true, md),
 +        dispatch_menu_action(1, false, false, true, true, md),
-+        InputOutcome::Action(Action::ShowReleaseNotes { .. })
-+    ));
-+    assert!(matches!(
+         InputOutcome::Action(Action::ShowReleaseNotes { .. })
+     ));
+     assert!(matches!(
+-        dispatch_menu_action(4, true, true, md),
 +        dispatch_menu_action(2, false, false, true, true, md),
 +        InputOutcome::Action(Action::Quit)
 +    ));
@@ -1659,7 +1675,28 @@ index 483296d4..d0f431b7 100644
          InputOutcome::Action(Action::Quit)
      ));
  }
-@@ -4836,17 +5042,103 @@ fn welcome_pending_n_is_unchanged() {
+@@ -3517,6 +3723,20 @@ fn ctrl_q_sets_pending_action() {
+     assert!(app.pending_action.is_some());
+     assert_eq!(app.pending_action.as_ref().unwrap().label, Some("quit"));
+ }
++/// Workshop: the second Ctrl+Q has the dashboard's two-second window, not the one-second
++/// default — long enough to read `press again to quit` and press again.
++#[test]
++fn ctrl_q_confirm_window_is_two_seconds() {
++    let mut app = test_app_with_agent();
++    let before = std::time::Instant::now();
++    let _ = app.handle_input(&ctrl_q());
++    let pending = app.pending_action.as_ref().expect("armed quit");
++    let window = pending.expires_at.saturating_duration_since(before);
++    assert!(
++        window > PendingAction::TTL && window <= crate::views::dashboard::state::CONFIRM_WINDOW,
++        "quit confirm window {window:?}"
++    );
++}
+ #[test]
+ fn ctrl_q_double_press_quits() {
+     let mut app = test_app_with_agent();
+@@ -4836,17 +5056,103 @@ fn welcome_pending_n_is_unchanged() {
      let outcome = app.handle_input(&key_event(KeyCode::Char('n'), KeyModifiers::NONE));
      assert!(matches!(outcome, InputOutcome::Unchanged));
  }
@@ -1765,7 +1802,7 @@ index 483296d4..d0f431b7 100644
  #[test]
  fn welcome_done_ctrl_w_opens_new_worktree_dialog() {
      let mut app = test_app();
-@@ -4858,8 +5150,10 @@ fn welcome_done_ctrl_w_opens_new_worktree_dialog() {
+@@ -4858,8 +5164,10 @@ fn welcome_done_ctrl_w_opens_new_worktree_dialog() {
          InputOutcome::Action(Action::OpenNewWorktreeDialog)
      ));
  }
@@ -1777,7 +1814,7 @@ index 483296d4..d0f431b7 100644
      let chords = [
          KeyModifiers::CONTROL,
          KeyModifiers::SUPER,
-@@ -4870,10 +5164,29 @@ fn welcome_paste_chords_leave_home() {
+@@ -4870,10 +5178,29 @@ fn welcome_paste_chords_leave_home() {
          let mut app = test_app();
          app.auth_state = AuthState::Done;
          app.welcome_prompt_focused = focused;
@@ -3957,10 +3994,45 @@ index 64d0b943..8aec3a3f 100644
          .session
          .session_id
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
-index 347259b3..7245eab1 100644
+index 347259b3..3bb3332f 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/lifecycle.rs
-@@ -1622,7 +1622,7 @@ fn trust_folder_continues_session_only_when_embedded_and_persist_denied() {
+@@ -258,12 +258,16 @@ fn session_created_banner_advertises_resume_in_minimal_mode() {
+     let texts = all_system_texts(&app, id);
+     let banner = texts
+         .iter()
+-        .find(|t| t.contains("switch between sessions"))
++        .find(|t| t.contains("switches between sessions"))
+         .unwrap_or_else(|| panic!("expected a session-switch banner, got: {texts:?}"));
+     assert!(
+-        banner.contains("Session new-session-123, use /resume to switch between sessions"),
++        banner.contains("New session \u{2014} /resume switches between sessions"),
+         "minimal mode must advertise /resume: {banner}"
+     );
++    assert!(
++        !banner.contains("new-session-123"),
++        "the banner never prints the session id: {banner}"
++    );
+     assert!(
+         !texts.iter().any(|t| t.contains("/dashboard")),
+         "minimal mode must NOT advertise /dashboard: {texts:?}"
+@@ -298,12 +302,13 @@ fn session_created_banner_after_minimal_new_replacing_session() {
+     let texts = all_system_texts(&app, id);
+     let banner = texts
+         .iter()
+-        .find(|t| t.contains("switch between sessions"))
++        .find(|t| t.contains("switches between sessions"))
+         .unwrap_or_else(|| panic!("expected a session-switch banner, got: {texts:?}"));
+     assert!(
+-        banner.contains("Session sess-b, use /resume to switch between sessions"),
++        banner.contains("New session \u{2014} /resume switches between sessions"),
+         "minimal /new must still advertise /resume after dropping the prior view: {banner}"
+     );
++    assert!(!banner.contains("sess-b"), "no session id: {banner}");
+ }
+ #[test]
+ fn global_cancel_subagents_pref_skips_panel_without_session_override() {
+@@ -1622,7 +1627,7 @@ fn trust_folder_continues_session_only_when_embedded_and_persist_denied() {
          .map(|(m, _)| m.as_str())
          .unwrap_or_default();
      assert!(
@@ -3969,7 +4041,7 @@ index 347259b3..7245eab1 100644
          "a session-only grant must show how to persist: {toast}"
      );
  }
-@@ -2031,31 +2031,48 @@ fn gated_worktree_with_none_companions_preserves_stashed_label_and_ref() {
+@@ -2031,31 +2036,48 @@ fn gated_worktree_with_none_companions_preserves_stashed_label_and_ref() {
      assert!(app.deferred_startup.session.is_none());
      assert!(!app.deferred_startup.worktree);
  }
@@ -4025,7 +4097,7 @@ index 347259b3..7245eab1 100644
      assert_eq!(app.active_view, ActiveView::Welcome);
      assert!(
          !app.welcome_announcement.expanded,
-@@ -2074,7 +2091,7 @@ fn auth_complete_strips_reauth_prompt_after_mid_session_login() {
+@@ -2074,7 +2096,7 @@ fn auth_complete_strips_reauth_prompt_after_mid_session_login() {
          .unwrap()
          .scrollback
          .push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
@@ -4034,7 +4106,7 @@ index 347259b3..7245eab1 100644
      let seq = authenticating_seq(&app);
      dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -2115,7 +2132,7 @@ fn auth_complete_retries_stashed_prompt_after_mid_session_login() {
+@@ -2115,7 +2137,7 @@ fn auth_complete_retries_stashed_prompt_after_mid_session_login() {
              chip_elements: Vec::new(),
          });
      }
