@@ -523,6 +523,16 @@ impl AuthManager {
                     self.enforce_pin_on_loaded_token();
                     return;
                 }
+                // Workshop: the re-reads exist to protect in-memory credentials from a transient
+                // read failure. With nothing in memory there is nothing to protect, and a missing
+                // `auth.json` is the normal state of a home that never signed in to the shell's
+                // own account — so stop after the first read instead of sleeping through the
+                // retry budget on every launch.
+                DiskAuthState::FileMissing | DiskAuthState::Unreadable
+                    if self.current_or_expired().is_none() =>
+                {
+                    break;
+                }
                 DiskAuthState::FileMissing | DiskAuthState::Unreadable => {}
             }
         }

@@ -229,7 +229,24 @@ pub fn default_howto_entries() -> Vec<DocEntry> {
 ///
 /// Called from the pager binary startup so the model can read them from disk.
 pub fn extract_user_guide_docs(grok_home: &std::path::Path) {
+    extract_user_guide_docs_for(grok_home, xai_grok_version::full_version());
+}
+
+/// Workshop: the stamp that says which build last wrote the guide. The guide is embedded, so a
+/// build writes the same bytes every launch; the stamp lets every launch but the first of a
+/// build skip the 26 file writes (a few milliseconds and a burst of disk writes on the
+/// startup path, before the terminal is even set up).
+const USER_GUIDE_STAMP: &str = ".workshop-version";
+
+fn extract_user_guide_docs_for(grok_home: &std::path::Path, version: &str) {
     let docs_dir = grok_home.join("docs").join("user-guide");
+    let stamp = docs_dir.join(USER_GUIDE_STAMP);
+    // A dev build's version does not change with its sources, so it always rewrites.
+    if !xai_grok_version::IS_DEV_BUILD
+        && std::fs::read_to_string(&stamp).is_ok_and(|s| s == version)
+    {
+        return;
+    }
     if let Err(e) = std::fs::create_dir_all(&docs_dir) {
         tracing::warn!(error = %e, "Failed to create user-guide docs directory");
         return;
@@ -260,6 +277,10 @@ pub fn extract_user_guide_docs(grok_home: &std::path::Path) {
                 }
             }
         }
+    }
+    // Written last: a stamp only ever claims a complete extraction.
+    if let Err(e) = std::fs::write(&stamp, version) {
+        tracing::debug!(error = %e, "Failed to write the user-guide stamp");
     }
 }
 
@@ -361,5 +382,35 @@ mod tests {
             docs_dir.join("notes.md").exists(),
             "User file should not be deleted"
         );
+    }
+
+    /// Workshop: a second launch of the same build leaves the guide alone; a new build (or a
+    /// missing stamp) rewrites it. Dev builds always rewrite, so the skip is asserted only on
+    /// release builds.
+    #[test]
+    fn extract_skips_rewrite_when_the_stamp_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let docs_dir = tmp.path().join("docs").join("user-guide");
+        extract_user_guide_docs_for(tmp.path(), "1.2.3 (abc)");
+        let stamp = docs_dir.join(USER_GUIDE_STAMP);
+        assert_eq!(std::fs::read_to_string(&stamp).unwrap(), "1.2.3 (abc)");
+        let first = USER_GUIDE[0].filename;
+        std::fs::write(docs_dir.join(first), "edited").unwrap();
+
+        extract_user_guide_docs_for(tmp.path(), "1.2.3 (abc)");
+        let after_same_build = std::fs::read_to_string(docs_dir.join(first)).unwrap();
+        if xai_grok_version::IS_DEV_BUILD {
+            assert_eq!(after_same_build, USER_GUIDE[0].content);
+        } else {
+            assert_eq!(after_same_build, "edited", "same build must not rewrite");
+        }
+
+        extract_user_guide_docs_for(tmp.path(), "1.2.4 (def)");
+        assert_eq!(
+            std::fs::read_to_string(docs_dir.join(first)).unwrap(),
+            USER_GUIDE[0].content,
+            "a new build rewrites the guide"
+        );
+        assert_eq!(std::fs::read_to_string(&stamp).unwrap(), "1.2.4 (def)");
     }
 }
