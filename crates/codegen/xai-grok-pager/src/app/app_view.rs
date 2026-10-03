@@ -4216,8 +4216,9 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                 }
                 *ctx.prompt_focused = true;
                 // Workshop: pasted text lands in the home composer and the card stays; an image
-                // paste still goes to the agent view, which owns the image machinery.
-                if crate::wrap_clipboard_image::try_decode_wrap_host_image_paste(text).is_none() {
+                // or a dropped file path still goes to the agent view, which owns the attachment
+                // machinery (the `[Image #1]` chips).
+                if welcome_paste_is_text(text) {
                     *ctx.menu_index = None;
                     let _ = ctx.prompt.handle_paste(text);
                     return InputOutcome::Changed;
@@ -4488,6 +4489,12 @@ fn handle_menu_nav(
         }
         _ => None,
     }
+}
+/// Workshop: whether a bracketed paste on the welcome screen is plain text for the home composer.
+/// A wrap-host image or dropped file paths are attachments; the agent view owns those.
+pub(crate) fn welcome_paste_is_text(text: &str) -> bool {
+    crate::wrap_clipboard_image::try_decode_wrap_host_image_paste(text).is_none()
+        && crate::prompt_images::try_read_dropped_paths(text).is_empty()
 }
 /// Workshop: whether a printable key typed on the welcome screen leaves it for the agent view.
 /// Text stays in the home composer (the card leaves when the message is sent); only a `/` that

@@ -5035,6 +5035,37 @@ fn welcome_done_slash_on_an_empty_composer_leaves_home() {
     assert!(matches!(outcome, InputOutcome::Changed));
     assert_eq!(app.welcome_prompt.text(), "a/");
 }
+/// Workshop: a bracketed paste of an image file's path is an attachment, so it goes to the
+/// agent view (where it becomes an `[Image #1]` chip); prose that merely mentions a path stays
+/// on the card as text.
+#[test]
+fn welcome_done_pasted_image_path_leaves_home_for_the_chip() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("cat.png");
+    // A 1x1 PNG, enough for the drop classifier to call it an image.
+    std::fs::write(
+        &png,
+        [
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ],
+    )
+    .unwrap();
+    assert!(!welcome_paste_is_text(&png.display().to_string()));
+    assert!(welcome_paste_is_text("install ghostty"));
+    assert!(welcome_paste_is_text("the file /tmp is a directory on Unix"));
+    let mut app = test_app();
+    app.auth_state = AuthState::Done;
+    let outcome = app.handle_input(&Event::Paste(png.display().to_string()));
+    assert!(matches!(
+        outcome,
+        InputOutcome::ActionThenForward(Action::LeaveHome)
+    ));
+    assert!(app.welcome_prompt.text().is_empty());
+}
 /// Workshop: pasted text lands in the home composer and the card stays.
 #[test]
 fn welcome_done_bracketed_paste_lands_in_the_home_composer() {
