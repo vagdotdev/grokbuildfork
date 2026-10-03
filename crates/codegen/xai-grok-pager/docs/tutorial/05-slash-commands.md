@@ -14,7 +14,7 @@ A few worth knowing on day one:
 | `/btw` | Send Workshop an aside *without* interrupting its current task |
 | `/rewind` (alias `/undo`) | Rewind the conversation to an earlier turn |
 | `/docs` | Full How-to Guides, in the TUI or on the web |
-| `/feedback` | Save a note and draft a GitHub issue from it |
+| `/feedback` | Save a note about what happened (kept under `~/.workshop`) |
 
 Two of those deserve a second look:
 

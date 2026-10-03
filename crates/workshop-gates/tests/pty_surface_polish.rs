@@ -50,7 +50,7 @@ fn welcome_is_one_name_and_an_invitation_to_type() {
         "the alternate name is gone:\n{screen}"
     );
     assert!(
-        screen.contains("Ask anything") && screen.contains("add a test for multiply"),
+        screen.contains("Ask anything") && screen.contains("tidy up my Downloads folder"),
         "the composer invites typing with an example:\n{screen}"
     );
     assert!(
