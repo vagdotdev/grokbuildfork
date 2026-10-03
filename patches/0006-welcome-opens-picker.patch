@@ -3905,7 +3905,7 @@ index 2049a2d9..2a81eaf5 100644
  /// to the previous row rather than disappearing.
  #[serial_test::serial(GROK_AGENT_DASHBOARD)]
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-index bf64193d..1ab94680 100644
+index bf64193d..b59e0e2b 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 @@ -35,7 +35,8 @@ use super::dashboard::{
@@ -3965,13 +3965,14 @@ index bf64193d..1ab94680 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -273,10 +307,12 @@ fn test_app() -> AppView {
+@@ -273,10 +307,13 @@ fn test_app() -> AppView {
          session_picker_entries_query: None,
          session_picker_pending_delete: None,
          welcome_tick: 0,
 -        welcome_shimmer_frame: 0,
 +        welcome_hero_frame: 0,
 +        welcome_hero_animating: false,
++        welcome_last_input_at: std::time::Instant::now(),
          startup_warnings: Vec::new(),
          is_api_key_auth: false,
          pending_update_version: None,
@@ -3979,7 +3980,7 @@ index bf64193d..1ab94680 100644
          foreign_resume_launch_generation: 0,
          foreign_resume_launch: None,
          quit_for_update: false,
-@@ -289,6 +325,9 @@ fn test_app() -> AppView {
+@@ -289,6 +326,9 @@ fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -3989,7 +3990,7 @@ index bf64193d..1ab94680 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -585,6 +624,28 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
+@@ -585,6 +625,28 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
      std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
      sess_dir
  }
