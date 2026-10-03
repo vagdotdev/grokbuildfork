@@ -54,8 +54,25 @@ impl Adapter for ClaudeAdapter {
     }
 
     /// The SDK's opening: an `initialize` control request (answered with the account's models,
-    /// ignored here) and the prompt as a `user` message.
-    fn prompt_lines(&self, prompt: &str) -> Vec<String> {
+    /// ignored here) and the prompt as a `user` message, its images as base64 image blocks ahead
+    /// of the text (the Messages API content shape the SDK passes through).
+    fn prompt_lines(&self, req: &RunRequest) -> Vec<String> {
+        use base64::Engine as _;
+        let mut content: Vec<Value> = req
+            .images
+            .iter()
+            .map(|image| {
+                json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": image.mime,
+                        "data": base64::engine::general_purpose::STANDARD.encode(&image.data),
+                    },
+                })
+            })
+            .collect();
+        content.push(json!({ "type": "text", "text": req.prompt }));
         vec![
             json!({
                 "type": "control_request",
@@ -66,7 +83,7 @@ impl Adapter for ClaudeAdapter {
             json!({
                 "type": "user",
                 "session_id": "",
-                "message": { "role": "user", "content": [{ "type": "text", "text": prompt }] },
+                "message": { "role": "user", "content": content },
                 "parent_tool_use_id": null,
             })
             .to_string(),
@@ -649,14 +666,41 @@ mod tests {
                 .any(|w| w == ["--permission-mode", "bypassPermissions"])
         );
         assert_eq!(a.prompt_delivery(), PromptDelivery::Channel);
-        let lines = a.prompt_lines("summarize README");
+        let lines = a.prompt_lines(&RunRequest::new("summarize README", "/tmp"));
         assert_eq!(lines.len(), 2);
         let init: Value = serde_json::from_str(&lines[0]).unwrap();
         assert_eq!(init["type"], "control_request");
         assert_eq!(init["request"]["subtype"], "initialize");
         let user: Value = serde_json::from_str(&lines[1]).unwrap();
         assert_eq!(user["type"], "user");
-        assert_eq!(user["message"]["content"][0]["text"], "summarize README");
+        assert_eq!(
+            user["message"]["content"],
+            json!([{ "type": "text", "text": "summarize README" }])
+        );
+    }
+
+    /// A pasted image reaches the model: it rides in the `user` message as a base64 image block
+    /// ahead of the text, never as the bare `[Image #1]` placeholder alone.
+    #[test]
+    fn attached_images_are_image_blocks_in_the_user_message() {
+        let mut req = RunRequest::new("[Image #1] what does it say?", "/tmp");
+        req.images.push(crate::adapter::PromptImage {
+            path: "/tmp/image-1.png".into(),
+            mime: "image/png".into(),
+            data: std::sync::Arc::from(&b"\x89PNG\r\n"[..]),
+        });
+        let lines = ClaudeAdapter.prompt_lines(&req);
+        let user: Value = serde_json::from_str(&lines[1]).unwrap();
+        assert_eq!(
+            user["message"]["content"],
+            json!([
+                {
+                    "type": "image",
+                    "source": { "type": "base64", "media_type": "image/png", "data": "iVBORw0K" },
+                },
+                { "type": "text", "text": "[Image #1] what does it say?" },
+            ])
+        );
     }
 
     /// Normal mode: a command the permission mode would prompt for arrives as `can_use_tool`;

@@ -4530,7 +4530,7 @@ fn handle_workshop_turn_msg(
             true
         }
         M::FollowUp(text) => {
-            app.workshop_turn_queue.push_back(text);
+            app.workshop_turn_queue.push_back((text, Vec::new()));
             false
         }
         M::Error(line) => {

@@ -122,10 +122,31 @@ impl AskReply {
     }
 }
 
+/// An image attached to the prompt: the file it is saved in (what `codex -i` and an agent's read
+/// tool take) and its bytes (what a Claude Code image block carries).
+#[derive(Clone, PartialEq, Eq)]
+pub struct PromptImage {
+    pub path: PathBuf,
+    pub mime: String,
+    pub data: std::sync::Arc<[u8]>,
+}
+
+impl std::fmt::Debug for PromptImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PromptImage")
+            .field("path", &self.path)
+            .field("mime", &self.mime)
+            .field("bytes", &self.data.len())
+            .finish()
+    }
+}
+
 /// One delegated, whole-task run.
 #[derive(Clone, Debug)]
 pub struct RunRequest {
     pub prompt: String,
+    /// Images pasted or attached with the prompt, in the prompt's order.
+    pub images: Vec<PromptImage>,
     /// Working directory for the child. Should be an isolated worktree from
     /// [`crate::worktree::WorkspaceIsolation`], never the user's live checkout.
     pub cwd: PathBuf,
@@ -139,6 +160,7 @@ impl RunRequest {
     pub fn new(prompt: impl Into<String>, cwd: impl Into<PathBuf>) -> Self {
         Self {
             prompt: prompt.into(),
+            images: Vec::new(),
             cwd: cwd.into(),
             model: None,
             resume: None,
@@ -203,10 +225,11 @@ pub trait Adapter: Send + Sync {
 
     fn prompt_delivery(&self) -> PromptDelivery;
 
-    /// The stdin lines that carry the prompt under [`PromptDelivery::Channel`] (the vendor's
-    /// message framing); unused for the other deliveries.
-    fn prompt_lines(&self, prompt: &str) -> Vec<String> {
-        vec![prompt.to_string()]
+    /// The prompt as the CLI takes it: the stdin lines under [`PromptDelivery::Channel`] (the
+    /// vendor's message framing), else the text written to stdin or passed as the argument (the
+    /// lines joined by newlines).
+    fn prompt_lines(&self, req: &RunRequest) -> Vec<String> {
+        vec![req.prompt.clone()]
     }
 
     /// Pinned non-interactive run arguments (without the prompt when

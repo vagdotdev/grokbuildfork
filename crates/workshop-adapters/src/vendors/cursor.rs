@@ -11,9 +11,11 @@
 //! * identity, status, login: `workshop-detect` (the one detection stack, shared with the
 //!   picker) verifies the binary, asks the official status command and runs the login.
 //! * run:      `cursor-agent -p --output-format stream-json --stream-partial-output
-//!   --trust [--mode plan | --force] [--model M] [--resume=ID] <prompt>`; prompt is
-//!   the final positional argument (stdin prompt delivery is not verified for
-//!   this CLI), stdin is `/dev/null`.
+//!   --trust [--add-dir DIR]... [--mode plan | --force] [--model M] [--resume=ID] <prompt>`;
+//!   prompt is the final positional argument (stdin prompt delivery is not verified for
+//!   this CLI), stdin is `/dev/null`. Attached images are listed by path after the prompt,
+//!   their folders added with `--add-dir`: the CLI has no image flag, and its read tool loads
+//!   image files for the model (`isImageFile` → `resizeImageIfNeeded` in 2026.09.26).
 //!
 //! Headless (`-p`) mode has no approval prompt. Without `--force` the CLI runs in
 //! its allowlist mode: the read-only commands it knows run, every other command is
@@ -67,6 +69,19 @@ impl Adapter for CursorAdapter {
         PromptDelivery::Argument
     }
 
+    /// The CLI takes no image input, but its agent's read tool opens image files for the model:
+    /// attached images are named by path after the prompt.
+    fn prompt_lines(&self, req: &RunRequest) -> Vec<String> {
+        let mut text = req.prompt.clone();
+        if !req.images.is_empty() {
+            text.push_str("\n\nAttached images (open each with your read tool to see it):");
+            for image in &req.images {
+                text.push_str(&format!("\n- {}", image.path.display()));
+            }
+        }
+        vec![text]
+    }
+
     fn run_args(&self, req: &RunRequest) -> Vec<String> {
         let mut args: Vec<String> = [
             "-p",
@@ -78,6 +93,17 @@ impl Adapter for CursorAdapter {
         .into_iter()
         .map(String::from)
         .collect();
+        // The folders the attached images are saved in, so the read tool may open them.
+        let mut image_dirs: Vec<&std::path::Path> = Vec::new();
+        for dir in req.images.iter().filter_map(|image| image.path.parent()) {
+            if !image_dirs.contains(&dir) {
+                image_dirs.push(dir);
+            }
+        }
+        for dir in image_dirs {
+            args.push("--add-dir".into());
+            args.push(dir.display().to_string());
+        }
         match req.permission {
             PermissionPolicy::ReadOnly => {
                 args.push("--mode".into());
@@ -596,6 +622,40 @@ mod tests {
                 "--stream-partial-output",
                 "--trust"
             ]
+        );
+    }
+
+    /// Attached images reach the Cursor agent as files it opens with its read tool: named by path
+    /// after the prompt, their folder added once as a workspace root.
+    #[test]
+    fn attached_images_are_named_files_in_an_added_folder() {
+        let image = |path: &str| crate::adapter::PromptImage {
+            path: path.into(),
+            mime: "image/png".into(),
+            data: std::sync::Arc::from(&b""[..]),
+        };
+        let mut req = RunRequest::new("[Image #1] [Image #2] compare", "/w");
+        req.images = vec![image("/s/images/a.png"), image("/s/images/b.png")];
+        assert_eq!(
+            CursorAdapter.prompt_lines(&req),
+            vec![
+                "[Image #1] [Image #2] compare\n\nAttached images (open each with your read tool \
+                 to see it):\n- /s/images/a.png\n- /s/images/b.png"
+            ]
+        );
+        let args = CursorAdapter.run_args(&req);
+        assert_eq!(
+            args.iter().filter(|a| *a == "--add-dir").count(),
+            1,
+            "{args:?}"
+        );
+        assert!(
+            args.windows(2).any(|w| w == ["--add-dir", "/s/images"]),
+            "{args:?}"
+        );
+        assert_eq!(
+            CursorAdapter.prompt_lines(&RunRequest::new("hi", "/w")),
+            vec!["hi"]
         );
     }
 

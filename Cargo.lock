@@ -13356,7 +13356,9 @@ name = "workshop-gates"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
+ "base64 0.22.1",
  "clap",
+ "image",
  "libc",
  "serde_json",
  "serial_test",

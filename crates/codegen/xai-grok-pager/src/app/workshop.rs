@@ -1057,6 +1057,8 @@ pub enum WorkshopTurnKind {
         adapter_id: AdapterId,
         resume: Option<String>,
         model: Option<String>,
+        /// The picked model as the picker names it (`GPT-6-Astra`): the failure line says it.
+        name: String,
     },
 }
 
@@ -1268,6 +1270,39 @@ pub fn prompt_file(image: &crate::prompt_images::PastedImage) -> Option<PromptFi
         mime: image.mime_type.clone(),
         url,
         filename: format!("image-{}.{ext}", image.display_number),
+    })
+}
+
+/// The one plain line shown when a pasted image could not go with the prompt (its file is gone).
+pub const IMAGE_NOT_ATTACHED_LINE: &str =
+    "An image couldn't be attached \u{2014} paste it again to send it";
+
+/// A pasted image as a vendor CLI takes it: the file it is saved in and its bytes. One pasted as
+/// bytes only is written under Workshop's tmp folder first. `None` when its file is gone.
+fn adapter_image(file: &PromptFile) -> Option<workshop_adapters::PromptImage> {
+    use base64::Engine as _;
+    let (path, data) = match file.url.strip_prefix("data:") {
+        Some(rest) => {
+            let (_, encoded) = rest.split_once(";base64,")?;
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .ok()?;
+            let dir = workshop_home().join("tmp").join("images");
+            std::fs::create_dir_all(&dir).ok()?;
+            let path = dir.join(format!("{}-{}", uuid::Uuid::new_v4(), file.filename));
+            std::fs::write(&path, &data).ok()?;
+            (path, data)
+        }
+        None => {
+            let path = url::Url::parse(&file.url).ok()?.to_file_path().ok()?;
+            let data = std::fs::read(&path).ok()?;
+            (path, data)
+        }
+    };
+    Some(workshop_adapters::PromptImage {
+        path,
+        mime: file.mime.clone(),
+        data: data.into(),
     })
 }
 
@@ -2203,34 +2238,33 @@ async fn build_stream(
             adapter_id,
             resume,
             model,
+            name,
         } => {
             let adapter = workshop_adapters::vendors::by_id(*adapter_id);
             let cli = match detect_adapter_cli(&*adapter).await {
                 Detection::Installed(cli) => cli,
                 Detection::Unverified { reason, .. } => {
                     log_failure_cause(&format!("{} could not be verified: {reason}", adapter.id()));
-                    return Err(TurnStartError::Other(failure_line(
-                        model.as_deref().unwrap_or(&adapter.id().to_string()),
-                    )));
+                    return Err(TurnStartError::Other(failure_line(name)));
                 }
                 Detection::NotInstalled => {
                     log_failure_cause(&format!("{} is not installed", adapter.id()));
-                    return Err(TurnStartError::Other(failure_line(
-                        model.as_deref().unwrap_or(&adapter.id().to_string()),
-                    )));
+                    return Err(TurnStartError::Other(failure_line(name)));
                 }
             };
             let mut req = RunRequest::new(spec.text.clone(), &spec.cwd);
             req.model = model.clone();
             req.resume = resume.clone();
             req.permission = permission;
+            req.images = spec.images.iter().filter_map(adapter_image).collect();
+            if req.images.len() < spec.images.len() {
+                let _ = tx.send(WorkshopTurnMsg::Notice(IMAGE_NOT_ATTACHED_LINE.to_owned()));
+            }
             let handle = spawn(&*adapter, &cli, req, &SupervisorOptions::default())
                 .await
                 .map_err(|e| {
                     log_failure_cause(&e.to_string());
-                    TurnStartError::Other(failure_line(
-                        model.as_deref().unwrap_or(&adapter.id().to_string()),
-                    ))
+                    TurnStartError::Other(failure_line(name))
                 })?;
             Ok((TurnStream::Adapter(handle), None))
         }
@@ -2346,7 +2380,7 @@ pub async fn run_workshop_turn(
 
     let mut model_name = match &spec.kind {
         WorkshopTurnKind::Engine { model, .. } => model.name.clone(),
-        WorkshopTurnKind::Adapter { adapter_id, .. } => adapter_id.to_string(),
+        WorkshopTurnKind::Adapter { name, .. } => name.clone(),
     };
     let is_engine = matches!(spec.kind, WorkshopTurnKind::Engine { .. });
     let mut cancelled = false;
@@ -2487,6 +2521,9 @@ pub async fn run_workshop_turn(
                     if vision_switch.is_some() {
                         continue;
                     }
+                    // One failure line a turn: a backend that reports the same failure again
+                    // (or once per retry of its own) only adds to the log.
+                    let already_failed = errored;
                     errored = true;
                     if stream.stalled() {
                         // The engine's idle ceiling ended the turn: reported as `Stalled` below,
@@ -2511,7 +2548,9 @@ pub async fn run_workshop_turn(
                             break;
                         }
                         log_failure_cause(&message);
-                        let _ = tx.send(WorkshopTurnMsg::Error(failure_line(&model_name)));
+                        if !already_failed {
+                            let _ = tx.send(WorkshopTurnMsg::Error(failure_line(&model_name)));
+                        }
                     }
                 }
                 Some(AdapterEvent::Thinking { text }) => {
@@ -2657,6 +2696,7 @@ pub async fn run_workshop_turn(
                                 *resume = Some(session);
                             }
                             spec.text = prompt;
+                            spec.images.clear();
                             match build_stream(&spec, &tx, permission).await {
                                 Ok((next, _)) => {
                                     stream = next;

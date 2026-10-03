@@ -938,6 +938,181 @@ fn rails_modes_normal_asks_with_the_approval_card_plan_is_read_only() {
     );
 }
 
+/// A small real PNG, as a screenshot the user drags in or pastes.
+fn write_png(dir: &Path) -> PathBuf {
+    let img = image::RgbaImage::from_pixel(24, 16, image::Rgba([31, 111, 235, 255]));
+    let mut bytes = Vec::new();
+    img.write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+    )
+    .unwrap();
+    let path = dir.join("screenshot.png");
+    std::fs::write(&path, bytes).unwrap();
+    path
+}
+
+/// Paste an image the way a terminal drops a file: its path in a bracketed paste. The composer
+/// turns it into the `[Image #1]` chip.
+fn paste_image(j: &mut Journey, path: &Path) {
+    j.h.inject_keys(format!("\x1b[200~{}\x1b[201~", path.display()).as_bytes())
+        .unwrap();
+    wait_for(&mut j.h, "[Image #1]", 10);
+    j.h.update(Duration::from_millis(300));
+}
+
+/// `/model`, type `filter`, Enter; wait until the composer names `label`.
+fn pick_model(j: &mut Journey, filter: &str, label: &str) {
+    slash(&mut j.h, "/model");
+    wait_for(&mut j.h, pty_common::PICKER_OPEN, 15);
+    wait_gone(&mut j.h, "detecting", 20);
+    j.h.inject_keys(filter.as_bytes()).unwrap();
+    j.h.update(Duration::from_millis(600));
+    j.h.inject_keys(b"\r").unwrap();
+    pty_common::wait_picker_closed(&mut j.h, 30);
+    let started = Instant::now();
+    while !composer_border(&j.h.screen_contents()).contains(label) {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the composer never named {label}:\n{}",
+            j.h.screen_contents()
+        );
+        j.h.update(Duration::from_millis(200));
+    }
+}
+
+/// The file that follows `flag` in a recorded CLI command line.
+fn flag_value(argv: &str, flag: &str) -> Option<PathBuf> {
+    let mut words = argv.split_whitespace();
+    words.find(|w| *w == flag)?;
+    words.next().map(PathBuf::from)
+}
+
+/// An image pasted into a subscription-rail turn reaches the CLI as that CLI's own image input
+/// (0.2.4 sent all three only the `[Image #1]` placeholder text): Claude Code gets it as a base64
+/// image block in the stream-json `user` message, Codex as `-i <file>`, and Cursor, whose CLI has
+/// no image input, as the saved file named in the prompt with its folder added (`--add-dir`), for
+/// its read tool to open.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake CLIs, no network); run with --include-ignored"]
+fn rails_pasted_images_reach_each_cli() {
+    let Some(bin) = bin_from_env() else { return };
+    let fakes = install_fakes(true);
+    let pictures = tempfile::tempdir().unwrap();
+    let png = write_png(pictures.path());
+    let mut j = spawn("rails-images", &bin, &[], Some(&fakes.bin));
+    connect_claude_default(&mut j);
+
+    // Claude Code: the image rides in the `user` message, ahead of the text.
+    paste_image(&mut j, &png);
+    send_prompt(&mut j, " what does it show?");
+    wait_turn_done(&mut j, 60);
+    snapshot(&j.h, &j.dir, "01-claude-image-turn");
+    let user = lines_of(&fakes.state.join("claude/stdin.txt"))
+        .into_iter()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(&l).ok())
+        .find(|v| v["type"] == "user")
+        .expect("the prompt reached claude");
+    let content = &user["message"]["content"];
+    assert_eq!(content[0]["type"], "image", "{content}");
+    assert_eq!(content[0]["source"]["media_type"], "image/png", "{content}");
+    let data = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(content[0]["source"]["data"].as_str().unwrap_or_default())
+            .expect("base64 image data")
+    };
+    assert!(data.starts_with(b"\x89PNG"), "the pasted PNG's bytes");
+    assert_eq!(content[1]["type"], "text");
+    assert!(
+        content[1]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("what does it show?")),
+        "{content}"
+    );
+
+    // Codex: `-i <file>`, the saved copy of the pasted image.
+    pick_model(&mut j, "astra", "GPT-6-Astra");
+    paste_image(&mut j, &png);
+    send_prompt(&mut j, " and now?");
+    wait_turn_done(&mut j, 60);
+    snapshot(&j.h, &j.dir, "02-codex-image-turn");
+    let argv = lines_of(&fakes.state.join("codex/turn_argv.txt"));
+    let turn = argv.last().expect("codex ran a turn");
+    let image = flag_value(turn, "-i").unwrap_or_else(|| panic!("no -i: {turn}"));
+    assert!(
+        std::fs::read(&image).is_ok_and(|b| b.starts_with(b"\x89PNG")),
+        "-i names the saved PNG: {turn}"
+    );
+
+    // Cursor: the saved file is named after the prompt and its folder is added.
+    pick_model(&mut j, "composer", "Composer 2.5");
+    paste_image(&mut j, &png);
+    send_prompt(&mut j, " describe it");
+    wait_turn_done(&mut j, 60);
+    snapshot(&j.h, &j.dir, "03-cursor-image-turn");
+    let argv = std::fs::read_to_string(fakes.state.join("cursor-agent/turn_argv.txt")).unwrap();
+    let dir = flag_value(&argv, "--add-dir").unwrap_or_else(|| panic!("no --add-dir: {argv}"));
+    assert!(
+        argv.contains("Attached images (open each with your read tool to see it):"),
+        "{argv}"
+    );
+    let named = argv
+        .lines()
+        .find_map(|l| l.strip_prefix("- "))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("no image path in the prompt: {argv}"));
+    assert_eq!(named.parent(), Some(dir.as_path()), "{argv}");
+    assert!(
+        std::fs::read(&named).is_ok_and(|b| b.starts_with(b"\x89PNG")),
+        "{argv}"
+    );
+    finish(
+        j,
+        "P3 images (logged-in fakes): a pasted PNG reached claude as a base64 image block, codex \
+         as -i <file>, cursor-agent as a named file in an --add-dir folder. No network.\n",
+    );
+}
+
+/// A Codex turn that fails ends on one plain line naming the picked model. Codex prints an error
+/// line for every retry of its own and one more before `turn.failed` (the real logged-out capture
+/// replayed here); 0.2.4 showed each as `Couldn't reach codex — Enter to retry`, a dozen times.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake CLIs, no network); run with --include-ignored"]
+fn rails_codex_failure_is_one_line_naming_the_model() {
+    let Some(bin) = bin_from_env() else { return };
+    let fakes = install_fakes(true);
+    std::fs::copy(
+        fixtures_dir().join("codex_logged_out.jsonl"),
+        fakes.state.join("codex/fixture.jsonl"),
+    )
+    .unwrap();
+    let mut j = spawn("rails-codex-failure", &bin, &[], Some(&fakes.bin));
+    wait_for(&mut j.h, FIRST_RUN_LABEL, 30);
+    pick_model(&mut j, "astra", "GPT-6-Astra");
+    send_prompt(&mut j, "Reply with just the word OK.");
+    wait_for(&mut j.h, "Couldn't reach GPT-6-Astra", 30);
+    j.h.update(Duration::from_secs(2));
+    snapshot(&j.h, &j.dir, "01-codex-failed");
+    let screen = j.h.screen_contents();
+    assert_eq!(
+        screen.matches("Couldn't reach").count(),
+        1,
+        "exactly one failure line:\n{screen}"
+    );
+    for wire in ["codex \u{2014}", "Reconnecting", "401", "Unauthorized"] {
+        assert!(
+            !screen.contains(wire),
+            "{wire:?} stays in the log:\n{screen}"
+        );
+    }
+    finish(
+        j,
+        "P3 Codex failure (logged-in fake replaying the real logged-out capture): one line, \
+         `Couldn't reach GPT-6-Astra — Enter to retry · /model to switch`. No network.\n",
+    );
+}
+
 /// P3 (logged out): the vendor rows read `sign in`; Enter on the Claude row launches
 /// `claude auth login`.
 #[test]

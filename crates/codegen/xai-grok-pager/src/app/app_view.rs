@@ -1063,6 +1063,8 @@ pub struct AppView {
     /// Workshop: the prompt of the last Engine/Adapter turn, kept so Enter on an empty composer
     /// can retry it after a failure.
     pub workshop_last_prompt: Option<String>,
+    /// The images that went with `workshop_last_prompt`; a retry sends them again.
+    pub workshop_last_images: Vec<workshop_adapters::opencode_engine::PromptFile>,
     /// True while an Engine/Adapter turn streams; a second submit is rejected and Esc/Ctrl-C cancels.
     pub workshop_turn_active: bool,
     /// Sender the event loop installs once so submit handlers can stream a turn's events back into
@@ -1102,9 +1104,10 @@ pub struct AppView {
     /// arrives (the finished row is built from input + result together).
     pub workshop_turn_tool_inputs:
         std::collections::HashMap<crate::scrollback::EntryId, (String, serde_json::Value)>,
-    /// Prompts submitted while an Engine/Adapter turn was running, oldest first; each becomes
-    /// its own turn when the running one ends.
-    pub workshop_turn_queue: std::collections::VecDeque<String>,
+    /// Prompts submitted while an Engine/Adapter turn was running, oldest first, each with the
+    /// images pasted with it; each becomes its own turn when the running one ends.
+    pub workshop_turn_queue:
+        std::collections::VecDeque<(String, Vec<workshop_adapters::opencode_engine::PromptFile>)>,
     /// Permission answers of the current engine turn by tool call id: a call that asks twice
     /// (`external_directory`, then `bash`) is answered once by the user and once from here.
     pub workshop_turn_decided_calls:
@@ -1674,6 +1677,7 @@ impl AppView {
             workshop_turn_running: Vec::new(),
             workshop_turn_errored: false,
             workshop_last_prompt: None,
+            workshop_last_images: Vec::new(),
             workshop_turn_active: false,
             workshop_turn_tx: None,
             workshop_turn_cancel: None,

@@ -630,23 +630,57 @@ pub(super) fn routes_off_acp_path(
 /// user bubble, mark the turn active, clear the composer, and spawn the streaming task whose events
 /// the event loop's Workshop `select!` arm renders. Never touches the ACP path.
 fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<Effect> {
-    use crate::app::workshop::{self, WorkshopConnection, WorkshopTurnKind, WorkshopTurnSpec};
+    // Images pasted with the prompt travel with it (the engine sends them as file parts, the
+    // CLIs as their own image inputs).
+    let pasted = match app.agents.get_mut(&id) {
+        Some(agent) => agent.prompt.drain_images(),
+        None => Vec::new(),
+    };
+    let mut images: Vec<_> = pasted
+        .iter()
+        .filter_map(crate::app::workshop::prompt_file)
+        .collect();
+    let lost_image = images.len() < pasted.len();
+    // Enter after a failure resends the failed prompt: its images go again with it.
+    if pasted.is_empty()
+        && app.workshop_turn_errored
+        && app.workshop_last_prompt.as_deref() == Some(text.as_str())
+    {
+        images = app.workshop_last_images.clone();
+    }
 
     if app.workshop_turn_active {
         // One turn at a time on the engine: later prompts wait their turn and go out as
         // separate messages when this one ends (`Done` drains the queue), never concatenated.
         let queued = {
-            app.workshop_turn_queue.push_back(text.trim().to_owned());
+            app.workshop_turn_queue
+                .push_back((text.trim().to_owned(), images));
             app.workshop_turn_queue.len()
         };
         if let Some(agent) = app.agents.get_mut(&id) {
             agent.prompt.set_text("");
         }
-        app.show_toast(&format!(
-            "Queued ({queued}) — sends when this turn ends. Ctrl+C cancels the current turn."
-        ));
+        app.show_toast(&if lost_image {
+            crate::app::workshop::IMAGE_NOT_ATTACHED_LINE.to_owned()
+        } else {
+            format!(
+                "Queued ({queued}) — sends when this turn ends. Ctrl+C cancels the current turn."
+            )
+        });
         return vec![];
     }
+    start_workshop_turn(app, id, text, images, lost_image)
+}
+
+fn start_workshop_turn(
+    app: &mut AppView,
+    id: AgentId,
+    text: String,
+    images: Vec<workshop_adapters::opencode_engine::PromptFile>,
+    lost_image: bool,
+) -> Vec<Effect> {
+    use crate::app::workshop::{self, WorkshopConnection, WorkshopTurnKind, WorkshopTurnSpec};
+
     let Some(tx) = app.workshop_turn_tx.clone() else {
         // No interactive loop channel (headless / tests): nothing to stream into.
         return vec![];
@@ -656,16 +690,6 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
     };
     let cwd = agent.session.cwd.clone();
     let mode = workshop_permission_mode(agent);
-    // Images pasted with the prompt travel with it (the engine sends them as file parts).
-    let images: Vec<_> = match app.agents.get_mut(&id) {
-        Some(agent) => agent
-            .prompt
-            .drain_images()
-            .iter()
-            .filter_map(crate::app::workshop::prompt_file)
-            .collect(),
-        None => Vec::new(),
-    };
 
     let kind = match &app.workshop_connection {
         WorkshopConnection::Shell => return vec![],
@@ -680,8 +704,10 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
             adapter_id: workshop::rail_adapter_id(*rail),
             resume: workshop::load_resume_id(rail.vendor().id(), &cwd),
             model: Some(model.model.clone()),
+            name: model.display().to_owned(),
         },
     };
+    app.workshop_last_images = images.clone();
     let spec = WorkshopTurnSpec {
         kind,
         cwd,
@@ -710,6 +736,11 @@ fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<E
             .scrollback
             .push_block(RenderBlock::user_prompt(text.as_str()));
         app.workshop_turn_prompt_entry = Some(entry);
+        if lost_image {
+            agent.scrollback.push_block(RenderBlock::system(
+                workshop::IMAGE_NOT_ATTACHED_LINE.to_owned(),
+            ));
+        }
         agent.prompt.set_text("");
         agent.workshop_turn_active = true;
         // The pager's own turn-status row runs from here: the wait for the model, its timers,
@@ -767,13 +798,13 @@ pub(crate) fn dispatch_workshop_next_queued(app: &mut AppView, id: AgentId) -> V
     if app.workshop_turn_active {
         return vec![];
     }
-    let Some(text) = app.workshop_turn_queue.pop_front() else {
+    let Some((text, images)) = app.workshop_turn_queue.pop_front() else {
         return vec![];
     };
     if text.is_empty() {
         return dispatch_workshop_next_queued(app, id);
     }
-    dispatch_workshop_turn(app, id, text)
+    start_workshop_turn(app, id, text, images, false)
 }
 
 pub(super) fn dispatch_send_prompt_submission(
