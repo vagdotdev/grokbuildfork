@@ -1,3 +1,35 @@
+diff --git a/crates/codegen/xai-grok-pager/src/app/acp_handler/tests/settings.rs b/crates/codegen/xai-grok-pager/src/app/acp_handler/tests/settings.rs
+index e149aaa6..088f60e1 100644
+--- a/crates/codegen/xai-grok-pager/src/app/acp_handler/tests/settings.rs
++++ b/crates/codegen/xai-grok-pager/src/app/acp_handler/tests/settings.rs
+@@ -56,7 +56,8 @@
+         assert!(handle_ext_notification(&notif, &mut app));
+         assert!(app.is_api_key_auth);
+         assert!(app.voice_mode_enabled);
+-        assert!(app.tier_restricted_commands.is_empty());
++        // Workshop: an API key is not an xAI account, so `/privacy` alone stays denied.
++        assert_eq!(app.tier_restricted_commands, vec!["privacy".to_owned()]);
+     }
+ 
+     #[test]
+@@ -68,7 +69,8 @@
+         ));
+         assert!(app.is_api_key_auth);
+         assert!(!app.usage_visible);
+-        assert!(app.tier_restricted_commands.is_empty());
++        // Workshop: an API key is not an xAI account, so `/privacy` alone stays denied.
++        assert_eq!(app.tier_restricted_commands, vec!["privacy".to_owned()]);
+         assert!(app.voice_mode_enabled);
+ 
+         // Later personal Free stamp must not keep API-key bypass or force-on voice.
+@@ -94,6 +96,7 @@
+         ));
+         assert!(!app.is_api_key_auth);
+         assert!(app.voice_mode_enabled);
++        // SuperGrok is an xAI account: nothing denied, `/privacy` included.
+         assert!(app.tier_restricted_commands.is_empty());
+     }
+ 
 diff --git a/crates/codegen/xai-grok-pager/src/memory_trace.rs b/crates/codegen/xai-grok-pager/src/memory_trace.rs
 index 04381803..8c74fbfb 100644
 --- a/crates/codegen/xai-grok-pager/src/memory_trace.rs
