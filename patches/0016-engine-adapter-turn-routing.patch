@@ -348,7 +348,7 @@ index 59bf6734..4f85ad00 100644
      if agent.permission_queue.is_empty() {
          return;
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-index a4d77733..e5e7988d 100644
+index a4d77733..9abc693d 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 @@ -82,6 +82,7 @@ pub(super) fn collect_live_doctor_report_for_terminal(
@@ -359,7 +359,7 @@ index a4d77733..e5e7988d 100644
      Some(report)
  }
  
-@@ -614,6 +615,167 @@ pub(super) fn dispatch_send_prompt_inner(
+@@ -614,6 +615,198 @@ pub(super) fn dispatch_send_prompt_inner(
      dispatch_send_prompt_submission(app, text, None, consume_input, literal, is_follow_up)
  }
  
@@ -378,23 +378,57 @@ index a4d77733..e5e7988d 100644
 +/// user bubble, mark the turn active, clear the composer, and spawn the streaming task whose events
 +/// the event loop's Workshop `select!` arm renders. Never touches the ACP path.
 +fn dispatch_workshop_turn(app: &mut AppView, id: AgentId, text: String) -> Vec<Effect> {
-+    use crate::app::workshop::{self, WorkshopConnection, WorkshopTurnKind, WorkshopTurnSpec};
++    // Images pasted with the prompt travel with it (the engine sends them as file parts, the
++    // CLIs as their own image inputs).
++    let pasted = match app.agents.get_mut(&id) {
++        Some(agent) => agent.prompt.drain_images(),
++        None => Vec::new(),
++    };
++    let mut images: Vec<_> = pasted
++        .iter()
++        .filter_map(crate::app::workshop::prompt_file)
++        .collect();
++    let lost_image = images.len() < pasted.len();
++    // Enter after a failure resends the failed prompt: its images go again with it.
++    if pasted.is_empty()
++        && app.workshop_turn_errored
++        && app.workshop_last_prompt.as_deref() == Some(text.as_str())
++    {
++        images = app.workshop_last_images.clone();
++    }
 +
 +    if app.workshop_turn_active {
 +        // One turn at a time on the engine: later prompts wait their turn and go out as
 +        // separate messages when this one ends (`Done` drains the queue), never concatenated.
 +        let queued = {
-+            app.workshop_turn_queue.push_back(text.trim().to_owned());
++            app.workshop_turn_queue
++                .push_back((text.trim().to_owned(), images));
 +            app.workshop_turn_queue.len()
 +        };
 +        if let Some(agent) = app.agents.get_mut(&id) {
 +            agent.prompt.set_text("");
 +        }
-+        app.show_toast(&format!(
-+            "Queued ({queued}) — sends when this turn ends. Ctrl+C cancels the current turn."
-+        ));
++        app.show_toast(&if lost_image {
++            crate::app::workshop::IMAGE_NOT_ATTACHED_LINE.to_owned()
++        } else {
++            format!(
++                "Queued ({queued}) — sends when this turn ends. Ctrl+C cancels the current turn."
++            )
++        });
 +        return vec![];
 +    }
++    start_workshop_turn(app, id, text, images, lost_image)
++}
++
++fn start_workshop_turn(
++    app: &mut AppView,
++    id: AgentId,
++    text: String,
++    images: Vec<workshop_adapters::opencode_engine::PromptFile>,
++    lost_image: bool,
++) -> Vec<Effect> {
++    use crate::app::workshop::{self, WorkshopConnection, WorkshopTurnKind, WorkshopTurnSpec};
++
 +    let Some(tx) = app.workshop_turn_tx.clone() else {
 +        // No interactive loop channel (headless / tests): nothing to stream into.
 +        return vec![];
@@ -404,16 +438,6 @@ index a4d77733..e5e7988d 100644
 +    };
 +    let cwd = agent.session.cwd.clone();
 +    let mode = workshop_permission_mode(agent);
-+    // Images pasted with the prompt travel with it (the engine sends them as file parts).
-+    let images: Vec<_> = match app.agents.get_mut(&id) {
-+        Some(agent) => agent
-+            .prompt
-+            .drain_images()
-+            .iter()
-+            .filter_map(crate::app::workshop::prompt_file)
-+            .collect(),
-+        None => Vec::new(),
-+    };
 +
 +    let kind = match &app.workshop_connection {
 +        WorkshopConnection::Shell => return vec![],
@@ -428,8 +452,10 @@ index a4d77733..e5e7988d 100644
 +            adapter_id: workshop::rail_adapter_id(*rail),
 +            resume: workshop::load_resume_id(rail.vendor().id(), &cwd),
 +            model: Some(model.model.clone()),
++            name: model.display().to_owned(),
 +        },
 +    };
++    app.workshop_last_images = images.clone();
 +    let spec = WorkshopTurnSpec {
 +        kind,
 +        cwd,
@@ -458,6 +484,11 @@ index a4d77733..e5e7988d 100644
 +            .scrollback
 +            .push_block(RenderBlock::user_prompt(text.as_str()));
 +        app.workshop_turn_prompt_entry = Some(entry);
++        if lost_image {
++            agent.scrollback.push_block(RenderBlock::system(
++                workshop::IMAGE_NOT_ATTACHED_LINE.to_owned(),
++            ));
++        }
 +        agent.prompt.set_text("");
 +        agent.workshop_turn_active = true;
 +        // The pager's own turn-status row runs from here: the wait for the model, its timers,
@@ -515,19 +546,19 @@ index a4d77733..e5e7988d 100644
 +    if app.workshop_turn_active {
 +        return vec![];
 +    }
-+    let Some(text) = app.workshop_turn_queue.pop_front() else {
++    let Some((text, images)) = app.workshop_turn_queue.pop_front() else {
 +        return vec![];
 +    };
 +    if text.is_empty() {
 +        return dispatch_workshop_next_queued(app, id);
 +    }
-+    dispatch_workshop_turn(app, id, text)
++    start_workshop_turn(app, id, text, images, false)
 +}
 +
  pub(super) fn dispatch_send_prompt_submission(
      app: &mut AppView,
      text: String,
-@@ -689,6 +851,20 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -689,6 +882,20 @@ pub(super) fn dispatch_send_prompt_submission(
          text
      };
  
@@ -548,7 +579,7 @@ index a4d77733..e5e7988d 100644
      // Capture app-level fields before the mut-borrow on `agent`.
      let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
      let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
-@@ -701,6 +877,7 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -701,6 +908,7 @@ pub(super) fn dispatch_send_prompt_submission(
      let login_method_id_from_app = app.login_method_id.as_ref().map(|id| id.0.to_string());
      let leader_mode = app.leader_mode;
      let screen_mode_is_minimal = app.screen_mode.is_minimal();
@@ -556,7 +587,7 @@ index a4d77733..e5e7988d 100644
      let Some(agent) = app.agents.get_mut(&id) else {
          return prelude;
      };
-@@ -1029,6 +1206,23 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -1029,6 +1237,23 @@ pub(super) fn dispatch_send_prompt_submission(
                  return effects;
              }
              CommandResult::QueueCommand(cmd_text) => {
@@ -580,7 +611,7 @@ index a4d77733..e5e7988d 100644
                  agent.session.enqueue_command(cmd_text);
              }
              CommandResult::InjectSkill {
-@@ -1413,7 +1607,28 @@ pub(super) fn handle_prompt_response(
+@@ -1413,7 +1638,28 @@ pub(super) fn handle_prompt_response(
      // The leader's `running_prompt_id` broadcast can arrive before this `PromptResponse`
      // Take any stashed adoption now; it is applied after `finish_turn` clears `current_prompt_id` below
      let pending_adoption = app.pending_running_adoptions.remove(&agent_id);
@@ -609,7 +640,7 @@ index a4d77733..e5e7988d 100644
          // Discard PromptResponses that don't belong to the currently active prompt
          // They belong to a turn the user rewound, or to a queued prompt that never became the running turn
          // Without the `Err` fallback, a queued prompt's RPC error has no id to gate on and is misattributed to the running turn
-@@ -1583,7 +1798,15 @@ pub(super) fn handle_prompt_response(
+@@ -1583,7 +1829,15 @@ pub(super) fn handle_prompt_response(
              || context_overflow
              || disk_full
              || request_failed_shown;
@@ -626,7 +657,7 @@ index a4d77733..e5e7988d 100644
  
          {
              let sid = agent.session.session_id.as_ref().map(|s| s.0.as_ref());
-@@ -1642,6 +1865,17 @@ pub(super) fn handle_prompt_response(
+@@ -1642,6 +1896,17 @@ pub(super) fn handle_prompt_response(
          // Insert the session event message (skip TurnCompleted for bash-mode, which has no agent turn)
          let event = match (&result, was_cancelling) {
              (Ok(_), false) if agent.bash_turn => None,
@@ -644,7 +675,7 @@ index a4d77733..e5e7988d 100644
              (Err(_), _) if dedicated_ux_shown => None,
              // `err` is already banner-formatted by `format_acp_error` at the producer, the single formatting owner
              // Don't re-format here
-@@ -1682,9 +1916,13 @@ pub(super) fn handle_prompt_response(
+@@ -1682,9 +1947,13 @@ pub(super) fn handle_prompt_response(
                  };
                  Some((NotificationEventKind::TurnComplete, body))
              }

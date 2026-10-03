@@ -889,17 +889,14 @@ async fn real_logged_out_codex_capture_fails_closed() {
     sandbox.set_exit_code(1);
     let (events, outcome) = collect(&sandbox, &CODEX, RunRequest::new("hi", sandbox.work())).await;
     assert!(last_is_terminal(&events));
-    assert!(
-        events
-            .iter()
-            .all(|e| matches!(e, AdapterEvent::Error { .. })),
-        "{events:?}"
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, AdapterEvent::Done { .. }))
-    );
+    // Codex's retry notices and the transport-fallback item are not failures: the run fails once,
+    // with `turn.failed`'s reason.
+    match events.as_slice() {
+        [AdapterEvent::Error { message }] => {
+            assert!(message.starts_with("unexpected status 401"), "{message}")
+        }
+        other => panic!("exactly one error expected: {other:?}"),
+    }
     match outcome {
         RunOutcome::Failed { reason, .. } => {
             assert!(reason.contains("401 Unauthorized"), "{reason}")

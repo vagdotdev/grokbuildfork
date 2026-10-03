@@ -274,6 +274,29 @@ pub fn google_seed_models() -> Vec<CatalogModel> {
     .collect()
 }
 
+/// OpenAI API models for a pasted key (models.dev `openai`, 2026-09-22; the same ids Codex CLI
+/// 0.157.1 lists). Keyed list endpoint, so seeded: without rows a connected key lists nothing.
+pub fn openai_seed_models() -> Vec<CatalogModel> {
+    let m = manifest("openai").expect("openai manifest");
+    let src = || seed_source("models.dev openai — seed");
+    [
+        ("gpt-6-astra", "GPT-6 Astra"),
+        ("gpt-6-sol", "GPT-6 Sol"),
+        ("gpt-6-luna", "GPT-6 Luna"),
+        ("gpt-5.6-sol", "GPT-5.6 Sol"),
+        ("gpt-5.6-terra", "GPT-5.6 Terra"),
+        ("gpt-5.6-luna", "GPT-5.6 Luna"),
+        ("gpt-5.5", "GPT-5.5"),
+    ]
+    .into_iter()
+    .map(|(id, name)| {
+        let mut r = row_for(&m, id, name, src());
+        r.tools = Some(true);
+        r
+    })
+    .collect()
+}
+
 /// NVIDIA build.nvidia.com coding-relevant trial models (live `/v1/models`, 2026-09-21).
 pub const NVIDIA_CODING_MODELS: [&str; 8] = [
     "nvidia/nemotron-3-ultra-550b-a55b",
@@ -348,6 +371,7 @@ impl Catalog {
         models.extend(openrouter_seed_models());
         models.extend(google_seed_models());
         models.extend(nvidia_seed_models());
+        models.extend(openai_seed_models());
         Self { models }
     }
 
@@ -550,7 +574,7 @@ mod tests {
         cat.push(max.clone());
         assert_eq!(fast.key(), "openai:gpt-5:fast");
         assert_eq!(max.key(), "openai:gpt-5:max");
-        assert_eq!(cat.rows_for("openai").len(), 2);
+        assert_eq!(cat.rows_for("openai").len(), openai_seed_models().len() + 2);
         let before = cat.rows_for("kilo").len();
         cat.replace_provider("kilo", vec![custom_row("kilo", "only/one:free").unwrap()]);
         assert_ne!(before, 1);

@@ -2589,6 +2589,34 @@ mod tests {
         assert!(!connected.iter().any(|r| r.provider_id() == Some("kilo")));
     }
 
+    /// A pasted OpenAI key lists OpenAI's GPT models to pick (its list endpoint needs the key, so
+    /// they are seeds); without a key OpenAI stays one connect row. In 0.2.4 a saved key made
+    /// OpenAI vanish from `/model` altogether: no rows, and no connect row either.
+    #[test]
+    fn an_openai_key_lists_gpt_models() {
+        let catalog = workshop_providers::Catalog::builtin();
+        let openai = |rows: &[ModelsRow]| -> Vec<String> {
+            rows.iter()
+                .filter(|r| r.provider_id() == Some("openai") && r.is_model())
+                .map(|r| r.title())
+                .collect()
+        };
+        let without = models_rows(&catalog, |_| false, &[], &[]);
+        assert!(openai(&without).is_empty());
+        assert!(without.iter().any(|r| matches!(
+            &r.kind,
+            RowKind::ConnectProvider { provider_id, .. } if provider_id == "openai"
+        )));
+        let with_key = models_rows(&catalog, |id| id == "openai", &[], &[]);
+        let gpt = openai(&with_key);
+        assert!(gpt.iter().any(|t| t == "GPT-6 Astra"), "{gpt:?}");
+        assert_eq!(gpt.len(), 7, "{gpt:?}");
+        assert!(with_key.iter().all(|r| !matches!(
+            &r.kind,
+            RowKind::ConnectProvider { provider_id, .. } if provider_id == "openai"
+        )));
+    }
+
     #[test]
     fn plain_model_name_drops_vendor_prefix_and_free_suffix() {
         assert_eq!(
