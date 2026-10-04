@@ -884,7 +884,12 @@ async fn keeper_main(spec: KeeperSpec) -> i32 {
     let (quit_tx, mut quit_rx) = tokio::sync::mpsc::unbounded_channel::<&'static str>();
     let (detach_tx, mut detach_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let mut attached: usize = 0;
-    let mut idle_since: Option<Instant> = Some(Instant::now());
+    // The idle clock runs only after the first Workshop has attached and the last has gone; the
+    // launch that started this keeper is about to connect, and a keep-warm of 0 must not stop the
+    // server before it does. A keeper nobody attaches to at all stops after the startup timeout.
+    let mut ever_attached = false;
+    let mut idle_since: Option<Instant> = None;
+    let first_attach_deadline = Instant::now() + startup_timeout + Duration::from_secs(10);
     let mut sigterm =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).ok();
@@ -894,6 +899,7 @@ async fn keeper_main(spec: KeeperSpec) -> i32 {
             accepted = listener.accept() => {
                 let Ok((stream, _)) = accepted else { continue };
                 attached += 1;
+                ever_attached = true;
                 idle_since = None;
                 let quit_tx = quit_tx.clone();
                 let detach_tx = detach_tx.clone();
@@ -928,11 +934,14 @@ async fn keeper_main(spec: KeeperSpec) -> i32 {
             _ = async { match sigterm.as_mut() { Some(s) => { s.recv().await; } None => std::future::pending::<()>().await } } => break "SIGTERM",
             _ = async { match sigint.as_mut() { Some(s) => { s.recv().await; } None => std::future::pending::<()>().await } } => break "SIGINT",
             _ = tick.tick() => {
-                if attached == 0
-                    && let Some(since) = idle_since
-                    && since.elapsed() >= keep_warm
-                {
-                    break "idle";
+                if attached == 0 {
+                    if ever_attached {
+                        if idle_since.is_some_and(|since| since.elapsed() >= keep_warm) {
+                            break "idle";
+                        }
+                    } else if Instant::now() > first_attach_deadline {
+                        break "no Workshop attached";
+                    }
                 }
                 // Another keeper's report must never be removed by us: only act on our own.
                 if ServeInfo::load(&home).is_none_or(|i| i.keeper_pid != std::process::id()) {
