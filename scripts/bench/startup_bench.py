@@ -38,6 +38,18 @@ def engine_state(home):
         return None
 
 
+def keeper_warm(home):
+    """Whether a keeper from an earlier launch is still serving this home (engine/serve.json names a
+    live keeper): the launch about to happen will attach instead of starting a server."""
+    try:
+        with open(os.path.join(home, ".workshop", "engine", "serve.json")) as f:
+            info = json.load(f)
+        os.kill(int(info["keeper_pid"]), 0)
+        return True
+    except Exception:
+        return False
+
+
 def run_once(binary, home, cols, rows, timeout, engine_timeout):
     env = {
         "HOME": home,
@@ -54,6 +66,7 @@ def run_once(binary, home, cols, rows, timeout, engine_timeout):
             os.remove(os.path.join(home, ".workshop", rel))
         except FileNotFoundError:
             pass
+    warm_keeper = keeper_warm(home)
     t0 = now()
     pid, fd = pty.fork()
     if pid == 0:
@@ -92,7 +105,10 @@ def run_once(binary, home, cols, rows, timeout, engine_timeout):
                 engine_ready = now() - t0
             if st.get("last_error") and engine_ready is None:
                 engine_ready = -1.0
-        if composer is not None and (engine_ready is not None or now() > engine_deadline):
+        # The composer's text arrives before the frame's end marker, and a kept-warm engine is
+        # ready before either: leave once all three are in (or the engine's deadline has passed).
+        if (composer is not None and first_frame is not None
+                and (engine_ready is not None or now() > engine_deadline)):
             break
         if composer is None and now() > deadline:
             break
@@ -131,7 +147,7 @@ def run_once(binary, home, cols, rows, timeout, engine_timeout):
     r = lambda x: None if x is None else round(x, 4)  # noqa: E731
     return dict(first_output=r(first_output), first_frame=r(first_frame), composer=r(composer),
                 engine_ready=r(engine_ready) if engine_ready != -1.0 else "error",
-                engine_phases=seen_phases)
+                engine_phases=seen_phases, keeper_warm=warm_keeper)
 
 
 def median(xs):
