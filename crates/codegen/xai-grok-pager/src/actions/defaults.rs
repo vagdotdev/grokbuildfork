@@ -511,7 +511,7 @@ pub(super) fn default_actions(
         ActionDef {
             id: ActionId::CycleMode,
             label: "mode",
-            description: "Cycle mode (Normal / Plan / Always-approve)",
+            description: "Cycle mode (Normal / Plan / Auto / Always-approve)",
             // All Shift+Tab encodings; see `input::key::shift_tab_keys()`
             default_key: crate::input::key::shift_tab_keys()[0],
             alt_keys: crate::input::key::shift_tab_keys()
@@ -524,7 +524,7 @@ pub(super) fn default_actions(
             hint_key_display: Some("Shift+Tab"),
             requires_confirmation: false,
             long_help: Some(
-                "Steps the session mode: Normal -> Plan -> Always-Approve -> Normal.\nPlan keeps the agent planning first and writes no files; Always-Approve runs every tool call without asking.\nCtrl+O toggles auto-approve directly.",
+                "Steps the session mode: Normal -> Plan -> Auto -> Always-Approve -> Normal (Auto only where it is offered).\nPlan keeps the agent planning first and writes no files; Auto checks each tool call first and asks only about the ones it will not allow; Always-Approve runs every tool call without asking.\nCtrl+O toggles auto-approve directly.",
             ),
         },
         // ── Panes (agent-level: toggle side panes) ─────────────────

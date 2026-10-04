@@ -258,11 +258,15 @@ fn session_created_banner_advertises_resume_in_minimal_mode() {
     let texts = all_system_texts(&app, id);
     let banner = texts
         .iter()
-        .find(|t| t.contains("switch between sessions"))
+        .find(|t| t.contains("switches between sessions"))
         .unwrap_or_else(|| panic!("expected a session-switch banner, got: {texts:?}"));
     assert!(
-        banner.contains("Session new-session-123, use /resume to switch between sessions"),
+        banner.contains("New session \u{2014} /resume switches between sessions"),
         "minimal mode must advertise /resume: {banner}"
+    );
+    assert!(
+        !banner.contains("new-session-123"),
+        "the banner never prints the session id: {banner}"
     );
     assert!(
         !texts.iter().any(|t| t.contains("/dashboard")),
@@ -298,12 +302,13 @@ fn session_created_banner_after_minimal_new_replacing_session() {
     let texts = all_system_texts(&app, id);
     let banner = texts
         .iter()
-        .find(|t| t.contains("switch between sessions"))
+        .find(|t| t.contains("switches between sessions"))
         .unwrap_or_else(|| panic!("expected a session-switch banner, got: {texts:?}"));
     assert!(
-        banner.contains("Session sess-b, use /resume to switch between sessions"),
+        banner.contains("New session \u{2014} /resume switches between sessions"),
         "minimal /new must still advertise /resume after dropping the prior view: {banner}"
     );
+    assert!(!banner.contains("sess-b"), "no session id: {banner}");
 }
 #[test]
 fn global_cancel_subagents_pref_skips_panel_without_session_override() {

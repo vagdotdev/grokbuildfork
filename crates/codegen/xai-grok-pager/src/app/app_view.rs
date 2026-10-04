@@ -3274,7 +3274,14 @@ impl AppView {
         };
         if def.requires_confirmation {
             let shortcut = KeyShortcut::from(*key);
-            self.pending_action = Some(PendingAction::new(Action::Quit, shortcut, def.label));
+            // Workshop: two seconds to read `press again to quit` and press again (the
+            // dashboard's confirm window); the one-second default lost people who read first.
+            self.pending_action = Some(PendingAction::with_ttl(
+                Action::Quit,
+                shortcut,
+                Some(def.label),
+                crate::views::dashboard::state::CONFIRM_WINDOW,
+            ));
             InputOutcome::Changed
         } else {
             InputOutcome::Action(Action::Quit)
