@@ -512,12 +512,17 @@ pub fn build_default_otel_layer_config() -> xai_grok_telemetry::otel_layer::Otel
     let endpoints = crate::agent::config::EndpointsConfig::default();
     let (credentials, token_header_value) =
         crate::credential_factory::build_bootstrap_otel_credentials();
+    // Workshop: the internal trace pipeline exports only to a destination someone configured.
+    // Its inherited default is the (neutral, loopback) chat proxy, where nothing listens, yet
+    // building its exporter costs a TLS client at tracing init — and that waits for the OS trust
+    // store, 120–230 ms on macOS (the Keychain), on the path to the first frame.
     let exporter = xai_grok_telemetry::otel_layer::OtelExporterConfig {
         traces_url: endpoints.resolve_otlp_traces_endpoint(),
         extra_headers: endpoints.resolve_otlp_headers(),
         export_interval: endpoints.resolve_otlp_export_interval(),
         timeout: endpoints.resolve_otlp_timeout(),
         enabled: endpoints.resolve_traces_export_enabled()
+            && endpoints.has_internal_otlp_destination()
             && !crate::agent::config::is_telemetry_explicitly_disabled_sync(),
     };
     xai_grok_telemetry::otel_layer::OtelLayerConfig {

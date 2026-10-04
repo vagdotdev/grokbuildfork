@@ -320,6 +320,15 @@ impl EndpointsConfig {
         }
         format!("{}/traces", self.proxy_url().trim_end_matches('/'))
     }
+    /// Workshop: whether someone configured a destination for the internal trace pipeline —
+    /// `GROK_INTERNAL_OTLP_TRACES_ENDPOINT`, or the legacy standard OTEL variables while the
+    /// external-OTEL master switch is unset. Without one, the pipeline would export to the
+    /// inherited default (the chat proxy, neutral and loopback in Workshop), where nothing listens.
+    pub(crate) fn has_internal_otlp_destination(&self) -> bool {
+        blank_as_unset(&self.grok_internal_otlp_traces_endpoint).is_some()
+            || (!self.external_otel_master_switch
+                && self.legacy_internal_otlp_traces_endpoint().is_some())
+    }
     /// Legacy (standard-OTEL-var) internal traces endpoint, if any.
     /// `otel_exporter_otlp_traces_endpoint` verbatim, else `otel_exporter_otlp_endpoint` + `/v1/traces`.
     /// Ignores the master switch.

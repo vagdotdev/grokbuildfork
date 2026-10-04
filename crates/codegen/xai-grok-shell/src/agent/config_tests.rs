@@ -8435,3 +8435,26 @@ async fn process_key_from_model_env_key() {
         Some(TOKEN)
     );
 }
+/// Workshop: the internal trace pipeline has a destination only when someone configured one.
+/// The inherited default (the chat proxy) is not one, so no exporter — and no TLS client at
+/// tracing init — is built for it.
+#[test]
+fn internal_otlp_destination_only_when_configured() {
+    let mut endpoints = EndpointsConfig::default();
+    endpoints.grok_internal_otlp_traces_endpoint = None;
+    endpoints.otel_exporter_otlp_endpoint = None;
+    endpoints.otel_exporter_otlp_traces_endpoint = None;
+    assert!(!endpoints.has_internal_otlp_destination());
+    endpoints.grok_internal_otlp_traces_endpoint = Some("   ".to_owned());
+    assert!(!endpoints.has_internal_otlp_destination(), "blank is unset");
+    endpoints.grok_internal_otlp_traces_endpoint =
+        Some("https://collector.example/v1/traces".to_owned());
+    assert!(endpoints.has_internal_otlp_destination());
+    // The legacy standard variables count only while the external-OTEL master switch is unset.
+    endpoints.grok_internal_otlp_traces_endpoint = None;
+    endpoints.otel_exporter_otlp_endpoint = Some("https://collector.example".to_owned());
+    endpoints.external_otel_master_switch = false;
+    assert!(endpoints.has_internal_otlp_destination());
+    endpoints.external_otel_master_switch = true;
+    assert!(!endpoints.has_internal_otlp_destination());
+}

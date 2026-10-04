@@ -28,10 +28,14 @@ impl ModelSource for OaiModelSource {
         self.endpoint.url.clone()
     }
     fn fetch(&self, auth: Option<&GrokAuth>) -> Result<FetchModelsResult, BackendError> {
-        let client = crate::http::shared_startup_blocking_client();
-        tracing::info!("Fetching models from {}", self.endpoint.url);
-        let mut request = client.get(&self.endpoint.url);
-        match self.endpoint.auth {
+        // Workshop: the credentials are resolved before the HTTP client is built. A launch with
+        // nothing to fetch with (no key, no session) then builds no client — the startup
+        // blocking client waits for the OS trust store, which is 120–230 ms on macOS.
+        enum Credential<'a> {
+            Key(String),
+            Session(&'a GrokAuth),
+        }
+        let credential = match self.endpoint.auth {
             EndpointAuth::ApiKey => {
                 let api_key = crate::agent::auth_method::read_xai_api_key_env()
                     .or_else(|_| {
@@ -43,7 +47,7 @@ impl ModelSource for OaiModelSource {
                             "No API key for custom models endpoint. Set XAI_API_KEY.".into(),
                         )
                     })?;
-                request = request.header("Authorization", format!("Bearer {}", api_key));
+                Credential::Key(api_key)
             }
             EndpointAuth::Session => {
                 let auth = auth
@@ -51,6 +55,17 @@ impl ModelSource for OaiModelSource {
                     .ok_or_else(|| {
                         BackendError::Auth("No auth credentials for cli-chat-proxy".into())
                     })?;
+                Credential::Session(auth)
+            }
+        };
+        let client = crate::http::shared_startup_blocking_client();
+        tracing::info!("Fetching models from {}", self.endpoint.url);
+        let mut request = client.get(&self.endpoint.url);
+        match credential {
+            Credential::Key(api_key) => {
+                request = request.header("Authorization", format!("Bearer {}", api_key));
+            }
+            Credential::Session(auth) => {
                 request = request
                     .header("Authorization", format!("Bearer {}", &auth.key))
                     .header("X-XAI-Token-Auth", "xai-grok-cli")
