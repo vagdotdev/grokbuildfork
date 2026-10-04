@@ -111,6 +111,7 @@ pub fn apply_engine_probe(report: &mut DiagnosticReport) {
         connection: crate::app::workshop::load_active_connection()
             .composer_label()
             .unwrap_or_else(|| "shell (Direct API / Local model)".to_owned()),
+        free_models: crate::app::workshop::free_models_setting_line(),
         binary,
         version,
         binary_status,

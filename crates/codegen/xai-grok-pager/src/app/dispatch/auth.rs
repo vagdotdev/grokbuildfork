@@ -245,7 +245,7 @@ pub(super) fn dispatch_open_connection_picker(
         None => {
             app.connection_picker = Some(
                 workshop_auth::PickerState::new()
-                    .with_active(app.workshop_connection.active_row_id())
+                    .with_active(crate::app::workshop::active_row_id(app))
                     .with_focus(focus),
             );
             // Rows and rails load asynchronously: loopback local-server probe, the cached model
@@ -357,6 +357,24 @@ pub(super) fn dispatch_workshop_set_effort(app: &mut AppView, level: String) -> 
 /// and `/auth` remain the only doors afterwards.
 pub(super) fn dispatch_workshop_first_run(app: &mut AppView) -> Vec<Effect> {
     app.workshop_first_launch = true;
+    // Prototype (`WORKSHOP_FREE_MODELS=direct`): land on the keyless pool model as the shell's own
+    // model instead — a Direct API row, so the turn runs in the shell's agent loop and nothing
+    // here or in the event loop brings an engine up.
+    if crate::app::workshop::free_models_mode() == crate::app::workshop::FreeModelsMode::Direct {
+        return match crate::app::workshop::activate_direct_default() {
+            Ok(plan) => {
+                crate::app::workshop::export_env(&plan.env);
+                set_workshop_connection(app, crate::app::workshop::WorkshopConnection::Shell);
+                start_workshop_activation(app, plan.key)
+            }
+            Err(e) => {
+                app.auth_state = AuthState::Pending {
+                    error: Some(format!("Could not write config.toml: {e}")),
+                };
+                vec![]
+            }
+        };
+    }
     set_workshop_connection(app, crate::app::workshop::first_run_connection());
     match crate::app::workshop::activate_placeholder_session(&app.workshop_connection) {
         Ok(key) => start_workshop_activation(app, key),
@@ -407,9 +425,99 @@ pub(super) fn dispatch_workshop_engine_unavailable(
     // The connection stays what the user has (the next launch tries it again); only this
     // process routes through the fallback, and the composer names the model that answers.
     app.workshop_fallback = Some(workshop_auth::plain_model_name(&plan.display_name));
-    app.workshop_resend = Some((agent_id, text));
+    app.workshop_resend = Some((agent_id, crate::app::workshop::WorkshopResend::Text(text)));
     app.auth_return_view = Some(ActiveView::Agent(agent_id));
     start_workshop_activation(app, plan.key)
+}
+
+/// Direct mode: route the shell's own model to pool row `to` — it is gone from the list,
+/// rate-limited, or cannot see the prompt's images — say `line` once when there is one (a system
+/// line in the open session, a toast on the home screen), and send `resend` again once the shell
+/// has reloaded (`handle_auth_complete`). The connection stays the shell's; only its model moves,
+/// and the composer names the model that answers.
+pub(super) fn switch_pool_model(
+    app: &mut AppView,
+    agent_id: Option<AgentId>,
+    to: &workshop_providers::CatalogModel,
+    line: Option<String>,
+    resend: Option<crate::app::workshop::WorkshopResend>,
+) -> Vec<Effect> {
+    let plan = match crate::app::workshop::activate_pool_model(to) {
+        Ok(plan) => plan,
+        Err(e) => {
+            crate::app::workshop::log_failure_cause(&format!("pool switch failed: {e}"));
+            return Vec::new();
+        }
+    };
+    crate::app::workshop::export_env(&plan.env);
+    if let Some(line) = line {
+        tracing::info!(%line, "workshop: pool model switched");
+        match agent_id.filter(|id| app.agents.contains_key(id)) {
+            Some(id) => {
+                if let Some(agent) = app.agents.get_mut(&id) {
+                    agent.scrollback.push_block(RenderBlock::system(line));
+                }
+            }
+            None if matches!(app.active_view, ActiveView::Welcome) => {
+                app.welcome_toast = Some((
+                    crate::glyphs::sanitize_toast_message(&line).into_owned(),
+                    std::time::Instant::now() + crate::app::workshop::RETIRED_NOTICE_FOR,
+                ));
+            }
+            None => app.show_toast(&line),
+        }
+    }
+    if let Some(id) = agent_id {
+        if let Some(resend) = resend {
+            app.workshop_resend = Some((id, resend));
+        }
+        app.auth_return_view = Some(ActiveView::Agent(id));
+    }
+    if let Some(picker) = app.connection_picker.as_mut() {
+        picker.active_id = Some(to.key());
+    }
+    start_workshop_activation(app, plan.key)
+}
+
+/// Direct mode: the pool list just read no longer offers the shell's pool model (owner rule: the
+/// pick sticks unless it is gone) — the chain's next row takes over with one plain line. The
+/// list counts only once it was fetched: seed rows are no evidence, and an engine / adapter
+/// connection or a session the silent fallback carries is not the pool's to move.
+pub(super) fn apply_pool_retired_pick(
+    app: &mut AppView,
+    snap: &workshop_auth::PickerSnapshot,
+) -> Vec<Effect> {
+    use workshop_auth::pool::POOL_PROVIDER_ID;
+    if !app.workshop_connection.is_shell() || app.workshop_fallback.is_some() {
+        return Vec::new();
+    }
+    let Some(current) = crate::app::workshop::active_pool_model() else {
+        return Vec::new();
+    };
+    let known = snap
+        .catalog_status
+        .iter()
+        .find(|s| s.provider_id == POOL_PROVIDER_ID)
+        .is_some_and(|s| s.freshness != workshop_auth::Freshness::Seed && s.rows > 0);
+    if !known {
+        return Vec::new();
+    }
+    let listed = snap.rows.iter().any(|r| {
+        matches!(&r.kind, workshop_auth::RowKind::Catalog { model, .. }
+            if model.provider_id == POOL_PROVIDER_ID && model.model_id == current.model_id)
+    });
+    if listed {
+        return Vec::new();
+    }
+    let Some((to, line)) = crate::app::workshop::pool_switch(&current, "is no longer offered")
+    else {
+        return Vec::new();
+    };
+    let agent_id = match app.active_view {
+        ActiveView::Agent(id) if app.agents.contains_key(&id) => Some(id),
+        _ => None,
+    };
+    switch_pool_model(app, agent_id, &to, Some(line), None)
 }
 
 /// Close the picker and return to the view it was opened from.
@@ -453,7 +561,14 @@ pub(super) fn dispatch_connection_picker(
             start_optional_xai_login(app)
         }
         PickerOutcome::SelectCatalog(model) => {
-            match crate::app::workshop::activate_catalog_model(&model) {
+            // A community-pool row (direct mode) is written the way the first run writes it:
+            // plain name, the pool's retry cap.
+            let activation = if model.provider_id == workshop_auth::pool::POOL_PROVIDER_ID {
+                crate::app::workshop::activate_pool_model(&model)
+            } else {
+                crate::app::workshop::activate_catalog_model(&model)
+            };
+            match activation {
                 Ok(plan) => {
                     crate::app::workshop::export_env(&plan.env);
                     picker.set_status(format!(
@@ -722,13 +837,37 @@ pub(super) fn handle_auth_complete(
             // Workshop: the prompt whose OpenCode turn could not start goes out again on the
             // fallback model that has just been activated — silently; the composer already
             // names the model that will answer (`dispatch_workshop_engine_unavailable`).
-            if let Some((id, text)) = app.workshop_resend.take()
+            if let Some((id, resend)) = app.workshop_resend.take()
                 && let Some(agent) = app.agents.get_mut(&id)
             {
-                agent
-                    .session
-                    .enqueue_entry(text, crate::app::agent::QueueEntryKind::Prompt);
+                let mut line: Option<String> = None;
+                match resend {
+                    crate::app::workshop::WorkshopResend::Text(text) => {
+                        agent
+                            .session
+                            .enqueue_entry(text, crate::app::agent::QueueEntryKind::Prompt);
+                    }
+                    crate::app::workshop::WorkshopResend::Held(held) => {
+                        agent.session.enqueue_prompt(held.text);
+                        let mut untaken = super::queue::attach_prompt_state_to_last_queued(
+                            agent,
+                            held.images,
+                            held.chip_elements,
+                            &mut app.pending_image_notices,
+                        );
+                        crate::prompt_images::drain_and_cleanup(
+                            crate::prompt_images::SessionPathPolicy::Preserve,
+                            &mut untaken,
+                        );
+                        line = held.line;
+                    }
+                }
                 let drain = maybe_drain_queue(agent, &mut app.pending_image_notices);
+                // The one plain line about a pool switch sits under the prompt as it goes out
+                // again, so the answer that follows reads as the named model's.
+                if let Some(line) = line.take() {
+                    agent.scrollback.push_block(RenderBlock::system(line));
+                }
                 retry_effects.extend(drain.effects);
                 page_flips.push((agent.session.id, drain.page_flip_entry));
             }

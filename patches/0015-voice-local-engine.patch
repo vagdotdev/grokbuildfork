@@ -794,7 +794,7 @@ index 2dfa5642..f4c471bf 100644
              "source '{}'; source '{}'; ssh -p 2222 host; env | string match -rq '^ssh='; and exit 9; or exit 0",
              rc.display(),
 diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs b/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
-index 2bf69489..76f477ee 100644
+index 2bf69489..379fdc3d 100644
 --- a/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/diagnostics/mod.rs
 @@ -39,16 +39,23 @@ pub(crate) use model::{
@@ -824,7 +824,7 @@ index 2bf69489..76f477ee 100644
      match xai_grok_voice::input_device_info() {
          Ok(device) => {
              report.facts.voice = Some(VoiceFacts::Device {
-@@ -71,6 +78,103 @@ pub fn apply_voice_probe(report: &mut DiagnosticReport, emit_missing_issue: bool
+@@ -71,6 +78,104 @@ pub fn apply_voice_probe(report: &mut DiagnosticReport, emit_missing_issue: bool
      }
  }
  
@@ -861,6 +861,7 @@ index 2bf69489..76f477ee 100644
 +        connection: crate::app::workshop::load_active_connection()
 +            .composer_label()
 +            .unwrap_or_else(|| "shell (Direct API / Local model)".to_owned()),
++        free_models: crate::app::workshop::free_models_setting_line(),
 +        binary,
 +        version,
 +        binary_status,
@@ -928,7 +929,7 @@ index 2bf69489..76f477ee 100644
  fn voice_missing_finding(error: String) -> DiagnosticFinding {
      DiagnosticFinding {
          id: VOICE_NO_INPUT_DEVICE_ID,
-@@ -80,7 +184,7 @@ fn voice_missing_finding(error: String) -> DiagnosticFinding {
+@@ -80,7 +185,7 @@ fn voice_missing_finding(error: String) -> DiagnosticFinding {
          automatic_remediation: None,
          note: Some(
              "Connect or select a microphone in your system sound settings. On Linux, install a \
@@ -937,7 +938,7 @@ index 2bf69489..76f477ee 100644
               doctor` again. Doctor can't detect denied macOS microphone access when the system \
               returns silence; follow the message shown when dictation fails."
                  .to_owned(),
-@@ -115,12 +219,12 @@ pub enum WarningCategory {
+@@ -115,12 +220,12 @@ pub enum WarningCategory {
      /// Every native copy then goes through a focus-dependent path (arboard via the XWayland selection bridge, or `wl-copy` without data-control).
      /// A copy fails if the terminal loses focus mid-copy.
      WaylandNoDataControl,
@@ -952,7 +953,7 @@ index 2bf69489..76f477ee 100644
      /// Clipboard forwarding and terminal-mode restore on dropped connections are then not guaranteed.
      /// An informational recommendation, not a breakage.
      SshWithoutWrap,
-@@ -229,8 +333,8 @@ pub(crate) fn collect_startup_warnings_from(
+@@ -229,8 +334,8 @@ pub(crate) fn collect_startup_warnings_from(
              None,
          );
          warning.note = Some(
@@ -963,7 +964,7 @@ index 2bf69489..76f477ee 100644
               supports OSC 52. You can also use `/copy <file>` or `/minimal`."
                  .to_owned(),
          );
-@@ -260,7 +364,7 @@ pub(crate) fn collect_startup_warnings_from(
+@@ -260,7 +365,7 @@ pub(crate) fn collect_startup_warnings_from(
      {
          let message = match fullscreen_active {
              Some(true) => "Fullscreen may be unreliable in tmux control mode",
@@ -972,7 +973,7 @@ index 2bf69489..76f477ee 100644
              None => "Display may be limited in tmux control mode",
          };
          let mut warning = TerminalWarning::new(WarningCategory::ControlMode, message, None, None);
-@@ -354,7 +458,7 @@ pub(crate) fn wezterm_kitty_keyboard_warning_from(
+@@ -354,7 +459,7 @@ pub(crate) fn wezterm_kitty_keyboard_warning_from(
              None,
          );
          warning.note = Some(
@@ -981,7 +982,7 @@ index 2bf69489..76f477ee 100644
               keyboard protocol over SSH yet. `enable_kitty_keyboard = true` applies only to \
               local WezTerm sessions."
                  .to_string(),
-@@ -396,7 +500,7 @@ fn sandbox_profile_conflict_warning_from(conflicts: Vec<String>) -> Option<Termi
+@@ -396,7 +501,7 @@ fn sandbox_profile_conflict_warning_from(conflicts: Vec<String>) -> Option<Termi
          fix: None,
          config_path: None,
          note: Some(format!(
@@ -990,7 +991,7 @@ index 2bf69489..76f477ee 100644
               or remove the conflicting project profile. Project settings can add profile names \
               but can't redefine a user profile.",
              crate::util::display_user_grok_path(xai_grok_config::SANDBOX_CONFIG_FILENAME)
-@@ -404,7 +508,7 @@ fn sandbox_profile_conflict_warning_from(conflicts: Vec<String>) -> Option<Termi
+@@ -404,7 +509,7 @@ fn sandbox_profile_conflict_warning_from(conflicts: Vec<String>) -> Option<Termi
      })
  }
  
@@ -999,7 +1000,7 @@ index 2bf69489..76f477ee 100644
  /// local machine. Gates (all must hold). This detector only describes the environment. All inputs are injected so
  /// tests never touch ambient env (pattern: [`diagnose_wayland_data_control`]).
  pub fn ssh_wrap_hint(
-@@ -418,7 +522,7 @@ pub fn ssh_wrap_hint(
+@@ -418,7 +523,7 @@ pub fn ssh_wrap_hint(
      let mut warning = TerminalWarning::new(
          WarningCategory::SshWithoutWrap,
          "Use local SSH wrapping for more reliable clipboard copy and terminal recovery",
@@ -1008,7 +1009,7 @@ index 2bf69489..76f477ee 100644
          None,
      );
      warning.note = Some(
-@@ -526,7 +630,7 @@ pub(crate) fn collect_notification_warnings_with_method(
+@@ -526,7 +631,7 @@ pub(crate) fn collect_notification_warnings_with_method(
      {
          let mut warning = TerminalWarning::new(
              WarningCategory::NotificationProtocolFallback,
@@ -1017,7 +1018,7 @@ index 2bf69489..76f477ee 100644
              None,
              None,
          );
-@@ -848,7 +952,7 @@ pub fn format_clipboard_diagnostics(input: ClipboardDiagnosticsInput<'_>) -> Cli
+@@ -848,7 +953,7 @@ pub fn format_clipboard_diagnostics(input: ClipboardDiagnosticsInput<'_>) -> Cli
      }
  }
  
@@ -1026,7 +1027,7 @@ index 2bf69489..76f477ee 100644
  ///
  /// Not in `collect_startup_warnings`: limited color is normal on some emulators and would spam the welcome banner.
  pub fn color_support_warning(
-@@ -865,13 +969,13 @@ pub fn color_support_warning(
+@@ -865,13 +970,13 @@ pub fn color_support_warning(
              None,
              None,
          );
@@ -1043,7 +1044,7 @@ index 2bf69489..76f477ee 100644
      if color_passthrough == TmuxColorPassthrough::Reduced {
          let mut warning = TerminalWarning::new(
              WarningCategory::TmuxColorReduced,
-@@ -882,7 +986,7 @@ pub fn color_support_warning(
+@@ -882,7 +987,7 @@ pub fn color_support_warning(
          warning.note = Some(format!(
              "Run `tmux source-file {tmux_config_path}`, then detach and reattach: the server \
               reads the option only on reload, and a client fixes its color depth only at attach. \
@@ -1052,7 +1053,7 @@ index 2bf69489..76f477ee 100644
               default-terminal \"tmux-256color\"` and `export COLORTERM=truecolor` to your shell \
               startup file."
          ));
-@@ -901,7 +1005,7 @@ pub fn color_support_warning(
+@@ -901,7 +1006,7 @@ pub fn color_support_warning(
      if brand == TerminalName::AppleTerminal {
          let mut warning = TerminalWarning::new(
              WarningCategory::LimitedColorSupport,
@@ -1061,7 +1062,7 @@ index 2bf69489..76f477ee 100644
              None,
              None,
          );
-@@ -913,7 +1017,7 @@ pub fn color_support_warning(
+@@ -913,7 +1018,7 @@ pub fn color_support_warning(
          let mut warning = TerminalWarning::new(
              WarningCategory::LimitedColorSupport,
              &format!(
@@ -1070,7 +1071,7 @@ index 2bf69489..76f477ee 100644
              ),
              Some("set -as terminal-features \",*:RGB\""),
              Some(tmux_config_path),
-@@ -921,20 +1025,20 @@ pub fn color_support_warning(
+@@ -921,20 +1026,20 @@ pub fn color_support_warning(
          warning.note = Some(format!(
              "In the same tmux config, also add `set -g default-terminal \"tmux-256color\"`. Add \
               `export COLORTERM=truecolor` to your shell startup file. Then reload tmux with \
@@ -1094,7 +1095,7 @@ index 2bf69489..76f477ee 100644
              .to_string(),
      );
      Some(warning)
-@@ -2061,7 +2165,7 @@ mod tests {
+@@ -2061,7 +2166,7 @@ mod tests {
          // is_ssh, no sink, not VS Code remote: recommend wrap
          let w = ssh_wrap_hint(true, false, false).expect("hint must fire");
          assert_eq!(w.category, WarningCategory::SshWithoutWrap);
@@ -1103,7 +1104,7 @@ index 2bf69489..76f477ee 100644
          assert!(
              w.config_path.is_none(),
              "fix is a command, not a config line"
-@@ -2082,7 +2186,7 @@ mod tests {
+@@ -2082,7 +2187,7 @@ mod tests {
  
      #[test]
      fn ssh_wrap_hint_suppressed_when_sink_active() {
@@ -1112,7 +1113,7 @@ index 2bf69489..76f477ee 100644
          assert!(ssh_wrap_hint(true, true, false).is_none());
      }
  
-@@ -2431,7 +2535,7 @@ mod tests {
+@@ -2431,7 +2536,7 @@ mod tests {
          assert!(finding.automatic_remediation.is_none());
          assert!(finding.note.as_deref().is_some_and(|note| {
              note.contains("install a supported audio recorder")
@@ -1121,7 +1122,7 @@ index 2bf69489..76f477ee 100644
                  && note.contains("can't detect denied macOS microphone access")
          }));
      }
-@@ -2911,7 +3015,7 @@ mod tests {
+@@ -2911,7 +3016,7 @@ mod tests {
          );
      }
  
@@ -1131,10 +1132,10 @@ index 2bf69489..76f477ee 100644
      fn color_support_warning_reports_tmux_clamp_without_color_evidence() {
          let w = color_support_warning(
 diff --git a/crates/codegen/xai-grok-pager/src/diagnostics/model.rs b/crates/codegen/xai-grok-pager/src/diagnostics/model.rs
-index 25294d16..82886ce3 100644
+index 25294d16..f85d1639 100644
 --- a/crates/codegen/xai-grok-pager/src/diagnostics/model.rs
 +++ b/crates/codegen/xai-grok-pager/src/diagnostics/model.rs
-@@ -95,6 +95,50 @@ pub struct DiagnosticFacts {
+@@ -95,6 +95,54 @@ pub struct DiagnosticFacts {
      /// Passive mic enumeration when voice capture is available.
      /// `None` omits the Voice section (no-audio builds, or TUI when voice mode is off).
      pub voice: Option<VoiceFacts>,
@@ -1151,6 +1152,10 @@ index 25294d16..82886ce3 100644
 +pub struct OpenCodeEngineFacts {
 +    /// The active connection as the composer shows it (`Big Pickle · OpenCode`, or `shell`).
 +    pub connection: String,
++    /// How the free models run: `engine` (OpenCode's catalog through `opencode serve`, the
++    /// default) or `direct` (the community pool in Workshop's own agent loop, no engine), with
++    /// where the setting comes from.
++    pub free_models: String,
 +    /// Resolved `opencode` binary, or `None` when none is installed.
 +    pub binary: Option<String>,
 +    pub version: Option<String>,
@@ -1185,7 +1190,7 @@ index 25294d16..82886ce3 100644
  }
  
  /// Result of a passive input-device lookup (does not open a capture stream).
-@@ -122,7 +166,7 @@ pub struct TmuxFacts {
+@@ -122,7 +170,7 @@ pub struct TmuxFacts {
  pub enum TmuxColorPassthrough {
      /// The client advertises `RGB`, so truecolor SGR reaches the terminal.
      Forwarded,
@@ -1356,7 +1361,7 @@ index 96ddc4b0..4deabb04 100644
          (
              TerminalContext {
 diff --git a/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs b/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
-index 5cc76928..a6c3a8a1 100644
+index 5cc76928..88120934 100644
 --- a/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
 +++ b/crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs
 @@ -5,11 +5,12 @@ use crate::diagnostics::{
@@ -1386,7 +1391,7 @@ index 5cc76928..a6c3a8a1 100644
          match voice {
              VoiceFacts::Device { name, detail } => {
                  fact(&mut out, "microphone", &format!("{name} ({detail})"));
-@@ -137,6 +140,79 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
+@@ -137,6 +140,80 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
              }
          }
      }
@@ -1431,6 +1436,7 @@ index 5cc76928..a6c3a8a1 100644
 +    if let Some(engine) = &facts.engine {
 +        out.push_str("\nOpenCode (free models)\n");
 +        fact(&mut out, "connection", &engine.connection);
++        fact(&mut out, "free models", &engine.free_models);
 +        match (&engine.binary, &engine.version) {
 +            (Some(path), Some(version)) => fact(&mut out, "binary", &format!("{path} ({version})")),
 +            (Some(path), None) => fact(
@@ -1466,7 +1472,7 @@ index 5cc76928..a6c3a8a1 100644
  
      if !report.findings.is_empty() {
          out.push_str("\nFindings\n");
-@@ -244,6 +320,13 @@ fn format_newline(newline: &NewlineFact) -> String {
+@@ -244,6 +321,13 @@ fn format_newline(newline: &NewlineFact) -> String {
      format!("Alt+Enter ({detail})")
  }
  
@@ -1481,7 +1487,7 @@ index 5cc76928..a6c3a8a1 100644
      if count == 1 { singular } else { plural }
  }
 diff --git a/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs b/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs
-index 3c4932bb..e70b9601 100644
+index 3c4932bb..0dd31396 100644
 --- a/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs
 +++ b/crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs
 @@ -3,7 +3,7 @@ use serde::Serialize;
@@ -1493,7 +1499,7 @@ index 3c4932bb..e70b9601 100644
  };
  use crate::host::HostOs;
  use crate::terminal::{ByobuBackend, ModifierFate, MultiplexerKind, TerminalName};
-@@ -58,6 +58,48 @@ struct JsonFacts<'a> {
+@@ -58,6 +58,50 @@ struct JsonFacts<'a> {
      clipboard: JsonClipboardFacts<'a>,
      #[serde(skip_serializing_if = "Option::is_none")]
      voice: Option<JsonVoiceFacts<'a>>,
@@ -1509,6 +1515,7 @@ index 3c4932bb..e70b9601 100644
 +#[serde(rename_all = "camelCase")]
 +struct JsonOpenCodeEngineFacts<'a> {
 +    connection: &'a str,
++    free_models: &'a str,
 +    #[serde(skip_serializing_if = "Option::is_none")]
 +    binary: Option<&'a str>,
 +    #[serde(skip_serializing_if = "Option::is_none")]
@@ -1529,6 +1536,7 @@ index 3c4932bb..e70b9601 100644
 +    fn from(f: &'a OpenCodeEngineFacts) -> Self {
 +        Self {
 +            connection: &f.connection,
++            free_models: &f.free_models,
 +            binary: f.binary.as_deref(),
 +            version: f.version.as_deref(),
 +            binary_status: &f.binary_status,
@@ -1542,7 +1550,7 @@ index 3c4932bb..e70b9601 100644
  }
  
  impl<'a> From<&'a DiagnosticReport> for JsonFacts<'a> {
-@@ -91,6 +133,44 @@ impl<'a> From<&'a DiagnosticReport> for JsonFacts<'a> {
+@@ -91,6 +135,44 @@ impl<'a> From<&'a DiagnosticReport> for JsonFacts<'a> {
              newline: facts.newline.as_ref().map(JsonNewlineFact::from),
              clipboard: JsonClipboardFacts::from(&facts.clipboard),
              voice: facts.voice.as_ref().map(JsonVoiceFacts::from),

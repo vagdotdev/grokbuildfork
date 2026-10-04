@@ -1097,8 +1097,12 @@ pub struct AppView {
     /// Kilo fallback).
     pub workshop_turn_prompt_entry: Option<crate::scrollback::EntryId>,
     /// Workshop: the prompt whose OpenCode turn could not start, held until the silent fallback
-    /// model has been activated (`AuthComplete`), then resent through the shell — no notice.
-    pub workshop_resend: Option<(crate::app::agent::AgentId, String)>,
+    /// model has been activated (`AuthComplete`), then resent through the shell — no notice. The
+    /// direct mode's pool switches (rate-limited, vision) hold their prompt here too.
+    pub workshop_resend: Option<(
+        crate::app::agent::AgentId,
+        crate::app::workshop::WorkshopResend,
+    )>,
     /// Workshop: the silent fallback is carrying this session's turns (the OpenCode model could not
     /// start or answer); holds the answering model's plain name for the composer. Cleared when the
     /// user picks a connection or the fallback fails too.
@@ -4939,23 +4943,17 @@ impl AppView {
                                 .workshop_fallback
                                 .clone()
                                 .or_else(|| self.workshop_connection.composer_label());
-                            let model_name = match workshop_label {
-                                Some(label) => {
-                                    if self.workshop_first_launch {
-                                        for text in
-                                            ["/model to switch", "/auth to connect subscriptions"]
-                                        {
-                                            flags_vec.push(
-                                                crate::views::prompt_widget::PromptFlag {
-                                                    text,
-                                                    color: Some(theme.gray_bright),
-                                                    bold: false,
-                                                },
-                                            );
-                                        }
-                                    }
-                                    label
+                            if self.workshop_first_launch {
+                                for text in ["/model to switch", "/auth to connect subscriptions"] {
+                                    flags_vec.push(crate::views::prompt_widget::PromptFlag {
+                                        text,
+                                        color: Some(theme.gray_bright),
+                                        bold: false,
+                                    });
                                 }
+                            }
+                            let model_name = match workshop_label {
+                                Some(label) => label,
                                 None => {
                                     let model_name_base =
                                         self.models.current_model_name().unwrap_or_default();

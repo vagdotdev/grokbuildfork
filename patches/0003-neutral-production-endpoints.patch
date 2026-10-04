@@ -78,7 +78,7 @@ index 8c1e9633..f5fec182 100644
              changelog.markdown.as_deref(),
              Some("# seeded offline md\n"),
 diff --git a/crates/codegen/xai-grok-shell/src/agent/config.rs b/crates/codegen/xai-grok-shell/src/agent/config.rs
-index b3b09925..db52f8ad 100644
+index b3b09925..2f81b4e5 100644
 --- a/crates/codegen/xai-grok-shell/src/agent/config.rs
 +++ b/crates/codegen/xai-grok-shell/src/agent/config.rs
 @@ -45,7 +45,8 @@ pub const DEFAULT_AGENT_TYPE: &str = "grok-build-plan";
@@ -91,7 +91,16 @@ index b3b09925..db52f8ad 100644
  pub const XAI_API_BASE_URL_DEFAULT: &str = "https://api.x.ai/v1";
  const NO_INLINE_CITATIONS_RESPONSE_INCLUDE: &str = "no_inline_citations";
  /// One or more environment variable names that may hold a model API key.
-@@ -4628,13 +4629,35 @@ pub(crate) fn first_own_credential(
+@@ -1734,6 +1735,8 @@ const NON_SERDE_CONFIG_PATHS: &[&str] = &[
+     "cli.grove",
+     "cli.grove_worktree",
+     "cli.nfs_worktree",
++    // Workshop: read by the pager (`app::workshop::free_models_mode`), not a `Config` field.
++    "workshop.free_models",
+ ];
+ /// [`NON_SERDE_CONFIG_PATHS`] plus the multi-path groups, every registered feature, every
+ /// [`UNMIRRORED_BOOLEAN_FEATURES`] key, and the managed policy pins (no-op in plain config.toml).
+@@ -4628,13 +4631,35 @@ pub(crate) fn first_own_credential(
          .map(str::to_owned)
          .or_else(|| env_key.and_then(EnvKeys::resolve_value))
  }

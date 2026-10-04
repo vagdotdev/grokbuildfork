@@ -181,6 +181,7 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
     if let Some(engine) = &facts.engine {
         out.push_str("\nOpenCode (free models)\n");
         fact(&mut out, "connection", &engine.connection);
+        fact(&mut out, "free models", &engine.free_models);
         match (&engine.binary, &engine.version) {
             (Some(path), Some(version)) => fact(&mut out, "binary", &format!("{path} ({version})")),
             (Some(path), None) => fact(

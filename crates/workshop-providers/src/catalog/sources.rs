@@ -40,6 +40,14 @@ fn outputs_text(v: &Value) -> bool {
     }
 }
 
+/// Whether the row's `architecture.input_modalities` names `image` (`None` when the list does not
+/// say).
+fn accepts_images(v: &Value) -> Option<bool> {
+    v.pointer("/architecture/input_modalities")
+        .and_then(Value::as_array)
+        .map(|mods| mods.iter().any(|m| m.as_str() == Some("image")))
+}
+
 fn zero_price_str(v: &Value) -> bool {
     matches!(v.pointer("/pricing/prompt").and_then(Value::as_str), Some(p) if p.trim().parse::<f64>().ok() == Some(0.0))
 }
@@ -68,6 +76,7 @@ pub fn parse_kilo_models(body: &str, as_of: &str) -> Result<Vec<CatalogModel>, P
             },
         );
         row.tools = Some(has_param(item, "tools"));
+        row.image_input = accepts_images(item);
         row.context_window = item.get("context_length").and_then(Value::as_u64);
         row.price = Some(Price::FREE);
         row.free_tier = FreeTier::Keyless;
@@ -122,6 +131,7 @@ pub fn parse_openrouter_models(body: &str, as_of: &str) -> Result<Vec<CatalogMod
             },
         );
         row.tools = Some(has_param(item, "tools"));
+        row.image_input = accepts_images(item);
         row.context_window = item.get("context_length").and_then(Value::as_u64);
         row.price = Some(Price::FREE);
         row.free_tier = FreeTier::KeyRequired;
@@ -277,6 +287,13 @@ mod tests {
         assert_eq!(ultra.tools, Some(true));
         assert_eq!(ultra.context_window, Some(1_000_000));
         assert!(ultra.badge_line().starts_with("Free · No sign-in"));
+        // Image input comes from `architecture.input_modalities`.
+        assert_eq!(ultra.image_input, Some(false));
+        let qwen = rows
+            .iter()
+            .find(|r| r.model_id == "qwen/qwen3.8-27b:free")
+            .unwrap();
+        assert_eq!(qwen.image_input, Some(true));
     }
 
     #[test]

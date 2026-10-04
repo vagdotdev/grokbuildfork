@@ -1735,6 +1735,8 @@ const NON_SERDE_CONFIG_PATHS: &[&str] = &[
     "cli.grove",
     "cli.grove_worktree",
     "cli.nfs_worktree",
+    // Workshop: read by the pager (`app::workshop::free_models_mode`), not a `Config` field.
+    "workshop.free_models",
 ];
 /// [`NON_SERDE_CONFIG_PATHS`] plus the multi-path groups, every registered feature, every
 /// [`UNMIRRORED_BOOLEAN_FEATURES`] key, and the managed policy pins (no-op in plain config.toml).

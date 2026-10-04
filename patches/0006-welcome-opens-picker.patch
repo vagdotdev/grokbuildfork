@@ -190,7 +190,7 @@ index 05556693..41171fbf 100644
              ActionId::ShortcutsHelp => {
                  use crate::views::shortcuts_help;
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..f99b5670 100644
+index fc9a4553..0282a7ca 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
 @@ -255,6 +255,15 @@ pub enum TickDemand {
@@ -287,7 +287,7 @@ index fc9a4553..f99b5670 100644
      /// The environment gates are process-constant, so one evaluation decides the run.
      pub ssh_wrap_tip_evaluated: bool,
      /// State for the clipboard-image tip, polled opportunistically and only while the terminal is focused.
-@@ -1009,6 +1045,97 @@ pub struct AppView {
+@@ -1009,6 +1045,101 @@ pub struct AppView {
      pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
      /// Whether deferred welcome-screen login should force OAuth.
      pub auth_use_oauth: bool,
@@ -343,8 +343,12 @@ index fc9a4553..f99b5670 100644
 +    /// Kilo fallback).
 +    pub workshop_turn_prompt_entry: Option<crate::scrollback::EntryId>,
 +    /// Workshop: the prompt whose OpenCode turn could not start, held until the silent fallback
-+    /// model has been activated (`AuthComplete`), then resent through the shell — no notice.
-+    pub workshop_resend: Option<(crate::app::agent::AgentId, String)>,
++    /// model has been activated (`AuthComplete`), then resent through the shell — no notice. The
++    /// direct mode's pool switches (rate-limited, vision) hold their prompt here too.
++    pub workshop_resend: Option<(
++        crate::app::agent::AgentId,
++        crate::app::workshop::WorkshopResend,
++    )>,
 +    /// Workshop: the silent fallback is carrying this session's turns (the OpenCode model could not
 +    /// start or answer); holds the answering model's plain name for the composer. Cleared when the
 +    /// user picks a connection or the fallback fails too.
@@ -385,7 +389,7 @@ index fc9a4553..f99b5670 100644
      /// Delivery state from the last clipboard copy during auth.
      pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
      /// Generation of the current auth copy feedback and its clear timer.
-@@ -1076,6 +1203,9 @@ pub struct AppView {
+@@ -1076,6 +1207,9 @@ pub struct AppView {
      /// Latest version string from a background update check.
      /// Set when a newer version is detected; rendered as a notification on the welcome screen.
      pub pending_update_version: Option<String>,
@@ -395,7 +399,7 @@ index fc9a4553..f99b5670 100644
      /// When true, the event loop should exit so the user can relaunch to pick up the downloaded update.
      pub quit_for_update: bool,
      /// Printed to stderr after terminal restore when Welcome yes could not save trust.
-@@ -1429,11 +1559,17 @@ impl AppView {
+@@ -1429,11 +1563,17 @@ impl AppView {
              pending_effects: Vec::new(),
              pending_editor: None,
              pending_pager_path: None,
@@ -413,7 +417,7 @@ index fc9a4553..f99b5670 100644
              welcome_import_banner_rect: None,
              last_mouse_pos: None,
              last_scroll_pos: None,
-@@ -1488,7 +1624,9 @@ impl AppView {
+@@ -1488,7 +1628,9 @@ impl AppView {
              session_picker_entries_query: None,
              session_picker_pending_delete: None,
              welcome_tick: 0,
@@ -424,7 +428,7 @@ index fc9a4553..f99b5670 100644
              cli_model_override: None,
              cli_effort_token: None,
              default_yolo: false,
-@@ -1543,6 +1681,36 @@ impl AppView {
+@@ -1543,6 +1685,36 @@ impl AppView {
              auth_url_poll_handle: None,
              deferred_startup: Default::default(),
              auth_use_oauth: false,
@@ -461,7 +465,7 @@ index fc9a4553..f99b5670 100644
              auth_clipboard_delivery: None,
              auth_clipboard_feedback_generation: 0,
              team_id: None,
-@@ -1573,6 +1741,7 @@ impl AppView {
+@@ -1573,6 +1745,7 @@ impl AppView {
              startup_warnings: Vec::new(),
              is_api_key_auth: false,
              pending_update_version: None,
@@ -469,7 +473,7 @@ index fc9a4553..f99b5670 100644
              foreign_resume_launch_generation: 0,
              foreign_resume_launch: None,
              quit_for_update: false,
-@@ -1673,12 +1842,20 @@ impl AppView {
+@@ -1673,12 +1846,20 @@ impl AppView {
      /// Call after gate flips, startup, reconnect, and session create/switch (so new agents inherit the gate).
      pub fn sync_permission_mode_slash_gate(&mut self) {
          let available = self.auto_mode_gate;
@@ -490,7 +494,7 @@ index fc9a4553..f99b5670 100644
          }
      }
      /// Recompute the tier-restricted slash commands from the current auth state.
-@@ -1704,16 +1881,28 @@ impl AppView {
+@@ -1704,16 +1885,28 @@ impl AppView {
              dashboard.set_restricted_commands(&names);
          }
          self.tier_restricted_commands = names;
@@ -522,7 +526,7 @@ index fc9a4553..f99b5670 100644
      }
      /// Draw-time expiry can flip the live-announcement predicate between pushes.
      /// Resync the slash gate only when it diverges from the stored flags (checked per frame, fan-out runs only on change).
-@@ -1891,6 +2080,37 @@ impl AppView {
+@@ -1891,6 +2084,37 @@ impl AppView {
              None
          }
      }
@@ -560,7 +564,7 @@ index fc9a4553..f99b5670 100644
      /// Commit interim on real send keys only (not multiline bare Enter).
      fn maybe_commit_voice_interim_before_submit_key(&mut self, key: &crossterm::event::KeyEvent) {
          if self.registry.matches_id(ActionId::InterjectPrompt, key) {
-@@ -2404,6 +2624,20 @@ impl AppView {
+@@ -2404,6 +2628,20 @@ impl AppView {
              }
              return InputOutcome::Changed;
          }
@@ -581,7 +585,7 @@ index fc9a4553..f99b5670 100644
          let zdr_blocked = self.is_zdr_blocked();
          let has_access = self.has_access();
          let welcome_pinned_upgrade_cta = crate::views::announcements::promo_cta(
-@@ -2442,7 +2676,17 @@ impl AppView {
+@@ -2442,7 +2680,17 @@ impl AppView {
                      menu_count: if zdr_blocked {
                          2
                      } else {
@@ -600,7 +604,7 @@ index fc9a4553..f99b5670 100644
                              + if self.welcome_show_changelog_action {
                                  1
                              } else {
-@@ -2483,6 +2727,8 @@ impl AppView {
+@@ -2483,6 +2731,8 @@ impl AppView {
                      welcome_doc_viewer: &mut self.welcome_doc_viewer,
                      changelog_markdown: &self.changelog_markdown,
                      show_changelog_action: self.welcome_show_changelog_action,
@@ -609,7 +613,7 @@ index fc9a4553..f99b5670 100644
                      has_pending_update: self.pending_update_version.is_some(),
                      has_foreign_resume,
                      cwd_has_git_ancestor: self.cwd_has_git_ancestor,
-@@ -2672,6 +2918,9 @@ impl AppView {
+@@ -2672,6 +2922,9 @@ impl AppView {
                  if let Some(outcome) = self.voice_esc_outcome(key_event) {
                      return outcome;
                  }
@@ -619,7 +623,7 @@ index fc9a4553..f99b5670 100644
                  if let Event::Key(key) = ev
                      && key.kind != KeyEventKind::Release
                  {
-@@ -3039,7 +3288,14 @@ impl AppView {
+@@ -3039,7 +3292,14 @@ impl AppView {
          };
          if def.requires_confirmation {
              let shortcut = KeyShortcut::from(*key);
@@ -635,7 +639,7 @@ index fc9a4553..f99b5670 100644
              InputOutcome::Changed
          } else {
              InputOutcome::Action(Action::Quit)
-@@ -3143,8 +3399,12 @@ struct WelcomeInputCtx<'a> {
+@@ -3143,8 +3403,12 @@ struct WelcomeInputCtx<'a> {
      import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
      welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
      changelog_markdown: &'a Option<String>,
@@ -649,7 +653,7 @@ index fc9a4553..f99b5670 100644
      has_pending_update: bool,
      /// A recent foreign session is available to resume when no update is pending.
      has_foreign_resume: bool,
-@@ -3171,6 +3431,130 @@ struct WelcomeInputCtx<'a> {
+@@ -3171,6 +3435,130 @@ struct WelcomeInputCtx<'a> {
      #[cfg(feature = "local-workspace")]
      session_picker_open: bool,
  }
@@ -780,7 +784,7 @@ index fc9a4553..f99b5670 100644
  /// Welcome view input: overlays first, then composer, then the menu.
  fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
      if let Some(modal) = ctx.import_claude_modal.as_mut() {
-@@ -3477,6 +3861,24 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3477,6 +3865,24 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
              crate::views::session_picker::PendingDeleteKey::Disarmed
              | crate::views::session_picker::PendingDeleteKey::NotArmed => {}
          }
@@ -805,7 +809,7 @@ index fc9a4553..f99b5670 100644
          if let Event::Key(key) = ev {
              if key.kind == KeyEventKind::Press
                  && (key!('c', CONTROL).matches(key) || key!('d', CONTROL).matches(key))
-@@ -3674,6 +4076,15 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3674,6 +4080,15 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
              && matches!(ctx.auth_state, AuthState::Done)
          {
              *ctx.prompt_focused = true;
@@ -821,7 +825,7 @@ index fc9a4553..f99b5670 100644
              return InputOutcome::ActionThenForward(Action::LeaveHome);
          }
          if matches!(ctx.auth_state, AuthState::Done)
-@@ -3721,7 +4132,12 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3721,7 +4136,12 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
          if matches!(ctx.auth_state, AuthState::Done) && crate::input::key::is_text_input_key(key) {
              *ctx.prompt_focused = true;
              *ctx.menu_index = None;
@@ -835,7 +839,7 @@ index fc9a4553..f99b5670 100644
          }
          if *ctx.prompt_focused {
              let had_highlight = ctx.prompt.textarea.selection_range().is_some();
-@@ -3750,6 +4166,8 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3750,6 +4170,8 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                  return dispatch_menu_action(
                      idx,
                      ctx.has_claude_import,
@@ -844,7 +848,7 @@ index fc9a4553..f99b5670 100644
                      ctx.show_changelog_action,
                      ctx.changelog_markdown.as_deref(),
                  );
-@@ -3844,6 +4262,14 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3844,6 +4266,14 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                      return InputOutcome::Unchanged;
                  }
                  *ctx.prompt_focused = true;
@@ -859,7 +863,7 @@ index fc9a4553..f99b5670 100644
                  return InputOutcome::ActionThenForward(Action::LeaveHome);
              }
              AuthState::Authenticating {
-@@ -3888,6 +4314,8 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3888,6 +4318,8 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                          return dispatch_menu_action(
                              i,
                              ctx.has_claude_import,
@@ -868,7 +872,7 @@ index fc9a4553..f99b5670 100644
                              ctx.show_changelog_action,
                              ctx.changelog_markdown.as_deref(),
                          );
-@@ -4109,6 +4537,21 @@ fn handle_menu_nav(
+@@ -4109,6 +4541,21 @@ fn handle_menu_nav(
          _ => None,
      }
  }
@@ -890,7 +894,7 @@ index fc9a4553..f99b5670 100644
  /// Dispatch an action for a welcome menu item when not yet authenticated.
  /// Menu layout: item 0 is Login, item 1 is Quit.
  fn dispatch_pending_menu_action(index: usize) -> InputOutcome {
-@@ -4138,39 +4581,47 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
+@@ -4138,39 +4585,47 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
      }
  }
  /// Dispatch an action for a welcome menu item by index.
@@ -956,7 +960,7 @@ index fc9a4553..f99b5670 100644
      }
      if index == quit_idx {
          return InputOutcome::Action(Action::Quit);
-@@ -4381,6 +4832,9 @@ impl AppView {
+@@ -4381,6 +4836,9 @@ impl AppView {
          });
          let welcome_default_yolo = self.default_yolo;
          let welcome_auto_gate = self.auto_mode_gate;
@@ -966,7 +970,7 @@ index fc9a4553..f99b5670 100644
          let Self {
              active_view,
              agents,
-@@ -4477,11 +4931,39 @@ impl AppView {
+@@ -4477,11 +4935,33 @@ impl AppView {
                              } else {
                                  self.tip.as_deref()
                              };
@@ -983,23 +987,17 @@ index fc9a4553..f99b5670 100644
 +                                .workshop_fallback
 +                                .clone()
 +                                .or_else(|| self.workshop_connection.composer_label());
-+                            let model_name = match workshop_label {
-+                                Some(label) => {
-+                                    if self.workshop_first_launch {
-+                                        for text in
-+                                            ["/model to switch", "/auth to connect subscriptions"]
-+                                        {
-+                                            flags_vec.push(
-+                                                crate::views::prompt_widget::PromptFlag {
-+                                                    text,
-+                                                    color: Some(theme.gray_bright),
-+                                                    bold: false,
-+                                                },
-+                                            );
-+                                        }
-+                                    }
-+                                    label
++                            if self.workshop_first_launch {
++                                for text in ["/model to switch", "/auth to connect subscriptions"] {
++                                    flags_vec.push(crate::views::prompt_widget::PromptFlag {
++                                        text,
++                                        color: Some(theme.gray_bright),
++                                        bold: false,
++                                    });
 +                                }
++                            }
++                            let model_name = match workshop_label {
++                                Some(label) => label,
 +                                None => {
 +                                    let model_name_base =
 +                                        self.models.current_model_name().unwrap_or_default();
@@ -1011,7 +1009,7 @@ index fc9a4553..f99b5670 100644
                              };
                              let hero_cta = crate::views::announcements::promo_cta(
                                  &self.active_announcements,
-@@ -4495,7 +4977,14 @@ impl AppView {
+@@ -4495,7 +4975,14 @@ impl AppView {
                                          &self.hidden_announcement_ids,
                                      )
                                  })
@@ -1027,7 +1025,7 @@ index fc9a4553..f99b5670 100644
                              let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                  prompt_focus: if self.welcome_prompt_focused {
                                      WelcomePromptFocus::Focused
-@@ -4508,6 +4997,7 @@ impl AppView {
+@@ -4508,6 +4995,7 @@ impl AppView {
                                  consent_state: &self.consent_state,
                                  consent_hover_link: self.welcome_consent_hover_link,
                                  login_label: self.login_label.as_deref(),
@@ -1035,7 +1033,7 @@ index fc9a4553..f99b5670 100644
                                  auth_code_input: self.auth_code_input.text(),
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
-@@ -4520,6 +5010,8 @@ impl AppView {
+@@ -4520,6 +5008,8 @@ impl AppView {
                                  team_name: self.team_name.as_deref(),
                                  has_access,
                                  has_claude_import: self.has_claude_import,
@@ -1044,7 +1042,7 @@ index fc9a4553..f99b5670 100644
                                  mouse_pos: self.last_mouse_pos,
                                  is_zdr_blocked: zdr_blocked_for_draw,
                                  session_picker: self.session_picker_entries.as_deref(),
-@@ -4534,6 +5026,7 @@ impl AppView {
+@@ -4534,6 +5024,7 @@ impl AppView {
                                  pending_hint,
                                  startup_warnings: &self.startup_warnings,
                                  pending_update_version: self.pending_update_version.as_deref(),
@@ -1052,7 +1050,7 @@ index fc9a4553..f99b5670 100644
                                  foreign_resume_hint: foreign_resume_hint.as_ref(),
                                  session_picker_content_results: self
                                      .session_picker_content_results
-@@ -4560,6 +5053,7 @@ impl AppView {
+@@ -4560,6 +5051,7 @@ impl AppView {
                                  welcome_announcement_expanded: self.welcome_announcement.expanded,
                                  upgrade_cta: hero_cta.map(|(_owner, label, _)| label),
                                  privacy_banner,
@@ -1060,7 +1058,7 @@ index fc9a4553..f99b5670 100644
                                  #[cfg(feature = "local-workspace")]
                                  workspace_mode: self.welcome_workspace_mode,
                                  #[cfg(feature = "local-workspace")]
-@@ -4576,7 +5070,10 @@ impl AppView {
+@@ -4576,7 +5068,10 @@ impl AppView {
                                  &mut self.session_picker_state,
                              );
                              self.welcome_menu_rects = result.menu_rects;
@@ -1071,7 +1069,7 @@ index fc9a4553..f99b5670 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4804,6 +5301,7 @@ impl AppView {
+@@ -4804,6 +5299,7 @@ impl AppView {
                                              .workspace_dashboard_enabled,
                                          overlay_header,
                                          overlay_stop_label: None,
@@ -1079,7 +1077,7 @@ index fc9a4553..f99b5670 100644
                                      },
                                  );
                                  if let Some(modal) = self.import_claude_modal.as_mut() {
-@@ -4824,6 +5322,28 @@ impl AppView {
+@@ -4824,6 +5320,28 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -1108,7 +1106,7 @@ index fc9a4553..f99b5670 100644
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5352,17 @@ impl AppView {
+@@ -4832,13 +5350,17 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
@@ -1127,7 +1125,7 @@ index fc9a4553..f99b5670 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5644,7 @@ impl AppView {
+@@ -5120,6 +5642,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -1135,7 +1133,7 @@ index fc9a4553..f99b5670 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5692,7 @@ impl AppView {
+@@ -5167,7 +5690,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -1144,7 +1142,7 @@ index fc9a4553..f99b5670 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5807,13 @@ impl AppView {
+@@ -5282,6 +5805,13 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
@@ -1158,7 +1156,7 @@ index fc9a4553..f99b5670 100644
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5300,11 +5832,7 @@ impl AppView {
+@@ -5300,11 +5830,7 @@ impl AppView {
              {
                  needs_redraw = true;
              } else {
@@ -1171,7 +1169,7 @@ index fc9a4553..f99b5670 100644
              }
          }
          if matches!(self.active_view, ActiveView::AgentDashboard)
-@@ -5355,7 +5883,10 @@ impl AppView {
+@@ -5355,7 +5881,10 @@ impl AppView {
              }
              let spinner_frame_tick =
                  agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
@@ -1183,7 +1181,7 @@ index fc9a4553..f99b5670 100644
              needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
                  && spinner_frame_tick;
              needs_redraw |= matches!(
-@@ -5623,6 +6154,20 @@ impl AppView {
+@@ -5623,6 +6152,20 @@ impl AppView {
          }
          needs_redraw
      }
@@ -1204,7 +1202,7 @@ index fc9a4553..f99b5670 100644
      /// Check if animation ticks should be scheduled.
      pub fn needs_animation(&self) -> bool {
          self.tick_demand() != TickDemand::None
-@@ -5637,6 +6182,15 @@ impl AppView {
+@@ -5637,6 +6180,15 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -1220,7 +1218,7 @@ index fc9a4553..f99b5670 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5781,9 +6335,105 @@ impl AppView {
+@@ -5781,9 +6333,105 @@ impl AppView {
                      TickDemand::None
                  }
              }
@@ -1243,8 +1241,8 @@ index fc9a4553..f99b5670 100644
 +                    TickDemand::None
 +                }
 +            }
-         }
-     }
++        }
++    }
 +    /// Workshop: whether the welcome hero should advance a frame on the next tick — the user has
 +    /// not turned it off (`[ui] hero_animation = false`), the terminal can show it (colour on, no
 +    /// legacy console), the last paint spun it (wide layout, logo shown), the terminal is
@@ -1298,8 +1296,8 @@ index fc9a4553..f99b5670 100644
 +                true
 +            }
 +            _ => false,
-+        }
-+    }
+         }
+     }
 +    /// Workshop: the turn-status row's activity for the running Engine/Adapter turn — the newest
 +    /// tool call still running, else the wait for the model (as the ACP tracker reports the gap
 +    /// before the first token and after each tool result).
@@ -1327,7 +1325,7 @@ index fc9a4553..f99b5670 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6455,9 @@ impl AppView {
+@@ -5805,7 +6453,9 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -2141,7 +2139,7 @@ index 87f63aef..c8d762b9 100644
          let explicit = self.sandbox.as_deref().filter(|s| !s.is_empty());
          Self::resolve_startup_sandbox(explicit, saved.map(String::from))
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
-index 769d63a9..33dc8cad 100644
+index 769d63a9..f48daf71 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs
 @@ -10,6 +10,7 @@ use crate::app::agent_view::AgentView;
@@ -2152,7 +2150,7 @@ index 769d63a9..33dc8cad 100644
  
  /// `/logout`: ask the shell to clear auth, then return to the login screen.
  pub(super) fn dispatch_logout(_app: &mut AppView) -> Vec<Effect> {
-@@ -203,22 +204,401 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
+@@ -203,22 +204,516 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
      }
  }
  
@@ -2171,7 +2169,6 @@ index 769d63a9..33dc8cad 100644
 -    let Some(method_id) = app.login_method_id.clone() else {
 -        app.auth_state = AuthState::Pending {
 -            error: Some(no_login_method_error(app)),
--        };
 +    dispatch_open_connection_picker(app, workshop_auth::PickerFocus::Subscriptions)
 +}
 +
@@ -2205,7 +2202,7 @@ index 769d63a9..33dc8cad 100644
 +        None => {
 +            app.connection_picker = Some(
 +                workshop_auth::PickerState::new()
-+                    .with_active(app.workshop_connection.active_row_id())
++                    .with_active(crate::app::workshop::active_row_id(app))
 +                    .with_focus(focus),
 +            );
 +            // Rows and rails load asynchronously: loopback local-server probe, the cached model
@@ -2317,6 +2314,24 @@ index 769d63a9..33dc8cad 100644
 +/// and `/auth` remain the only doors afterwards.
 +pub(super) fn dispatch_workshop_first_run(app: &mut AppView) -> Vec<Effect> {
 +    app.workshop_first_launch = true;
++    // Prototype (`WORKSHOP_FREE_MODELS=direct`): land on the keyless pool model as the shell's own
++    // model instead — a Direct API row, so the turn runs in the shell's agent loop and nothing
++    // here or in the event loop brings an engine up.
++    if crate::app::workshop::free_models_mode() == crate::app::workshop::FreeModelsMode::Direct {
++        return match crate::app::workshop::activate_direct_default() {
++            Ok(plan) => {
++                crate::app::workshop::export_env(&plan.env);
++                set_workshop_connection(app, crate::app::workshop::WorkshopConnection::Shell);
++                start_workshop_activation(app, plan.key)
++            }
++            Err(e) => {
++                app.auth_state = AuthState::Pending {
++                    error: Some(format!("Could not write config.toml: {e}")),
++                };
++                vec![]
++            }
+         };
++    }
 +    set_workshop_connection(app, crate::app::workshop::first_run_connection());
 +    match crate::app::workshop::activate_placeholder_session(&app.workshop_connection) {
 +        Ok(key) => start_workshop_activation(app, key),
@@ -2367,9 +2382,99 @@ index 769d63a9..33dc8cad 100644
 +    // The connection stays what the user has (the next launch tries it again); only this
 +    // process routes through the fallback, and the composer names the model that answers.
 +    app.workshop_fallback = Some(workshop_auth::plain_model_name(&plan.display_name));
-+    app.workshop_resend = Some((agent_id, text));
++    app.workshop_resend = Some((agent_id, crate::app::workshop::WorkshopResend::Text(text)));
 +    app.auth_return_view = Some(ActiveView::Agent(agent_id));
 +    start_workshop_activation(app, plan.key)
++}
++
++/// Direct mode: route the shell's own model to pool row `to` — it is gone from the list,
++/// rate-limited, or cannot see the prompt's images — say `line` once when there is one (a system
++/// line in the open session, a toast on the home screen), and send `resend` again once the shell
++/// has reloaded (`handle_auth_complete`). The connection stays the shell's; only its model moves,
++/// and the composer names the model that answers.
++pub(super) fn switch_pool_model(
++    app: &mut AppView,
++    agent_id: Option<AgentId>,
++    to: &workshop_providers::CatalogModel,
++    line: Option<String>,
++    resend: Option<crate::app::workshop::WorkshopResend>,
++) -> Vec<Effect> {
++    let plan = match crate::app::workshop::activate_pool_model(to) {
++        Ok(plan) => plan,
++        Err(e) => {
++            crate::app::workshop::log_failure_cause(&format!("pool switch failed: {e}"));
++            return Vec::new();
++        }
++    };
++    crate::app::workshop::export_env(&plan.env);
++    if let Some(line) = line {
++        tracing::info!(%line, "workshop: pool model switched");
++        match agent_id.filter(|id| app.agents.contains_key(id)) {
++            Some(id) => {
++                if let Some(agent) = app.agents.get_mut(&id) {
++                    agent.scrollback.push_block(RenderBlock::system(line));
++                }
++            }
++            None if matches!(app.active_view, ActiveView::Welcome) => {
++                app.welcome_toast = Some((
++                    crate::glyphs::sanitize_toast_message(&line).into_owned(),
++                    std::time::Instant::now() + crate::app::workshop::RETIRED_NOTICE_FOR,
++                ));
++            }
++            None => app.show_toast(&line),
++        }
++    }
++    if let Some(id) = agent_id {
++        if let Some(resend) = resend {
++            app.workshop_resend = Some((id, resend));
++        }
++        app.auth_return_view = Some(ActiveView::Agent(id));
++    }
++    if let Some(picker) = app.connection_picker.as_mut() {
++        picker.active_id = Some(to.key());
++    }
++    start_workshop_activation(app, plan.key)
++}
++
++/// Direct mode: the pool list just read no longer offers the shell's pool model (owner rule: the
++/// pick sticks unless it is gone) — the chain's next row takes over with one plain line. The
++/// list counts only once it was fetched: seed rows are no evidence, and an engine / adapter
++/// connection or a session the silent fallback carries is not the pool's to move.
++pub(super) fn apply_pool_retired_pick(
++    app: &mut AppView,
++    snap: &workshop_auth::PickerSnapshot,
++) -> Vec<Effect> {
++    use workshop_auth::pool::POOL_PROVIDER_ID;
++    if !app.workshop_connection.is_shell() || app.workshop_fallback.is_some() {
++        return Vec::new();
++    }
++    let Some(current) = crate::app::workshop::active_pool_model() else {
++        return Vec::new();
++    };
++    let known = snap
++        .catalog_status
++        .iter()
++        .find(|s| s.provider_id == POOL_PROVIDER_ID)
++        .is_some_and(|s| s.freshness != workshop_auth::Freshness::Seed && s.rows > 0);
++    if !known {
++        return Vec::new();
++    }
++    let listed = snap.rows.iter().any(|r| {
++        matches!(&r.kind, workshop_auth::RowKind::Catalog { model, .. }
++            if model.provider_id == POOL_PROVIDER_ID && model.model_id == current.model_id)
++    });
++    if listed {
++        return Vec::new();
++    }
++    let Some((to, line)) = crate::app::workshop::pool_switch(&current, "is no longer offered")
++    else {
++        return Vec::new();
++    };
++    let agent_id = match app.active_view {
++        ActiveView::Agent(id) if app.agents.contains_key(&id) => Some(id),
++        _ => None,
++    };
++    switch_pool_model(app, agent_id, &to, Some(line), None)
 +}
 +
 +/// Close the picker and return to the view it was opened from.
@@ -2413,7 +2518,14 @@ index 769d63a9..33dc8cad 100644
 +            start_optional_xai_login(app)
 +        }
 +        PickerOutcome::SelectCatalog(model) => {
-+            match crate::app::workshop::activate_catalog_model(&model) {
++            // A community-pool row (direct mode) is written the way the first run writes it:
++            // plain name, the pool's retry cap.
++            let activation = if model.provider_id == workshop_auth::pool::POOL_PROVIDER_ID {
++                crate::app::workshop::activate_pool_model(&model)
++            } else {
++                crate::app::workshop::activate_catalog_model(&model)
++            };
++            match activation {
 +                Ok(plan) => {
 +                    crate::app::workshop::export_env(&plan.env);
 +                    picker.set_status(format!(
@@ -2498,7 +2610,9 @@ index 769d63a9..33dc8cad 100644
 +        }
 +    }
 +}
-+
+ 
+-    // Show the auth UI when triggered from inside a session
+-    // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
 +/// An Engine/Adapter connection routes turns through workshop-adapters, not the shell model — but
 +/// the shell still needs a model + auth method to open the ACP session that backs the agent view.
 +/// Write a keyless placeholder model and reuse the same anonymous activation Direct/Local uses, so
@@ -2547,9 +2661,7 @@ index 769d63a9..33dc8cad 100644
 +        session,
 +    }]
 +}
- 
--    // Show the auth UI when triggered from inside a session
--    // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
++
 +/// The only path to the inherited xAI OIDC flow: the user selected the labeled optional xAI card
 +/// (and confirmed). Sends `grok.com` with `workshop_xai_opt_in`, which the shell requires before it
 +/// attaches the xAI OAuth2 provider when none is configured.
@@ -2565,7 +2677,7 @@ index 769d63a9..33dc8cad 100644
          show_welcome(app);
      }
  
-@@ -240,6 +620,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
+@@ -240,6 +735,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
              method_id,
              use_oauth: app.auth_use_oauth,
              force_interactive: true,
@@ -2573,7 +2685,7 @@ index 769d63a9..33dc8cad 100644
          },
          Effect::PollAuthUrl { request_seq },
      ]
-@@ -263,6 +644,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
+@@ -263,6 +759,8 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
      app.auth_state = AuthState::Done;
      app.auth_show_raw_url = false;
      app.auth_code_input.reset();
@@ -2582,7 +2694,7 @@ index 769d63a9..33dc8cad 100644
      restore_auth_return_view(app, return_view);
      // This runs on all agents because the login may have been started from the dashboard
      // Clearing the stash alone is not enough
-@@ -314,6 +697,15 @@ pub(super) fn handle_auth_complete(
+@@ -314,6 +812,15 @@ pub(super) fn handle_auth_complete(
          app.welcome_prompt_focused = !app.is_access_blocked();
          app.auth_code_input.reset();
  
@@ -2598,20 +2710,44 @@ index 769d63a9..33dc8cad 100644
          // Mid-session re-auth (`/login` or a 401 prompt): restore the view the user was on instead of running the startup load-session flow
          // The session state lives in `app.agents`, independent of `active_view`, so it is preserved across the auth detour
          if let Some(return_view) = app.auth_return_view.take() {
-@@ -327,6 +719,19 @@ pub(super) fn handle_auth_complete(
+@@ -327,6 +834,43 @@ pub(super) fn handle_auth_complete(
              // Auth is global, so handle every agent (the login may have been started from the dashboard, not the agent that 401'd)
              let mut retry_effects = Vec::new();
              let mut page_flips = Vec::new();
 +            // Workshop: the prompt whose OpenCode turn could not start goes out again on the
 +            // fallback model that has just been activated — silently; the composer already
 +            // names the model that will answer (`dispatch_workshop_engine_unavailable`).
-+            if let Some((id, text)) = app.workshop_resend.take()
++            if let Some((id, resend)) = app.workshop_resend.take()
 +                && let Some(agent) = app.agents.get_mut(&id)
 +            {
-+                agent
-+                    .session
-+                    .enqueue_entry(text, crate::app::agent::QueueEntryKind::Prompt);
++                let mut line: Option<String> = None;
++                match resend {
++                    crate::app::workshop::WorkshopResend::Text(text) => {
++                        agent
++                            .session
++                            .enqueue_entry(text, crate::app::agent::QueueEntryKind::Prompt);
++                    }
++                    crate::app::workshop::WorkshopResend::Held(held) => {
++                        agent.session.enqueue_prompt(held.text);
++                        let mut untaken = super::queue::attach_prompt_state_to_last_queued(
++                            agent,
++                            held.images,
++                            held.chip_elements,
++                            &mut app.pending_image_notices,
++                        );
++                        crate::prompt_images::drain_and_cleanup(
++                            crate::prompt_images::SessionPathPolicy::Preserve,
++                            &mut untaken,
++                        );
++                        line = held.line;
++                    }
++                }
 +                let drain = maybe_drain_queue(agent, &mut app.pending_image_notices);
++                // The one plain line about a pool switch sits under the prompt as it goes out
++                // again, so the answer that follows reads as the named model's.
++                if let Some(line) = line.take() {
++                    agent.scrollback.push_block(RenderBlock::system(line));
++                }
 +                retry_effects.extend(drain.effects);
 +                page_flips.push((agent.session.id, drain.page_flip_entry));
 +            }
@@ -2752,7 +2888,7 @@ index 89c36b27..2915bc02 100644
              let policy_block = app.yolo_policy_block;
              let auto_mode_gate = app.auto_mode_gate;
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
-index b00317f2..594b5a65 100644
+index b00317f2..57b27c76 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs
 @@ -13,7 +13,7 @@ use super::cta::{
@@ -2840,7 +2976,7 @@ index b00317f2..594b5a65 100644
  /// Every other failure (`TextRead`, `TargetInsertion`, `AlreadyReported`) is a real dead end and must keep toasting.
  pub(super) fn wrap_host_image_request_eligible(completion: ClipboardPasteCompletion) -> bool {
      matches!(
-@@ -999,6 +1059,143 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -999,6 +1059,144 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              }
              vec![]
          }
@@ -2865,6 +3001,7 @@ index b00317f2..594b5a65 100644
 +                Vec::new()
 +            };
 +            let mut effects = crate::app::workshop::apply_retired_pick(app, &engine, &snap.rails);
++            effects.extend(super::auth::apply_pool_retired_pick(app, &snap));
 +            if let Some(picker) = app.connection_picker.as_mut() {
 +                // The cursor lands on the active connection's row (never xAI, never Zen).
 +                picker.apply_snapshot(snap);
@@ -2984,7 +3121,7 @@ index b00317f2..594b5a65 100644
          TaskResult::ChangelogFetched { markdown, entries } => {
              app.changelog_markdown = markdown;
              app.changelog_bullets =
-@@ -1172,6 +1369,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1172,6 +1370,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              } = &app.auth_state
                  && *current_seq == request_seq
              {
@@ -2996,7 +3133,7 @@ index b00317f2..594b5a65 100644
                  app.auth_state = AuthState::Pending { error: Some(error) };
                  app.auth_code_input.reset();
              }
-@@ -1185,6 +1387,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1185,6 +1388,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
          } => handle_auth_url_ready(app, request_seq, auth_url, external, mode),
          TaskResult::AuthCodeSubmitted { .. } => vec![],
          TaskResult::AuthCancelComplete => vec![],
@@ -3004,7 +3141,7 @@ index b00317f2..594b5a65 100644
          TaskResult::McpsListLoaded { agent_id, result } => {
              use crate::views::extensions_modal::TabDataState;
              if let Some(agent) = app.agents.get_mut(&agent_id)
-@@ -1521,6 +1724,8 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1521,6 +1725,8 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              after,
          } => {
              use crate::app::actions::AfterSessionDelete;
@@ -3013,7 +3150,7 @@ index b00317f2..594b5a65 100644
              remove_session_from_pickers(
                  app,
                  &source,
-@@ -1539,16 +1744,16 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1539,16 +1745,16 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              let membership_removal_failed = deleted_build
                  && !crate::app::workspace_sync::request_removal(app, &session_id, removal_cause);
              let delete_notice = if membership_removal_failed {
@@ -3033,7 +3170,7 @@ index b00317f2..594b5a65 100644
                  return vec![];
              }
              if after == AfterSessionDelete::UnusedHusk {
-@@ -1620,7 +1825,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
+@@ -1620,7 +1826,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
              } else if foreground && after == AfterSessionDelete::Welcome {
                  effects.extend(dispatch_exit_session(app));
              }
@@ -3043,7 +3180,7 @@ index b00317f2..594b5a65 100644
          }
          TaskResult::DeleteSessionFailed {
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
-index 0cbf3632..3724147b 100644
+index 0cbf3632..574c10ca 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs
 @@ -394,7 +394,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
@@ -3055,7 +3192,7 @@ index 0cbf3632..3724147b 100644
      let seq = authenticating_seq(&app);
      let effects = dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -554,34 +554,656 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
+@@ -554,34 +554,660 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
      );
  }
  
@@ -3497,9 +3634,13 @@ index 0cbf3632..3724147b 100644
 +        ),
 +        "switches the open session to the fallback model, got {effects:?}"
 +    );
-+    assert_eq!(
-+        app.workshop_resend.as_ref().map(|(_, t)| t.as_str()),
-+        Some("hello")
++    assert!(
++        matches!(
++            app.workshop_resend.as_ref(),
++            Some((_, crate::app::workshop::WorkshopResend::Text(t))) if t == "hello"
++        ),
++        "the prompt is held for the resend: {:?}",
++        app.workshop_resend
 +    );
 +    assert!(
 +        system_blocks(&app).is_empty(),
@@ -3723,7 +3864,7 @@ index 0cbf3632..3724147b 100644
  }
  
  /// Puts the app in `Authenticating` with a live task's abort handle installed, as the event loop would.
-@@ -591,7 +1213,7 @@ fn install_live_auth_task(
+@@ -591,7 +1217,7 @@ fn install_live_auth_task(
      app: &mut AppView,
      rt: &tokio::runtime::Runtime,
  ) -> (tokio::task::JoinHandle<()>, u64) {
@@ -3732,7 +3873,7 @@ index 0cbf3632..3724147b 100644
      let task = rt.spawn(std::future::pending::<()>());
      match &mut app.auth_state {
          AuthState::Authenticating {
-@@ -621,7 +1243,7 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -621,7 +1247,7 @@ fn login_while_authenticating_aborts_prior_task() {
      let mut app = test_app_with_agent();
      let (prior_task, first_seq) = install_live_auth_task(&mut app, &rt);
  
@@ -3741,7 +3882,7 @@ index 0cbf3632..3724147b 100644
  
      rt.block_on(async {
          assert!(
-@@ -651,12 +1273,12 @@ fn login_while_authenticating_aborts_prior_task() {
+@@ -651,12 +1277,12 @@ fn login_while_authenticating_aborts_prior_task() {
  #[test]
  fn stale_auth_complete_after_relogin_is_ignored() {
      let mut app = test_app_with_agent();
@@ -3756,7 +3897,7 @@ index 0cbf3632..3724147b 100644
  
      dispatch(
          Action::TaskComplete(TaskResult::AuthComplete {
-@@ -722,7 +1344,7 @@ fn cancel_login_aborts_prior_task() {
+@@ -722,7 +1348,7 @@ fn cancel_login_aborts_prior_task() {
  #[test]
  fn cancel_login_restores_view() {
      let mut app = test_app_with_agent();
@@ -5639,10 +5780,10 @@ index 60fe34f9..f647dfc2 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..af645027
+index 00000000..11fd4040
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,3463 @@
+@@ -0,0 +1,3751 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -5678,7 +5819,7 @@ index 00000000..af645027
 +    detect, question_answers_prompt,
 +};
 +use workshop_detect::DetectConfig;
-+use workshop_auth::{ENGINE_PROVIDER_ID, EngineModel, PickerSnapshot, models_rows};
++use workshop_auth::{ENGINE_PROVIDER_ID, EngineModel, PickerSnapshot};
 +use workshop_providers::catalog::live::{self as live_catalogs, HostedCatalogs};
 +use workshop_providers::{
 +    Catalog, CatalogStatus, CredentialBroker, CredentialInjection, FileSecretStore, Freshness,
@@ -5884,24 +6025,104 @@ index 00000000..af645027
 +/// Kilo Gateway (the PTY gate proves the fallback without network).
 +pub const KILO_BASE_URL_ENV: &str = "WORKSHOP_KILO_BASE_URL";
 +
++/// Prototype setting: how the free models run. `WORKSHOP_FREE_MODELS` wins, then
++/// `[workshop] free_models` in `$WORKSHOP_HOME/config.toml`; anything else is the default.
++pub const FREE_MODELS_ENV: &str = "WORKSHOP_FREE_MODELS";
++
++/// Where a first run lands when nothing is connected yet.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum FreeModelsMode {
++    /// OpenCode's free catalog (Big Pickle today) through `opencode serve`: the engine installs
++    /// itself and runs under the TUI. The default.
++    Engine,
++    /// No engine process: the first run lands on the keyless community pool model the silent
++    /// fallback already uses, in the shell's own agent loop. OpenCode's own free tier refuses
++    /// every client but OpenCode, so Big Pickle is not reachable this way; `/model` can still
++    /// pick an OpenCode row, which starts the engine as before.
++    Direct,
++}
++
++impl FreeModelsMode {
++    fn parse(text: &str) -> Option<Self> {
++        match text.trim().to_ascii_lowercase().as_str() {
++            "engine" => Some(Self::Engine),
++            "direct" => Some(Self::Direct),
++            _ => None,
++        }
++    }
++}
++
++/// The config key behind [`free_models_mode`], as it reads in `config.toml`.
++pub const FREE_MODELS_CONFIG_KEY: &str = "[workshop] free_models";
++
++/// Where the free-models setting came from.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum FreeModelsSource {
++    Env,
++    Config,
++    Default,
++}
++
++pub fn free_models_mode() -> FreeModelsMode {
++    free_models_setting().0
++}
++
++/// The mode and where it was set: the env var, the config key, or the default.
++pub fn free_models_setting() -> (FreeModelsMode, FreeModelsSource) {
++    if let Some(mode) = std::env::var(FREE_MODELS_ENV)
++        .ok()
++        .and_then(|v| FreeModelsMode::parse(&v))
++    {
++        return (mode, FreeModelsSource::Env);
++    }
++    match std::fs::read_to_string(workshop_auth::config_path())
++        .ok()
++        .and_then(|s| s.parse::<toml::Table>().ok())
++        .and_then(|doc| {
++            doc.get("workshop")?
++                .get("free_models")?
++                .as_str()
++                .and_then(FreeModelsMode::parse)
++        }) {
++        Some(mode) => (mode, FreeModelsSource::Config),
++        None => (FreeModelsMode::Engine, FreeModelsSource::Default),
++    }
++}
++
++/// The one line `/doctor` shows for the setting: which path the free models take and where
++/// that was decided.
++pub fn free_models_setting_line() -> String {
++    let (mode, source) = free_models_setting();
++    let path = match mode {
++        FreeModelsMode::Engine => {
++            "engine \u{2014} OpenCode's free catalog through `opencode serve`"
++        }
++        FreeModelsMode::Direct => {
++            "direct \u{2014} the community pool in Workshop's own agent loop, no engine process"
++        }
++    };
++    let source = match source {
++        FreeModelsSource::Env => format!("set by {FREE_MODELS_ENV}"),
++        FreeModelsSource::Config => format!("set by {FREE_MODELS_CONFIG_KEY} in config.toml"),
++        FreeModelsSource::Default => {
++            format!("the default; {FREE_MODELS_CONFIG_KEY} = \"direct\" switches")
++        }
++    };
++    format!("{path} ({source})")
++}
++
 +/// The keyless Direct API model Workshop silently falls back to when the OpenCode model cannot
 +/// start or answer: the first *concrete* model of the Kilo community pool's default chain (not
 +/// the auto-router, so the composer can name the model that actually answered). Never listed on
 +/// `/model`; the user only ever sees the model name.
 +pub fn kilo_fallback_model() -> Option<workshop_providers::CatalogModel> {
 +    let catalog = Catalog::builtin();
-+    let mut model = workshop_providers::KILO_DEFAULT_CHAIN
++    let model = workshop_providers::KILO_DEFAULT_CHAIN
 +        .iter()
 +        .filter_map(|id| catalog.get(&format!("kilo:{id}")))
 +        .find(|m| workshop_auth::is_chat_model_name(&m.model_id) && !m.model_id.contains("auto"))
 +        .cloned()?;
-+    if let Some(base) = std::env::var(KILO_BASE_URL_ENV)
-+        .ok()
-+        .filter(|v| !v.trim().is_empty())
-+    {
-+        model.base_url = base.trim().trim_end_matches('/').to_owned();
-+    }
-+    Some(model)
++    Some(with_pool_base_url(model))
 +}
 +
 +/// The credential broker over the OS keyring with the owner-only file fallback under the home.
@@ -6085,9 +6306,11 @@ index 00000000..af645027
 +fn listed_refresh_providers(
 +    broker: &CredentialBroker,
 +) -> Vec<workshop_providers::ProviderManifest> {
++    // The pool's list is fetched once the pool is a connection of its own (direct mode).
++    let pool = pool_listed();
 +    live_catalogs::REFRESH_PROVIDERS
 +        .iter()
-+        .filter(|id| !workshop_auth::is_hidden_provider(id))
++        .filter(|id| !workshop_auth::is_hidden_provider(id) || (pool && **id == "kilo"))
 +        .filter(|id| {
 +            workshop_providers::manifest(id)
 +                .is_some_and(|m| !m.requires_credential() || broker.is_connected(id))
@@ -6131,7 +6354,13 @@ index 00000000..af645027
 +    let broker = default_broker();
 +    let secret_backend = broker.secret_backend();
 +    let engine = cached_engine_models();
-+    let rows = models_rows(&catalog, |id| broker.is_connected(id), &engine, &rails);
++    let rows = workshop_auth::models_rows_with_pool(
++        &catalog,
++        |id| broker.is_connected(id),
++        &engine,
++        &rails,
++        pool_listed(),
++    );
 +    let default_selection = Some(select_default(&local, true));
 +    let mut catalog_status = vec![engine_catalog_status(&engine, engine_error)];
 +    catalog_status.extend(hosted_status);
@@ -6168,9 +6397,32 @@ index 00000000..af645027
 +/// connection actually offers, instead of the shell's placeholder ids. Returns `None` for a
 +/// Shell connection (the shell's own list applies).
 +pub fn connection_models_text() -> Option<String> {
-+    let conn = models_cli_connection(load_active_connection(), is_first_run());
++    let first_run = is_first_run();
++    let conn = models_cli_connection(load_active_connection(), first_run);
 +    let mut out = String::new();
 +    match &conn {
++        // Direct mode on a home that never launched: the pool default it would land on.
++        WorkshopConnection::Shell if first_run && pool_listed() => {
++            let rows = pool_rows();
++            let default = workshop_auth::pool::pool_default(&rows)?;
++            out.push_str(&format!(
++                "Model: {} ({}) \u{2014} free, no key\n\nAvailable models ({}):\n",
++                workshop_auth::plain_model_name(&default.display_name),
++                workshop_auth::pool::POOL_GROUP,
++                workshop_auth::pool::POOL_GROUP
++            ));
++            for m in &rows {
++                let active = m.model_id == default.model_id;
++                out.push_str(&format!(
++                    "  {} {} \u{2014} {}{}\n",
++                    if active { "*" } else { "-" },
++                    m.model_id,
++                    workshop_auth::plain_model_name(&m.display_name),
++                    if active { " (active)" } else { "" }
++                ));
++            }
++            out.push_str("\nSwitch with /model inside workshop.\n");
++        }
 +        WorkshopConnection::Shell => return None,
 +        WorkshopConnection::Engine { model } => {
 +            out.push_str(&format!(
@@ -6213,7 +6465,7 @@ index 00000000..af645027
 +/// the shell's "You are not authenticated" is not what that home has.
 +fn models_cli_connection(saved: WorkshopConnection, first_run: bool) -> WorkshopConnection {
 +    match saved {
-+        WorkshopConnection::Shell if first_run => first_run_connection(),
++        WorkshopConnection::Shell if first_run && !pool_listed() => first_run_connection(),
 +        conn => conn,
 +    }
 +}
@@ -6298,6 +6550,165 @@ index 00000000..af645027
 +    model: &workshop_providers::CatalogModel,
 +) -> Result<ActivationPlan, String> {
 +    activate_catalog_model_with(model, |spec| spec.max_retries = Some(FALLBACK_MAX_RETRIES))
++}
++
++/// Whether the community pool is a connection of its own ([`FreeModelsMode::Direct`]): listed on
++/// `/model`, its live list fetched with the others, its rows the first-run default.
++pub fn pool_listed() -> bool {
++    free_models_mode() == FreeModelsMode::Direct
++}
++
++/// The pool rows the direct mode works from ([`workshop_auth::pool::pool_rows`]): the last
++/// fetched Kilo list in `catalog-cache/` (the picker's refresh writes it), else the compiled seed.
++pub fn pool_rows() -> Vec<workshop_providers::CatalogModel> {
++    workshop_auth::pool::pool_rows(&live_catalogs::load_cached(&catalog_cache_dir()).catalog)
++}
++
++/// The silent fallback's test hook ([`KILO_BASE_URL_ENV`]): a loopback server standing in for
++/// the pool's endpoint.
++fn pool_base_url_override() -> Option<String> {
++    std::env::var(KILO_BASE_URL_ENV)
++        .ok()
++        .filter(|v| !v.trim().is_empty())
++        .map(|v| v.trim().trim_end_matches('/').to_owned())
++}
++
++/// The pool's endpoint as its rows are written: the manifest's, or the test hook's.
++fn pool_base_url() -> Option<String> {
++    pool_base_url_override().or_else(|| {
++        workshop_providers::manifest(workshop_auth::pool::POOL_PROVIDER_ID).map(|m| m.base_url)
++    })
++}
++
++/// The test hook applies to every pool row.
++fn with_pool_base_url(
++    mut model: workshop_providers::CatalogModel,
++) -> workshop_providers::CatalogModel {
++    if let Some(base) = pool_base_url_override() {
++        model.base_url = base;
++    }
++    model
++}
++
++/// Activate a pool row as the shell's own model: the fallback's retry cap (the pool is shared,
++/// a quarter hour of `Retrying…` helps nobody) and a plain composer name (`Nemotron 3 Super`, as
++/// the fallback shows it). Used by the direct first run, a pool row picked on `/model`, and the
++/// retire / rate-limit / vision switches.
++pub fn activate_pool_model(
++    model: &workshop_providers::CatalogModel,
++) -> Result<ActivationPlan, String> {
++    let model = with_pool_base_url(model.clone());
++    activate_catalog_model_with(&model, |spec| {
++        spec.max_retries = Some(FALLBACK_MAX_RETRIES);
++        spec.name = workshop_auth::plain_model_name(&spec.name);
++    })
++}
++
++/// The first-run default of [`FreeModelsMode::Direct`]: the pool's default row
++/// ([`workshop_auth::pool::pool_default`]), so no engine is ever installed or started.
++pub fn activate_direct_default() -> Result<ActivationPlan, String> {
++    let model = workshop_auth::pool::pool_default(&pool_rows())
++        .ok_or("no keyless pool model in the catalog")?;
++    activate_pool_model(&model)
++}
++
++/// The pool row the shell's own model is right now: in direct mode, `config.toml`'s
++/// `[models] default` names the config key of an offered pool row. `None` on another Direct API
++/// or Local model, or with the mode off. Callers on an engine / adapter connection (whose shell
++/// model is the placeholder) check `is_shell()` first.
++pub fn active_pool_model() -> Option<workshop_providers::CatalogModel> {
++    if !pool_listed() {
++        return None;
++    }
++    let text = std::fs::read_to_string(workshop_auth::config_path()).ok()?;
++    let doc: toml::Table = text.parse().ok()?;
++    let default = doc.get("models")?.get("default")?.as_str()?;
++    let entry = doc.get("model")?.get(default)?.as_table()?;
++    if entry.get("base_url")?.as_str()? != pool_base_url()? {
++        return None;
++    }
++    let manifest = workshop_providers::manifest(workshop_auth::pool::POOL_PROVIDER_ID)?;
++    let model_id = entry.get("model")?.as_str()?.to_owned();
++    // A row the list no longer offers (the retire check needs to know which) is rebuilt from the
++    // entry itself, so the line that says so can still name it.
++    pool_rows()
++        .into_iter()
++        .find(|m| m.model_id == model_id)
++        .or_else(|| {
++            let name = entry
++                .get("name")
++                .and_then(toml::Value::as_str)
++                .unwrap_or(&model_id);
++            Some(workshop_providers::catalog::row_for(
++                &manifest,
++                &model_id,
++                name,
++                workshop_providers::CatalogSource {
++                    name: "config.toml".into(),
++                    as_of: String::new(),
++                },
++            ))
++        })
++}
++
++/// The picker row of the active connection: the engine or subscription model's, else — on the
++/// shell's own model — the pool row's (`kilo:<model>`), so `/model` marks a pool model the way it
++/// marks an engine or subscription model. `None` for any other Direct API / Local model.
++pub fn active_row_id(app: &crate::app::app_view::AppView) -> Option<String> {
++    app.workshop_connection.active_row_id().or_else(|| {
++        app.workshop_connection
++            .is_shell()
++            .then(active_pool_model)
++            .flatten()
++            .map(|m| m.key())
++    })
++}
++
++/// The direct mode's answer to a pool row that is gone from the list or rate-limited: the next
++/// row in chain order, with the plain line that says so. `None` when nothing else is offered.
++pub fn pool_switch(
++    from: &workshop_providers::CatalogModel,
++    why: &str,
++) -> Option<(workshop_providers::CatalogModel, String)> {
++    let to = workshop_auth::pool::pool_next(&pool_rows(), &from.model_id)?;
++    let line = format!(
++        "{} {why} \u{2014} using {}",
++        workshop_auth::plain_model_name(&from.display_name),
++        workshop_auth::plain_model_name(&to.display_name)
++    );
++    Some((to, line))
++}
++
++/// A prompt taken off the composer before its send, held while the shell switches model, then
++/// queued with its images (`handle_auth_complete`).
++#[derive(Debug, Clone)]
++pub struct HeldPrompt {
++    pub text: String,
++    pub images: Vec<crate::prompt_images::PastedImage>,
++    pub chip_elements: Vec<crate::app::agent::ChipElement>,
++    /// The one plain line said with the resend (`… is busy right now — using …`), under the
++    /// prompt as it goes out again; `None` for a quiet switch.
++    pub line: Option<String>,
++}
++
++/// What goes out again once a model switch has completed (`AuthComplete`).
++#[derive(Debug, Clone)]
++pub enum WorkshopResend {
++    /// The prompt text (the silent fallback's resend, or a rate-limited pool turn).
++    Text(String),
++    /// A prompt held before its send, images and all (the pool's vision switch).
++    Held(HeldPrompt),
++}
++
++/// The pool row that sees images, when the active pool model cannot and the pool offers one
++/// ([`workshop_auth::pool::pool_vision`]).
++pub fn pool_vision_switch(
++    from: &workshop_providers::CatalogModel,
++) -> Option<workshop_providers::CatalogModel> {
++    if from.image_input == Some(true) {
++        return None;
++    }
++    workshop_auth::pool::pool_vision(&pool_rows()).filter(|m| m.model_id != from.model_id)
 +}
 +
 +fn activate_catalog_model_with(
@@ -7573,8 +7984,9 @@ index 00000000..af645027
 +    app.workshop_connection = conn;
 +    app.workshop_fallback = None;
 +    sync_agent_views(app);
++    let active_id = active_row_id(app);
 +    if let Some(picker) = app.connection_picker.as_mut() {
-+        picker.active_id = app.workshop_connection.active_row_id();
++        picker.active_id = active_id;
 +    }
 +    tracing::info!(%line, "workshop: picked model gone, routed to the default");
 +    match app.active_view {
@@ -8724,6 +9136,23 @@ index 00000000..af645027
 +            model: EngineModel::big_pickle_seed(),
 +        };
 +        assert_eq!(models_cli_connection(saved.clone(), true), saved);
++    }
++
++    /// The prototype setting: `engine` unless the env var or the config key says `direct`; an
++    /// unknown value is the default.
++    #[test]
++    fn free_models_mode_parses_env_and_config_values() {
++        use super::FreeModelsMode;
++        assert_eq!(
++            FreeModelsMode::parse("direct"),
++            Some(FreeModelsMode::Direct)
++        );
++        assert_eq!(
++            FreeModelsMode::parse(" Engine "),
++            Some(FreeModelsMode::Engine)
++        );
++        assert_eq!(FreeModelsMode::parse("opencode"), None);
++        assert_eq!(FreeModelsMode::parse(""), None);
 +    }
 +
 +    #[test]

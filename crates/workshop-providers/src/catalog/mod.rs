@@ -84,6 +84,9 @@ pub struct CatalogModel {
     /// Advertises tool calling (`None` = unknown).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<bool>,
+    /// Accepts images in the prompt (`None` = unknown; live lists say, seeds mostly do not).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_input: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
     pub data_badge: DataBadge,
@@ -155,6 +158,7 @@ pub fn row_for(
         default_visible: true,
         note: m.terms_caveat.clone(),
         tools: None,
+        image_input: None,
         context_window: None,
         data_badge: m.data_badge,
     }
@@ -212,6 +216,9 @@ pub fn kilo_seed_models() -> Vec<CatalogModel> {
     ];
     for r in &mut rows {
         r.tools = Some(r.model_id != "z-ai/glm-5.2:free");
+        // `architecture.input_modalities` as of the review date: Qwen3.8 27B sees images, the
+        // NVIDIA and GLM rows are text-only; the routers are not picked for vision.
+        r.image_input = Some(r.model_id == "qwen/qwen3.8-27b:free");
     }
     rows
 }

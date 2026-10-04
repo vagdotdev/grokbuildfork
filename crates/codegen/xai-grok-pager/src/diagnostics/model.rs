@@ -108,6 +108,10 @@ pub struct DiagnosticFacts {
 pub struct OpenCodeEngineFacts {
     /// The active connection as the composer shows it (`Big Pickle · OpenCode`, or `shell`).
     pub connection: String,
+    /// How the free models run: `engine` (OpenCode's catalog through `opencode serve`, the
+    /// default) or `direct` (the community pool in Workshop's own agent loop, no engine), with
+    /// where the setting comes from.
+    pub free_models: String,
     /// Resolved `opencode` binary, or `None` when none is installed.
     pub binary: Option<String>,
     pub version: Option<String>,
