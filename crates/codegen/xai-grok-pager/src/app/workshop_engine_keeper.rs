@@ -575,6 +575,10 @@ async fn spawn_keeper(spec: &KeeperSpec) -> Result<u32, String> {
             });
         }
     }
+    // The one child meant to outlive this session: enrolling it in the process scope would kill
+    // it with the TUI, which is the opposite of its job. It is reaped below and its own lifetime
+    // is bounded by the keep-warm clock.
+    #[allow(clippy::disallowed_methods)]
     let mut child = cmd.spawn().map_err(|e| format!("spawn keeper: {e}"))?;
     let pid = child.id().ok_or("keeper has no pid")?;
     let json = serde_json::to_vec(spec).map_err(|e| e.to_string())?;
@@ -667,7 +671,12 @@ async fn keeper_main(spec: KeeperSpec) -> i32 {
         .stderr(std::process::Stdio::piped())
         .process_group(0)
         .kill_on_drop(true);
-    let mut child = match cmd.spawn() {
+    // The keeper is the server's process scope: it ends the server's group on every exit path
+    // below and exits when the server dies, so the TUI's scope (which this process is not part
+    // of) is not what should own it.
+    #[allow(clippy::disallowed_methods)]
+    let spawned = cmd.spawn();
+    let mut child = match spawned {
         Ok(c) => c,
         Err(e) => {
             stamp(&log, &format!("cannot start `opencode serve`: {e}"));
@@ -834,7 +843,7 @@ async fn keeper_main(spec: KeeperSpec) -> i32 {
             }
         }
     };
-    let _ = log_rx.close();
+    log_rx.close();
     stamp(&log, &format!("stopping ({why})"));
     stop_server(&mut child, serve_pid).await;
     if ServeInfo::load(&home).is_some_and(|i| i.keeper_pid == std::process::id()) {

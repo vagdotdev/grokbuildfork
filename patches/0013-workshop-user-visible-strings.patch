@@ -857,7 +857,7 @@ index 8ffcc224..6c52e20b 100644
  ## Reopen this tutorial
  
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
-index ab27a76d..e21bec31 100644
+index ab27a76d..44fdeddd 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
 @@ -1,99 +1,104 @@
@@ -974,7 +974,7 @@ index ab27a76d..e21bec31 100644
 +the moment Workshop opens, so it is usually ready by the time you press `Enter`; a message sent
 +before it is ready simply waits for it — the status row reads `First-time setup, 12 MB downloaded…`
 +while it does. The install (about a minute on a slow connection) reaches only opencode.ai, the
-+vendor's installer; every later message answers within seconds. The engine stays warm for ten
++vendor's installer; every later message answers within seconds. OpenCode stays running for ten
 +minutes after you quit (`WORKSHOP_ENGINE_KEEP_WARM_SECS` changes that; `0` stops it with Workshop),
 +so a relaunch within that time finds it ready at once. While a message is being
 +worked on, the status row above the composer shows what is happening — `Waiting for response…`,
