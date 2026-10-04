@@ -75,9 +75,11 @@ if [[ -f "$dist/$engine_asset" && -f "$dist/MODEL.lock.json" ]]; then
   # The installer reads the model files from the lock's fixed models release, a sibling of the
   # version directory; serve them there too.
   models_tag=$(jq -r '.models_release_tag // empty' "$dist/MODEL.lock.json")
+  model_dir="v$version"
   if [[ -n "$models_tag" ]]; then
     mkdir -p "$www/dl/$models_tag"
     cp "$dist"/ggml-*.bin "$www/dl/$models_tag/"
+    model_dir=$models_tag
   fi
   # The smallest tier is what CPU runners end up with; the smoke pins it to keep the run bounded.
   # A forced tier also opts in to installing voice now (the default install has no voice at all).
@@ -139,7 +141,7 @@ check_voice() { # check_voice HOME -> helper runs, model present with the pinned
   echo "  $out; model $base_file verified; tier $(cat "$home/voice/model.selected")"
 }
 
-model_gets() { grep -c "GET /dl/v$version/$base_file " "$server_log" || true; }
+model_gets() { grep -c "GET /dl/$model_dir/$base_file " "$server_log" || true; }
 
 echo "== 1. install from $channel manifest"
 if (HOME="$tmp/home" SHELL=/bin/bash WORKSHOP_HOME="$tmp/h1" WORKSHOP_CHANNEL="$channel" WORKSHOP_MANIFEST_URL="$base/$channel.json" sh "$install_sh") && check_install "$tmp/h1"; then
@@ -194,9 +196,9 @@ if $voice; then
 
   echo "== 7. voice: interrupted download resumes from .partial"
   mkdir -p "$tmp/h7/voice"
-  head -c 1000000 "$www/dl/v$version/$base_file" >"$tmp/h7/voice/$base_file.partial"
+  head -c 1000000 "$www/dl/$model_dir/$base_file" >"$tmp/h7/voice/$base_file.partial"
   before=$(model_gets)
-  if (HOME="$tmp/home" SHELL=/bin/bash WORKSHOP_HOME="$tmp/h7" WORKSHOP_CHANNEL="$channel" WORKSHOP_MANIFEST_URL="$base/$channel.json" sh "$install_sh") 2>"$tmp/h7.err"     && check_voice "$tmp/h7" && grep -q "GET /dl/v$version/$base_file 206 " "$server_log"; then
+  if (HOME="$tmp/home" SHELL=/bin/bash WORKSHOP_HOME="$tmp/h7" WORKSHOP_CHANNEL="$channel" WORKSHOP_MANIFEST_URL="$base/$channel.json" sh "$install_sh") 2>"$tmp/h7.err"     && check_voice "$tmp/h7" && grep -q "GET /dl/$model_dir/$base_file 206 " "$server_log"; then
     report ok "partial resumed (HTTP 206) and verified"
   else
     cat "$tmp/h7.err"; report fail "resume from .partial"
@@ -223,7 +225,7 @@ fi
 # The default install (no WORKSHOP_VOICE, no tier) downloads the one `workshop` archive and
 # nothing else: no voice helper, no model, not even their checksum/pin files. Its output reads
 # like a product and ends with the next command.
-voice_gets() { grep -c -E "GET /dl/v$version/(voice-engine-|MODEL\.lock\.json|SHA256SUMS)" "$server_log" || true; }
+voice_gets() { grep -c -E "GET /dl/(v$version/(voice-engine-|MODEL\.lock\.json|SHA256SUMS)|${model_dir:-v$version}/ggml-)" "$server_log" || true; }
 check_cli() { # check_cli HOME -> the symlink layout and --version, voice not required
   local home=$1 out link
   [[ -L "$home/bin/$PRODUCT_BIN" ]] || { echo "  no symlink at $home/bin/$PRODUCT_BIN"; return 1; }
