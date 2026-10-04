@@ -309,6 +309,7 @@ fn test_app() -> AppView {
         welcome_tick: 0,
         welcome_hero_frame: 0,
         welcome_hero_animating: false,
+        welcome_last_input_at: std::time::Instant::now(),
         startup_warnings: Vec::new(),
         is_api_key_auth: false,
         pending_update_version: None,

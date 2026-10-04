@@ -190,10 +190,26 @@ index 05556693..41171fbf 100644
              ActionId::ShortcutsHelp => {
                  use crate::views::shortcuts_help;
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-index fc9a4553..be439e35 100644
+index fc9a4553..f99b5670 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
-@@ -516,8 +516,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
+@@ -255,6 +255,15 @@ pub enum TickDemand {
+ /// Tick cadence for [`TickDemand::Slow`] (~12fps).
+ /// Matches the welcome logo's `SHIMMER_FPS` so slow ticks sample every shimmer frame, and bounds the latency of the macOS Cmd link-hover underline.
+ pub const SLOW_TICK_INTERVAL: Duration = Duration::from_millis(83);
++/// Workshop: how long the welcome hero keeps spinning after the user's last input. A welcome
++/// screen nobody is touching then parks (no frames written, no CPU) until the next key, and the
++/// spin picks up from the frame it held.
++pub const HERO_IDLE_PAUSE: Duration = Duration::from_secs(30);
++
++/// Workshop: whether the hero is still within its spin window after the last input.
++pub fn hero_spins_after_input(last_input_at: Instant, now: Instant) -> bool {
++    now.saturating_duration_since(last_input_at) < HERO_IDLE_PAUSE
++}
+ /// Welcome toast lifetime (wall clock, so the duration holds whether the event loop is ticking Slow or Fast).
+ const WELCOME_TOAST_DURATION: Duration = Duration::from_secs(2);
+ fn reconnect_success_hides_mismatch(current: Option<&str>, incoming: &str) -> bool {
+@@ -516,8 +525,9 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
  /// Slash commands unavailable on the free and X Basic subscription tiers.
  /// To restrict another command for these tiers, add its canonical name (no leading `/`) here.
  /// Matching covers aliases automatically via [`crate::slash::registry::CommandRegistry::set_restricted_commands`].
@@ -205,7 +221,7 @@ index fc9a4553..be439e35 100644
  /// Whether a subscription-tier display name is a tier with restricted commands: the free tier and X Basic.
  /// Free covers no subscription (`None`) or an explicit "Free"; X Basic covers CCP display name "X Basic" with JWT claim fallback "x_basic".
  /// The pager's *cosmetic* slash-command gate treats an absent tier (`None`) as restricted (it recovers live on the next settings update).
-@@ -746,6 +747,15 @@ pub struct AppView {
+@@ -746,6 +756,15 @@ pub struct AppView {
      /// When true the event loop ensures the pager renders raw control codes (`less -R`) so the colors show instead of literal escapes.
      /// Plain-text transcripts (`/export` markdown) leave this false.
      pub pending_pager_ansi: bool,
@@ -221,7 +237,7 @@ index fc9a4553..be439e35 100644
      /// Minimal mode only: the Ctrl+T **force-show** pin for the todo panel.
      /// Minimal-mode-only per-session state, consolidated into a single field so the central `AppView` isn't peppered with loose minimal flags.
      /// Default-empty and inert outside `--minimal`; the `xai-grok-pager-minimal` crate reads/mutates it through the `crate::minimal_api` accessors.
-@@ -754,9 +764,18 @@ pub struct AppView {
+@@ -754,9 +773,18 @@ pub struct AppView {
      pub welcome_menu_index: Option<usize>,
      /// Hit-test rects for welcome menu items (populated during render).
      pub welcome_menu_rects: Vec<ratatui::layout::Rect>,
@@ -241,7 +257,7 @@ index fc9a4553..be439e35 100644
      /// Hit-test rect for the import-claude banner on the welcome screen.
      pub welcome_import_banner_rect: Option<ratatui::layout::Rect>,
      /// Last known mouse position (column, row), updated on every Mouse event.
-@@ -872,9 +891,13 @@ pub struct AppView {
+@@ -872,9 +900,17 @@ pub struct AppView {
      pub session_picker_pending_delete: Option<crate::views::session_picker::PendingDelete>,
      /// Tick counter for welcome screen spinner animation.
      pub welcome_tick: u64,
@@ -255,10 +271,14 @@ index fc9a4553..be439e35 100644
 +    /// Workshop: the last welcome paint spun the hero (wide layout, logo shown, animation on), as
 +    /// reported by the renderer. Off until the first paint and whenever the resting frame is drawn.
 +    pub welcome_hero_animating: bool,
++    /// Workshop: when the user last touched the terminal (a key, the mouse, a paste, or coming
++    /// back to the window). The hero spins for [`HERO_IDLE_PAUSE`] after that and then holds its
++    /// frame, so a welcome screen left open stops repainting ([`Self::welcome_hero_spins`]).
++    pub welcome_last_input_at: Instant,
      /// CLI model override (`-m` / `--model`).
      /// Seeded into every new `AgentSession.deferred_model_switch` so the model is applied once the session is created.
      pub cli_model_override: Option<acp::ModelId>,
-@@ -954,7 +977,7 @@ pub struct AppView {
+@@ -954,7 +990,7 @@ pub struct AppView {
      /// One-shot gate for the small-screen `/compact-mode` tip: set after the first evaluation at a stable agent-view draw (regardless of outcome).
      /// Later resizes thus can never re-trigger the tip within this run.
      pub small_screen_tip_evaluated: bool,
@@ -267,7 +287,7 @@ index fc9a4553..be439e35 100644
      /// The environment gates are process-constant, so one evaluation decides the run.
      pub ssh_wrap_tip_evaluated: bool,
      /// State for the clipboard-image tip, polled opportunistically and only while the terminal is focused.
-@@ -1009,6 +1032,97 @@ pub struct AppView {
+@@ -1009,6 +1045,97 @@ pub struct AppView {
      pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
      /// Whether deferred welcome-screen login should force OAuth.
      pub auth_use_oauth: bool,
@@ -365,7 +385,7 @@ index fc9a4553..be439e35 100644
      /// Delivery state from the last clipboard copy during auth.
      pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
      /// Generation of the current auth copy feedback and its clear timer.
-@@ -1076,6 +1190,9 @@ pub struct AppView {
+@@ -1076,6 +1203,9 @@ pub struct AppView {
      /// Latest version string from a background update check.
      /// Set when a newer version is detected; rendered as a notification on the welcome screen.
      pub pending_update_version: Option<String>,
@@ -375,7 +395,7 @@ index fc9a4553..be439e35 100644
      /// When true, the event loop should exit so the user can relaunch to pick up the downloaded update.
      pub quit_for_update: bool,
      /// Printed to stderr after terminal restore when Welcome yes could not save trust.
-@@ -1429,11 +1546,17 @@ impl AppView {
+@@ -1429,11 +1559,17 @@ impl AppView {
              pending_effects: Vec::new(),
              pending_editor: None,
              pending_pager_path: None,
@@ -393,17 +413,18 @@ index fc9a4553..be439e35 100644
              welcome_import_banner_rect: None,
              last_mouse_pos: None,
              last_scroll_pos: None,
-@@ -1488,7 +1611,8 @@ impl AppView {
+@@ -1488,7 +1624,9 @@ impl AppView {
              session_picker_entries_query: None,
              session_picker_pending_delete: None,
              welcome_tick: 0,
 -            welcome_shimmer_frame: 0,
 +            welcome_hero_frame: 0,
 +            welcome_hero_animating: false,
++            welcome_last_input_at: Instant::now(),
              cli_model_override: None,
              cli_effort_token: None,
              default_yolo: false,
-@@ -1543,6 +1667,36 @@ impl AppView {
+@@ -1543,6 +1681,36 @@ impl AppView {
              auth_url_poll_handle: None,
              deferred_startup: Default::default(),
              auth_use_oauth: false,
@@ -440,7 +461,7 @@ index fc9a4553..be439e35 100644
              auth_clipboard_delivery: None,
              auth_clipboard_feedback_generation: 0,
              team_id: None,
-@@ -1573,6 +1727,7 @@ impl AppView {
+@@ -1573,6 +1741,7 @@ impl AppView {
              startup_warnings: Vec::new(),
              is_api_key_auth: false,
              pending_update_version: None,
@@ -448,7 +469,7 @@ index fc9a4553..be439e35 100644
              foreign_resume_launch_generation: 0,
              foreign_resume_launch: None,
              quit_for_update: false,
-@@ -1673,12 +1828,20 @@ impl AppView {
+@@ -1673,12 +1842,20 @@ impl AppView {
      /// Call after gate flips, startup, reconnect, and session create/switch (so new agents inherit the gate).
      pub fn sync_permission_mode_slash_gate(&mut self) {
          let available = self.auto_mode_gate;
@@ -469,7 +490,7 @@ index fc9a4553..be439e35 100644
          }
      }
      /// Recompute the tier-restricted slash commands from the current auth state.
-@@ -1704,16 +1867,28 @@ impl AppView {
+@@ -1704,16 +1881,28 @@ impl AppView {
              dashboard.set_restricted_commands(&names);
          }
          self.tier_restricted_commands = names;
@@ -501,7 +522,7 @@ index fc9a4553..be439e35 100644
      }
      /// Draw-time expiry can flip the live-announcement predicate between pushes.
      /// Resync the slash gate only when it diverges from the stored flags (checked per frame, fan-out runs only on change).
-@@ -1891,6 +2066,37 @@ impl AppView {
+@@ -1891,6 +2080,37 @@ impl AppView {
              None
          }
      }
@@ -539,7 +560,7 @@ index fc9a4553..be439e35 100644
      /// Commit interim on real send keys only (not multiline bare Enter).
      fn maybe_commit_voice_interim_before_submit_key(&mut self, key: &crossterm::event::KeyEvent) {
          if self.registry.matches_id(ActionId::InterjectPrompt, key) {
-@@ -2404,6 +2610,20 @@ impl AppView {
+@@ -2404,6 +2624,20 @@ impl AppView {
              }
              return InputOutcome::Changed;
          }
@@ -560,7 +581,7 @@ index fc9a4553..be439e35 100644
          let zdr_blocked = self.is_zdr_blocked();
          let has_access = self.has_access();
          let welcome_pinned_upgrade_cta = crate::views::announcements::promo_cta(
-@@ -2442,7 +2662,17 @@ impl AppView {
+@@ -2442,7 +2676,17 @@ impl AppView {
                      menu_count: if zdr_blocked {
                          2
                      } else {
@@ -579,7 +600,7 @@ index fc9a4553..be439e35 100644
                              + if self.welcome_show_changelog_action {
                                  1
                              } else {
-@@ -2483,6 +2713,8 @@ impl AppView {
+@@ -2483,6 +2727,8 @@ impl AppView {
                      welcome_doc_viewer: &mut self.welcome_doc_viewer,
                      changelog_markdown: &self.changelog_markdown,
                      show_changelog_action: self.welcome_show_changelog_action,
@@ -588,7 +609,7 @@ index fc9a4553..be439e35 100644
                      has_pending_update: self.pending_update_version.is_some(),
                      has_foreign_resume,
                      cwd_has_git_ancestor: self.cwd_has_git_ancestor,
-@@ -2672,6 +2904,9 @@ impl AppView {
+@@ -2672,6 +2918,9 @@ impl AppView {
                  if let Some(outcome) = self.voice_esc_outcome(key_event) {
                      return outcome;
                  }
@@ -598,7 +619,7 @@ index fc9a4553..be439e35 100644
                  if let Event::Key(key) = ev
                      && key.kind != KeyEventKind::Release
                  {
-@@ -3039,7 +3274,14 @@ impl AppView {
+@@ -3039,7 +3288,14 @@ impl AppView {
          };
          if def.requires_confirmation {
              let shortcut = KeyShortcut::from(*key);
@@ -614,7 +635,7 @@ index fc9a4553..be439e35 100644
              InputOutcome::Changed
          } else {
              InputOutcome::Action(Action::Quit)
-@@ -3143,8 +3385,12 @@ struct WelcomeInputCtx<'a> {
+@@ -3143,8 +3399,12 @@ struct WelcomeInputCtx<'a> {
      import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
      welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
      changelog_markdown: &'a Option<String>,
@@ -628,7 +649,7 @@ index fc9a4553..be439e35 100644
      has_pending_update: bool,
      /// A recent foreign session is available to resume when no update is pending.
      has_foreign_resume: bool,
-@@ -3171,6 +3417,130 @@ struct WelcomeInputCtx<'a> {
+@@ -3171,6 +3431,130 @@ struct WelcomeInputCtx<'a> {
      #[cfg(feature = "local-workspace")]
      session_picker_open: bool,
  }
@@ -759,7 +780,7 @@ index fc9a4553..be439e35 100644
  /// Welcome view input: overlays first, then composer, then the menu.
  fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
      if let Some(modal) = ctx.import_claude_modal.as_mut() {
-@@ -3477,6 +3847,24 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3477,6 +3861,24 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
              crate::views::session_picker::PendingDeleteKey::Disarmed
              | crate::views::session_picker::PendingDeleteKey::NotArmed => {}
          }
@@ -784,7 +805,7 @@ index fc9a4553..be439e35 100644
          if let Event::Key(key) = ev {
              if key.kind == KeyEventKind::Press
                  && (key!('c', CONTROL).matches(key) || key!('d', CONTROL).matches(key))
-@@ -3674,6 +4062,15 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3674,6 +4076,15 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
              && matches!(ctx.auth_state, AuthState::Done)
          {
              *ctx.prompt_focused = true;
@@ -800,7 +821,7 @@ index fc9a4553..be439e35 100644
              return InputOutcome::ActionThenForward(Action::LeaveHome);
          }
          if matches!(ctx.auth_state, AuthState::Done)
-@@ -3721,7 +4118,12 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3721,7 +4132,12 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
          if matches!(ctx.auth_state, AuthState::Done) && crate::input::key::is_text_input_key(key) {
              *ctx.prompt_focused = true;
              *ctx.menu_index = None;
@@ -814,7 +835,7 @@ index fc9a4553..be439e35 100644
          }
          if *ctx.prompt_focused {
              let had_highlight = ctx.prompt.textarea.selection_range().is_some();
-@@ -3750,6 +4152,8 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3750,6 +4166,8 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                  return dispatch_menu_action(
                      idx,
                      ctx.has_claude_import,
@@ -823,7 +844,7 @@ index fc9a4553..be439e35 100644
                      ctx.show_changelog_action,
                      ctx.changelog_markdown.as_deref(),
                  );
-@@ -3844,6 +4248,14 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3844,6 +4262,14 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                      return InputOutcome::Unchanged;
                  }
                  *ctx.prompt_focused = true;
@@ -838,7 +859,7 @@ index fc9a4553..be439e35 100644
                  return InputOutcome::ActionThenForward(Action::LeaveHome);
              }
              AuthState::Authenticating {
-@@ -3888,6 +4300,8 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
+@@ -3888,6 +4314,8 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                          return dispatch_menu_action(
                              i,
                              ctx.has_claude_import,
@@ -847,7 +868,7 @@ index fc9a4553..be439e35 100644
                              ctx.show_changelog_action,
                              ctx.changelog_markdown.as_deref(),
                          );
-@@ -4109,6 +4523,21 @@ fn handle_menu_nav(
+@@ -4109,6 +4537,21 @@ fn handle_menu_nav(
          _ => None,
      }
  }
@@ -869,7 +890,7 @@ index fc9a4553..be439e35 100644
  /// Dispatch an action for a welcome menu item when not yet authenticated.
  /// Menu layout: item 0 is Login, item 1 is Quit.
  fn dispatch_pending_menu_action(index: usize) -> InputOutcome {
-@@ -4138,39 +4567,47 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
+@@ -4138,39 +4581,47 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
      }
  }
  /// Dispatch an action for a welcome menu item by index.
@@ -935,7 +956,7 @@ index fc9a4553..be439e35 100644
      }
      if index == quit_idx {
          return InputOutcome::Action(Action::Quit);
-@@ -4381,6 +4818,9 @@ impl AppView {
+@@ -4381,6 +4832,9 @@ impl AppView {
          });
          let welcome_default_yolo = self.default_yolo;
          let welcome_auto_gate = self.auto_mode_gate;
@@ -945,7 +966,7 @@ index fc9a4553..be439e35 100644
          let Self {
              active_view,
              agents,
-@@ -4477,11 +4917,39 @@ impl AppView {
+@@ -4477,11 +4931,39 @@ impl AppView {
                              } else {
                                  self.tip.as_deref()
                              };
@@ -990,7 +1011,7 @@ index fc9a4553..be439e35 100644
                              };
                              let hero_cta = crate::views::announcements::promo_cta(
                                  &self.active_announcements,
-@@ -4495,7 +4963,14 @@ impl AppView {
+@@ -4495,7 +4977,14 @@ impl AppView {
                                          &self.hidden_announcement_ids,
                                      )
                                  })
@@ -1006,7 +1027,7 @@ index fc9a4553..be439e35 100644
                              let welcome_params = crate::views::welcome::WelcomeRenderParams {
                                  prompt_focus: if self.welcome_prompt_focused {
                                      WelcomePromptFocus::Focused
-@@ -4508,6 +4983,7 @@ impl AppView {
+@@ -4508,6 +4997,7 @@ impl AppView {
                                  consent_state: &self.consent_state,
                                  consent_hover_link: self.welcome_consent_hover_link,
                                  login_label: self.login_label.as_deref(),
@@ -1014,7 +1035,7 @@ index fc9a4553..be439e35 100644
                                  auth_code_input: self.auth_code_input.text(),
                                  auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
                                  clipboard_delivery: self.auth_clipboard_delivery,
-@@ -4520,6 +4996,8 @@ impl AppView {
+@@ -4520,6 +5010,8 @@ impl AppView {
                                  team_name: self.team_name.as_deref(),
                                  has_access,
                                  has_claude_import: self.has_claude_import,
@@ -1023,7 +1044,7 @@ index fc9a4553..be439e35 100644
                                  mouse_pos: self.last_mouse_pos,
                                  is_zdr_blocked: zdr_blocked_for_draw,
                                  session_picker: self.session_picker_entries.as_deref(),
-@@ -4534,6 +5012,7 @@ impl AppView {
+@@ -4534,6 +5026,7 @@ impl AppView {
                                  pending_hint,
                                  startup_warnings: &self.startup_warnings,
                                  pending_update_version: self.pending_update_version.as_deref(),
@@ -1031,7 +1052,7 @@ index fc9a4553..be439e35 100644
                                  foreign_resume_hint: foreign_resume_hint.as_ref(),
                                  session_picker_content_results: self
                                      .session_picker_content_results
-@@ -4560,6 +5039,7 @@ impl AppView {
+@@ -4560,6 +5053,7 @@ impl AppView {
                                  welcome_announcement_expanded: self.welcome_announcement.expanded,
                                  upgrade_cta: hero_cta.map(|(_owner, label, _)| label),
                                  privacy_banner,
@@ -1039,7 +1060,7 @@ index fc9a4553..be439e35 100644
                                  #[cfg(feature = "local-workspace")]
                                  workspace_mode: self.welcome_workspace_mode,
                                  #[cfg(feature = "local-workspace")]
-@@ -4576,7 +5056,10 @@ impl AppView {
+@@ -4576,7 +5070,10 @@ impl AppView {
                                  &mut self.session_picker_state,
                              );
                              self.welcome_menu_rects = result.menu_rects;
@@ -1050,7 +1071,7 @@ index fc9a4553..be439e35 100644
                              self.welcome_prompt_rect = result.prompt_rect;
                              self.welcome_import_banner_rect = result.import_banner_rect;
                              self.welcome_auth_url_rect = result.auth_url_rect;
-@@ -4804,6 +5287,7 @@ impl AppView {
+@@ -4804,6 +5301,7 @@ impl AppView {
                                              .workspace_dashboard_enabled,
                                          overlay_header,
                                          overlay_stop_label: None,
@@ -1058,7 +1079,7 @@ index fc9a4553..be439e35 100644
                                      },
                                  );
                                  if let Some(modal) = self.import_claude_modal.as_mut() {
-@@ -4824,6 +5308,28 @@ impl AppView {
+@@ -4824,6 +5322,28 @@ impl AppView {
                                          compact,
                                      );
                                  }
@@ -1087,7 +1108,7 @@ index fc9a4553..be439e35 100644
                                  if let Some(fps) = &fps_overlay {
                                      fps.render(full_area, f.buffer_mut());
                                  }
-@@ -4832,13 +5338,17 @@ impl AppView {
+@@ -4832,13 +5352,17 @@ impl AppView {
                                  }
                                  let (cursor_pos, post_flush) = result;
                                  let has_cloud = false;
@@ -1106,7 +1127,7 @@ index fc9a4553..be439e35 100644
                                      None
                                  } else {
                                      cursor_pos
-@@ -5120,6 +5630,7 @@ impl AppView {
+@@ -5120,6 +5644,7 @@ impl AppView {
              || self.new_worktree_dialog.is_some()
              || self.welcome_doc_viewer.is_some()
              || self.tutorial.is_some()
@@ -1114,7 +1135,7 @@ index fc9a4553..be439e35 100644
              || matches!(self.active_view, ActiveView::AgentDashboard
                  if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
              || matches!(self.active_view, ActiveView::AgentDashboard
-@@ -5167,7 +5678,7 @@ impl AppView {
+@@ -5167,7 +5692,7 @@ impl AppView {
          self.small_screen_tip_evaluated = true;
          super::dispatch::show_small_screen_tip(self);
      }
@@ -1123,7 +1144,7 @@ index fc9a4553..be439e35 100644
      /// The welcome screen has no ephemeral-tip row, so the first stable agent-view draw is the earliest surface that can paint a session-load tip.
      /// Reads the live environment (cached statics) and delegates to the injectable inner so tests never depend on the host's SSH shape.
      pub(crate) fn maybe_trigger_ssh_wrap_tip(&mut self) {
-@@ -5282,6 +5793,13 @@ impl AppView {
+@@ -5282,6 +5807,13 @@ impl AppView {
          let mut needs_redraw = false;
          needs_redraw |= self.minimal_state.transcript.is_some();
          needs_redraw |= self.poll_clipboard_focus_tip();
@@ -1137,7 +1158,7 @@ index fc9a4553..be439e35 100644
          if matches!(self.active_view, ActiveView::Welcome) {
              self.welcome_tick = self.welcome_tick.wrapping_add(1);
              if let Some(expires_at) = self.welcome_toast.as_ref().map(|(_, at)| *at) {
-@@ -5300,11 +5818,7 @@ impl AppView {
+@@ -5300,11 +5832,7 @@ impl AppView {
              {
                  needs_redraw = true;
              } else {
@@ -1150,7 +1171,7 @@ index fc9a4553..be439e35 100644
              }
          }
          if matches!(self.active_view, ActiveView::AgentDashboard)
-@@ -5355,7 +5869,10 @@ impl AppView {
+@@ -5355,7 +5883,10 @@ impl AppView {
              }
              let spinner_frame_tick =
                  agent.scrollback.animation_tick() % crate::views::turn_status::SPINNER_DIVISOR == 0;
@@ -1162,7 +1183,7 @@ index fc9a4553..be439e35 100644
              needs_redraw |= (agent.session_starting_since.is_some() || agent.mcp_chip_visible())
                  && spinner_frame_tick;
              needs_redraw |= matches!(
-@@ -5623,6 +6140,20 @@ impl AppView {
+@@ -5623,6 +6154,20 @@ impl AppView {
          }
          needs_redraw
      }
@@ -1183,7 +1204,7 @@ index fc9a4553..be439e35 100644
      /// Check if animation ticks should be scheduled.
      pub fn needs_animation(&self) -> bool {
          self.tick_demand() != TickDemand::None
-@@ -5637,6 +6168,15 @@ impl AppView {
+@@ -5637,6 +6182,15 @@ impl AppView {
          if self.pending_action.is_some() {
              return TickDemand::Fast;
          }
@@ -1199,7 +1220,7 @@ index fc9a4553..be439e35 100644
          if self.minimal_state.transcript.is_some() {
              return TickDemand::Fast;
          }
-@@ -5781,9 +6321,94 @@ impl AppView {
+@@ -5781,9 +6335,105 @@ impl AppView {
                      TickDemand::None
                  }
              }
@@ -1222,17 +1243,28 @@ index fc9a4553..be439e35 100644
 +                    TickDemand::None
 +                }
 +            }
-+        }
-+    }
+         }
+     }
 +    /// Workshop: whether the welcome hero should advance a frame on the next tick — the user has
 +    /// not turned it off (`[ui] hero_animation = false`), the terminal can show it (colour on, no
-+    /// legacy console), the last paint spun it (wide layout, logo shown) and the terminal is
-+    /// focused. Leaving the welcome screen ends it by construction: the tick only runs here for
-+    /// [`ActiveView::Welcome`].
++    /// legacy console), the last paint spun it (wide layout, logo shown), the terminal is
++    /// focused, and the user touched it in the last [`HERO_IDLE_PAUSE`]. Leaving the welcome
++    /// screen ends it by construction: the tick only runs here for [`ActiveView::Welcome`].
 +    pub fn welcome_hero_spins(&self) -> bool {
 +        self.hero_animation_enabled()
 +            && self.welcome_hero_animating
 +            && self.notification_service.focus_tracker.is_focused()
++            && hero_spins_after_input(self.welcome_last_input_at, Instant::now())
++    }
++    /// Workshop: the user touched the terminal (see [`Self::welcome_last_input_at`]).
++    pub fn note_terminal_input(&mut self, event: &crossterm::event::Event) {
++        use crossterm::event::Event;
++        if matches!(
++            event,
++            Event::Key(_) | Event::Mouse(_) | Event::Paste(_) | Event::FocusGained
++        ) {
++            self.welcome_last_input_at = Instant::now();
++        }
 +    }
 +    /// Workshop: `[ui] hero_animation` (default on) and the terminal's ability to show the spin.
 +    pub fn hero_animation_enabled(&self) -> bool {
@@ -1266,8 +1298,8 @@ index fc9a4553..be439e35 100644
 +                true
 +            }
 +            _ => false,
-         }
-     }
++        }
++    }
 +    /// Workshop: the turn-status row's activity for the running Engine/Adapter turn — the newest
 +    /// tool call still running, else the wait for the model (as the ACP tracker reports the gap
 +    /// before the first token and after each tool result).
@@ -1295,7 +1327,7 @@ index fc9a4553..be439e35 100644
      /// Update the terminal tab title and OSC 9;4 progress bar.
      /// Stores any resulting escape sequences in `pending_notification_escapes`.
      /// Also clears the permission notification flag when no permissions remain queued, so the next batch fires a fresh bell/popup.
-@@ -5805,7 +6430,9 @@ impl AppView {
+@@ -5805,7 +6455,9 @@ impl AppView {
                  };
                  let has_perms = !agent.permission_queue.is_empty();
                  let elapsed = if parked { None } else { agent.turn_elapsed() };
@@ -1307,7 +1339,7 @@ index fc9a4553..be439e35 100644
              } else {
                  (None, None, None, false, None, false)
 diff --git a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
-index 483296d4..faf5fee3 100644
+index 483296d4..496e5a65 100644
 --- a/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/app_view_tests.rs
 @@ -169,6 +169,36 @@ pub(crate) fn test_app() -> AppView {
@@ -1357,13 +1389,14 @@ index 483296d4..faf5fee3 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -261,10 +294,12 @@ pub(crate) fn test_app() -> AppView {
+@@ -261,10 +294,13 @@ pub(crate) fn test_app() -> AppView {
          session_picker_entries_query: None,
          session_picker_pending_delete: None,
          welcome_tick: 0,
 -        welcome_shimmer_frame: 0,
 +        welcome_hero_frame: 0,
 +        welcome_hero_animating: false,
++        welcome_last_input_at: Instant::now(),
          startup_warnings: Vec::new(),
          is_api_key_auth: false,
          pending_update_version: None,
@@ -1371,7 +1404,7 @@ index 483296d4..faf5fee3 100644
          foreign_resume_launch_generation: 0,
          foreign_resume_launch: None,
          quit_for_update: false,
-@@ -278,6 +313,9 @@ pub(crate) fn test_app() -> AppView {
+@@ -278,6 +314,9 @@ pub(crate) fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -1381,7 +1414,7 @@ index 483296d4..faf5fee3 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -616,6 +654,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
+@@ -616,6 +655,7 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
      );
  }
  #[test]
@@ -1389,7 +1422,7 @@ index 483296d4..faf5fee3 100644
  fn needs_animation_gates_prompt_history_tick_delivery() {
      let mut app = test_app_with_agent();
      let id = super::super::agent::AgentId(0);
-@@ -774,17 +813,70 @@ fn tick_demand_follows_the_mcp_chip() {
+@@ -774,17 +814,102 @@ fn tick_demand_follows_the_mcp_chip() {
          "the MCP chip spinner ticks while servers connect"
      );
  }
@@ -1436,6 +1469,22 @@ index 483296d4..faf5fee3 100644
 +    );
 +    app.notification_service.focus_tracker.on_focus_gained();
 +    assert_eq!(app.tick_demand(), TickDemand::Slow);
++    // Workshop: a welcome screen nobody has touched for `HERO_IDLE_PAUSE` holds its frame and
++    // parks the loop; the next key (or the mouse, a paste, coming back to the window) resumes it.
++    app.welcome_last_input_at = Instant::now() - HERO_IDLE_PAUSE - Duration::from_secs(1);
++    assert!(!app.welcome_hero_spins());
++    assert_eq!(app.tick_demand(), TickDemand::None);
++    let parked = app.welcome_hero_frame;
++    app.tick();
++    assert_eq!(
++        app.welcome_hero_frame, parked,
++        "no frame advances while idle"
++    );
++    app.note_terminal_input(&Event::Resize(80, 24));
++    assert!(!app.welcome_hero_spins(), "a resize is not the user");
++    app.note_terminal_input(&Event::Key(KeyEvent::from(KeyCode::Char('a'))));
++    assert!(app.welcome_hero_spins());
++    assert_eq!(app.tick_demand(), TickDemand::Slow);
 +    // `[ui] hero_animation = false` shows the resting frame: nothing to tick for.
 +    app.current_ui.hero_animation = Some(false);
 +    assert!(!app.hero_animation_enabled());
@@ -1448,6 +1497,22 @@ index 483296d4..faf5fee3 100644
      app.session_picker_content_loading = true;
      assert_eq!(app.tick_demand(), TickDemand::Fast);
  }
++
++/// Workshop: the spin window after the last input, independent of the terminal (the test above
++/// returns early under `NO_COLOR`).
++#[test]
++fn hero_spin_window_after_input() {
++    let t0 = Instant::now();
++    assert!(hero_spins_after_input(t0, t0));
++    assert!(hero_spins_after_input(
++        t0,
++        t0 + HERO_IDLE_PAUSE - Duration::from_millis(1)
++    ));
++    assert!(!hero_spins_after_input(t0, t0 + HERO_IDLE_PAUSE));
++    assert!(!hero_spins_after_input(t0, t0 + Duration::from_secs(3600)));
++    // A clock that reads earlier than the input (tests, suspend) counts as fresh input.
++    assert!(hero_spins_after_input(t0 + Duration::from_secs(5), t0));
++}
 +
 +/// A welcome toast needs the clock to expire even when the hero rests.
 +#[test]
@@ -1463,7 +1528,7 @@ index 483296d4..faf5fee3 100644
  /// An open modal session picker that is still fetching keeps fast ticks alive on an otherwise-idle agent (its loading spinner must animate).
  /// That holds even after the fast foreign scan lands rows the default Grok filter hides; once the native list settles the demand parks again.
  #[test]
-@@ -2268,16 +2360,86 @@ fn is_restricted_tier_classification() {
+@@ -2268,16 +2393,86 @@ fn is_restricted_tier_classification() {
      assert!(!is_restricted_tier(Some("X Premium+")));
      assert!(!is_restricted_tier(Some("SomeFutureTier")));
  }
@@ -1473,12 +1538,13 @@ index 483296d4..faf5fee3 100644
 -    assert!(TIER_RESTRICTED_COMMANDS.contains(&"voice"));
 +fn voice_not_in_tier_restricted_commands() {
 +    assert!(!TIER_RESTRICTED_COMMANDS.contains(&"voice"));
-+}
+ }
 +/// Workshop: `/privacy` opens an xAI-account setting, so it is hidden on a fresh home (the free
 +/// models), for API keys and for external auth, and offered once an xAI account (a tier or a
 +/// team) is signed in — on the welcome composer, every agent and the dashboard alike. The tier
 +/// deny list is not involved (a typed `/privacy` must never open the SuperGrok upsell).
-+#[test]
+ #[test]
+-fn is_voice_tier_restricted_tracks_tier() {
 +fn privacy_is_hidden_until_an_xai_account_is_signed_in() {
 +    let hidden = |app: &AppView| {
 +        app.welcome_prompt
@@ -1533,9 +1599,8 @@ index 483296d4..faf5fee3 100644
 +            .is_restricted("privacy"),
 +        "never on the upsell path"
 +    );
- }
- #[test]
--fn is_voice_tier_restricted_tracks_tier() {
++}
++#[test]
 +fn is_voice_tier_restricted_only_for_the_xai_provider() {
      let mut app = test_app();
      app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
@@ -1554,7 +1619,7 @@ index 483296d4..faf5fee3 100644
      let meta = xai_grok_login::AuthMeta {
          subscription_tier: Some("SuperGrok".into()),
          ..Default::default()
-@@ -3198,15 +3360,15 @@ fn welcome_ctrl_d_requires_confirmation() {
+@@ -3198,15 +3393,15 @@ fn welcome_ctrl_d_requires_confirmation() {
  #[test]
  fn menu_action_indices_without_changelog() {
      assert!(matches!(
@@ -1573,7 +1638,7 @@ index 483296d4..faf5fee3 100644
          InputOutcome::Action(Action::Quit)
      ));
  }
-@@ -3214,46 +3376,90 @@ fn menu_action_indices_without_changelog() {
+@@ -3214,46 +3409,90 @@ fn menu_action_indices_without_changelog() {
  fn menu_action_changelog_sits_above_quit() {
      let md = Some("# notes");
      assert!(matches!(
@@ -1593,8 +1658,7 @@ index 483296d4..faf5fee3 100644
      ));
  }
 +/// Workshop: the release-notes row never dead-ends; without fetched markdown it opens the bundled notes.
- #[test]
--fn menu_action_changelog_before_fetch_is_noop() {
++#[test]
 +fn menu_action_release_notes_before_fetch_opens_bundled_notes() {
 +    match dispatch_menu_action(2, false, true, true, true, None) {
 +        InputOutcome::Action(Action::ShowReleaseNotes { content, .. }) => {
@@ -1604,7 +1668,8 @@ index 483296d4..faf5fee3 100644
 +    }
 +}
 +/// Workshop: with nothing to resume the Resume row is absent and the indices close up.
-+#[test]
+ #[test]
+-fn menu_action_changelog_before_fetch_is_noop() {
 +fn menu_action_indices_without_resume() {
      assert!(matches!(
 -        dispatch_menu_action(2, false, true, None),
@@ -1641,13 +1706,15 @@ index 483296d4..faf5fee3 100644
      assert!(matches!(
 -        dispatch_menu_action(2, true, true, md),
 +        dispatch_menu_action(2, true, true, true, true, md),
-+        InputOutcome::Action(Action::FetchSessionList)
-+    ));
-+    assert!(matches!(
+         InputOutcome::Action(Action::FetchSessionList)
+     ));
+     assert!(matches!(
+-        dispatch_menu_action(3, true, true, md),
 +        dispatch_menu_action(3, true, true, true, true, md),
-+        InputOutcome::Action(Action::ShowReleaseNotes { .. })
-+    ));
-+    assert!(matches!(
+         InputOutcome::Action(Action::ShowReleaseNotes { .. })
+     ));
+     assert!(matches!(
+-        dispatch_menu_action(4, true, true, md),
 +        dispatch_menu_action(4, true, true, true, true, md),
 +        InputOutcome::Action(Action::Quit)
 +    ));
@@ -1658,15 +1725,13 @@ index 483296d4..faf5fee3 100644
 +    let md = Some("# notes");
 +    assert!(matches!(
 +        dispatch_menu_action(0, false, false, true, true, md),
-         InputOutcome::Action(Action::FetchSessionList)
-     ));
-     assert!(matches!(
--        dispatch_menu_action(3, true, true, md),
++        InputOutcome::Action(Action::FetchSessionList)
++    ));
++    assert!(matches!(
 +        dispatch_menu_action(1, false, false, true, true, md),
-         InputOutcome::Action(Action::ShowReleaseNotes { .. })
-     ));
-     assert!(matches!(
--        dispatch_menu_action(4, true, true, md),
++        InputOutcome::Action(Action::ShowReleaseNotes { .. })
++    ));
++    assert!(matches!(
 +        dispatch_menu_action(2, false, false, true, true, md),
 +        InputOutcome::Action(Action::Quit)
 +    ));
@@ -1675,7 +1740,7 @@ index 483296d4..faf5fee3 100644
          InputOutcome::Action(Action::Quit)
      ));
  }
-@@ -3517,6 +3723,20 @@ fn ctrl_q_sets_pending_action() {
+@@ -3517,6 +3756,20 @@ fn ctrl_q_sets_pending_action() {
      assert!(app.pending_action.is_some());
      assert_eq!(app.pending_action.as_ref().unwrap().label, Some("quit"));
  }
@@ -1696,7 +1761,7 @@ index 483296d4..faf5fee3 100644
  #[test]
  fn ctrl_q_double_press_quits() {
      let mut app = test_app_with_agent();
-@@ -4836,17 +5056,103 @@ fn welcome_pending_n_is_unchanged() {
+@@ -4836,17 +5089,103 @@ fn welcome_pending_n_is_unchanged() {
      let outcome = app.handle_input(&key_event(KeyCode::Char('n'), KeyModifiers::NONE));
      assert!(matches!(outcome, InputOutcome::Unchanged));
  }
@@ -1802,7 +1867,7 @@ index 483296d4..faf5fee3 100644
  #[test]
  fn welcome_done_ctrl_w_opens_new_worktree_dialog() {
      let mut app = test_app();
-@@ -4858,8 +5164,10 @@ fn welcome_done_ctrl_w_opens_new_worktree_dialog() {
+@@ -4858,8 +5197,10 @@ fn welcome_done_ctrl_w_opens_new_worktree_dialog() {
          InputOutcome::Action(Action::OpenNewWorktreeDialog)
      ));
  }
@@ -1814,7 +1879,7 @@ index 483296d4..faf5fee3 100644
      let chords = [
          KeyModifiers::CONTROL,
          KeyModifiers::SUPER,
-@@ -4870,10 +5178,29 @@ fn welcome_paste_chords_leave_home() {
+@@ -4870,10 +5211,29 @@ fn welcome_paste_chords_leave_home() {
          let mut app = test_app();
          app.auth_state = AuthState::Done;
          app.welcome_prompt_focused = focused;
@@ -3840,7 +3905,7 @@ index 2049a2d9..2a81eaf5 100644
  /// to the previous row rather than disappearing.
  #[serial_test::serial(GROK_AGENT_DASHBOARD)]
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
-index bf64193d..1ab94680 100644
+index bf64193d..b59e0e2b 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs
 @@ -35,7 +35,8 @@ use super::dashboard::{
@@ -3900,13 +3965,14 @@ index bf64193d..1ab94680 100644
          welcome_import_banner_rect: None,
          last_mouse_pos: None,
          last_scroll_pos: None,
-@@ -273,10 +307,12 @@ fn test_app() -> AppView {
+@@ -273,10 +307,13 @@ fn test_app() -> AppView {
          session_picker_entries_query: None,
          session_picker_pending_delete: None,
          welcome_tick: 0,
 -        welcome_shimmer_frame: 0,
 +        welcome_hero_frame: 0,
 +        welcome_hero_animating: false,
++        welcome_last_input_at: std::time::Instant::now(),
          startup_warnings: Vec::new(),
          is_api_key_auth: false,
          pending_update_version: None,
@@ -3914,7 +3980,7 @@ index bf64193d..1ab94680 100644
          foreign_resume_launch_generation: 0,
          foreign_resume_launch: None,
          quit_for_update: false,
-@@ -289,6 +325,9 @@ fn test_app() -> AppView {
+@@ -289,6 +326,9 @@ fn test_app() -> AppView {
          pending_effects: Vec::new(),
          pending_editor: None,
          pending_pager_path: None,
@@ -3924,7 +3990,7 @@ index bf64193d..1ab94680 100644
          pending_pager_ansi: false,
          minimal_state: crate::minimal_api::MinimalState::default(),
          reconnect_pending: false,
-@@ -585,6 +624,28 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
+@@ -585,6 +625,28 @@ fn plant_local_build_session(cwd: &std::path::Path, session_id: &str) -> std::pa
      std::fs::write(sess_dir.join("summary.json"), b"{}").expect("plant summary");
      sess_dir
  }
@@ -4308,7 +4374,7 @@ index 1c507697..89312ddd 100644
              let tx = acp_tx.clone();
              let abort_handle = tasks
 diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
-index eda61b3c..c7e7b9a6 100644
+index eda61b3c..1a4b9cf6 100644
 --- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
 @@ -765,18 +765,79 @@ fn run_pending_suspends(
@@ -4537,12 +4603,13 @@ index eda61b3c..c7e7b9a6 100644
      };
      app.has_external_auth_provider =
          crate::slash::commands::usage::detect_external_auth_provider(&app.auth_methods);
-@@ -1359,6 +1471,14 @@ pub(crate) async fn run(
+@@ -1359,6 +1471,15 @@ pub(crate) async fn run(
      }
      app.voice_config.client_identifier = crate::client_identity::HEADLESS_CLIENT_TYPE.to_string();
      app.voice_config.user_agent = crate::client_identity::client_user_agent();
-+    // Workshop: on a returning launch voice gets ready in the background half a minute in (a
-+    // first run waits for its first reply, see `handle_workshop_turn_msg`).
++    // Workshop: with the background voice setup turned on (`[voice] auto_download`), a returning
++    // launch starts it half a minute in (a first run waits for its first reply, see
++    // `handle_workshop_turn_msg`); by default the first `/voice` fetches on request.
 +    if !needs_interactive_login {
 +        post_render_effects.extend(crate::app::workshop::maybe_start_voice_prefetch(
 +            &mut app,
@@ -4552,7 +4619,7 @@ index eda61b3c..c7e7b9a6 100644
      app.zdr_access_enabled = xai_grok_shell::util::config::resolve_zdr_access_enabled(
          requirements.as_ref(),
          user_config.as_ref(),
-@@ -1632,6 +1752,13 @@ pub(crate) async fn run(
+@@ -1632,6 +1753,13 @@ pub(crate) async fn run(
      let (progress_tx, mut progress_rx) =
          tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
      let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
@@ -4566,7 +4633,7 @@ index eda61b3c..c7e7b9a6 100644
      let voice_auth_factory = connection.auth_manager.clone();
      let mut tick_interval = tick_interval;
      let mut animation_tick_at: Option<Instant> = None;
-@@ -1759,6 +1886,16 @@ pub(crate) async fn run(
+@@ -1759,6 +1887,16 @@ pub(crate) async fn run(
                  git_ref: args.worktree_ref.clone(),
              })
          }
@@ -4583,7 +4650,7 @@ index eda61b3c..c7e7b9a6 100644
          MaterializedStartup::NewAuto => None,
      };
      if let Some(action) = startup_action {
-@@ -1892,7 +2029,7 @@ pub(crate) async fn run(
+@@ -1892,7 +2030,7 @@ pub(crate) async fn run(
          if process_effects(workspace_effects, &mut tasks, &mut app, &progress_tx) {
              break;
          }
@@ -4592,7 +4659,7 @@ index eda61b3c..c7e7b9a6 100644
              &mut app,
              terminal,
              &input_paused,
-@@ -1902,9 +2039,16 @@ pub(crate) async fn run(
+@@ -1902,9 +2040,16 @@ pub(crate) async fn run(
              &mut suspend_retry_after,
              &mut suspend_wait_reports,
          ) {
@@ -4612,7 +4679,7 @@ index eda61b3c..c7e7b9a6 100644
          }
          if run_pending_mode_switch(
              &mut app,
-@@ -1921,6 +2065,22 @@ pub(crate) async fn run(
+@@ -1921,6 +2066,22 @@ pub(crate) async fn run(
          ) {
              break;
          }
@@ -4635,15 +4702,16 @@ index eda61b3c..c7e7b9a6 100644
          if let VoiceState::ColdStart { hold, target } = app.voice_state {
              if app.voice_cmd_tx.is_none() && app.voice_can_start_pipeline() {
                  let voice_auth = crate::voice::build_voice_auth(voice_auth_factory.clone());
-@@ -2314,6 +2474,7 @@ pub(crate) async fn run(
+@@ -2314,6 +2475,8 @@ pub(crate) async fn run(
              maybe_ev = input_rx.recv() => {
                  // `None` means the dedicated terminal reader thread has ended.
                  let Some(ev) = maybe_ev else { break };
 +                let typed_char = typed_character(&ev.event);
++                app.note_terminal_input(&ev.event);
                  let handled_at = std::time::Instant::now();
                  let waited =
                      super::event_loop_stall::input_wait(ev.arrived_at, handled_at, loop_entry);
-@@ -2331,6 +2492,9 @@ pub(crate) async fn run(
+@@ -2331,6 +2494,9 @@ pub(crate) async fn run(
                  if result.should_quit {
                      break;
                  }
@@ -4653,7 +4721,7 @@ index eda61b3c..c7e7b9a6 100644
                  if !app.pending_effects.is_empty() {
                      let effs = std::mem::take(&mut app.pending_effects);
                      if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
-@@ -2885,6 +3049,23 @@ pub(crate) async fn run(
+@@ -2885,6 +3051,23 @@ pub(crate) async fn run(
                  presenter.request(false);
              }
  
@@ -4677,7 +4745,7 @@ index eda61b3c..c7e7b9a6 100644
              // A burst can backlog the 128-slot channel, so `voice_rx` is effectively always-ready
              // Kept last, it can never starve cancellation, ACP, task/progress completions, keyboard input, or the render/animation/poll timers
              // Voice is only serviced when nothing else is pending
-@@ -3096,6 +3277,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3096,6 +3279,9 @@ fn finish_run(app: &mut AppView) -> RunResult {
      app.abandon_startup();
      let exit_info = app.active_agent().and_then(|agent| {
          let sid = agent.session.session_id.as_ref()?;
@@ -4687,7 +4755,7 @@ index eda61b3c..c7e7b9a6 100644
          let summary = if app.screen_mode.is_fullscreen() {
              use crate::views::session_title;
              let last_prompt = session_title::last_user_prompt_line(agent);
-@@ -3109,7 +3293,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
+@@ -3109,7 +3295,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
              None
          };
          Some(super::ExitInfo {
@@ -4696,7 +4764,7 @@ index eda61b3c..c7e7b9a6 100644
              minimal: app.screen_mode.is_minimal(),
              summary,
          })
-@@ -3143,7 +3327,9 @@ struct RoutedInputEvent {
+@@ -3143,7 +3329,9 @@ struct RoutedInputEvent {
      is_startup_replay: bool,
  }
  fn tty_suspend_armed(app: &AppView) -> bool {
@@ -4707,7 +4775,7 @@ index eda61b3c..c7e7b9a6 100644
  }
  fn normalize_input_event(
      timed: TimedInputEvent,
-@@ -3934,6 +4120,618 @@ pub(crate) fn dispatch_then_forward(
+@@ -3934,6 +4122,618 @@ pub(crate) fn dispatch_then_forward(
      effects
  }
  /// Spawn effects into the task set. Returns `true` if the app should quit.
@@ -5326,7 +5394,7 @@ index eda61b3c..c7e7b9a6 100644
  fn process_effects(
      effs: Vec<super::actions::Effect>,
      tasks: &mut JoinSet<TaskResult>,
-@@ -4036,15 +4834,6 @@ mod tests {
+@@ -4036,15 +4836,6 @@ mod tests {
          };
          a
      }
@@ -5342,7 +5410,7 @@ index eda61b3c..c7e7b9a6 100644
      use crate::render::draw::WriterSync;
      use crossterm::event::{KeyEvent, KeyEventState};
      #[test]
-@@ -4469,7 +5258,9 @@ mod tests {
+@@ -4469,7 +5260,9 @@ mod tests {
          }
      }
      #[tokio::test]
@@ -5353,7 +5421,7 @@ index eda61b3c..c7e7b9a6 100644
          let mut app = crate::app::app_view::tests::test_app();
          let (acp_tx, mut acp_rx) = tokio::sync::mpsc::unbounded_channel();
          app.acp_tx = acp_tx;
-@@ -4493,19 +5284,16 @@ mod tests {
+@@ -4493,19 +5286,16 @@ mod tests {
          )
          .await;
          assert!(!result.should_quit);
@@ -5571,10 +5639,10 @@ index 60fe34f9..f647dfc2 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..f2bd1e96
+index 00000000..af645027
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,3462 @@
+@@ -0,0 +1,3463 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -6733,9 +6801,10 @@ index 00000000..f2bd1e96
 +}
 +
 +/// Start the background voice setup (the `voice-engine` helper, then this machine's speech model,
-+/// from the release mirror only) unless it is off (`voice.auto_download`, `WORKSHOP_VOICE_AUTO=0`),
-+/// voice is disabled, already running this process, or already in place. `delay` holds it back
-+/// on a returning launch so the first half minute is the user's.
++/// from the release mirror only) when it is turned on (`voice.auto_download`,
++/// `WORKSHOP_VOICE_AUTO=1`; off by default — the first `/voice` fetches on request), unless voice
++/// is disabled, it is already running in this process, or everything is in place. `delay` holds
++/// it back on a returning launch so the first half minute is the user's.
 +pub fn maybe_start_voice_prefetch(
 +    app: &mut crate::app::app_view::AppView,
 +    delay: Duration,

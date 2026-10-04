@@ -1,11 +1,12 @@
 //! Voice gets ready in the background. A default install ships `workshop` alone; the TUI fetches
 //! the `voice-engine` helper and this machine's speech model itself, from the release mirror only:
 //!
-//! * First run: nothing is fetched before the first reply; once it lands, the helper archive is
+//! * Background setup turned on (`WORKSHOP_VOICE_AUTO=1` / `[voice] auto_download = true`), first
+//!   run: nothing is fetched before the first reply; once it lands, the helper archive is
 //!   verified against the release's `SHA256SUMS` and linked as `~/.workshop/bin/voice-engine`, then
 //!   the model downloads into `~/.workshop/voice/`. `/voice` meanwhile says `Voice is getting ready
 //!   — 62%` instead of failing. The mirror saw exactly those three files.
-//! * `WORKSHOP_VOICE_AUTO=0`: nothing is fetched on its own; a `/voice` press still asks for it.
+//! * The default: nothing is fetched on its own; the first `/voice` press asks for it.
 //!
 //! Hermetic: a loopback mirror (`fixtures/fake-voice-mirror.py`) with a test lock file pinning a
 //! small model; the answering fake `opencode` on loopback. Opt-in via `WORKSHOP_BIN`,
@@ -189,6 +190,7 @@ fn voice_gets_ready_in_the_background_after_the_first_reply() {
         &[
             ("WORKSHOP_VOICE_MIRROR_BASE", base.as_str()),
             ("WORKSHOP_VOICE_LOCK", lock.as_str()),
+            ("WORKSHOP_VOICE_AUTO", "1"),
         ],
         Some(fake.path()),
     );
@@ -255,9 +257,11 @@ fn voice_gets_ready_in_the_background_after_the_first_reply() {
     quit_twice(&mut j);
 }
 
+/// The default: a user who never dictates never downloads the helper or a model; the first
+/// `/voice` fetches them on request. (`WORKSHOP_VOICE_AUTO=0` is the same with the flag on.)
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (loopback mirror + fake opencode); run with --include-ignored"]
-fn opt_out_fetches_nothing_on_its_own_but_a_voice_press_still_asks() {
+fn by_default_nothing_is_fetched_until_a_voice_press_asks() {
     let Some(bin) = bin_from_env() else { return };
     let mirror = build_mirror();
     let (_server, base) = serve(&mirror);
@@ -265,12 +269,11 @@ fn opt_out_fetches_nothing_on_its_own_but_a_voice_press_still_asks() {
     let fake = fake_opencode_answering(&recorder.path().join("prompts.jsonl"));
     let lock = mirror.lock.to_string_lossy().to_string();
     let mut j = spawn(
-        "voice-prefetch-off",
+        "voice-prefetch-default",
         &bin,
         &[
             ("WORKSHOP_VOICE_MIRROR_BASE", base.as_str()),
             ("WORKSHOP_VOICE_LOCK", lock.as_str()),
-            ("WORKSHOP_VOICE_AUTO", "0"),
         ],
         Some(fake.path()),
     );
@@ -280,7 +283,7 @@ fn opt_out_fetches_nothing_on_its_own_but_a_voice_press_still_asks() {
     j.h.update(Duration::from_millis(4000));
     assert!(
         requests(&mirror).is_empty(),
-        "turned off: nothing is fetched on its own"
+        "by default nothing is fetched on its own"
     );
     let helper = j.workshop_home().join("bin").join("voice-engine");
     assert!(!helper.exists());

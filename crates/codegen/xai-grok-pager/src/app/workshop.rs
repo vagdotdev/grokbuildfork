@@ -1156,9 +1156,10 @@ pub fn has_resumable_sessions(cwd: &Path) -> bool {
 }
 
 /// Start the background voice setup (the `voice-engine` helper, then this machine's speech model,
-/// from the release mirror only) unless it is off (`voice.auto_download`, `WORKSHOP_VOICE_AUTO=0`),
-/// voice is disabled, already running this process, or already in place. `delay` holds it back
-/// on a returning launch so the first half minute is the user's.
+/// from the release mirror only) when it is turned on (`voice.auto_download`,
+/// `WORKSHOP_VOICE_AUTO=1`; off by default — the first `/voice` fetches on request), unless voice
+/// is disabled, it is already running in this process, or everything is in place. `delay` holds
+/// it back on a returning launch so the first half minute is the user's.
 pub fn maybe_start_voice_prefetch(
     app: &mut crate::app::app_view::AppView,
     delay: Duration,
