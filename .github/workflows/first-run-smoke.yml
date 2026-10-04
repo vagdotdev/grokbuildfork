@@ -58,18 +58,18 @@ jobs:
           grep -q 'export PATH=' "$EVIDENCE/install.log" || { echo "::error::no PATH hint for a shell without ~/.workshop/bin"; exit 1; }
           env -i HOME="$FRESH_HOME" PATH="$path" "$FRESH_HOME/.workshop/bin/workshop" --version | tee -a "$EVIDENCE/install.log"
 
-      - name: macOS — installed binaries are native, validly signed and not quarantined
+      # The default install is the workshop binary alone (voice is fetched on request), so this checks
+      # workshop; the voice helper is checked after a voice install below.
+      - name: macOS — the installed binary is native, validly signed and not quarantined
         if: runner.os == 'macOS'
         run: |
           arch=$(uname -m)
-          for b in "$FRESH_HOME/.workshop/bin/workshop" "$FRESH_HOME/.workshop/bin/voice-engine"; do
-            real=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$b")
-            file "$real"
-            file "$real" | grep -q "$arch" || { echo "::error::$real is not $arch"; exit 1; }
-            codesign --verify --verbose=2 "$real"
-            if xattr -p com.apple.quarantine "$real" 2>/dev/null; then echo "::error::$real is quarantined"; exit 1; fi
-          done
-          "$FRESH_HOME/.workshop/bin/voice-engine" --version
+          real=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$FRESH_HOME/.workshop/bin/workshop")
+          file "$real"
+          file "$real" | grep -q "$arch" || { echo "::error::$real is not $arch"; exit 1; }
+          codesign --verify --verbose=2 "$real"
+          if xattr -p com.apple.quarantine "$real" 2>/dev/null; then echo "::error::$real is quarantined"; exit 1; fi
+          test ! -e "$FRESH_HOME/.workshop/bin/voice-engine" || { echo "::error::the default install fetched the voice helper"; exit 1; }
 
       - name: First run in a PTY — composer, first sentence, reply, /exit
         run: |
@@ -100,6 +100,27 @@ jobs:
           grep -q 'listening on http://127.0.0.1:' "$log" || { echo "::error::opencode serve did not listen on loopback"; exit 1; }
           if grep -E 'listening on http://(0\.0\.0\.0|\[::\])' "$log"; then echo "::error::engine listened beyond loopback"; exit 1; fi
 
+      # Voice on request: the installer's voice path (WORKSHOP_VOICE=1) on a second fresh home picks
+      # this machine's helper build and model tier (Apple Silicon: the arm64 helper and the turbo
+      # model, from the release and voice-models-v1).
+      - name: Voice — this machine gets its native voice helper
+        if: always()
+        run: |
+          VOICE_HOME="$RUNNER_TEMP/voice-home"; mkdir -p "$VOICE_HOME"
+          env -i HOME="$VOICE_HOME" PATH="$USER_PATH" SHELL="$USER_SHELL" LANG=en_US.UTF-8 TERM=xterm-256color WORKSHOP_VOICE=1 \
+            sh -c 'curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/release-channel/install.sh | sh' \
+            2>&1 | tee "$EVIDENCE/voice-install.log"
+          helper=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$VOICE_HOME/.workshop/bin/voice-engine")
+          test -x "$helper" || { echo "::error::no voice helper at $helper"; exit 1; }
+          file "$helper" | tee -a "$EVIDENCE/voice-install.log"
+          ls -l "$VOICE_HOME/.workshop/voice/" | tee -a "$EVIDENCE/voice-install.log"
+          if [ "$(uname -s)" = Darwin ]; then
+            file "$helper" | grep -q "$(uname -m)" || { echo "::error::$helper is not $(uname -m)"; exit 1; }
+            codesign --verify --verbose=2 "$helper"
+            if xattr -p com.apple.quarantine "$helper" 2>/dev/null; then echo "::error::$helper is quarantined"; exit 1; fi
+          fi
+          "$VOICE_HOME/.workshop/bin/voice-engine" --version | tee -a "$EVIDENCE/voice-install.log"
+
       - name: Summary
         if: always()
         run: |
@@ -107,6 +128,7 @@ jobs:
             echo "### First run on ${{ matrix.runner }} ($(uname -sm))"
             echo '```'
             tail -3 "$EVIDENCE/install.log" 2>/dev/null
+            grep -E 'Mach-O|ELF|voice-engine [0-9]' "$EVIDENCE/voice-install.log" 2>/dev/null
             cat "$EVIDENCE/pty/timings.json" 2>/dev/null
             echo '```'
             echo '```'
