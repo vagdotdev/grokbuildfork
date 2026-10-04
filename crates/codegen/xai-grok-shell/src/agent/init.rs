@@ -483,6 +483,14 @@ pub fn update_telemetry_config(config: &AgentConfig, auth_manager: &AuthManager)
         tracing::warn!("telemetry init skipped: GROK_CLIENT_NAME yields an invalid user agent");
         return;
     }
+    // Workshop: with no event sink configured (this build bakes none), or telemetry off, there is
+    // no client to build; asking for the shared HTTP client here made the first frame wait for the
+    // OS trust store (the Keychain on macOS, 120–230 ms).
+    let mode = config.resolve_telemetry_mode().value;
+    if mode.is_disabled() || !config.telemetry.has_event_sink() {
+        xai_grok_telemetry::client::disable();
+        return;
+    }
     let grok_auth = auth_manager.current().filter(|a| a.is_xai_auth());
     let user_id = grok_auth.as_ref().map(|a| a.user_id.clone());
     let team_id = grok_auth.as_ref().and_then(|a| a.team_id.clone());
@@ -495,7 +503,7 @@ pub fn update_telemetry_config(config: &AgentConfig, auth_manager: &AuthManager)
     );
     xai_grok_telemetry::client::init(
         config.telemetry.clone(),
-        config.resolve_telemetry_mode().value,
+        mode,
         user_id,
         team_id,
         config.endpoints.deployment_key.clone(),

@@ -1,5 +1,26 @@
+diff --git a/crates/codegen/xai-grok-telemetry/src/client.rs b/crates/codegen/xai-grok-telemetry/src/client.rs
+index 2ca21fce..543e26a4 100644
+--- a/crates/codegen/xai-grok-telemetry/src/client.rs
++++ b/crates/codegen/xai-grok-telemetry/src/client.rs
+@@ -446,6 +446,16 @@ pub fn init(
+     drop(guard);
+     sync_profile();
+ }
++/// Workshop: no telemetry client at all — what [`init`] does for a disabled mode, without an HTTP
++/// client to hand over. The shared client's first build waits for the OS trust store (the Keychain
++/// on macOS, 120–230 ms), so a build with nothing to send must not ask for one on the startup path.
++pub fn disable() {
++    let lock = TELEMETRY_CLIENT.get_or_init(|| Mutex::new(None));
++    let mut guard = lock.lock().unwrap_or_else(|err| err.into_inner());
++    *guard = None;
++    drop(guard);
++    sync_profile();
++}
+ /// Re-initialize the telemetry client if it was not created at startup (e.g. because auth was not yet available).
+ /// No-op when the client is already set, so safe to call unconditionally after auth succeeds.
+ pub fn init_if_needed(
 diff --git a/crates/codegen/xai-grok-telemetry/src/config.rs b/crates/codegen/xai-grok-telemetry/src/config.rs
-index bed3b176..102c9248 100644
+index bed3b176..2299a26d 100644
 --- a/crates/codegen/xai-grok-telemetry/src/config.rs
 +++ b/crates/codegen/xai-grok-telemetry/src/config.rs
 @@ -175,18 +175,28 @@ pub struct TelemetryConfig {
@@ -34,7 +55,27 @@ index bed3b176..102c9248 100644
          let mixpanel_enabled = baked_enabled || build_token.is_some();
          let (events_url, events_api_key, mixpanel_token) = (
              build_url.or(baked_url),
-@@ -332,16 +342,15 @@ mod tests {
+@@ -229,6 +239,19 @@ impl Default for TelemetryConfig {
+     }
+ }
+ impl TelemetryConfig {
++    /// Workshop: whether any event sink is configured — a Mixpanel token with Mixpanel on, or an
++    /// events URL. Without one the telemetry client would hold an HTTP client it never uses.
++    pub fn has_event_sink(&self) -> bool {
++        let token = self
++            .mixpanel_token
++            .as_deref()
++            .is_some_and(|t| !t.trim().is_empty());
++        let events = self
++            .events_url
++            .as_deref()
++            .is_some_and(|u| !u.trim().is_empty());
++        (self.mixpanel_enabled && token) || events
++    }
+     /// Clears every sink still carrying its baked `internal-telemetry-defaults` value; the events
+     /// key follows the URL, so an explicit URL keeps a baked key. Returns whether anything was cleared.
+     pub(crate) fn disarm_baked_sinks(&mut self) -> bool {
+@@ -332,16 +355,15 @@ mod tests {
              )
          );
      }
@@ -58,3 +99,30 @@ index bed3b176..102c9248 100644
      }
      #[test]
      fn otel_timeout_fields_accept_int_or_string() {
+@@ -363,4 +385,26 @@ mod tests {
+             Some("60000")
+         );
+     }
++    /// Workshop: the default build bakes no sink, so there is nothing to build a client for; a
++    /// token (with Mixpanel on) or an events URL is one.
++    #[test]
++    fn has_event_sink_needs_a_token_or_an_events_url() {
++        let mut cfg = TelemetryConfig::default();
++        cfg.mixpanel_token = None;
++        cfg.mixpanel_enabled = false;
++        cfg.events_url = None;
++        assert!(!cfg.has_event_sink());
++        cfg.mixpanel_token = Some("tok".into());
++        assert!(
++            !cfg.has_event_sink(),
++            "a token with Mixpanel off is not a sink"
++        );
++        cfg.mixpanel_enabled = true;
++        assert!(cfg.has_event_sink());
++        cfg.mixpanel_enabled = false;
++        cfg.events_url = Some("  ".into());
++        assert!(!cfg.has_event_sink(), "blank is unset");
++        cfg.events_url = Some("https://events.example/v1".into());
++        assert!(cfg.has_event_sink());
++    }
+ }
