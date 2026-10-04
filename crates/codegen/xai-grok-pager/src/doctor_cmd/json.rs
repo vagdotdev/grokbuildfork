@@ -70,6 +70,7 @@ struct JsonFacts<'a> {
 #[serde(rename_all = "camelCase")]
 struct JsonOpenCodeEngineFacts<'a> {
     connection: &'a str,
+    free_models: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     binary: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,6 +91,7 @@ impl<'a> From<&'a OpenCodeEngineFacts> for JsonOpenCodeEngineFacts<'a> {
     fn from(f: &'a OpenCodeEngineFacts) -> Self {
         Self {
             connection: &f.connection,
+            free_models: &f.free_models,
             binary: f.binary.as_deref(),
             version: f.version.as_deref(),
             binary_status: &f.binary_status,

@@ -33,7 +33,7 @@ use workshop_adapters::{
     detect, question_answers_prompt,
 };
 use workshop_detect::DetectConfig;
-use workshop_auth::{ENGINE_PROVIDER_ID, EngineModel, PickerSnapshot, models_rows};
+use workshop_auth::{ENGINE_PROVIDER_ID, EngineModel, PickerSnapshot};
 use workshop_providers::catalog::live::{self as live_catalogs, HostedCatalogs};
 use workshop_providers::{
     Catalog, CatalogStatus, CredentialBroker, CredentialInjection, FileSecretStore, Freshness,
@@ -266,14 +266,30 @@ impl FreeModelsMode {
     }
 }
 
+/// The config key behind [`free_models_mode`], as it reads in `config.toml`.
+pub const FREE_MODELS_CONFIG_KEY: &str = "[workshop] free_models";
+
+/// Where the free-models setting came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreeModelsSource {
+    Env,
+    Config,
+    Default,
+}
+
 pub fn free_models_mode() -> FreeModelsMode {
+    free_models_setting().0
+}
+
+/// The mode and where it was set: the env var, the config key, or the default.
+pub fn free_models_setting() -> (FreeModelsMode, FreeModelsSource) {
     if let Some(mode) = std::env::var(FREE_MODELS_ENV)
         .ok()
         .and_then(|v| FreeModelsMode::parse(&v))
     {
-        return mode;
+        return (mode, FreeModelsSource::Env);
     }
-    std::fs::read_to_string(workshop_auth::config_path())
+    match std::fs::read_to_string(workshop_auth::config_path())
         .ok()
         .and_then(|s| s.parse::<toml::Table>().ok())
         .and_then(|doc| {
@@ -281,8 +297,32 @@ pub fn free_models_mode() -> FreeModelsMode {
                 .get("free_models")?
                 .as_str()
                 .and_then(FreeModelsMode::parse)
-        })
-        .unwrap_or(FreeModelsMode::Engine)
+        }) {
+        Some(mode) => (mode, FreeModelsSource::Config),
+        None => (FreeModelsMode::Engine, FreeModelsSource::Default),
+    }
+}
+
+/// The one line `/doctor` shows for the setting: which path the free models take and where
+/// that was decided.
+pub fn free_models_setting_line() -> String {
+    let (mode, source) = free_models_setting();
+    let path = match mode {
+        FreeModelsMode::Engine => {
+            "engine \u{2014} OpenCode's free catalog through `opencode serve`"
+        }
+        FreeModelsMode::Direct => {
+            "direct \u{2014} the community pool in Workshop's own agent loop, no engine process"
+        }
+    };
+    let source = match source {
+        FreeModelsSource::Env => format!("set by {FREE_MODELS_ENV}"),
+        FreeModelsSource::Config => format!("set by {FREE_MODELS_CONFIG_KEY} in config.toml"),
+        FreeModelsSource::Default => {
+            format!("the default; {FREE_MODELS_CONFIG_KEY} = \"direct\" switches")
+        }
+    };
+    format!("{path} ({source})")
 }
 
 /// The keyless Direct API model Workshop silently falls back to when the OpenCode model cannot
@@ -291,18 +331,12 @@ pub fn free_models_mode() -> FreeModelsMode {
 /// `/model`; the user only ever sees the model name.
 pub fn kilo_fallback_model() -> Option<workshop_providers::CatalogModel> {
     let catalog = Catalog::builtin();
-    let mut model = workshop_providers::KILO_DEFAULT_CHAIN
+    let model = workshop_providers::KILO_DEFAULT_CHAIN
         .iter()
         .filter_map(|id| catalog.get(&format!("kilo:{id}")))
         .find(|m| workshop_auth::is_chat_model_name(&m.model_id) && !m.model_id.contains("auto"))
         .cloned()?;
-    if let Some(base) = std::env::var(KILO_BASE_URL_ENV)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-    {
-        model.base_url = base.trim().trim_end_matches('/').to_owned();
-    }
-    Some(model)
+    Some(with_pool_base_url(model))
 }
 
 /// The credential broker over the OS keyring with the owner-only file fallback under the home.
@@ -486,9 +520,11 @@ pub async fn refresh_picker_snapshot(
 fn listed_refresh_providers(
     broker: &CredentialBroker,
 ) -> Vec<workshop_providers::ProviderManifest> {
+    // The pool's list is fetched once the pool is a connection of its own (direct mode).
+    let pool = pool_listed();
     live_catalogs::REFRESH_PROVIDERS
         .iter()
-        .filter(|id| !workshop_auth::is_hidden_provider(id))
+        .filter(|id| !workshop_auth::is_hidden_provider(id) || (pool && **id == "kilo"))
         .filter(|id| {
             workshop_providers::manifest(id)
                 .is_some_and(|m| !m.requires_credential() || broker.is_connected(id))
@@ -532,7 +568,13 @@ async fn build_picker_snapshot(
     let broker = default_broker();
     let secret_backend = broker.secret_backend();
     let engine = cached_engine_models();
-    let rows = models_rows(&catalog, |id| broker.is_connected(id), &engine, &rails);
+    let rows = workshop_auth::models_rows_with_pool(
+        &catalog,
+        |id| broker.is_connected(id),
+        &engine,
+        &rails,
+        pool_listed(),
+    );
     let default_selection = Some(select_default(&local, true));
     let mut catalog_status = vec![engine_catalog_status(&engine, engine_error)];
     catalog_status.extend(hosted_status);
@@ -569,9 +611,32 @@ pub fn activate_placeholder_session(conn: &WorkshopConnection) -> Result<String,
 /// connection actually offers, instead of the shell's placeholder ids. Returns `None` for a
 /// Shell connection (the shell's own list applies).
 pub fn connection_models_text() -> Option<String> {
-    let conn = models_cli_connection(load_active_connection(), is_first_run());
+    let first_run = is_first_run();
+    let conn = models_cli_connection(load_active_connection(), first_run);
     let mut out = String::new();
     match &conn {
+        // Direct mode on a home that never launched: the pool default it would land on.
+        WorkshopConnection::Shell if first_run && pool_listed() => {
+            let rows = pool_rows();
+            let default = workshop_auth::pool::pool_default(&rows)?;
+            out.push_str(&format!(
+                "Model: {} ({}) \u{2014} free, no key\n\nAvailable models ({}):\n",
+                workshop_auth::plain_model_name(&default.display_name),
+                workshop_auth::pool::POOL_GROUP,
+                workshop_auth::pool::POOL_GROUP
+            ));
+            for m in &rows {
+                let active = m.model_id == default.model_id;
+                out.push_str(&format!(
+                    "  {} {} \u{2014} {}{}\n",
+                    if active { "*" } else { "-" },
+                    m.model_id,
+                    workshop_auth::plain_model_name(&m.display_name),
+                    if active { " (active)" } else { "" }
+                ));
+            }
+            out.push_str("\nSwitch with /model inside workshop.\n");
+        }
         WorkshopConnection::Shell => return None,
         WorkshopConnection::Engine { model } => {
             out.push_str(&format!(
@@ -614,7 +679,7 @@ pub fn connection_models_text() -> Option<String> {
 /// the shell's "You are not authenticated" is not what that home has.
 fn models_cli_connection(saved: WorkshopConnection, first_run: bool) -> WorkshopConnection {
     match saved {
-        WorkshopConnection::Shell if first_run => first_run_connection(),
+        WorkshopConnection::Shell if first_run && !pool_listed() => first_run_connection(),
         conn => conn,
     }
 }
@@ -701,16 +766,163 @@ pub fn activate_fallback_model(
     activate_catalog_model_with(model, |spec| spec.max_retries = Some(FALLBACK_MAX_RETRIES))
 }
 
-/// The first-run default of [`FreeModelsMode::Direct`]: the pool model the silent fallback uses
-/// ([`kilo_fallback_model`]), written as the shell's own model with the fallback's retry cap and
-/// a plain composer name (`Nemotron 3 Super`, as the fallback shows it), so no engine is ever
-/// installed or started.
-pub fn activate_direct_default() -> Result<ActivationPlan, String> {
-    let model = kilo_fallback_model().ok_or("no keyless pool model in the catalog")?;
+/// Whether the community pool is a connection of its own ([`FreeModelsMode::Direct`]): listed on
+/// `/model`, its live list fetched with the others, its rows the first-run default.
+pub fn pool_listed() -> bool {
+    free_models_mode() == FreeModelsMode::Direct
+}
+
+/// The pool rows the direct mode works from ([`workshop_auth::pool::pool_rows`]): the last
+/// fetched Kilo list in `catalog-cache/` (the picker's refresh writes it), else the compiled seed.
+pub fn pool_rows() -> Vec<workshop_providers::CatalogModel> {
+    workshop_auth::pool::pool_rows(&live_catalogs::load_cached(&catalog_cache_dir()).catalog)
+}
+
+/// The silent fallback's test hook ([`KILO_BASE_URL_ENV`]): a loopback server standing in for
+/// the pool's endpoint.
+fn pool_base_url_override() -> Option<String> {
+    std::env::var(KILO_BASE_URL_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim().trim_end_matches('/').to_owned())
+}
+
+/// The pool's endpoint as its rows are written: the manifest's, or the test hook's.
+fn pool_base_url() -> Option<String> {
+    pool_base_url_override().or_else(|| {
+        workshop_providers::manifest(workshop_auth::pool::POOL_PROVIDER_ID).map(|m| m.base_url)
+    })
+}
+
+/// The test hook applies to every pool row.
+fn with_pool_base_url(
+    mut model: workshop_providers::CatalogModel,
+) -> workshop_providers::CatalogModel {
+    if let Some(base) = pool_base_url_override() {
+        model.base_url = base;
+    }
+    model
+}
+
+/// Activate a pool row as the shell's own model: the fallback's retry cap (the pool is shared,
+/// a quarter hour of `Retrying…` helps nobody) and a plain composer name (`Nemotron 3 Super`, as
+/// the fallback shows it). Used by the direct first run, a pool row picked on `/model`, and the
+/// retire / rate-limit / vision switches.
+pub fn activate_pool_model(
+    model: &workshop_providers::CatalogModel,
+) -> Result<ActivationPlan, String> {
+    let model = with_pool_base_url(model.clone());
     activate_catalog_model_with(&model, |spec| {
         spec.max_retries = Some(FALLBACK_MAX_RETRIES);
         spec.name = workshop_auth::plain_model_name(&spec.name);
     })
+}
+
+/// The first-run default of [`FreeModelsMode::Direct`]: the pool's default row
+/// ([`workshop_auth::pool::pool_default`]), so no engine is ever installed or started.
+pub fn activate_direct_default() -> Result<ActivationPlan, String> {
+    let model = workshop_auth::pool::pool_default(&pool_rows())
+        .ok_or("no keyless pool model in the catalog")?;
+    activate_pool_model(&model)
+}
+
+/// The pool row the shell's own model is right now: in direct mode, `config.toml`'s
+/// `[models] default` names the config key of an offered pool row. `None` on another Direct API
+/// or Local model, or with the mode off. Callers on an engine / adapter connection (whose shell
+/// model is the placeholder) check `is_shell()` first.
+pub fn active_pool_model() -> Option<workshop_providers::CatalogModel> {
+    if !pool_listed() {
+        return None;
+    }
+    let text = std::fs::read_to_string(workshop_auth::config_path()).ok()?;
+    let doc: toml::Table = text.parse().ok()?;
+    let default = doc.get("models")?.get("default")?.as_str()?;
+    let entry = doc.get("model")?.get(default)?.as_table()?;
+    if entry.get("base_url")?.as_str()? != pool_base_url()? {
+        return None;
+    }
+    let manifest = workshop_providers::manifest(workshop_auth::pool::POOL_PROVIDER_ID)?;
+    let model_id = entry.get("model")?.as_str()?.to_owned();
+    // A row the list no longer offers (the retire check needs to know which) is rebuilt from the
+    // entry itself, so the line that says so can still name it.
+    pool_rows()
+        .into_iter()
+        .find(|m| m.model_id == model_id)
+        .or_else(|| {
+            let name = entry
+                .get("name")
+                .and_then(toml::Value::as_str)
+                .unwrap_or(&model_id);
+            Some(workshop_providers::catalog::row_for(
+                &manifest,
+                &model_id,
+                name,
+                workshop_providers::CatalogSource {
+                    name: "config.toml".into(),
+                    as_of: String::new(),
+                },
+            ))
+        })
+}
+
+/// The picker row of the active connection: the engine or subscription model's, else — on the
+/// shell's own model — the pool row's (`kilo:<model>`), so `/model` marks a pool model the way it
+/// marks an engine or subscription model. `None` for any other Direct API / Local model.
+pub fn active_row_id(app: &crate::app::app_view::AppView) -> Option<String> {
+    app.workshop_connection.active_row_id().or_else(|| {
+        app.workshop_connection
+            .is_shell()
+            .then(active_pool_model)
+            .flatten()
+            .map(|m| m.key())
+    })
+}
+
+/// The direct mode's answer to a pool row that is gone from the list or rate-limited: the next
+/// row in chain order, with the plain line that says so. `None` when nothing else is offered.
+pub fn pool_switch(
+    from: &workshop_providers::CatalogModel,
+    why: &str,
+) -> Option<(workshop_providers::CatalogModel, String)> {
+    let to = workshop_auth::pool::pool_next(&pool_rows(), &from.model_id)?;
+    let line = format!(
+        "{} {why} \u{2014} using {}",
+        workshop_auth::plain_model_name(&from.display_name),
+        workshop_auth::plain_model_name(&to.display_name)
+    );
+    Some((to, line))
+}
+
+/// A prompt taken off the composer before its send, held while the shell switches model, then
+/// queued with its images (`handle_auth_complete`).
+#[derive(Debug, Clone)]
+pub struct HeldPrompt {
+    pub text: String,
+    pub images: Vec<crate::prompt_images::PastedImage>,
+    pub chip_elements: Vec<crate::app::agent::ChipElement>,
+    /// The one plain line said with the resend (`… is busy right now — using …`), under the
+    /// prompt as it goes out again; `None` for a quiet switch.
+    pub line: Option<String>,
+}
+
+/// What goes out again once a model switch has completed (`AuthComplete`).
+#[derive(Debug, Clone)]
+pub enum WorkshopResend {
+    /// The prompt text (the silent fallback's resend, or a rate-limited pool turn).
+    Text(String),
+    /// A prompt held before its send, images and all (the pool's vision switch).
+    Held(HeldPrompt),
+}
+
+/// The pool row that sees images, when the active pool model cannot and the pool offers one
+/// ([`workshop_auth::pool::pool_vision`]).
+pub fn pool_vision_switch(
+    from: &workshop_providers::CatalogModel,
+) -> Option<workshop_providers::CatalogModel> {
+    if from.image_input == Some(true) {
+        return None;
+    }
+    workshop_auth::pool::pool_vision(&pool_rows()).filter(|m| m.model_id != from.model_id)
 }
 
 fn activate_catalog_model_with(
@@ -1986,8 +2198,9 @@ pub fn apply_fallback(
     app.workshop_connection = conn;
     app.workshop_fallback = None;
     sync_agent_views(app);
+    let active_id = active_row_id(app);
     if let Some(picker) = app.connection_picker.as_mut() {
-        picker.active_id = app.workshop_connection.active_row_id();
+        picker.active_id = active_id;
     }
     tracing::info!(%line, "workshop: picked model gone, routed to the default");
     match app.active_view {

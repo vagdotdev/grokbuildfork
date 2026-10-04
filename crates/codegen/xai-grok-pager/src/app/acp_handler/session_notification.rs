@@ -1899,6 +1899,12 @@ pub(super) fn apply_retry_state(
                 .unwrap_or_default(),
         });
     } else if !is_reauth {
+        // Workshop: a retried turn keeps its prompt held (as a compaction does) so the
+        // `PromptResponse` of a rate-limited turn can resend it on another model (the community
+        // pool's next row); `finish_turn` drops it otherwise.
+        if session.compact_held_prompt.is_none() {
+            session.compact_held_prompt = session.in_flight_prompt.clone();
+        }
         session.in_flight_prompt = None;
     }
 }

@@ -981,9 +981,13 @@ fn engine_unavailable_falls_back_silently_and_resends_the_prompt() {
         ),
         "switches the open session to the fallback model, got {effects:?}"
     );
-    assert_eq!(
-        app.workshop_resend.as_ref().map(|(_, t)| t.as_str()),
-        Some("hello")
+    assert!(
+        matches!(
+            app.workshop_resend.as_ref(),
+            Some((_, crate::app::workshop::WorkshopResend::Text(t))) if t == "hello"
+        ),
+        "the prompt is held for the resend: {:?}",
+        app.workshop_resend
     );
     assert!(
         system_blocks(&app).is_empty(),

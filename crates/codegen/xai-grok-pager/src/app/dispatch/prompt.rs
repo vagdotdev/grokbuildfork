@@ -928,6 +928,48 @@ pub(super) fn dispatch_send_prompt_submission(
         agent.prompt.rebind_image_placeholders();
     }
 
+    // Workshop (direct mode): a prompt with images on a pool model that cannot see them goes to
+    // the pool's vision row — quietly, as the engine path hands such turns to a model that sees.
+    // The prompt is held with its images while the shell reloads and goes out right after
+    // (`handle_auth_complete`); the composer names the model that answers.
+    if consume_input
+        && submission.is_none()
+        && !literal
+        && !text.trim().starts_with('/')
+        && workshop_connection_is_shell
+        && !agent.prompt.images.is_empty()
+        && let Some(from) = crate::app::workshop::active_pool_model()
+        && let Some(to) = crate::app::workshop::pool_vision_switch(&from)
+    {
+        let (_, images, chip_elements) = agent.prompt.stash().into_submission();
+        agent.prompt.set_text("");
+        agent.note_draft_consumed();
+        crate::app::workshop_engine_state::append_log(
+            &crate::app::workshop::engine_log_path(),
+            &format!(
+                "vision: the prompt carries {} image(s) {} cannot see; {} answers",
+                images.len(),
+                from.model_id,
+                to.model_id
+            ),
+        );
+        let held = crate::app::workshop::HeldPrompt {
+            text,
+            images,
+            chip_elements,
+            line: None,
+        };
+        let mut effects = prelude;
+        effects.extend(super::auth::switch_pool_model(
+            app,
+            Some(id),
+            &to,
+            None,
+            Some(crate::app::workshop::WorkshopResend::Held(held)),
+        ));
+        return effects;
+    }
+
     // Submitting the prompt retires any edit-contextual ephemeral tip (ambient tips live out their TTL across the submit)
     agent.ephemeral_tip.clear_on_submit();
 
@@ -1778,6 +1820,37 @@ pub(super) fn handle_prompt_response(
             wire_cancellation_context.as_ref(),
         );
         let rate_limited = agent.session.rate_limited;
+        // Workshop (direct mode): the shared pool rate-limited the shell's pool model. The turn
+        // goes on with the next row of the chain — one plain line, the prompt resent once the
+        // shell has reloaded — unless the pool has nothing else to offer, when the usual
+        // rate-limit line stands.
+        let pool_switch = if result.is_err()
+            && (rate_limited || http_status == Some(429))
+            && app.workshop_connection.is_shell()
+            && app.workshop_fallback.is_none()
+        {
+            crate::app::workshop::active_pool_model()
+                .and_then(|from| crate::app::workshop::pool_switch(&from, "is busy right now"))
+                .and_then(|(to, line)| {
+                    // The retry handler holds a retried turn's prompt in `compact_held_prompt`.
+                    agent
+                        .session
+                        .in_flight_prompt
+                        .as_ref()
+                        .or(agent.session.compact_held_prompt.as_ref())
+                        .map(|p| {
+                            let held = crate::app::workshop::HeldPrompt {
+                                text: p.text.clone(),
+                                images: p.images.clone(),
+                                chip_elements: p.chip_elements.clone(),
+                                line: Some(line),
+                            };
+                            (to, held)
+                        })
+                })
+        } else {
+            None
+        };
         // Fallback mirroring the credit-limit race guard below
         // If the retry notification lost the race with (or never reached) this PromptResponse, detect the free-usage code from the prompt error itself
         // The flattened 429 body embeds it
@@ -1828,7 +1901,8 @@ pub(super) fn handle_prompt_response(
             || reauth_prompted
             || context_overflow
             || disk_full
-            || request_failed_shown;
+            || request_failed_shown
+            || pool_switch.is_some();
         // Workshop fallback: count from the user's original prompt so a slow model that fell over
         // after 12 min doesn't read as the fallback's short answer time.
         let elapsed = if is_fallback_turn {
@@ -1896,6 +1970,13 @@ pub(super) fn handle_prompt_response(
         // Insert the session event message (skip TurnCompleted for bash-mode, which has no agent turn)
         let event = match (&result, was_cancelling) {
             (Ok(_), false) if agent.bash_turn => None,
+            (Err(err), _) if pool_switch.is_some() => {
+                // The rate-limit banner the retry handler pushed is the cause; the cause goes to
+                // the log, and the one plain line about the switch follows below.
+                crate::app::workshop::log_failure_cause(err);
+                super::auth::strip_trailing_auth_error_blocks(agent);
+                None
+            }
             (Err(err), _) if fallback_failure.is_some() => {
                 crate::app::workshop::log_failure_cause(err);
                 // The wire error banner the retry handler already pushed for this turn (`Bad
@@ -2151,6 +2232,20 @@ pub(super) fn handle_prompt_response(
             nonce: Default::default(),
         });
         note_peek_page_flip(app, agent_id, page_flip_entry);
+        if let Some((to, held)) = pool_switch {
+            // The rate-limit banner is the cause and went to the log above; the line about the
+            // switch is said with the resend instead.
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                super::auth::strip_trailing_auth_error_blocks(agent);
+            }
+            effects.extend(super::auth::switch_pool_model(
+                app,
+                Some(agent_id),
+                &to,
+                None,
+                Some(crate::app::workshop::WorkshopResend::Held(held)),
+            ));
+        }
         return effects;
     }
     vec![]

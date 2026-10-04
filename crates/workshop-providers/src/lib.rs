@@ -58,7 +58,9 @@ pub use manifest::{
     builtin_manifests, manifest,
 };
 pub use oauth::{OpenRouterSignIn, SignInMode};
-pub use resolve::{CredentialInjection, ModelEntrySpec, resolve_model_entry, workshop_env_key};
+pub use resolve::{
+    CredentialInjection, ModelEntrySpec, config_key_for, resolve_model_entry, workshop_env_key,
+};
 pub use sampler::{api_backend_for, auth_scheme_for, sampler_config_for};
 pub use secrets::{
     FileSecretStore, KeyringSecretStore, LayeredSecretStore, MemorySecretStore, SecretStore,

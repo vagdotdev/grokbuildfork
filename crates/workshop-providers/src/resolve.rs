@@ -76,21 +76,27 @@ pub struct ModelEntrySpec {
     pub credential: CredentialInjection,
 }
 
+/// The `[model.<key>]` config key a catalog row ([`crate::CatalogModel::key`]) is written under:
+/// `provider-model` with characters TOML keys accept.
+pub fn config_key_for(catalog_key: &str) -> String {
+    catalog_key
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
 impl ModelEntrySpec {
-    /// Config key for `[model.<key>]`: `provider-model` with characters TOML keys accept.
+    /// Config key for `[model.<key>]` ([`config_key_for`] of the row's catalog key).
     pub fn config_key(&self) -> String {
-        self.id
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                    c
-                } else {
-                    '-'
-                }
-            })
-            .collect::<String>()
-            .trim_matches('-')
-            .to_string()
+        config_key_for(&self.id)
     }
 
     /// The `[model.<key>]` table as TOML (no secrets; `env_key` names only).

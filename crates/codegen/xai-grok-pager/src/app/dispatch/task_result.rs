@@ -1080,6 +1080,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 Vec::new()
             };
             let mut effects = crate::app::workshop::apply_retired_pick(app, &engine, &snap.rails);
+            effects.extend(super::auth::apply_pool_retired_pick(app, &snap));
             if let Some(picker) = app.connection_picker.as_mut() {
                 // The cursor lands on the active connection's row (never xAI, never Zen).
                 picker.apply_snapshot(snap);

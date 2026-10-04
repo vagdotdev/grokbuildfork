@@ -13,7 +13,9 @@
 //! point to the inherited xAI OIDC flow, and only after the user selects it twice.
 //!
 //! Kilo Gateway is never listed ([`HIDDEN_PROVIDERS`]): it is Workshop's silent fallback when the
-//! OpenCode model cannot answer, and the user only ever sees the answering model's name.
+//! OpenCode model cannot answer, and the user only ever sees the answering model's name. The one
+//! exception is the `direct` free-models mode, where the same rows are the first-run default and
+//! are listed as the [`pool::POOL_GROUP`] group ([`models_rows_with_pool`]).
 //!
 //! Data sources: model rows come from [`workshop_providers`] (local servers, connected
 //! providers) plus the OpenCode free catalog; vendor state comes from [`workshop_detect`] (the
@@ -27,6 +29,7 @@
 #![deny(clippy::indexing_slicing)]
 
 pub mod config_write;
+pub mod pool;
 pub mod text;
 
 use std::path::PathBuf;
@@ -103,7 +106,8 @@ pub const ENGINE_CATALOG_SOURCE: &str = "opencode serve /config/providers";
 pub const ENGINE_ROW_NOTE: &str = "Free · no sign-in · the provider may log prompts";
 /// Providers that exist in the catalog code but are never listed on `/model` or `/auth` and never
 /// fetched for the picker (owner decision, v0.2.2): the Kilo Gateway community pool, which only
-/// serves as the silent fallback behind the OpenCode default.
+/// serves as the silent fallback behind the OpenCode default — unless the `direct` free-models
+/// mode makes it the default itself ([`models_rows_with_pool`]).
 pub const HIDDEN_PROVIDERS: [&str; 1] = ["kilo"];
 
 /// Whether `provider_id` is hidden from every picker surface.
@@ -447,11 +451,41 @@ pub fn models_rows(
     catalog: &workshop_providers::Catalog,
     connected: impl Fn(&str) -> bool,
     engine_models: &[EngineModel],
+    rails: &[RailState],
+) -> Vec<ModelsRow> {
+    models_rows_with_pool(catalog, connected, engine_models, rails, false)
+}
+
+/// [`models_rows`], with the community pool listed as its own group ahead of OpenCode when
+/// `pool` is set (the `direct` free-models mode, where a first run lands on a pool row): one
+/// plain-named row per offered model ([`pool::pool_rows`]), the [`pool::POOL_GROUP`] header and
+/// the [`pool::POOL_BADGE`]. Off, the pool stays the hidden silent fallback it has always been.
+pub fn models_rows_with_pool(
+    catalog: &workshop_providers::Catalog,
+    connected: impl Fn(&str) -> bool,
+    engine_models: &[EngineModel],
     _rails: &[RailState],
+    pool: bool,
 ) -> Vec<ModelsRow> {
     let mut rows = Vec::new();
-    // OpenCode free tier first: it is the first-run default. Only through the genuine client, so
-    // it is an engine group, not Direct API. One row per model; its levels are a sub-menu.
+    if pool {
+        for m in pool::pool_rows(catalog) {
+            let mut shown = m;
+            shown.display_name = plain_model_name(&shown.display_name);
+            rows.push(ModelsRow {
+                kind: RowKind::Catalog {
+                    model: shown,
+                    locked: false,
+                },
+                group: pool::POOL_GROUP.into(),
+                badge: pool::POOL_BADGE.into(),
+                class: ConnectionClass::DirectApi,
+            });
+        }
+    }
+    // OpenCode free tier next (first by default: it is the first-run default). Only through the
+    // genuine client, so it is an engine group, not Direct API. One row per model; its levels
+    // are a sub-menu.
     let engine: Vec<EngineModel> = if engine_models.is_empty() {
         vec![EngineModel::big_pickle_seed()]
     } else {
@@ -2587,6 +2621,58 @@ mod tests {
             "a connected provider's models are listed"
         );
         assert!(!connected.iter().any(|r| r.provider_id() == Some("kilo")));
+    }
+
+    /// The `direct` free-models mode lists the pool as its own group ahead of OpenCode: plain
+    /// model names, the pool badge, the default chain's model first, no router rows — and nothing
+    /// else about the list changes.
+    #[test]
+    fn direct_mode_lists_the_pool_first_with_plain_names() {
+        let catalog = workshop_providers::Catalog::builtin();
+        let rows = models_rows_with_pool(&catalog, |_| false, &[], &[], true);
+        let first = rows.first().expect("a pool row");
+        assert_eq!(first.group, pool::POOL_GROUP);
+        assert_eq!(first.badge, pool::POOL_BADGE);
+        assert_eq!(first.class, ConnectionClass::DirectApi);
+        assert_eq!(first.title(), "Nemotron 3 Super");
+        assert_eq!(first.provider_id(), Some("kilo"));
+        assert_eq!(first.short_badge(), "free");
+        assert!(matches!(
+            &first.kind,
+            RowKind::Catalog { locked: false, .. }
+        ));
+        let pool: Vec<&ModelsRow> = rows
+            .iter()
+            .filter(|r| r.group == pool::POOL_GROUP)
+            .collect();
+        assert!(
+            pool.len() >= 3,
+            "{:?}",
+            pool.iter().map(|r| r.title()).collect::<Vec<_>>()
+        );
+        assert!(
+            pool.iter()
+                .all(|r| !r.title().contains("(free)") && !r.title().contains(": ")),
+            "plain names: {:?}",
+            pool.iter().map(|r| r.title()).collect::<Vec<_>>()
+        );
+        assert!(
+            !pool
+                .iter()
+                .any(|r| r.title().contains("Router") || r.title().contains("Auto")),
+            "no router rows: {:?}",
+            pool.iter().map(|r| r.title()).collect::<Vec<_>>()
+        );
+        // The engine group follows, unchanged.
+        let engine = rows
+            .iter()
+            .find(|r| r.group == ENGINE_DISPLAY_NAME)
+            .expect("engine row");
+        assert_eq!(engine.title(), "Big Pickle");
+        // Off, the list is exactly what `models_rows` builds.
+        let off = models_rows_with_pool(&catalog, |_| false, &[], &[], false);
+        assert_eq!(off, models_rows(&catalog, |_| false, &[], &[]));
+        assert!(!off.iter().any(|r| r.provider_id() == Some("kilo")));
     }
 
     /// A pasted OpenAI key lists OpenAI's GPT models to pick (its list endpoint needs the key, so

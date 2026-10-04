@@ -54,6 +54,23 @@ index 7c41a29c..690ac9cc 100644
      let notify = matches!(&event, Some(SessionEvent::TurnCompleted { .. }));
      crate::app::turn_completion::push_turn_terminal_marker(agent, event);
      crate::app::turn_completion::note_hook_blocked_turn(
+diff --git a/crates/codegen/xai-grok-pager/src/app/acp_handler/session_notification.rs b/crates/codegen/xai-grok-pager/src/app/acp_handler/session_notification.rs
+index ac92a50c..a1d23ea5 100644
+--- a/crates/codegen/xai-grok-pager/src/app/acp_handler/session_notification.rs
++++ b/crates/codegen/xai-grok-pager/src/app/acp_handler/session_notification.rs
+@@ -1899,6 +1899,12 @@ pub(super) fn apply_retry_state(
+                 .unwrap_or_default(),
+         });
+     } else if !is_reauth {
++        // Workshop: a retried turn keeps its prompt held (as a compaction does) so the
++        // `PromptResponse` of a rate-limited turn can resend it on another model (the community
++        // pool's next row); `finish_turn` drops it otherwise.
++        if session.compact_held_prompt.is_none() {
++            session.compact_held_prompt = session.in_flight_prompt.clone();
++        }
+         session.in_flight_prompt = None;
+     }
+ }
 diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
 index f968c838..a7812b94 100644
 --- a/crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs
@@ -400,7 +417,7 @@ index 59bf6734..4f85ad00 100644
      if agent.permission_queue.is_empty() {
          return;
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
-index a4d77733..9abc693d 100644
+index a4d77733..2a4a5fae 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
 @@ -82,6 +82,7 @@ pub(super) fn collect_live_doctor_report_for_terminal(
@@ -639,7 +656,56 @@ index a4d77733..9abc693d 100644
      let Some(agent) = app.agents.get_mut(&id) else {
          return prelude;
      };
-@@ -1029,6 +1237,23 @@ pub(super) fn dispatch_send_prompt_submission(
+@@ -720,6 +928,48 @@ pub(super) fn dispatch_send_prompt_submission(
+         agent.prompt.rebind_image_placeholders();
+     }
+ 
++    // Workshop (direct mode): a prompt with images on a pool model that cannot see them goes to
++    // the pool's vision row — quietly, as the engine path hands such turns to a model that sees.
++    // The prompt is held with its images while the shell reloads and goes out right after
++    // (`handle_auth_complete`); the composer names the model that answers.
++    if consume_input
++        && submission.is_none()
++        && !literal
++        && !text.trim().starts_with('/')
++        && workshop_connection_is_shell
++        && !agent.prompt.images.is_empty()
++        && let Some(from) = crate::app::workshop::active_pool_model()
++        && let Some(to) = crate::app::workshop::pool_vision_switch(&from)
++    {
++        let (_, images, chip_elements) = agent.prompt.stash().into_submission();
++        agent.prompt.set_text("");
++        agent.note_draft_consumed();
++        crate::app::workshop_engine_state::append_log(
++            &crate::app::workshop::engine_log_path(),
++            &format!(
++                "vision: the prompt carries {} image(s) {} cannot see; {} answers",
++                images.len(),
++                from.model_id,
++                to.model_id
++            ),
++        );
++        let held = crate::app::workshop::HeldPrompt {
++            text,
++            images,
++            chip_elements,
++            line: None,
++        };
++        let mut effects = prelude;
++        effects.extend(super::auth::switch_pool_model(
++            app,
++            Some(id),
++            &to,
++            None,
++            Some(crate::app::workshop::WorkshopResend::Held(held)),
++        ));
++        return effects;
++    }
++
+     // Submitting the prompt retires any edit-contextual ephemeral tip (ambient tips live out their TTL across the submit)
+     agent.ephemeral_tip.clear_on_submit();
+ 
+@@ -1029,6 +1279,23 @@ pub(super) fn dispatch_send_prompt_submission(
                  return effects;
              }
              CommandResult::QueueCommand(cmd_text) => {
@@ -663,7 +729,7 @@ index a4d77733..9abc693d 100644
                  agent.session.enqueue_command(cmd_text);
              }
              CommandResult::InjectSkill {
-@@ -1413,7 +1638,28 @@ pub(super) fn handle_prompt_response(
+@@ -1413,7 +1680,28 @@ pub(super) fn handle_prompt_response(
      // The leader's `running_prompt_id` broadcast can arrive before this `PromptResponse`
      // Take any stashed adoption now; it is applied after `finish_turn` clears `current_prompt_id` below
      let pending_adoption = app.pending_running_adoptions.remove(&agent_id);
@@ -692,11 +758,52 @@ index a4d77733..9abc693d 100644
          // Discard PromptResponses that don't belong to the currently active prompt
          // They belong to a turn the user rewound, or to a queued prompt that never became the running turn
          // Without the `Err` fallback, a queued prompt's RPC error has no id to gate on and is misattributed to the running turn
-@@ -1583,7 +1829,15 @@ pub(super) fn handle_prompt_response(
+@@ -1532,6 +1820,37 @@ pub(super) fn handle_prompt_response(
+             wire_cancellation_context.as_ref(),
+         );
+         let rate_limited = agent.session.rate_limited;
++        // Workshop (direct mode): the shared pool rate-limited the shell's pool model. The turn
++        // goes on with the next row of the chain — one plain line, the prompt resent once the
++        // shell has reloaded — unless the pool has nothing else to offer, when the usual
++        // rate-limit line stands.
++        let pool_switch = if result.is_err()
++            && (rate_limited || http_status == Some(429))
++            && app.workshop_connection.is_shell()
++            && app.workshop_fallback.is_none()
++        {
++            crate::app::workshop::active_pool_model()
++                .and_then(|from| crate::app::workshop::pool_switch(&from, "is busy right now"))
++                .and_then(|(to, line)| {
++                    // The retry handler holds a retried turn's prompt in `compact_held_prompt`.
++                    agent
++                        .session
++                        .in_flight_prompt
++                        .as_ref()
++                        .or(agent.session.compact_held_prompt.as_ref())
++                        .map(|p| {
++                            let held = crate::app::workshop::HeldPrompt {
++                                text: p.text.clone(),
++                                images: p.images.clone(),
++                                chip_elements: p.chip_elements.clone(),
++                                line: Some(line),
++                            };
++                            (to, held)
++                        })
++                })
++        } else {
++            None
++        };
+         // Fallback mirroring the credit-limit race guard below
+         // If the retry notification lost the race with (or never reached) this PromptResponse, detect the free-usage code from the prompt error itself
+         // The flattened 429 body embeds it
+@@ -1582,8 +1901,17 @@ pub(super) fn handle_prompt_response(
+             || reauth_prompted
              || context_overflow
              || disk_full
-             || request_failed_shown;
+-            || request_failed_shown;
 -        let elapsed = agent.turn_elapsed();
++            || request_failed_shown
++            || pool_switch.is_some();
 +        // Workshop fallback: count from the user's original prompt so a slow model that fell over
 +        // after 12 min doesn't read as the fallback's short answer time.
 +        let elapsed = if is_fallback_turn {
@@ -709,10 +816,17 @@ index a4d77733..9abc693d 100644
  
          {
              let sid = agent.session.session_id.as_ref().map(|s| s.0.as_ref());
-@@ -1642,6 +1896,17 @@ pub(super) fn handle_prompt_response(
+@@ -1642,6 +1970,24 @@ pub(super) fn handle_prompt_response(
          // Insert the session event message (skip TurnCompleted for bash-mode, which has no agent turn)
          let event = match (&result, was_cancelling) {
              (Ok(_), false) if agent.bash_turn => None,
++            (Err(err), _) if pool_switch.is_some() => {
++                // The rate-limit banner the retry handler pushed is the cause; the cause goes to
++                // the log, and the one plain line about the switch follows below.
++                crate::app::workshop::log_failure_cause(err);
++                super::auth::strip_trailing_auth_error_blocks(agent);
++                None
++            }
 +            (Err(err), _) if fallback_failure.is_some() => {
 +                crate::app::workshop::log_failure_cause(err);
 +                // The wire error banner the retry handler already pushed for this turn (`Bad
@@ -727,7 +841,7 @@ index a4d77733..9abc693d 100644
              (Err(_), _) if dedicated_ux_shown => None,
              // `err` is already banner-formatted by `format_acp_error` at the producer, the single formatting owner
              // Don't re-format here
-@@ -1682,9 +1947,13 @@ pub(super) fn handle_prompt_response(
+@@ -1682,9 +2028,13 @@ pub(super) fn handle_prompt_response(
                  };
                  Some((NotificationEventKind::TurnComplete, body))
              }
@@ -744,6 +858,27 @@ index a4d77733..9abc693d 100644
              _ => None,
          };
  
+@@ -1882,6 +2232,20 @@ pub(super) fn handle_prompt_response(
+             nonce: Default::default(),
+         });
+         note_peek_page_flip(app, agent_id, page_flip_entry);
++        if let Some((to, held)) = pool_switch {
++            // The rate-limit banner is the cause and went to the log above; the line about the
++            // switch is said with the resend instead.
++            if let Some(agent) = app.agents.get_mut(&agent_id) {
++                super::auth::strip_trailing_auth_error_blocks(agent);
++            }
++            effects.extend(super::auth::switch_pool_model(
++                app,
++                Some(agent_id),
++                &to,
++                None,
++                Some(crate::app::workshop::WorkshopResend::Held(held)),
++            ));
++        }
+         return effects;
+     }
+     vec![]
 diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/foreign.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/foreign.rs
 index daaf550f..60bcca32 100644
 --- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/foreign.rs
