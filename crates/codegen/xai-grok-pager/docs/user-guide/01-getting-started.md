@@ -52,10 +52,12 @@ You land in the composer. The footer names the active model, **Big Pickle**: Ope
 default, no sign-in, no key. Type a sentence and press `Enter`.
 
 OpenCode's official `opencode` CLI is installed on your first launch and started in the background
-every time Workshop opens, so it is usually ready by the time you press `Enter`; a message sent
+the moment Workshop opens, so it is usually ready by the time you press `Enter`; a message sent
 before it is ready simply waits for it — the status row reads `First-time setup, 12 MB downloaded…`
 while it does. The install (about a minute on a slow connection) reaches only opencode.ai, the
-vendor's installer; every later message answers within seconds. While a message is being
+vendor's installer; every later message answers within seconds. The engine stays warm for ten
+minutes after you quit (`WORKSHOP_ENGINE_KEEP_WARM_SECS` changes that; `0` stops it with Workshop),
+so a relaunch within that time finds it ready at once. While a message is being
 worked on, the status row above the composer shows what is happening — `Waiting for response…`,
 `Thinking…`, `Run sudo apt install ghostty` with that command's own seconds — plus the turn's total
 time and `[stop]` (or `Ctrl+C`) to cancel; the turn closes with `Worked for 2m31s`. If the free

@@ -290,6 +290,14 @@ jobs:
         env:
           WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
         run: cargo test -p workshop-gates --test engine_shell -- --nocapture --include-ignored --test-threads=1
+      - name: PTY gates — the engine stays warm between sessions (keeper lifecycle, hermetic)
+        # A relaunch attaches to the keeper's server (same keeper, same server, a turn answers
+        # through it); a SIGKILLed TUI frees the keeper, which stops its server and exits after the
+        # keep-warm time, removing serve.json and its socket; a launch with a different engine
+        # configuration ends the old keeper and server and starts fresh ones.
+        env:
+          WORKSHOP_BIN: ${{ github.workspace }}/target/debug/workshop
+        run: cargo test -p workshop-gates --test engine_keeper -- --nocapture --include-ignored --test-threads=1
       - name: PTY smoke — live model lists (hermetic)
         # Zero egress before the user acts (logging proxy: first run, /auth, `workshop login` and
         # /model on a fresh home ask for nothing; once an API key is configured /model asks exactly

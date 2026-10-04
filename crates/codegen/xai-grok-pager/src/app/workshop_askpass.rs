@@ -413,7 +413,7 @@ fn helper_main(prompt: &str) -> i32 {
         eprintln!("{SKIPPED}");
         return 1;
     };
-    let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&socket) else {
+    let Some(mut stream) = connect_live_socket(Path::new(&socket)) else {
         eprintln!("{SKIPPED}");
         return 1;
     };
@@ -441,6 +441,40 @@ fn helper_main(prompt: &str) -> i32 {
             1
         }
     }
+}
+
+/// Connect to the Workshop that can show the prompt. The engine's environment names the socket of
+/// the Workshop that started the engine; with the engine kept warm between sessions
+/// (`workshop_engine_keeper`) that Workshop may be gone and a later one listening on its own
+/// socket (`askpass-<pid>.sock`, same directory). Try the named socket, then the newest live one.
+fn connect_live_socket(named: &Path) -> Option<std::os::unix::net::UnixStream> {
+    if let Ok(stream) = std::os::unix::net::UnixStream::connect(named) {
+        return Some(stream);
+    }
+    let dir = named.parent()?;
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("askpass-") && n.ends_with(".sock"))
+        })
+        .filter_map(|e| {
+            let modified = e.metadata().ok()?.modified().ok()?;
+            Some((modified, e.path()))
+        })
+        .collect();
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in candidates {
+        if path == named {
+            continue;
+        }
+        if let Ok(stream) = std::os::unix::net::UnixStream::connect(&path) {
+            return Some(stream);
+        }
+    }
+    None
 }
 
 /// The prompt's title: the shell command that needs the password when the turn's running tool

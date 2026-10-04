@@ -366,55 +366,16 @@ impl OpenCodeEngine {
             _ => {}
         }
 
-        // The engine runs the user's own commands, so it gets the user's environment untouched
-        // (minus the secret-shaped deny list), not the strict allowlist used for vendor-CLI
-        // probes: `DISPLAY`/`WAYLAND_DISPLAY`/`DBUS_SESSION_BUS_ADDRESS`/… pass through so a GUI
-        // the model launches can open on the desktop, and `CI`/`TERM=dumb`/`NO_COLOR` are not
-        // forced onto the commands. See `crate::env::engine_env`.
-        let mut env = match &opts.env {
-            Some(env) => crate::env::engine_env(env.clone(), &[])?,
-            None => crate::env::engine_env_from_process(&[])?,
-        };
-        // Loopback server; still password-protected so another local user
-        // cannot drive the session. Generated per launch, never persisted.
-        let password = random_password();
-        env.insert(
-            OsString::from("OPENCODE_SERVER_PASSWORD"),
-            OsString::from(&password),
-        );
-        // The allowlist dropped any inherited OPENCODE_PERMISSION; only the host's own policy
-        // (if any) reaches the server.
-        debug_assert!(!env.contains_key(&OsString::from("OPENCODE_PERMISSION")));
-        if let Some(policy) = &opts.permission {
-            env.insert(
-                OsString::from("OPENCODE_PERMISSION"),
-                OsString::from(policy.to_string()),
-            );
-        }
-        if let Some(config) = &opts.config {
-            env.insert(
-                OsString::from("OPENCODE_CONFIG_CONTENT"),
-                OsString::from(config.to_string()),
-            );
-        }
-        for (key, value) in &opts.extra_env {
-            env.insert(key.clone(), value.clone());
-        }
+        let (env, password) = serve_env(&opts)?;
 
         let port = pick_free_port().await.map_err(EngineError::Spawn)?;
         let mut cmd = tokio::process::Command::new(&cli.path);
-        cmd.args([
-            "serve",
-            "--hostname",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-        ])
-        .current_dir(&opts.workspace)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        cmd.args(serve_args(port))
+            .current_dir(&opts.workspace)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
         crate::env::apply(&mut cmd, &env);
         tracing::info!(program = %cli.path.display(), version = %cli.version, port, workspace = %opts.workspace.display(), "starting opencode serve");
         let (mut child, group) = crate::spawn::spawn_enrolled(cmd)
@@ -441,7 +402,7 @@ impl OpenCodeEngine {
             stderr_tail,
         };
         let client = match tokio::time::timeout(opts.startup_timeout, addr_rx).await {
-            Ok(Ok(addr)) => ServerClient::new(addr, "opencode", &password),
+            Ok(Ok(addr)) => ServerClient::new(addr, SERVE_USER, &password),
             // The stdout reader is gone: the process exited before it ever listened.
             Ok(Err(_)) => {
                 let (status, tail) = teardown(&mut process).await;
@@ -726,6 +687,67 @@ impl OpenCodeEngine {
             let _ = teardown(&mut process).await;
         }
     }
+}
+
+/// The environment `opencode serve` runs with, and the server password inside it. The engine
+/// runs the user's own commands, so it gets the user's environment untouched (minus the
+/// secret-shaped deny list), not the strict allowlist used for vendor-CLI probes:
+/// `DISPLAY`/`WAYLAND_DISPLAY`/`DBUS_SESSION_BUS_ADDRESS`/… pass through so a GUI the model
+/// launches can open on the desktop, and `CI`/`TERM=dumb`/`NO_COLOR` are not forced onto the
+/// commands (see `crate::env::engine_env`). The loopback server is password-protected so another
+/// local user cannot drive the session; the password is generated per call and never persisted
+/// by this crate. Public so a host can start the server outside this process (a warm engine kept
+/// between sessions) with exactly the environment [`OpenCodeEngine::start`] would use.
+pub fn serve_env(
+    opts: &EngineOptions,
+) -> Result<(BTreeMap<OsString, OsString>, String), EngineError> {
+    let mut env = match &opts.env {
+        Some(env) => crate::env::engine_env(env.clone(), &[])?,
+        None => crate::env::engine_env_from_process(&[])?,
+    };
+    let password = random_password();
+    env.insert(
+        OsString::from("OPENCODE_SERVER_PASSWORD"),
+        OsString::from(&password),
+    );
+    // The allowlist dropped any inherited OPENCODE_PERMISSION; only the host's own policy
+    // (if any) reaches the server.
+    debug_assert!(!env.contains_key(&OsString::from("OPENCODE_PERMISSION")));
+    if let Some(policy) = &opts.permission {
+        env.insert(
+            OsString::from("OPENCODE_PERMISSION"),
+            OsString::from(policy.to_string()),
+        );
+    }
+    if let Some(config) = &opts.config {
+        env.insert(
+            OsString::from("OPENCODE_CONFIG_CONTENT"),
+            OsString::from(config.to_string()),
+        );
+    }
+    for (key, value) in &opts.extra_env {
+        env.insert(key.clone(), value.clone());
+    }
+    Ok((env, password))
+}
+
+/// The arguments of the `opencode serve` Workshop runs: loopback only, on `port`.
+pub fn serve_args(port: u16) -> [String; 5] {
+    [
+        "serve".into(),
+        "--hostname".into(),
+        "127.0.0.1".into(),
+        "--port".into(),
+        port.to_string(),
+    ]
+}
+
+/// The user name of the loopback server's basic auth (OpenCode's own, fixed).
+pub const SERVE_USER: &str = "opencode";
+
+/// A free loopback TCP port, for a server a host starts itself.
+pub async fn free_loopback_port() -> std::io::Result<u16> {
+    pick_free_port().await
 }
 
 /// `opencode/<model>` -> (`opencode`, `<model>`); a bare id defaults to `opencode`.

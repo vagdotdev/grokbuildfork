@@ -2113,6 +2113,11 @@ fn main() {
     if let Some(code) = xai_grok_pager::app::workshop_engine_shell::maybe_run_helper() {
         std::process::exit(code);
     }
+    // Workshop: `workshop __engine-keeper` is the detached process that keeps `opencode serve`
+    // warm between sessions (see app::workshop_engine_keeper).
+    if let Some(code) = xai_grok_pager::app::workshop_engine_keeper::maybe_run_helper() {
+        std::process::exit(code);
+    }
     set_release_channel(ReleaseChannel::from_label(
         xai_grok_update::channel_name().unwrap_or_default(),
     ));
