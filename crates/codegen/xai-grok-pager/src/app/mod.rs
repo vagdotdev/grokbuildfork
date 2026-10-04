@@ -694,6 +694,10 @@ pub async fn run(
                 )
             }
         };
+    // Workshop: the steps before the agent connects are timed one by one (`startup timing` in
+    // the unified log), so a platform where one of them is slow can be read off the log.
+    let pre_tui_login =
+        xai_grok_telemetry::instrumentation::timer("startup.pre_connect.pre_tui_login");
     if let xai_grok_login::PreTuiLoginOutcome::SignedIn(auth) =
         xai_grok_login::maybe_run_pre_tui_external_login(
             &grok_com_config,
@@ -706,13 +710,17 @@ pub async fn run(
         xai_grok_shell::agent::init::apply_post_login_config(*auth).await?;
         args.force_login = false;
     }
+    drop(pre_tui_login);
     xai_tty_utils::redirect_native_stderr();
+    let auth_refresh =
+        xai_grok_telemetry::instrumentation::timer("startup.pre_connect.auth_refresh");
     let refreshed_auth = tokio::time::timeout(
         xai_grok_shell::http::STARTUP_AUTH_REFRESH_TIMEOUT,
         xai_grok_login::try_ensure_fresh_auth(&grok_com_config, proxy_base_url),
     )
     .await
     .unwrap_or(None);
+    drop(auth_refresh);
     let settings_query = xai_grok_shell::agent::remote_config::settings_get::SettingsQuery::resolve(
         refreshed_auth,
         Some(grok_com_config.clone()),
@@ -945,7 +953,10 @@ pub async fn run(
         default_auto_mode: launch_auto && !launch_yolo.yolo,
         status_line: false,
     };
+    let config_watcher_timer =
+        xai_grok_telemetry::instrumentation::timer("startup.pre_connect.config_watcher");
     let mut config_watcher = crate::appearance::ConfigWatcher::start().await?;
+    drop(config_watcher_timer);
     let alt_screen_config_mode = config_watcher.current().alt_screen;
     let term_ctx = crate::terminal::terminal_context();
     let is_control_mode = crate::terminal::detect_tmux_control_mode(term_ctx);
@@ -1010,6 +1021,7 @@ pub async fn run(
         crate::render::draw::spawn_writer_thread()
             .context("failed to spawn the term-writer thread")?;
     let cursor_blink = event_loop::load_initial_ui_config().cursor_blink;
+    let terminal_timer = xai_grok_telemetry::instrumentation::timer("startup.pre_connect.terminal");
     let TerminalInit {
         mut terminal,
         screen_mode,
@@ -1022,6 +1034,7 @@ pub async fn run(
         writer_sync,
         cursor_blink,
     )?;
+    drop(terminal_timer);
     MINIMAL_SHOW_SWITCH_BACK_TO_FULLSCREEN.store(
         relaunched_into_minimal && screen_mode.is_minimal(),
         Ordering::Release,
@@ -1051,6 +1064,8 @@ pub async fn run(
     } else {
         crate::acp::AgentKind::Embedded
     };
+    let otel_timer =
+        xai_grok_telemetry::instrumentation::timer("startup.pre_connect.external_otel");
     xai_grok_telemetry::external::init(
         xai_grok_shell::agent::config::resolve_external_otel_config(
             xai_grok_telemetry::external::config::ExternalClientInfo {
@@ -1060,7 +1075,10 @@ pub async fn run(
             },
         ),
     );
+    drop(otel_timer);
+    let tracing_timer = xai_grok_telemetry::instrumentation::timer("startup.pre_connect.tracing");
     let tracing_handle = crate::tracing::init_tracing();
+    drop(tracing_timer);
     let pending_startup = xai_grok_telemetry::startup::PendingStartup::new();
     let timer = xai_grok_telemetry::startup::begin(crate::acp::Owner::Client);
     let primary_started = std::time::Instant::now();
