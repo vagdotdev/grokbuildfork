@@ -239,6 +239,52 @@ pub fn first_run_connection() -> WorkshopConnection {
 /// Kilo Gateway (the PTY gate proves the fallback without network).
 pub const KILO_BASE_URL_ENV: &str = "WORKSHOP_KILO_BASE_URL";
 
+/// Prototype setting: how the free models run. `WORKSHOP_FREE_MODELS` wins, then
+/// `[workshop] free_models` in `$WORKSHOP_HOME/config.toml`; anything else is the default.
+pub const FREE_MODELS_ENV: &str = "WORKSHOP_FREE_MODELS";
+
+/// Where a first run lands when nothing is connected yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreeModelsMode {
+    /// OpenCode's free catalog (Big Pickle today) through `opencode serve`: the engine installs
+    /// itself and runs under the TUI. The default.
+    Engine,
+    /// No engine process: the first run lands on the keyless community pool model the silent
+    /// fallback already uses, in the shell's own agent loop. OpenCode's own free tier refuses
+    /// every client but OpenCode, so Big Pickle is not reachable this way; `/model` can still
+    /// pick an OpenCode row, which starts the engine as before.
+    Direct,
+}
+
+impl FreeModelsMode {
+    fn parse(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "engine" => Some(Self::Engine),
+            "direct" => Some(Self::Direct),
+            _ => None,
+        }
+    }
+}
+
+pub fn free_models_mode() -> FreeModelsMode {
+    if let Some(mode) = std::env::var(FREE_MODELS_ENV)
+        .ok()
+        .and_then(|v| FreeModelsMode::parse(&v))
+    {
+        return mode;
+    }
+    std::fs::read_to_string(workshop_auth::config_path())
+        .ok()
+        .and_then(|s| s.parse::<toml::Table>().ok())
+        .and_then(|doc| {
+            doc.get("workshop")?
+                .get("free_models")?
+                .as_str()
+                .and_then(FreeModelsMode::parse)
+        })
+        .unwrap_or(FreeModelsMode::Engine)
+}
+
 /// The keyless Direct API model Workshop silently falls back to when the OpenCode model cannot
 /// start or answer: the first *concrete* model of the Kilo community pool's default chain (not
 /// the auto-router, so the composer can name the model that actually answered). Never listed on
@@ -653,6 +699,18 @@ pub fn activate_fallback_model(
     model: &workshop_providers::CatalogModel,
 ) -> Result<ActivationPlan, String> {
     activate_catalog_model_with(model, |spec| spec.max_retries = Some(FALLBACK_MAX_RETRIES))
+}
+
+/// The first-run default of [`FreeModelsMode::Direct`]: the pool model the silent fallback uses
+/// ([`kilo_fallback_model`]), written as the shell's own model with the fallback's retry cap and
+/// a plain composer name (`Nemotron 3 Super`, as the fallback shows it), so no engine is ever
+/// installed or started.
+pub fn activate_direct_default() -> Result<ActivationPlan, String> {
+    let model = kilo_fallback_model().ok_or("no keyless pool model in the catalog")?;
+    activate_catalog_model_with(&model, |spec| {
+        spec.max_retries = Some(FALLBACK_MAX_RETRIES);
+        spec.name = workshop_auth::plain_model_name(&spec.name);
+    })
 }
 
 fn activate_catalog_model_with(
@@ -3079,6 +3137,23 @@ mod tests {
             model: EngineModel::big_pickle_seed(),
         };
         assert_eq!(models_cli_connection(saved.clone(), true), saved);
+    }
+
+    /// The prototype setting: `engine` unless the env var or the config key says `direct`; an
+    /// unknown value is the default.
+    #[test]
+    fn free_models_mode_parses_env_and_config_values() {
+        use super::FreeModelsMode;
+        assert_eq!(
+            FreeModelsMode::parse("direct"),
+            Some(FreeModelsMode::Direct)
+        );
+        assert_eq!(
+            FreeModelsMode::parse(" Engine "),
+            Some(FreeModelsMode::Engine)
+        );
+        assert_eq!(FreeModelsMode::parse("opencode"), None);
+        assert_eq!(FreeModelsMode::parse(""), None);
     }
 
     #[test]

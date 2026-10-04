@@ -4939,23 +4939,17 @@ impl AppView {
                                 .workshop_fallback
                                 .clone()
                                 .or_else(|| self.workshop_connection.composer_label());
-                            let model_name = match workshop_label {
-                                Some(label) => {
-                                    if self.workshop_first_launch {
-                                        for text in
-                                            ["/model to switch", "/auth to connect subscriptions"]
-                                        {
-                                            flags_vec.push(
-                                                crate::views::prompt_widget::PromptFlag {
-                                                    text,
-                                                    color: Some(theme.gray_bright),
-                                                    bold: false,
-                                                },
-                                            );
-                                        }
-                                    }
-                                    label
+                            if self.workshop_first_launch {
+                                for text in ["/model to switch", "/auth to connect subscriptions"] {
+                                    flags_vec.push(crate::views::prompt_widget::PromptFlag {
+                                        text,
+                                        color: Some(theme.gray_bright),
+                                        bold: false,
+                                    });
                                 }
+                            }
+                            let model_name = match workshop_label {
+                                Some(label) => label,
                                 None => {
                                     let model_name_base =
                                         self.models.current_model_name().unwrap_or_default();

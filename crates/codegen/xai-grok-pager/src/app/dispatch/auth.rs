@@ -357,6 +357,24 @@ pub(super) fn dispatch_workshop_set_effort(app: &mut AppView, level: String) -> 
 /// and `/auth` remain the only doors afterwards.
 pub(super) fn dispatch_workshop_first_run(app: &mut AppView) -> Vec<Effect> {
     app.workshop_first_launch = true;
+    // Prototype (`WORKSHOP_FREE_MODELS=direct`): land on the keyless pool model as the shell's own
+    // model instead — a Direct API row, so the turn runs in the shell's agent loop and nothing
+    // here or in the event loop brings an engine up.
+    if crate::app::workshop::free_models_mode() == crate::app::workshop::FreeModelsMode::Direct {
+        return match crate::app::workshop::activate_direct_default() {
+            Ok(plan) => {
+                crate::app::workshop::export_env(&plan.env);
+                set_workshop_connection(app, crate::app::workshop::WorkshopConnection::Shell);
+                start_workshop_activation(app, plan.key)
+            }
+            Err(e) => {
+                app.auth_state = AuthState::Pending {
+                    error: Some(format!("Could not write config.toml: {e}")),
+                };
+                vec![]
+            }
+        };
+    }
     set_workshop_connection(app, crate::app::workshop::first_run_connection());
     match crate::app::workshop::activate_placeholder_session(&app.workshop_connection) {
         Ok(key) => start_workshop_activation(app, key),
