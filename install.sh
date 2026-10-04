@@ -403,6 +403,11 @@ $ve_version"
   VOICE_LOCK="$tmp/MODEL.lock.json"
   fetch_quiet "$v_base/MODEL.lock.json" "$VOICE_LOCK"
   [ -n "$(json_block "$VOICE_LOCK" base)" ] || die "release $v_version ships no MODEL.lock.json with model pins"
+  # The model files live on one fixed release for every version when the lock names it.
+  models_tag=$(json_str "$VOICE_LOCK" models_release_tag)
+  if [ -z "${WORKSHOP_VOICE_MODEL_BASE:-}" ] && [ -n "$models_tag" ]; then
+    VOICE_MODEL_BASE="${v_base%/*}/$models_tag"
+  fi
 
   # 3. an earlier install (or the app) already chose a tier and its file verifies: nothing to download
   if [ -z "${WORKSHOP_VOICE_TIER:-}" ] && [ -f "$VOICE_DIR/model.selected" ]; then
