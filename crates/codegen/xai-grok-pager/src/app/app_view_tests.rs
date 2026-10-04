@@ -814,7 +814,7 @@ fn tick_demand_follows_the_mcp_chip() {
         "the MCP chip spinner ticks while servers connect"
     );
 }
-/// Workshop: the welcome hero donut advances one frame per Slow tick (~12fps), never a 30fps loop,
+/// Workshop: the welcome hero donut advances one frame per Slow tick (~24 fps), never a 30fps loop,
 /// and only while the last paint spun it and the terminal is focused; otherwise the resting welcome
 /// screen parks. The deep-search spinner upgrades it to Fast while loading.
 #[test]

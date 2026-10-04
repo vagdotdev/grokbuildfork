@@ -247,14 +247,17 @@ impl DashboardReturn {
 pub enum TickDemand {
     /// Nothing animates or polls: the event loop parks (zero wakeups).
     None,
-    /// Only low-frequency work is pending (welcome logo shimmer at ~12fps, the macOS Cmd link-hover poll): tick at [`SLOW_TICK_INTERVAL`].
+    /// Only low-frequency work is pending (the welcome hero at ~24 fps, the macOS Cmd link-hover poll): tick at [`SLOW_TICK_INTERVAL`].
     Slow,
     /// Real animation is on screen: tick at the configured animation fps.
     Fast,
 }
-/// Tick cadence for [`TickDemand::Slow`] (~12fps).
-/// Matches the welcome logo's `SHIMMER_FPS` so slow ticks sample every shimmer frame, and bounds the latency of the macOS Cmd link-hover underline.
-pub const SLOW_TICK_INTERVAL: Duration = Duration::from_millis(83);
+/// Tick cadence for [`TickDemand::Slow`] (~24 fps).
+/// Workshop: the welcome hero donut advances one frame per slow tick; at 12 fps its turn read as a
+/// sequence of poses, at 24 fps as motion, for about one more percent of a core while the welcome
+/// screen is up (it parks after [`HERO_IDLE_PAUSE`] without input). Also bounds the latency of the
+/// macOS Cmd link-hover underline.
+pub const SLOW_TICK_INTERVAL: Duration = Duration::from_millis(42);
 /// Workshop: how long the welcome hero keeps spinning after the user's last input. A welcome
 /// screen nobody is touching then parks (no frames written, no CPU) until the next key, and the
 /// spin picks up from the frame it held.
@@ -901,7 +904,7 @@ pub struct AppView {
     /// Tick counter for welcome screen spinner animation.
     pub welcome_tick: u64,
     /// Workshop: the frame of the hero donut's loop the welcome screen shows. Advances one frame
-    /// per slow tick (~12 fps) while [`Self::welcome_hero_spins`]; holds its frame otherwise, so
+    /// per slow tick (~24 fps) while [`Self::welcome_hero_spins`]; holds its frame otherwise, so
     /// the mark resumes where it paused instead of jumping.
     pub welcome_hero_frame: u32,
     /// Workshop: the last welcome paint spun the hero (wide layout, logo shown, animation on), as
@@ -6156,7 +6159,7 @@ impl AppView {
     /// hero art has a new frame to paint. The welcome view redraws on a tick only when this frame
     /// advances; nothing outside the hero changes on such a frame, so the terminal diff writes the
     /// hero cells only. The donut advances one frame of its loop per slow tick
-    /// ([`SLOW_TICK_INTERVAL`], ~12 fps) while [`Self::welcome_hero_spins`]; the clock runs only
+    /// ([`SLOW_TICK_INTERVAL`], ~24 fps) while [`Self::welcome_hero_spins`]; the clock runs only
     /// while the welcome view is up, so it stops with the first message.
     fn tick_welcome_hero(&mut self) -> bool {
         if !self.welcome_hero_spins() {

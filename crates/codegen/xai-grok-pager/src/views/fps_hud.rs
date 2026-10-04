@@ -23,7 +23,7 @@ const SAMPLE_CAP: usize = 120;
 /// Overlay text refresh cadence; avoids re-sorting/formatting every frame.
 const REFRESH: Duration = Duration::from_millis(250);
 /// Panel width in cells; each line is padded/truncated to this.
-const PANEL_WIDTH: u16 = 32;
+const PANEL_WIDTH: u16 = 44;
 /// Whether this HUD owns the `GROK_FPS` env gate: only where the dev `FrameMetrics` overlay is compiled out.
 /// In debug/dev builds the env keeps feeding that overlay alone.
 const HONORS_GROK_FPS_ENV: bool = true;
@@ -100,7 +100,7 @@ impl FpsHud {
 /// Mean/percentile line from the ring buffer; placeholder before samples.
 fn format_stats(samples: &VecDeque<Duration>) -> String {
     if samples.is_empty() {
-        return "fps:- p50:- p95:-".to_string();
+        return "fps:- p50:- p95:- max:-".to_string();
     }
     let mut ms: Vec<f64> = samples.iter().map(|d| d.as_secs_f64() * 1000.0).collect();
     ms.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -112,7 +112,10 @@ fn format_stats(samples: &VecDeque<Duration>) -> String {
     };
     let p50 = percentile(&ms, 50.0);
     let p95 = percentile(&ms, 95.0);
-    format!("fps:{fps:.0} p50:{p50:.1}ms p95:{p95:.1}ms")
+    // Workshop: the worst frame in the window — one slow frame is what a stutter is made of,
+    // and a percentile hides it.
+    let max = ms.last().copied().unwrap_or(0.0);
+    format!("fps:{fps:.0} p50:{p50:.1}ms p95:{p95:.1}ms max:{max:.1}ms")
 }
 /// Linear-interpolation percentile from a sorted slice.
 fn percentile(sorted: &[f64], pct: f64) -> f64 {
@@ -205,7 +208,7 @@ mod tests {
             hud.record(Duration::from_millis(10));
         }
         let overlay = hud.overlay(0).expect("enabled");
-        assert_eq!(overlay.body, "fps:100 p50:10.0ms p95:10.0ms");
+        assert_eq!(overlay.body, "fps:100 p50:10.0ms p95:10.0ms max:10.0ms");
     }
     #[test]
     fn record_is_a_noop_while_disabled() {
@@ -224,7 +227,7 @@ mod tests {
             .add_modifier(Modifier::ITALIC);
         buf.set_style(area, theme);
         let overlay = FpsOverlay {
-            body: "fps:100 p50:10.0ms p95:10.0ms".to_string(),
+            body: "fps:100 p50:10.0ms p95:10.0ms max:10.0ms".to_string(),
             top_offset: 1,
         };
         overlay.render(area, &mut buf);

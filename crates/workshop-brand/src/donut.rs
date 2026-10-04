@@ -19,7 +19,10 @@ use std::sync::OnceLock;
 pub const RAMP: [char; 12] = ['.', ',', '-', '~', ':', ';', '=', '!', '*', '#', '$', '@'];
 
 /// Frames in one loop: `a` makes two turns and `b` one, so the frame after the last is the first.
-pub const FRAMES: usize = 144;
+/// 288 frames at the pager's ~24 fps slow tick is one loop every 12 s: the same speed the 144-frame
+/// loop had at ~12 fps, with half the step between frames, so the turn reads as motion rather
+/// than as a sequence of poses.
+pub const FRAMES: usize = 288;
 
 /// Angles of frame 0: a three-quarter view with the hole showing, also the static fallback.
 const A0: f32 = 1.0;

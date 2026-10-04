@@ -13,11 +13,13 @@ use crate::donut::{self, Size};
 /// Frames in one hero loop: exactly one donut loop, so the loop closes where it started.
 pub const FRAMES: usize = donut::FRAMES;
 
-/// The loop's timeline in frames (the pager ticks at about 12 fps): the donut alone until
-/// `SPIN_END`, the `v` rising until `RISE_END`, resting until `REST_END`, then sinking to the end.
-const SPIN_END: usize = 96;
-const RISE_END: usize = SPIN_END + 12;
-const REST_END: usize = RISE_END + 24;
+/// The loop's timeline in frames, as shares of the loop so the seconds stay the same whatever
+/// the frame count (the pager ticks at about 24 fps, one loop every 12 s): the donut alone for
+/// the first two thirds (`SPIN_END`), the `v` rising for a twelfth (`RISE_END`), resting for a
+/// sixth (`REST_END`), then sinking to the end.
+const SPIN_END: usize = FRAMES * 2 / 3;
+const RISE_END: usize = SPIN_END + FRAMES / 12;
+const REST_END: usize = RISE_END + FRAMES / 6;
 
 /// The `v` monogram at the two hero grids, in braille dots; U+2800 is a blank cell.
 const MARK_FULL: &str = include_str!("../assets/monogram-sans-7x14.txt");
