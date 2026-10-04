@@ -49,8 +49,8 @@ use workshop_detect::Identity;
 pub const DEFAULT_KEEP_WARM: Duration = Duration::from_secs(600);
 /// Override for the keep-warm time, in seconds (`0`: the server stops with the last Workshop).
 pub const KEEP_WARM_ENV: &str = "WORKSHOP_OPENCODE_KEEP_WARM_SECS";
-/// How long a launch waits for a keeper it spawned to report its server.
-pub const SPAWN_TIMEOUT: Duration = Duration::from_secs(60);
+/// Slack a launch gives a keeper it spawned beyond the server's own startup timeout.
+const SPAWN_SLACK: Duration = Duration::from_secs(5);
 
 const SUBCOMMAND: &str = "__engine-keeper";
 const QUIT: &str = "quit";
@@ -81,6 +81,37 @@ fn attach_lock_path(home: &Path) -> PathBuf {
 
 pub fn socket_path(home: &Path) -> PathBuf {
     home.join("run").join("engine-keeper.sock")
+}
+
+/// `engine/keeper-failed.json`: why a keeper gave up before it had a server (the launch that
+/// spawned it reports this cause; `workshop doctor` keeps it in `state.json`).
+fn failure_path(home: &Path) -> PathBuf {
+    home.join("engine").join("keeper-failed.json")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct KeeperFailure {
+    keeper_pid: u32,
+    reason: String,
+}
+
+impl KeeperFailure {
+    fn write(home: &Path, reason: &str) {
+        let f = KeeperFailure {
+            keeper_pid: std::process::id(),
+            reason: reason.to_owned(),
+        };
+        if let Ok(json) = serde_json::to_vec_pretty(&f) {
+            let _ = workshop_providers::atomic_write_private(&failure_path(home), &json);
+        }
+    }
+
+    fn take(home: &Path, keeper_pid: u32) -> Option<String> {
+        let raw = std::fs::read_to_string(failure_path(home)).ok()?;
+        let _ = std::fs::remove_file(failure_path(home));
+        let f: KeeperFailure = serde_json::from_str(&raw).ok()?;
+        (f.keeper_pid == keeper_pid).then_some(f.reason)
+    }
 }
 
 // ── What is served ───────────────────────────────────────────────────────────────────────────────
@@ -214,6 +245,9 @@ pub struct KeeperSpec {
     pub password: String,
     pub identity: EngineIdentity,
     pub keep_warm_secs: u64,
+    /// How long the server may take to listen before the keeper gives up (the launch's
+    /// `EngineOptions::startup_timeout`).
+    pub startup_timeout_secs: u64,
 }
 
 // ── Deciding ─────────────────────────────────────────────────────────────────────────────────────
@@ -457,12 +491,14 @@ pub async fn acquire(
         password: password.clone(),
         identity: want.clone(),
         keep_warm_secs: keep_warm().as_secs(),
+        startup_timeout_secs: opts.startup_timeout.as_secs().max(1),
     };
+    let _ = std::fs::remove_file(failure_path(home));
     let keeper_pid = spawn_keeper(&spec).await?;
     log(&format!(
         "keeper: started (pid {keeper_pid}), waiting for its server"
     ));
-    let deadline = Instant::now() + SPAWN_TIMEOUT;
+    let deadline = Instant::now() + opts.startup_timeout + SPAWN_SLACK;
     loop {
         if let Some(info) = ServeInfo::load(home)
             && info.keeper_pid == keeper_pid
@@ -478,15 +514,20 @@ pub async fn acquire(
             });
         }
         if !pid_alive(keeper_pid) {
-            return Err(format!(
-                "the engine keeper exited before its server was up; log: {}",
-                spec.log.display()
-            ));
+            // The keeper says why it gave up (the server exited during startup, never listened):
+            // the same causes `OpenCodeEngine::start` reported when the server was a child.
+            return Err(KeeperFailure::take(home, keeper_pid).unwrap_or_else(|| {
+                format!(
+                    "the engine keeper exited before its server was up; log: {}",
+                    spec.log.display()
+                )
+            }));
         }
         if Instant::now() > deadline {
             signal(keeper_pid, libc::SIGTERM);
             return Err(format!(
-                "the engine keeper did not report a server within {SPAWN_TIMEOUT:?}; log: {}",
+                "`opencode serve` did not become ready within {:?}: the keeper reported no server; log: {}",
+                opts.startup_timeout,
                 spec.log.display()
             ));
         }
@@ -717,20 +758,77 @@ async fn keeper_main(spec: KeeperSpec) -> i32 {
     });
     drop(log_tx);
 
-    // Wait for the server to listen (its stdout says so), logging everything it prints.
-    let listening = tokio::time::timeout(Duration::from_secs(60), async {
-        while let Some(line) = log_rx.recv().await {
-            crate::app::workshop_engine_state::append_log(&log, &line);
-            if line.contains("listening on") {
-                return true;
+    // Wait for the server to listen (its stdout says so), logging everything it prints. A server
+    // that exits first, or never listens, is reported the way `OpenCodeEngine::start` reported it
+    // when the server was the TUI's own child, so the launch shows the same plain line and
+    // `workshop doctor` sees the same cause.
+    let startup_timeout = Duration::from_secs(spec.startup_timeout_secs);
+    let mut stderr_tail: Vec<String> = Vec::new();
+    let listen_deadline = tokio::time::sleep(startup_timeout);
+    tokio::pin!(listen_deadline);
+    let outcome: Result<(), String> = loop {
+        tokio::select! {
+            line = log_rx.recv() => {
+                let Some(line) = line else {
+                    // Both pipes hit EOF: the server is exiting (or has). Report its status.
+                    let tail = stderr_tail.join(" ").trim().to_owned();
+                    let tail = if tail.is_empty() { "no output".to_owned() } else { tail };
+                    break Err(
+                        match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+                            Ok(Ok(status)) => format!(
+                                "`opencode serve` exited during startup ({status}): {tail}"
+                            ),
+                            Ok(Err(e)) => format!(
+                                "`opencode serve` exited during startup ({e}): {tail}"
+                            ),
+                            Err(_) => format!(
+                                "`opencode serve` closed its output before it listened: {tail}"
+                            ),
+                        },
+                    );
+                };
+                crate::app::workshop_engine_state::append_log(&log, &line);
+                if let Some(rest) = line.strip_prefix("stderr: ") {
+                    stderr_tail.push(rest.to_owned());
+                    if stderr_tail.len() > 20 {
+                        stderr_tail.remove(0);
+                    }
+                }
+                if line.contains("listening on") {
+                    break Ok(());
+                }
+            }
+            status = child.wait() => {
+                // Drain what the server printed on its way out (the readers close the channel
+                // once its pipes hit EOF), then report it.
+                while let Ok(Some(line)) =
+                    tokio::time::timeout(Duration::from_millis(500), log_rx.recv()).await
+                {
+                    crate::app::workshop_engine_state::append_log(&log, &line);
+                    if let Some(rest) = line.strip_prefix("stderr: ") {
+                        stderr_tail.push(rest.to_owned());
+                    }
+                }
+                let status = match status {
+                    Ok(s) => s.to_string(),
+                    Err(e) => e.to_string(),
+                };
+                let tail = stderr_tail.join(" ").trim().to_owned();
+                break Err(format!(
+                    "`opencode serve` exited during startup ({status}): {}",
+                    if tail.is_empty() { "no output".to_owned() } else { tail }
+                ));
+            }
+            _ = &mut listen_deadline => {
+                break Err(format!(
+                    "`opencode serve` did not become ready within {startup_timeout:?}: never printed `listening on`"
+                ));
             }
         }
-        false
-    })
-    .await
-    .unwrap_or(false);
-    if !listening {
-        stamp(&log, "the server never printed `listening on`; stopping");
+    };
+    if let Err(reason) = outcome {
+        stamp(&log, &format!("{reason}; stopping"));
+        KeeperFailure::write(&home, &reason);
         stop_server(&mut child, serve_pid).await;
         return 2;
     }
