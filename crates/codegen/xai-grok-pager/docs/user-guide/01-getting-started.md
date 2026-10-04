@@ -56,7 +56,7 @@ the moment Workshop opens, so it is usually ready by the time you press `Enter`;
 before it is ready simply waits for it — the status row reads `First-time setup, 12 MB downloaded…`
 while it does. The install (about a minute on a slow connection) reaches only opencode.ai, the
 vendor's installer; every later message answers within seconds. OpenCode stays running for ten
-minutes after you quit (`WORKSHOP_ENGINE_KEEP_WARM_SECS` changes that; `0` stops it with Workshop),
+minutes after you quit (`WORKSHOP_OPENCODE_KEEP_WARM_SECS` changes that; `0` stops it with Workshop),
 so a relaunch within that time finds it ready at once. While a message is being
 worked on, the status row above the composer shows what is happening — `Waiting for response…`,
 `Thinking…`, `Run sudo apt install ghostty` with that command's own seconds — plus the turn's total

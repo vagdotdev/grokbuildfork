@@ -6,7 +6,7 @@
 //! `opencode serve` per Workshop home and outlives the TUI that started it. A launch attaches to
 //! it in a few milliseconds instead of starting a server; the keeper stops the server and exits
 //! itself once no Workshop has been attached for [`DEFAULT_KEEP_WARM`] (or
-//! `WORKSHOP_ENGINE_KEEP_WARM_SECS`).
+//! `WORKSHOP_OPENCODE_KEEP_WARM_SECS`).
 //!
 //! Lifecycle, in one place:
 //!
@@ -48,7 +48,7 @@ use workshop_detect::Identity;
 /// How long the keeper keeps the server after the last Workshop detached.
 pub const DEFAULT_KEEP_WARM: Duration = Duration::from_secs(600);
 /// Override for the keep-warm time, in seconds (`0`: the server stops with the last Workshop).
-pub const KEEP_WARM_ENV: &str = "WORKSHOP_ENGINE_KEEP_WARM_SECS";
+pub const KEEP_WARM_ENV: &str = "WORKSHOP_OPENCODE_KEEP_WARM_SECS";
 /// How long a launch waits for a keeper it spawned to report its server.
 pub const SPAWN_TIMEOUT: Duration = Duration::from_secs(60);
 

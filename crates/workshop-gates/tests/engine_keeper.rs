@@ -78,7 +78,7 @@ fn launch(
     keep_warm: &str,
     extra: &[(&str, &str)],
 ) -> Journey {
-    let mut env = vec![("WORKSHOP_ENGINE_KEEP_WARM_SECS", keep_warm)];
+    let mut env = vec![("WORKSHOP_OPENCODE_KEEP_WARM_SECS", keep_warm)];
     env.extend_from_slice(extra);
     spawn_in(name, bin, &env, Some(fake), home)
 }

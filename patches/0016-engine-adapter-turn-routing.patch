@@ -1651,7 +1651,7 @@ index 00000000..9714178b
 +}
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop_engine_keeper.rs b/crates/codegen/xai-grok-pager/src/app/workshop_engine_keeper.rs
 new file mode 100644
-index 00000000..9e510166
+index 00000000..4877664b
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop_engine_keeper.rs
 @@ -0,0 +1,1054 @@
@@ -1663,7 +1663,7 @@ index 00000000..9e510166
 +//! `opencode serve` per Workshop home and outlives the TUI that started it. A launch attaches to
 +//! it in a few milliseconds instead of starting a server; the keeper stops the server and exits
 +//! itself once no Workshop has been attached for [`DEFAULT_KEEP_WARM`] (or
-+//! `WORKSHOP_ENGINE_KEEP_WARM_SECS`).
++//! `WORKSHOP_OPENCODE_KEEP_WARM_SECS`).
 +//!
 +//! Lifecycle, in one place:
 +//!
@@ -1705,7 +1705,7 @@ index 00000000..9e510166
 +/// How long the keeper keeps the server after the last Workshop detached.
 +pub const DEFAULT_KEEP_WARM: Duration = Duration::from_secs(600);
 +/// Override for the keep-warm time, in seconds (`0`: the server stops with the last Workshop).
-+pub const KEEP_WARM_ENV: &str = "WORKSHOP_ENGINE_KEEP_WARM_SECS";
++pub const KEEP_WARM_ENV: &str = "WORKSHOP_OPENCODE_KEEP_WARM_SECS";
 +/// How long a launch waits for a keeper it spawned to report its server.
 +pub const SPAWN_TIMEOUT: Duration = Duration::from_secs(60);
 +
