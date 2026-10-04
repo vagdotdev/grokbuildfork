@@ -98,3 +98,103 @@ fn a_failed_opencode_start_falls_back_silently_and_the_answer_arrives() {
     drop(j);
     drop(content);
 }
+
+/// Prototype (`WORKSHOP_FREE_MODELS=direct`): a first run lands on the pool model as the shell's
+/// own model and answers through the shell's agent loop. No `opencode` is ever run — not the
+/// installer, not `--version`, not `serve` — and nothing engine-shaped is written to the home.
+#[test]
+#[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (mock inference on loopback, a recording fake opencode); run with --include-ignored"]
+fn the_direct_default_answers_with_no_engine_process() {
+    let Some(bin) = bin_from_env() else { return };
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let content = rt
+        .block_on(ContentController::start())
+        .expect("mock inference server");
+    content.set_response("Two plus two is four.");
+    let url = content.url();
+
+    // An `opencode` on PATH that records every invocation: the proof is that it never runs.
+    let fake = tempfile::tempdir().expect("tempdir");
+    let calls = fake.path().join("calls");
+    std::fs::write(
+        fake.path().join("opencode"),
+        format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 2\n", calls.display()),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            fake.path().join("opencode"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+
+    let mut j = spawn(
+        "direct-default",
+        &bin,
+        &[
+            (KILO_BASE_URL_ENV, url.as_str()),
+            ("WORKSHOP_FREE_MODELS", "direct"),
+        ],
+        Some(fake.path()),
+    );
+    wait_for(&mut j.h, "\u{276f}", 45);
+    wait_for(&mut j.h, "Nemotron 3 Super", 30);
+    j.h.update(Duration::from_millis(1200));
+    let screen = j.h.screen_contents();
+    assert!(
+        !screen.contains("Big Pickle") && !screen.contains("connect a model"),
+        "the direct first run lands in the composer on the pool model, no engine model, no picker:\n{screen}"
+    );
+    assert!(
+        screen.contains("/model to switch"),
+        "the first-launch hint shows for the direct default too:\n{screen}"
+    );
+    assert_no_plumbing(&j.h, "first run");
+    snapshot(&j.h, &j.dir, "01-first-run-direct");
+
+    send_prompt(&mut j, "what is two plus two?");
+    expect_thinking_line(&mut j, "Two plus two is four.", 30);
+    wait_for(&mut j.h, "Two plus two is four.", 60);
+    j.h.update(Duration::from_millis(800));
+    snapshot(&j.h, &j.dir, "02-answer-direct");
+    assert_no_plumbing(&j.h, "answer");
+    assert!(
+        content.has_chat_completion(),
+        "the reply came from the pool endpoint through the shell's own sampler"
+    );
+    let screen = j.h.screen_contents();
+    assert!(
+        screen.contains("Nemotron 3 Super") && !screen.contains("Couldn't reach"),
+        "the composer still names the pool model and nothing failed:\n{screen}"
+    );
+
+    // Engine-less, provably: opencode never ran, and the home has no engine state or log.
+    assert!(
+        !calls.exists(),
+        "opencode was run: {}",
+        std::fs::read_to_string(&calls).unwrap_or_default()
+    );
+    let home = j.workshop_home();
+    for rel in ["engine", "logs/opencode-engine.log", "tools"] {
+        assert!(
+            !home.join(rel).exists(),
+            "{rel} exists in the home although no engine was wanted"
+        );
+    }
+    let conn =
+        std::fs::read_to_string(home.join("active-connection.json")).expect("active connection");
+    assert!(
+        conn.contains("\"shell\""),
+        "the saved connection is the shell's own model: {conn}"
+    );
+    let config = std::fs::read_to_string(home.join("config.toml")).expect("config.toml");
+    assert!(
+        config.contains("name = \"Nemotron 3 Super\"") && config.contains("max_retries = 2"),
+        "the pool model is written with a plain name and the fallback's retry cap:\n{config}"
+    );
+    drop(j);
+    drop(content);
+}
