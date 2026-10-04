@@ -95,6 +95,11 @@ jobs:
         if: always()
         run: |
           python3 scripts/bench/summarize_startup.py /tmp/bench/results/runs.jsonl "${{ matrix.name }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          # The unified logs carry the startup phases (ms): where the time goes on this platform.
+          for h in release tree; do
+            mkdir -p "/tmp/bench/results/logs-$h"
+            cp /tmp/bench/home-$h/.workshop/logs/*.jsonl /tmp/bench/home-$h/.workshop/logs/*.log "/tmp/bench/results/logs-$h/" 2>/dev/null || true
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
