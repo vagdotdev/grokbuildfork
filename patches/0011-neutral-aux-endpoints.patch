@@ -75,7 +75,7 @@ index 7511a050..480640e2 100644
          assert!(!is_xai_api_url("https://api.anthropic.com/v1"));
          assert!(!is_xai_api_url("https://generativelanguage.googleapis.com"));
 diff --git a/crates/codegen/xai-grok-shell/src/agent/config_tests.rs b/crates/codegen/xai-grok-shell/src/agent/config_tests.rs
-index 6c1e17a6..bb66da26 100644
+index 6c1e17a6..1a943224 100644
 --- a/crates/codegen/xai-grok-shell/src/agent/config_tests.rs
 +++ b/crates/codegen/xai-grok-shell/src/agent/config_tests.rs
 @@ -3201,7 +3201,7 @@ fn e2e_default_model_with_session_routes_to_proxy() {
@@ -114,6 +114,33 @@ index 6c1e17a6..bb66da26 100644
              None,
              None,
              Some("https://api.x.ai/v1"),
+@@ -8435,3 +8435,26 @@ async fn process_key_from_model_env_key() {
+         Some(TOKEN)
+     );
+ }
++/// Workshop: the internal trace pipeline has a destination only when someone configured one.
++/// The inherited default (the chat proxy) is not one, so no exporter — and no TLS client at
++/// tracing init — is built for it.
++#[test]
++fn internal_otlp_destination_only_when_configured() {
++    let mut endpoints = EndpointsConfig::default();
++    endpoints.grok_internal_otlp_traces_endpoint = None;
++    endpoints.otel_exporter_otlp_endpoint = None;
++    endpoints.otel_exporter_otlp_traces_endpoint = None;
++    assert!(!endpoints.has_internal_otlp_destination());
++    endpoints.grok_internal_otlp_traces_endpoint = Some("   ".to_owned());
++    assert!(!endpoints.has_internal_otlp_destination(), "blank is unset");
++    endpoints.grok_internal_otlp_traces_endpoint =
++        Some("https://collector.example/v1/traces".to_owned());
++    assert!(endpoints.has_internal_otlp_destination());
++    // The legacy standard variables count only while the external-OTEL master switch is unset.
++    endpoints.grok_internal_otlp_traces_endpoint = None;
++    endpoints.otel_exporter_otlp_endpoint = Some("https://collector.example".to_owned());
++    endpoints.external_otel_master_switch = false;
++    assert!(endpoints.has_internal_otlp_destination());
++    endpoints.external_otel_master_switch = true;
++    assert!(!endpoints.has_internal_otlp_destination());
++}
 diff --git a/crates/codegen/xai-grok-shell/src/remote/client.rs b/crates/codegen/xai-grok-shell/src/remote/client.rs
 index be95f3a8..b61e0832 100644
 --- a/crates/codegen/xai-grok-shell/src/remote/client.rs
@@ -149,10 +176,56 @@ index 3301d563..954684f1 100644
          !url.contains("acme-corp"),
          "deployment key would be sent to the inference host: {url}"
 diff --git a/crates/codegen/xai-grok-shell/src/remote/model_source/oai.rs b/crates/codegen/xai-grok-shell/src/remote/model_source/oai.rs
-index fdb1e6d9..0af254ff 100644
+index fdb1e6d9..2a7abb64 100644
 --- a/crates/codegen/xai-grok-shell/src/remote/model_source/oai.rs
 +++ b/crates/codegen/xai-grok-shell/src/remote/model_source/oai.rs
-@@ -150,10 +150,22 @@ mod tests {
+@@ -28,10 +28,14 @@ impl ModelSource for OaiModelSource {
+         self.endpoint.url.clone()
+     }
+     fn fetch(&self, auth: Option<&GrokAuth>) -> Result<FetchModelsResult, BackendError> {
+-        let client = crate::http::shared_startup_blocking_client();
+-        tracing::info!("Fetching models from {}", self.endpoint.url);
+-        let mut request = client.get(&self.endpoint.url);
+-        match self.endpoint.auth {
++        // Workshop: the credentials are resolved before the HTTP client is built. A launch with
++        // nothing to fetch with (no key, no session) then builds no client — the startup
++        // blocking client waits for the OS trust store, which is 120–230 ms on macOS.
++        enum Credential<'a> {
++            Key(String),
++            Session(&'a GrokAuth),
++        }
++        let credential = match self.endpoint.auth {
+             EndpointAuth::ApiKey => {
+                 let api_key = crate::agent::auth_method::read_xai_api_key_env()
+                     .or_else(|_| {
+@@ -43,7 +47,7 @@ impl ModelSource for OaiModelSource {
+                             "No API key for custom models endpoint. Set XAI_API_KEY.".into(),
+                         )
+                     })?;
+-                request = request.header("Authorization", format!("Bearer {}", api_key));
++                Credential::Key(api_key)
+             }
+             EndpointAuth::Session => {
+                 let auth = auth
+@@ -51,6 +55,17 @@ impl ModelSource for OaiModelSource {
+                     .ok_or_else(|| {
+                         BackendError::Auth("No auth credentials for cli-chat-proxy".into())
+                     })?;
++                Credential::Session(auth)
++            }
++        };
++        let client = crate::http::shared_startup_blocking_client();
++        tracing::info!("Fetching models from {}", self.endpoint.url);
++        let mut request = client.get(&self.endpoint.url);
++        match credential {
++            Credential::Key(api_key) => {
++                request = request.header("Authorization", format!("Bearer {}", api_key));
++            }
++            Credential::Session(auth) => {
+                 request = request
+                     .header("Authorization", format!("Bearer {}", &auth.key))
+                     .header("X-XAI-Token-Auth", "xai-grok-cli")
+@@ -150,10 +165,22 @@ mod tests {
              .unwrap(),
          );
          let session = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::Session);

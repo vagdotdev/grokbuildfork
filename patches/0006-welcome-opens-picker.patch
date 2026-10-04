@@ -5605,7 +5605,7 @@ index eda61b3c..1a4b9cf6 100644
      #[tokio::test]
      async fn handled_counts_only_events_processed_before_suspend_break() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/mod.rs b/crates/codegen/xai-grok-pager/src/app/mod.rs
-index 60fe34f9..f647dfc2 100644
+index 60fe34f9..59456f4f 100644
 --- a/crates/codegen/xai-grok-pager/src/app/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/mod.rs
 @@ -13,6 +13,15 @@ pub mod actions;
@@ -5634,7 +5634,36 @@ index 60fe34f9..f647dfc2 100644
      let raw_config = xai_grok_shell::config::load_effective_config()
          .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
      let (grok_com_config, proxy_base_url) =
-@@ -815,9 +827,20 @@ pub async fn run(
+@@ -682,6 +694,10 @@ pub async fn run(
+                 )
+             }
+         };
++    // Workshop: the steps before the agent connects are timed one by one (`startup timing` in
++    // the unified log), so a platform where one of them is slow can be read off the log.
++    let pre_tui_login =
++        xai_grok_telemetry::instrumentation::timer("startup.pre_connect.pre_tui_login");
+     if let xai_grok_login::PreTuiLoginOutcome::SignedIn(auth) =
+         xai_grok_login::maybe_run_pre_tui_external_login(
+             &grok_com_config,
+@@ -694,13 +710,17 @@ pub async fn run(
+         xai_grok_shell::agent::init::apply_post_login_config(*auth).await?;
+         args.force_login = false;
+     }
++    drop(pre_tui_login);
+     xai_tty_utils::redirect_native_stderr();
++    let auth_refresh =
++        xai_grok_telemetry::instrumentation::timer("startup.pre_connect.auth_refresh");
+     let refreshed_auth = tokio::time::timeout(
+         xai_grok_shell::http::STARTUP_AUTH_REFRESH_TIMEOUT,
+         xai_grok_login::try_ensure_fresh_auth(&grok_com_config, proxy_base_url),
+     )
+     .await
+     .unwrap_or(None);
++    drop(auth_refresh);
+     let settings_query = xai_grok_shell::agent::remote_config::settings_get::SettingsQuery::resolve(
+         refreshed_auth,
+         Some(grok_com_config.clone()),
+@@ -815,9 +835,20 @@ pub async fn run(
          }
          session_startup::set_active_local_workspace(lw)?;
      }
@@ -5656,7 +5685,54 @@ index 60fe34f9..f647dfc2 100644
      let mut materialize_ctx = session_startup::MaterializeCtx::from_pager_args(&args);
      materialize_ctx.restore_progress_on_stdout =
          std::io::IsTerminal::is_terminal(&std::io::stdout());
-@@ -1154,6 +1177,8 @@ pub async fn run(
+@@ -922,7 +953,10 @@ pub async fn run(
+         default_auto_mode: launch_auto && !launch_yolo.yolo,
+         status_line: false,
+     };
++    let config_watcher_timer =
++        xai_grok_telemetry::instrumentation::timer("startup.pre_connect.config_watcher");
+     let mut config_watcher = crate::appearance::ConfigWatcher::start().await?;
++    drop(config_watcher_timer);
+     let alt_screen_config_mode = config_watcher.current().alt_screen;
+     let term_ctx = crate::terminal::terminal_context();
+     let is_control_mode = crate::terminal::detect_tmux_control_mode(term_ctx);
+@@ -987,6 +1021,7 @@ pub async fn run(
+         crate::render::draw::spawn_writer_thread()
+             .context("failed to spawn the term-writer thread")?;
+     let cursor_blink = event_loop::load_initial_ui_config().cursor_blink;
++    let terminal_timer = xai_grok_telemetry::instrumentation::timer("startup.pre_connect.terminal");
+     let TerminalInit {
+         mut terminal,
+         screen_mode,
+@@ -999,6 +1034,7 @@ pub async fn run(
+         writer_sync,
+         cursor_blink,
+     )?;
++    drop(terminal_timer);
+     MINIMAL_SHOW_SWITCH_BACK_TO_FULLSCREEN.store(
+         relaunched_into_minimal && screen_mode.is_minimal(),
+         Ordering::Release,
+@@ -1028,6 +1064,8 @@ pub async fn run(
+     } else {
+         crate::acp::AgentKind::Embedded
+     };
++    let otel_timer =
++        xai_grok_telemetry::instrumentation::timer("startup.pre_connect.external_otel");
+     xai_grok_telemetry::external::init(
+         xai_grok_shell::agent::config::resolve_external_otel_config(
+             xai_grok_telemetry::external::config::ExternalClientInfo {
+@@ -1037,7 +1075,10 @@ pub async fn run(
+             },
+         ),
+     );
++    drop(otel_timer);
++    let tracing_timer = xai_grok_telemetry::instrumentation::timer("startup.pre_connect.tracing");
+     let tracing_handle = crate::tracing::init_tracing();
++    drop(tracing_timer);
+     let pending_startup = xai_grok_telemetry::startup::PendingStartup::new();
+     let timer = xai_grok_telemetry::startup::begin(crate::acp::Owner::Client);
+     let primary_started = std::time::Instant::now();
+@@ -1154,6 +1195,8 @@ pub async fn run(
          bg_update_rx,
          writer_event_rx,
          &mut reader_thread,
@@ -5665,7 +5741,7 @@ index 60fe34f9..f647dfc2 100644
      )
      .await;
      signal_handler::clear_quit_notify();
-@@ -1233,7 +1258,7 @@ pub async fn run(
+@@ -1233,7 +1276,7 @@ pub async fn run(
          Err(run_error) => Err(run_error),
      }
  }
@@ -5674,7 +5750,7 @@ index 60fe34f9..f647dfc2 100644
  /// Best-effort: closed-pane EIO/BrokenPipe must not panic (`panic = "abort"`).
  /// TODO: extend beyond --minimal by rebuilding resume argv from launch flags (see screen_mode_relaunch)
  fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write) {
-@@ -1253,11 +1278,12 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
+@@ -1253,11 +1296,12 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
          }
          let _ = writeln!(w);
      }
@@ -5690,7 +5766,7 @@ index 60fe34f9..f647dfc2 100644
      }
  }
  /// Screen-mode relaunch failure fallback (same quit tail as plain resume).
-@@ -1474,6 +1500,11 @@ fn init_terminal(
+@@ -1474,6 +1518,11 @@ fn init_terminal(
          startup_typeahead.extend(event_loop::capture_startup_typeahead(
              std::time::Duration::from_millis(0),
          ));
@@ -5702,7 +5778,7 @@ index 60fe34f9..f647dfc2 100644
          set_terminal_title("");
          if want_minimal && clear_main_screen {
              xai_grok_shell::util::with_locked_stderr(|stderr| {
-@@ -1671,10 +1702,10 @@ pub(crate) fn set_terminal_title(title: &str) {
+@@ -1671,10 +1720,10 @@ pub(crate) fn set_terminal_title(title: &str) {
  fn terminal_title_string(title: &str) -> String {
      let sanitized: String = title.chars().filter(|c| !c.is_control()).collect();
      if sanitized.is_empty() {
@@ -5716,7 +5792,7 @@ index 60fe34f9..f647dfc2 100644
      }
  }
  #[cfg(test)]
-@@ -1724,11 +1755,11 @@ mod tests {
+@@ -1724,11 +1773,11 @@ mod tests {
      fn terminal_title_strips_control_characters() {
          assert_eq!(
              terminal_title_string("evil\x07\x1b]52;c;payload\x07title"),
@@ -5732,7 +5808,7 @@ index 60fe34f9..f647dfc2 100644
      }
      #[test]
      fn hunk_tracker_mode_nothing_set_is_none() {
-@@ -2245,9 +2276,9 @@ mod tests {
+@@ -2245,9 +2294,9 @@ mod tests {
          assert!(!args.no_alt_screen);
      }
      #[test]
@@ -5744,7 +5820,7 @@ index 60fe34f9..f647dfc2 100644
      }
      #[test]
      fn cli_help_output_header() {
-@@ -2257,9 +2288,9 @@ mod tests {
+@@ -2257,9 +2306,9 @@ mod tests {
          assert_eq!(
              first_5,
              vec![
@@ -5756,7 +5832,7 @@ index 60fe34f9..f647dfc2 100644
                  "",
                  "Arguments:",
              ]
-@@ -2305,7 +2336,7 @@ mod tests {
+@@ -2305,7 +2354,7 @@ mod tests {
          print_exit_resume_hint(&bare_exit_info("sess-abc", false), 80, &mut buf);
          assert_eq!(
              String::from_utf8(buf).unwrap(),
@@ -5765,7 +5841,7 @@ index 60fe34f9..f647dfc2 100644
          );
      }
      #[test]
-@@ -2314,7 +2345,7 @@ mod tests {
+@@ -2314,7 +2363,7 @@ mod tests {
          print_exit_resume_hint(&bare_exit_info("sess-abc", true), 80, &mut buf);
          assert_eq!(
              String::from_utf8(buf).unwrap(),
@@ -5774,7 +5850,7 @@ index 60fe34f9..f647dfc2 100644
          );
      }
      #[test]
-@@ -2338,8 +2369,7 @@ mod tests {
+@@ -2338,8 +2387,7 @@ mod tests {
                  "> make the suite deterministic\n",
                  "  Pinned the seed; 200 consecutive green runs.\n",
                  "\n",
@@ -5784,7 +5860,7 @@ index 60fe34f9..f647dfc2 100644
              )
          );
      }
-@@ -2360,7 +2390,7 @@ mod tests {
+@@ -2360,7 +2408,7 @@ mod tests {
          assert!(out.contains(&format!("\n{}…\n", "t".repeat(19))));
          assert!(out.contains(&format!("\n> {}…\n", "p".repeat(17))));
          assert!(out.contains(&format!("\n  {}…\n", "r".repeat(17))));
@@ -10075,6 +10151,47 @@ index 51c3c5f1..adf9568d 100644
      /// Case-insensitive matching against the catalog: `/model grok 4.5` resolves to the same `ModelId` as `/model Grok 4.5`.
      #[test]
      fn run_set_default_model_resolves_case_insensitively() {
+diff --git a/crates/codegen/xai-grok-pager/src/tracing.rs b/crates/codegen/xai-grok-pager/src/tracing.rs
+index e424f437..430da153 100644
+--- a/crates/codegen/xai-grok-pager/src/tracing.rs
++++ b/crates/codegen/xai-grok-pager/src/tracing.rs
+@@ -334,6 +334,12 @@ pub fn init_tracing() -> TracingHandle {
+         .with_target(true)
+         .with_ansi(true)
+         .with_writer(make_writer);
++    // Workshop: each step is timed (`startup timing` in the unified log); on macOS one of them
++    // held the first frame back by ~190 ms and this is how it was found.
++    let t = xai_grok_telemetry::instrumentation::timer("startup.tracing.otel_config");
++    let otel_config = xai_grok_shell::agent::init::build_default_otel_layer_config();
++    drop(t);
++    let t = xai_grok_telemetry::instrumentation::timer("startup.tracing.otel_layer");
+     let otel_layer = xai_grok_telemetry::otel_layer::build_otel_layer(
+         xai_grok_telemetry::otel_layer::OtelClientInfo {
+             client_name: "grok-pager",
+@@ -341,8 +347,10 @@ pub fn init_tracing() -> TracingHandle {
+             service_version: xai_grok_version::full_version(),
+             app_entrypoint: "tui",
+         },
+-        xai_grok_shell::agent::init::build_default_otel_layer_config(),
++        otel_config,
+     );
++    drop(t);
++    let t = xai_grok_telemetry::instrumentation::timer("startup.tracing.layers");
+     let instrumentation_layer = xai_grok_telemetry::instrumentation::layer();
+     let sampling_log_layer = xai_grok_telemetry::sampling_log::layer();
+     let hooks_log_layer = xai_grok_telemetry::hooks_log::layer();
+@@ -353,7 +361,11 @@ pub fn init_tracing() -> TracingHandle {
+         .with(xai_grok_telemetry::span_profile::layer("tui"))
+         .with(hooks_log_layer)
+         .with(otel_layer);
++    drop(t);
++    let t = xai_grok_telemetry::instrumentation::timer("startup.tracing.firehose");
+     xai_grok_telemetry::debug_log::install_firehose(registry, "tui");
++    drop(t);
++    let _t = xai_grok_telemetry::instrumentation::timer("startup.tracing.external_init");
+     xai_grok_telemetry::external::init(
+         xai_grok_shell::agent::config::resolve_external_otel_config(
+             xai_grok_telemetry::external::config::ExternalClientInfo {
 diff --git a/crates/codegen/xai-grok-pager/src/views/connection_picker.rs b/crates/codegen/xai-grok-pager/src/views/connection_picker.rs
 new file mode 100644
 index 00000000..8479791d

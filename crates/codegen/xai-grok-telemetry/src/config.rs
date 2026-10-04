@@ -239,6 +239,19 @@ impl Default for TelemetryConfig {
     }
 }
 impl TelemetryConfig {
+    /// Workshop: whether any event sink is configured — a Mixpanel token with Mixpanel on, or an
+    /// events URL. Without one the telemetry client would hold an HTTP client it never uses.
+    pub fn has_event_sink(&self) -> bool {
+        let token = self
+            .mixpanel_token
+            .as_deref()
+            .is_some_and(|t| !t.trim().is_empty());
+        let events = self
+            .events_url
+            .as_deref()
+            .is_some_and(|u| !u.trim().is_empty());
+        (self.mixpanel_enabled && token) || events
+    }
     /// Clears every sink still carrying its baked `internal-telemetry-defaults` value; the events
     /// key follows the URL, so an explicit URL keeps a baked key. Returns whether anything was cleared.
     pub(crate) fn disarm_baked_sinks(&mut self) -> bool {
@@ -371,5 +384,27 @@ mod tests {
             from_str.otel_metric_export_interval.as_deref(),
             Some("60000")
         );
+    }
+    /// Workshop: the default build bakes no sink, so there is nothing to build a client for; a
+    /// token (with Mixpanel on) or an events URL is one.
+    #[test]
+    fn has_event_sink_needs_a_token_or_an_events_url() {
+        let mut cfg = TelemetryConfig::default();
+        cfg.mixpanel_token = None;
+        cfg.mixpanel_enabled = false;
+        cfg.events_url = None;
+        assert!(!cfg.has_event_sink());
+        cfg.mixpanel_token = Some("tok".into());
+        assert!(
+            !cfg.has_event_sink(),
+            "a token with Mixpanel off is not a sink"
+        );
+        cfg.mixpanel_enabled = true;
+        assert!(cfg.has_event_sink());
+        cfg.mixpanel_enabled = false;
+        cfg.events_url = Some("  ".into());
+        assert!(!cfg.has_event_sink(), "blank is unset");
+        cfg.events_url = Some("https://events.example/v1".into());
+        assert!(cfg.has_event_sink());
     }
 }

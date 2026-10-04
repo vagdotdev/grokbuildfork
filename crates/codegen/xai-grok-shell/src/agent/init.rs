@@ -483,6 +483,14 @@ pub fn update_telemetry_config(config: &AgentConfig, auth_manager: &AuthManager)
         tracing::warn!("telemetry init skipped: GROK_CLIENT_NAME yields an invalid user agent");
         return;
     }
+    // Workshop: with no event sink configured (this build bakes none), or telemetry off, there is
+    // no client to build; asking for the shared HTTP client here made the first frame wait for the
+    // OS trust store (the Keychain on macOS, 120–230 ms).
+    let mode = config.resolve_telemetry_mode().value;
+    if mode.is_disabled() || !config.telemetry.has_event_sink() {
+        xai_grok_telemetry::client::disable();
+        return;
+    }
     let grok_auth = auth_manager.current().filter(|a| a.is_xai_auth());
     let user_id = grok_auth.as_ref().map(|a| a.user_id.clone());
     let team_id = grok_auth.as_ref().and_then(|a| a.team_id.clone());
@@ -495,7 +503,7 @@ pub fn update_telemetry_config(config: &AgentConfig, auth_manager: &AuthManager)
     );
     xai_grok_telemetry::client::init(
         config.telemetry.clone(),
-        config.resolve_telemetry_mode().value,
+        mode,
         user_id,
         team_id,
         config.endpoints.deployment_key.clone(),
@@ -512,12 +520,17 @@ pub fn build_default_otel_layer_config() -> xai_grok_telemetry::otel_layer::Otel
     let endpoints = crate::agent::config::EndpointsConfig::default();
     let (credentials, token_header_value) =
         crate::credential_factory::build_bootstrap_otel_credentials();
+    // Workshop: the internal trace pipeline exports only to a destination someone configured.
+    // Its inherited default is the (neutral, loopback) chat proxy, where nothing listens, yet
+    // building its exporter costs a TLS client at tracing init — and that waits for the OS trust
+    // store, 120–230 ms on macOS (the Keychain), on the path to the first frame.
     let exporter = xai_grok_telemetry::otel_layer::OtelExporterConfig {
         traces_url: endpoints.resolve_otlp_traces_endpoint(),
         extra_headers: endpoints.resolve_otlp_headers(),
         export_interval: endpoints.resolve_otlp_export_interval(),
         timeout: endpoints.resolve_otlp_timeout(),
         enabled: endpoints.resolve_traces_export_enabled()
+            && endpoints.has_internal_otlp_destination()
             && !crate::agent::config::is_telemetry_explicitly_disabled_sync(),
     };
     xai_grok_telemetry::otel_layer::OtelLayerConfig {

@@ -446,6 +446,16 @@ pub fn init(
     drop(guard);
     sync_profile();
 }
+/// Workshop: no telemetry client at all — what [`init`] does for a disabled mode, without an HTTP
+/// client to hand over. The shared client's first build waits for the OS trust store (the Keychain
+/// on macOS, 120–230 ms), so a build with nothing to send must not ask for one on the startup path.
+pub fn disable() {
+    let lock = TELEMETRY_CLIENT.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().unwrap_or_else(|err| err.into_inner());
+    *guard = None;
+    drop(guard);
+    sync_profile();
+}
 /// Re-initialize the telemetry client if it was not created at startup (e.g. because auth was not yet available).
 /// No-op when the client is already set, so safe to call unconditionally after auth succeeds.
 pub fn init_if_needed(
