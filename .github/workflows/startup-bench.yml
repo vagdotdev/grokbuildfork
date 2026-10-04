@@ -1,0 +1,102 @@
+# Startup bench on hosted runners (macOS and Linux): first byte, first frame, composer usable and
+# engine ready, from exec, for the latest published release and for this tree. The numbers land in
+# the job summary and as an artifact. Nothing here gates a merge; it exists because nobody had a
+# Mac to measure on (the owner's platform). Runs on PRs that touch the bench, and on demand.
+name: startup-bench
+
+on:
+  pull_request:
+    paths:
+      - "scripts/bench/**"
+      - ".github/workflows/startup-bench.yml"
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Published release tag to compare against (default: the latest release)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # The release workflow's profile overrides (see release.yml): LTO off, 16 codegen units, no
+  # debuginfo, so the build fits the hosted runners and matches what users run.
+  CARGO_PROFILE_RELEASE_DIST_STRIP: symbols
+  CARGO_PROFILE_RELEASE_DIST_LTO: "off"
+  CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS: "16"
+  CARGO_PROFILE_RELEASE_DIST_DEBUG: "0"
+
+jobs:
+  bench:
+    name: startup bench (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-aarch64
+            runner: macos-latest
+            asset: macos-aarch64
+          - name: linux-x86_64
+            runner: ubuntu-latest
+            asset: linux-x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "29.3"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: startup-bench-${{ matrix.name }}
+      - name: Build this tree (release-dist, release settings)
+        run: |
+          cargo build --locked --profile release-dist -p xai-grok-pager-bin
+          ls -la target/release-dist/workshop
+          target/release-dist/workshop --version
+      - name: Download the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.release }}"
+          if [ -z "$tag" ]; then
+            tag="$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName)"
+          fi
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+          mkdir -p /tmp/bench/release
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p "workshop-*-${{ matrix.asset }}.tar.gz" -D /tmp/bench/release
+          tar -xzf /tmp/bench/release/workshop-*-${{ matrix.asset }}.tar.gz -C /tmp/bench/release
+          /tmp/bench/release/workshop --version
+      - name: Bench the published release (fresh, then warm x5)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/bench/results
+          python3 scripts/bench/startup_bench.py --bin /tmp/bench/release/workshop --home /tmp/bench/home-release \
+            --fresh --runs 1 --label "release-$RELEASE_TAG" --engine-timeout 300 --out /tmp/bench/results/runs.jsonl
+          python3 scripts/bench/startup_bench.py --bin /tmp/bench/release/workshop --home /tmp/bench/home-release \
+            --runs 5 --label "release-$RELEASE_TAG" --out /tmp/bench/results/runs.jsonl
+      - name: Bench this tree (fresh, then warm x5)
+        run: |
+          set -euo pipefail
+          python3 scripts/bench/startup_bench.py --bin target/release-dist/workshop --home /tmp/bench/home-tree \
+            --fresh --runs 1 --label "tree-${GITHUB_SHA::8}" --engine-timeout 300 --out /tmp/bench/results/runs.jsonl
+          python3 scripts/bench/startup_bench.py --bin target/release-dist/workshop --home /tmp/bench/home-tree \
+            --runs 5 --label "tree-${GITHUB_SHA::8}" --out /tmp/bench/results/runs.jsonl
+      - name: Summary
+        if: always()
+        run: |
+          python3 scripts/bench/summarize_startup.py /tmp/bench/results/runs.jsonl "${{ matrix.name }}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: startup-bench-${{ matrix.name }}
+          path: /tmp/bench/results/
