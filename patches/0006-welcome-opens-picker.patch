@@ -5605,16 +5605,17 @@ index eda61b3c..1a4b9cf6 100644
      #[tokio::test]
      async fn handled_counts_only_events_processed_before_suspend_break() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/mod.rs b/crates/codegen/xai-grok-pager/src/app/mod.rs
-index 60fe34f9..59456f4f 100644
+index 60fe34f9..9d741c6c 100644
 --- a/crates/codegen/xai-grok-pager/src/app/mod.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/mod.rs
-@@ -13,6 +13,15 @@ pub mod actions;
+@@ -13,6 +13,16 @@ pub mod actions;
  pub mod agent;
  pub mod agent_view;
  pub mod app_view;
 +/// Workshop overlay: connection picker loading and activation.
 +pub mod workshop;
 +pub mod workshop_askpass;
++pub mod workshop_engine_keeper;
 +pub mod workshop_engine_shell;
 +pub mod workshop_engine_state;
 +pub mod workshop_permissions;
@@ -5624,7 +5625,7 @@ index 60fe34f9..59456f4f 100644
  pub mod bundle;
  pub(crate) mod cancel_latency;
  pub mod cli;
-@@ -669,6 +678,9 @@ pub async fn run(
+@@ -669,6 +679,9 @@ pub async fn run(
      let screen_mode_override = screen_mode_relaunch::take_screen_mode_env_override();
      let cancel = CancellationToken::new();
      let startup_start = std::time::Instant::now();
@@ -5634,7 +5635,7 @@ index 60fe34f9..59456f4f 100644
      let raw_config = xai_grok_shell::config::load_effective_config()
          .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
      let (grok_com_config, proxy_base_url) =
-@@ -682,6 +694,10 @@ pub async fn run(
+@@ -682,6 +695,10 @@ pub async fn run(
                  )
              }
          };
@@ -5645,7 +5646,7 @@ index 60fe34f9..59456f4f 100644
      if let xai_grok_login::PreTuiLoginOutcome::SignedIn(auth) =
          xai_grok_login::maybe_run_pre_tui_external_login(
              &grok_com_config,
-@@ -694,13 +710,17 @@ pub async fn run(
+@@ -694,13 +711,17 @@ pub async fn run(
          xai_grok_shell::agent::init::apply_post_login_config(*auth).await?;
          args.force_login = false;
      }
@@ -5663,7 +5664,7 @@ index 60fe34f9..59456f4f 100644
      let settings_query = xai_grok_shell::agent::remote_config::settings_get::SettingsQuery::resolve(
          refreshed_auth,
          Some(grok_com_config.clone()),
-@@ -815,9 +835,20 @@ pub async fn run(
+@@ -815,9 +836,20 @@ pub async fn run(
          }
          session_startup::set_active_local_workspace(lw)?;
      }
@@ -5685,7 +5686,7 @@ index 60fe34f9..59456f4f 100644
      let mut materialize_ctx = session_startup::MaterializeCtx::from_pager_args(&args);
      materialize_ctx.restore_progress_on_stdout =
          std::io::IsTerminal::is_terminal(&std::io::stdout());
-@@ -922,7 +953,10 @@ pub async fn run(
+@@ -922,7 +954,10 @@ pub async fn run(
          default_auto_mode: launch_auto && !launch_yolo.yolo,
          status_line: false,
      };
@@ -5696,7 +5697,7 @@ index 60fe34f9..59456f4f 100644
      let alt_screen_config_mode = config_watcher.current().alt_screen;
      let term_ctx = crate::terminal::terminal_context();
      let is_control_mode = crate::terminal::detect_tmux_control_mode(term_ctx);
-@@ -987,6 +1021,7 @@ pub async fn run(
+@@ -987,6 +1022,7 @@ pub async fn run(
          crate::render::draw::spawn_writer_thread()
              .context("failed to spawn the term-writer thread")?;
      let cursor_blink = event_loop::load_initial_ui_config().cursor_blink;
@@ -5704,7 +5705,7 @@ index 60fe34f9..59456f4f 100644
      let TerminalInit {
          mut terminal,
          screen_mode,
-@@ -999,6 +1034,7 @@ pub async fn run(
+@@ -999,6 +1035,7 @@ pub async fn run(
          writer_sync,
          cursor_blink,
      )?;
@@ -5712,7 +5713,7 @@ index 60fe34f9..59456f4f 100644
      MINIMAL_SHOW_SWITCH_BACK_TO_FULLSCREEN.store(
          relaunched_into_minimal && screen_mode.is_minimal(),
          Ordering::Release,
-@@ -1028,6 +1064,8 @@ pub async fn run(
+@@ -1028,6 +1065,8 @@ pub async fn run(
      } else {
          crate::acp::AgentKind::Embedded
      };
@@ -5721,7 +5722,7 @@ index 60fe34f9..59456f4f 100644
      xai_grok_telemetry::external::init(
          xai_grok_shell::agent::config::resolve_external_otel_config(
              xai_grok_telemetry::external::config::ExternalClientInfo {
-@@ -1037,7 +1075,10 @@ pub async fn run(
+@@ -1037,7 +1076,10 @@ pub async fn run(
              },
          ),
      );
@@ -5732,7 +5733,7 @@ index 60fe34f9..59456f4f 100644
      let pending_startup = xai_grok_telemetry::startup::PendingStartup::new();
      let timer = xai_grok_telemetry::startup::begin(crate::acp::Owner::Client);
      let primary_started = std::time::Instant::now();
-@@ -1154,6 +1195,8 @@ pub async fn run(
+@@ -1154,6 +1196,8 @@ pub async fn run(
          bg_update_rx,
          writer_event_rx,
          &mut reader_thread,
@@ -5741,7 +5742,7 @@ index 60fe34f9..59456f4f 100644
      )
      .await;
      signal_handler::clear_quit_notify();
-@@ -1233,7 +1276,7 @@ pub async fn run(
+@@ -1233,7 +1277,7 @@ pub async fn run(
          Err(run_error) => Err(run_error),
      }
  }
@@ -5750,7 +5751,7 @@ index 60fe34f9..59456f4f 100644
  /// Best-effort: closed-pane EIO/BrokenPipe must not panic (`panic = "abort"`).
  /// TODO: extend beyond --minimal by rebuilding resume argv from launch flags (see screen_mode_relaunch)
  fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write) {
-@@ -1253,11 +1296,12 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
+@@ -1253,11 +1297,12 @@ fn print_exit_resume_hint(info: &ExitInfo, max_width: usize, w: &mut impl Write)
          }
          let _ = writeln!(w);
      }
@@ -5766,7 +5767,7 @@ index 60fe34f9..59456f4f 100644
      }
  }
  /// Screen-mode relaunch failure fallback (same quit tail as plain resume).
-@@ -1474,6 +1518,11 @@ fn init_terminal(
+@@ -1474,6 +1519,11 @@ fn init_terminal(
          startup_typeahead.extend(event_loop::capture_startup_typeahead(
              std::time::Duration::from_millis(0),
          ));
@@ -5778,7 +5779,7 @@ index 60fe34f9..59456f4f 100644
          set_terminal_title("");
          if want_minimal && clear_main_screen {
              xai_grok_shell::util::with_locked_stderr(|stderr| {
-@@ -1671,10 +1720,10 @@ pub(crate) fn set_terminal_title(title: &str) {
+@@ -1671,10 +1721,10 @@ pub(crate) fn set_terminal_title(title: &str) {
  fn terminal_title_string(title: &str) -> String {
      let sanitized: String = title.chars().filter(|c| !c.is_control()).collect();
      if sanitized.is_empty() {
@@ -5792,7 +5793,7 @@ index 60fe34f9..59456f4f 100644
      }
  }
  #[cfg(test)]
-@@ -1724,11 +1773,11 @@ mod tests {
+@@ -1724,11 +1774,11 @@ mod tests {
      fn terminal_title_strips_control_characters() {
          assert_eq!(
              terminal_title_string("evil\x07\x1b]52;c;payload\x07title"),
@@ -5808,7 +5809,7 @@ index 60fe34f9..59456f4f 100644
      }
      #[test]
      fn hunk_tracker_mode_nothing_set_is_none() {
-@@ -2245,9 +2294,9 @@ mod tests {
+@@ -2245,9 +2295,9 @@ mod tests {
          assert!(!args.no_alt_screen);
      }
      #[test]
@@ -5820,7 +5821,7 @@ index 60fe34f9..59456f4f 100644
      }
      #[test]
      fn cli_help_output_header() {
-@@ -2257,9 +2306,9 @@ mod tests {
+@@ -2257,9 +2307,9 @@ mod tests {
          assert_eq!(
              first_5,
              vec![
@@ -5832,7 +5833,7 @@ index 60fe34f9..59456f4f 100644
                  "",
                  "Arguments:",
              ]
-@@ -2305,7 +2354,7 @@ mod tests {
+@@ -2305,7 +2355,7 @@ mod tests {
          print_exit_resume_hint(&bare_exit_info("sess-abc", false), 80, &mut buf);
          assert_eq!(
              String::from_utf8(buf).unwrap(),
@@ -5841,7 +5842,7 @@ index 60fe34f9..59456f4f 100644
          );
      }
      #[test]
-@@ -2314,7 +2363,7 @@ mod tests {
+@@ -2314,7 +2364,7 @@ mod tests {
          print_exit_resume_hint(&bare_exit_info("sess-abc", true), 80, &mut buf);
          assert_eq!(
              String::from_utf8(buf).unwrap(),
@@ -5850,7 +5851,7 @@ index 60fe34f9..59456f4f 100644
          );
      }
      #[test]
-@@ -2338,8 +2387,7 @@ mod tests {
+@@ -2338,8 +2388,7 @@ mod tests {
                  "> make the suite deterministic\n",
                  "  Pinned the seed; 200 consecutive green runs.\n",
                  "\n",
@@ -5860,7 +5861,7 @@ index 60fe34f9..59456f4f 100644
              )
          );
      }
-@@ -2360,7 +2408,7 @@ mod tests {
+@@ -2360,7 +2409,7 @@ mod tests {
          assert!(out.contains(&format!("\n{}…\n", "t".repeat(19))));
          assert!(out.contains(&format!("\n> {}…\n", "p".repeat(17))));
          assert!(out.contains(&format!("\n  {}…\n", "r".repeat(17))));
@@ -5871,10 +5872,10 @@ index 60fe34f9..59456f4f 100644
      fn print_relaunch_failure_hint_writes_expected_lines() {
 diff --git a/crates/codegen/xai-grok-pager/src/app/workshop.rs b/crates/codegen/xai-grok-pager/src/app/workshop.rs
 new file mode 100644
-index 00000000..11fd4040
+index 00000000..ac944f2d
 --- /dev/null
 +++ b/crates/codegen/xai-grok-pager/src/app/workshop.rs
-@@ -0,0 +1,3751 @@
+@@ -0,0 +1,3786 @@
 +//! Workshop overlay: connection picker data loading and selection activation.
 +//!
 +//! Models rows come from `workshop-providers`, rail state from `workshop-detect`, and the OpenCode
@@ -5903,6 +5904,7 @@ index 00000000..11fd4040
 +    detect_opencode, format_bytes, install_opencode, instructions_config,
 +};
 +
++use crate::app::workshop_engine_keeper as keeper;
 +use crate::app::workshop_engine_state::{self as state, EngineState};
 +use workshop_adapters::supervisor::{RunHandle, SupervisorOptions, spawn};
 +use workshop_adapters::{
@@ -7108,6 +7110,9 @@ index 00000000..11fd4040
 +    /// The `sudo` askpass listener (one per process, started with the first engine); `None`
 +    /// until then, or when the home could not hold it.
 +    askpass: std::sync::Mutex<Option<Arc<crate::app::workshop_askpass::AskpassServer>>>,
++    /// The connection that tells the engine keeper this Workshop is attached; held for the life
++    /// of the process (see `workshop_engine_keeper`).
++    keeper_lease: std::sync::Mutex<Option<crate::app::workshop_engine_keeper::Lease>>,
 +}
 +
 +pub type EngineSlot = Arc<EngineSlotInner>;
@@ -7118,6 +7123,7 @@ index 00000000..11fd4040
 +        phase: watch::channel(String::new()).0,
 +        recent_failure: std::sync::Mutex::new(None),
 +        askpass: std::sync::Mutex::new(None),
++        keeper_lease: std::sync::Mutex::new(None),
 +    })
 +}
 +
@@ -7827,8 +7833,34 @@ index 00000000..11fd4040
 +    opts.idle_timeout = Some(stall_timeout());
 +    opts.compose_timeout = Some(compose_timeout());
 +
-+    match OpenCodeEngine::start(&cli, opts).await {
++    // The server lives in the engine keeper, a detached process that outlives this one, so a
++    // relaunch attaches to a warm engine in milliseconds instead of starting a new one. The
++    // keeper is started here on the first launch (or after an update, a changed engine or a
++    // changed configuration), with exactly the environment `OpenCodeEngine::start` would use.
++    let instructions =
++        engine_instructions(load_active_connection().model_display_name().as_deref());
++    let sink = log.clone();
++    let log_line = move |line: &str| state::append_log(&sink, line);
++    let warm = match keeper::acquire(&home, &cli, &opts, &instructions, &log_line).await {
++        Ok(warm) => warm,
++        Err(e) => {
++            workshop_detect::IdentityCache::new(identity_cache_path()).forget(&cli.path);
++            state::append_log(&log, &format!("start failed: {e}"));
++            return Err(engine_fail(&mut st, &home, format!("did not start: {e}")));
++        }
++    };
++    // A warm server answers the health check at once; a fresh one is already listening.
++    let attached = warm.attached;
++    opts.startup_timeout = if attached {
++        Duration::from_secs(5)
++    } else {
++        ENGINE_START_TIMEOUT
++    };
++    match OpenCodeEngine::attach(warm.addr, keeper::USER, &warm.password, opts).await {
 +        Ok(engine) => {
++            if let Ok(mut lease) = slot.keeper_lease.lock() {
++                *lease = Some(warm.lease);
++            }
 +            st.last_phase = Some("ready".into());
 +            st.save(&home);
 +            Ok(engine)
@@ -7836,8 +7868,12 @@ index 00000000..11fd4040
 +        Err(e) => {
 +            // A binary that was taken on trust from the identity cache may be the cause (a
 +            // quarantine flag, a broken install): the next launch runs the real `--version`
-+            // check again, which is what the repair path above keys on.
++            // check again, which is what the repair path above keys on. A warm server that
++            // failed its health check is dropped too: the next launch replaces its keeper.
 +            workshop_detect::IdentityCache::new(identity_cache_path()).forget(&cli.path);
++            if attached {
++                let _ = std::fs::remove_file(keeper::serve_info_path(&home));
++            }
 +            state::append_log(&log, &format!("start failed: {e}"));
 +            Err(engine_fail(&mut st, &home, format!("did not start: {e}")))
 +        }

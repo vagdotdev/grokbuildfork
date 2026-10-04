@@ -1370,8 +1370,9 @@ fn unix_now() -> f64 {
 /// The engine is brought up at launch, silently — never on Enter. A fresh home installs it (the
 /// vendor installer stubbed by a `curl` that "downloads" a script placing the fake engine where
 /// the real one lands) and starts `opencode serve` before a single key is pressed; a returning
-/// home starts it before a single key is pressed and installs nothing; in both cases the first
-/// answer arrives within seconds of Enter, with no bring-up line first.
+/// home finds the server the first launch's keeper kept warm, attaches before a single key is
+/// pressed, starts nothing and installs nothing; in both cases the first answer arrives within
+/// seconds of Enter, with no bring-up line first.
 #[test]
 #[ignore = "needs WORKSHOP_BIN (built workshop binary); hermetic (fake opencode serve, stub installer); run with --include-ignored"]
 fn engine_starts_at_launch_not_on_enter() {
@@ -1521,16 +1522,36 @@ EOS
     h.inject_keys(b"\x03").unwrap();
     let _ = h.wait_exit_code(Duration::from_secs(10));
 
-    // 2. Returning home: the server starts at launch again, nothing is installed, and the first
-    //    message is answered at once.
+    // 2. Returning home: the server the first launch started is still up (its keeper holds it
+    //    warm between sessions), the launch attaches to it at once, nothing starts, nothing is
+    //    installed, and the first message is answered at once.
     let launched = unix_now();
+    std::fs::remove_file(home.path().join(".workshop/engine/state.json")).ok();
     let mut h = spawn();
     wait_for(&mut h, FIRST_RUN_LABEL, 45);
-    let started = wait_for_engine_start(&mut h, &log, 2, 60);
-    assert!(
-        started >= launched,
-        "the second start belongs to the second launch"
+    let ready_deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let state_path = home.path().join(".workshop/engine/state.json");
+    let engine_ready = loop {
+        let ready = std::fs::read_to_string(&state_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .is_some_and(|v| v.get("last_phase").and_then(|p| p.as_str()) == Some("ready"));
+        if ready {
+            break unix_now();
+        }
+        assert!(
+            std::time::Instant::now() < ready_deadline,
+            "the returning launch did not reach a ready engine within 30s:\n{}",
+            h.screen_contents()
+        );
+        h.update(Duration::from_millis(100));
+    };
+    assert_eq!(
+        engine_starts(&log).len(),
+        1,
+        "a returning launch attaches to the warm server; it starts none"
     );
+    let started = engine_ready;
     assert_eq!(
         curl_calls(&curl_log).len(),
         1,
@@ -1550,19 +1571,23 @@ EOS
     let first_answer = enter.elapsed();
     h.update(Duration::from_millis(400));
     snapshot(&h, &dir, "04-returning-launch-first-answer");
-    assert_eq!(engine_starts(&log).len(), 2, "one server per launch");
+    assert_eq!(
+        engine_starts(&log).len(),
+        1,
+        "one server across both launches: the second attached to the first's"
+    );
     assert!(
         first_answer < Duration::from_secs(10),
         "the first answer waited on no bring-up: {first_answer:?}"
     );
     let (again_up, again_answer) = (started - launched, first_answer.as_secs_f64());
     eprintln!(
-        "returning home: launch\u{2192}engine up {again_up:.2}s, Enter\u{2192}answer {again_answer:.2}s"
+        "returning home: launch\u{2192}engine ready (attached) {again_up:.2}s, Enter\u{2192}answer {again_answer:.2}s"
     );
     std::fs::write(
         dir.join("timings.txt"),
         format!(
-            "fresh home: engine up {fresh_up:.2}s after launch (stub install + start); first answer {fresh_answer:.2}s after Enter\nreturning home: engine up {again_up:.2}s after launch; first answer {again_answer:.2}s after Enter\n"
+            "fresh home: engine up {fresh_up:.2}s after launch (stub install + start); first answer {fresh_answer:.2}s after Enter\nreturning home: engine ready (attached to the warm server) {again_up:.2}s after launch; first answer {again_answer:.2}s after Enter\n"
         ),
     )
     .unwrap();
@@ -1570,6 +1595,20 @@ EOS
     h.update(Duration::from_millis(400));
     h.inject_keys(b"\x03").unwrap();
     let _ = h.wait_exit_code(Duration::from_secs(10));
+    // The keeper outlives the TUI by design; the test ends it so nothing outlives the test.
+    if let Some(info) = std::fs::read_to_string(home.path().join(".workshop/engine/serve.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+    {
+        for key in ["keeper_pid", "serve_pid"] {
+            if let Some(pid) = info.get(key).and_then(|v| v.as_i64()) {
+                // SAFETY: ending the test's own keeper and server.
+                unsafe {
+                    libc::kill(pid as libc::pid_t, libc::SIGTERM);
+                }
+            }
+        }
+    }
     eprintln!("evidence: {}", dir.display());
 }
 

@@ -181,6 +181,10 @@ fn spawn_journey(
         ("PATH", path_s.as_str()),
         ("TERM", "xterm-256color"),
         ("GROK_DISABLE_AUTOUPDATER", "1"),
+        // The engine keeper outlives the TUI by design (ten minutes); a gate's keeper must not
+        // outlive the gate, so it stops with the TUI unless a gate asks otherwise (the keeper
+        // gates do, through `extra_env`, which is applied after this).
+        ("WORKSHOP_OPENCODE_KEEP_WARM_SECS", "0"),
     ];
     // Text assertions want a colourless screen; `WORKSHOP_PTY_COLOR=1` on the test process keeps
     // the colours for the HTML screenshots that become the project's evidence.

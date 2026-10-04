@@ -26,6 +26,7 @@ use workshop_adapters::opencode_engine::{
     detect_opencode, format_bytes, install_opencode, instructions_config,
 };
 
+use crate::app::workshop_engine_keeper as keeper;
 use crate::app::workshop_engine_state::{self as state, EngineState};
 use workshop_adapters::supervisor::{RunHandle, SupervisorOptions, spawn};
 use workshop_adapters::{
@@ -1231,6 +1232,9 @@ pub struct EngineSlotInner {
     /// The `sudo` askpass listener (one per process, started with the first engine); `None`
     /// until then, or when the home could not hold it.
     askpass: std::sync::Mutex<Option<Arc<crate::app::workshop_askpass::AskpassServer>>>,
+    /// The connection that tells the engine keeper this Workshop is attached; held for the life
+    /// of the process (see `workshop_engine_keeper`).
+    keeper_lease: std::sync::Mutex<Option<crate::app::workshop_engine_keeper::Lease>>,
 }
 
 pub type EngineSlot = Arc<EngineSlotInner>;
@@ -1241,6 +1245,7 @@ pub fn new_engine_slot() -> EngineSlot {
         phase: watch::channel(String::new()).0,
         recent_failure: std::sync::Mutex::new(None),
         askpass: std::sync::Mutex::new(None),
+        keeper_lease: std::sync::Mutex::new(None),
     })
 }
 
@@ -1950,8 +1955,34 @@ async fn start_engine(
     opts.idle_timeout = Some(stall_timeout());
     opts.compose_timeout = Some(compose_timeout());
 
-    match OpenCodeEngine::start(&cli, opts).await {
+    // The server lives in the engine keeper, a detached process that outlives this one, so a
+    // relaunch attaches to a warm engine in milliseconds instead of starting a new one. The
+    // keeper is started here on the first launch (or after an update, a changed engine or a
+    // changed configuration), with exactly the environment `OpenCodeEngine::start` would use.
+    let instructions =
+        engine_instructions(load_active_connection().model_display_name().as_deref());
+    let sink = log.clone();
+    let log_line = move |line: &str| state::append_log(&sink, line);
+    let warm = match keeper::acquire(&home, &cli, &opts, &instructions, &log_line).await {
+        Ok(warm) => warm,
+        Err(e) => {
+            workshop_detect::IdentityCache::new(identity_cache_path()).forget(&cli.path);
+            state::append_log(&log, &format!("start failed: {e}"));
+            return Err(engine_fail(&mut st, &home, format!("did not start: {e}")));
+        }
+    };
+    // A warm server answers the health check at once; a fresh one is already listening.
+    let attached = warm.attached;
+    opts.startup_timeout = if attached {
+        Duration::from_secs(5)
+    } else {
+        ENGINE_START_TIMEOUT
+    };
+    match OpenCodeEngine::attach(warm.addr, keeper::USER, &warm.password, opts).await {
         Ok(engine) => {
+            if let Ok(mut lease) = slot.keeper_lease.lock() {
+                *lease = Some(warm.lease);
+            }
             st.last_phase = Some("ready".into());
             st.save(&home);
             Ok(engine)
@@ -1959,8 +1990,12 @@ async fn start_engine(
         Err(e) => {
             // A binary that was taken on trust from the identity cache may be the cause (a
             // quarantine flag, a broken install): the next launch runs the real `--version`
-            // check again, which is what the repair path above keys on.
+            // check again, which is what the repair path above keys on. A warm server that
+            // failed its health check is dropped too: the next launch replaces its keeper.
             workshop_detect::IdentityCache::new(identity_cache_path()).forget(&cli.path);
+            if attached {
+                let _ = std::fs::remove_file(keeper::serve_info_path(&home));
+            }
             state::append_log(&log, &format!("start failed: {e}"));
             Err(engine_fail(&mut st, &home, format!("did not start: {e}")))
         }
