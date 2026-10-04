@@ -334,6 +334,12 @@ pub fn init_tracing() -> TracingHandle {
         .with_target(true)
         .with_ansi(true)
         .with_writer(make_writer);
+    // Workshop: each step is timed (`startup timing` in the unified log); on macOS one of them
+    // held the first frame back by ~190 ms and this is how it was found.
+    let t = xai_grok_telemetry::instrumentation::timer("startup.tracing.otel_config");
+    let otel_config = xai_grok_shell::agent::init::build_default_otel_layer_config();
+    drop(t);
+    let t = xai_grok_telemetry::instrumentation::timer("startup.tracing.otel_layer");
     let otel_layer = xai_grok_telemetry::otel_layer::build_otel_layer(
         xai_grok_telemetry::otel_layer::OtelClientInfo {
             client_name: "grok-pager",
@@ -341,8 +347,10 @@ pub fn init_tracing() -> TracingHandle {
             service_version: xai_grok_version::full_version(),
             app_entrypoint: "tui",
         },
-        xai_grok_shell::agent::init::build_default_otel_layer_config(),
+        otel_config,
     );
+    drop(t);
+    let t = xai_grok_telemetry::instrumentation::timer("startup.tracing.layers");
     let instrumentation_layer = xai_grok_telemetry::instrumentation::layer();
     let sampling_log_layer = xai_grok_telemetry::sampling_log::layer();
     let hooks_log_layer = xai_grok_telemetry::hooks_log::layer();
@@ -353,7 +361,11 @@ pub fn init_tracing() -> TracingHandle {
         .with(xai_grok_telemetry::span_profile::layer("tui"))
         .with(hooks_log_layer)
         .with(otel_layer);
+    drop(t);
+    let t = xai_grok_telemetry::instrumentation::timer("startup.tracing.firehose");
     xai_grok_telemetry::debug_log::install_firehose(registry, "tui");
+    drop(t);
+    let _t = xai_grok_telemetry::instrumentation::timer("startup.tracing.external_init");
     xai_grok_telemetry::external::init(
         xai_grok_shell::agent::config::resolve_external_otel_config(
             xai_grok_telemetry::external::config::ExternalClientInfo {
