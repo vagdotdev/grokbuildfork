@@ -28,7 +28,10 @@ def main():
         return
     groups = {}
     for r in rows:
-        groups.setdefault((r.get("label", ""), r.get("home_kind", "")), []).append(r)
+        kind = r.get("home_kind", "")
+        if kind == "warm" and r.get("keeper_warm"):
+            kind = "warm, engine kept warm"
+        groups.setdefault((r.get("label", ""), kind), []).append(r)
     title = f"### Startup bench{' — ' + platform if platform else ''}"
     print(title)
     print()
@@ -41,7 +44,8 @@ def main():
         print(f"| {label} | {kind} | {len(rs)} | {fmt(median([r.get('first_output') for r in rs]))} | "
               f"{fmt(median([r.get('first_frame') for r in rs]))} | {fmt(median([r.get('composer') for r in rs]))} | {eng_s} |")
     print()
-    print("Medians; times from exec in a 120×40 PTY. Fresh = empty home (the engine installs); warm = the home that launch left.")
+    print("Medians; times from exec in a 120×40 PTY. Fresh = empty home (the engine installs); warm = the home that launch "
+          "left; \"engine kept warm\" = a keeper from an earlier launch was still serving, so the launch attached to it.")
 
 
 if __name__ == "__main__":
